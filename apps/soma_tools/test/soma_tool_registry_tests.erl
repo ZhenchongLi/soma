@@ -55,8 +55,7 @@ test_register_tool_rejects_missing_field_name_unresolvable() ->
         module => soma_tool_echo
     },
     ?assertMatch({error, _}, soma_tool_registry:register_tool(Manifest)),
-    %% staged-red: deliberately wrong expected value so the assertion fires.
-    ?assertEqual({ok, registered},
+    ?assertEqual({error, not_found},
                  soma_tool_registry:resolve_descriptor(ghost_tool)).
 
 register_tool_rejects_missing_field_name_unresolvable_test_() ->
