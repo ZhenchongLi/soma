@@ -21,3 +21,13 @@ tools already emit from `describe/0`:
   to retry.
 - `timeout_ms` — the per-call timeout in milliseconds after which the runtime
   abandons the tool call and the run records a timeout.
+
+## Adapter types
+
+A manifest entry names exactly one of two adapter types, which tells the runtime
+how to run the tool:
+
+- `erlang_module` — runs an in-BEAM module that implements the `soma_tool`
+  behaviour, the same way every v0.1 tool runs today.
+- `cli` — runs an external one-shot executable as a separate process, given an
+  executable path and an argv list (never a shell command string).
