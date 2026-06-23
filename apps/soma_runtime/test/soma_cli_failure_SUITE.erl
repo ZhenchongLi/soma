@@ -6,11 +6,13 @@
 -export([test_missing_executable_named_error/1]).
 -export([test_missing_executable_reaches_run_failed_trail/1]).
 -export([test_non_executable_permission_error/1]).
+-export([test_non_zero_exit_carries_status/1]).
 
 all() ->
     [test_missing_executable_named_error,
      test_missing_executable_reaches_run_failed_trail,
-     test_non_executable_permission_error].
+     test_non_executable_permission_error,
+     test_non_zero_exit_carries_status].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -122,6 +124,63 @@ test_non_executable_permission_error(_Config) ->
     %% the worker returned a named not-executable error, not a raw port exception
     {cli_executable_not_executable, _} = Reason,
     ok.
+
+%% Criterion 4: a run whose `cli' step's external program exits with a non-zero
+%% status reaches `run.failed', and the failure payload carries that exit status.
+%% Driven through the full session/run/tool-call stack via
+%% soma_agent_session:start_run/2. The helper script does `exit 3'. With the old
+%% code `collect_cli/2' only matched `{exit_status, 0}', so the worker blocked
+%% forever and the per-step timer drove the run to `run.timeout' -- the wrong
+%% terminal state, with the exit status lost. The proof is that the run reaches
+%% `run.failed' (never `run.timeout'), and the `tool.failed' event's
+%% `payload.reason' matches `{cli_exit_status, 3, _}' so the exit status 3 rides
+%% in the payload.
+test_non_zero_exit_carries_status(_Config) ->
+    StorePid = event_store_pid(),
+    Helper = write_exit_helper(3),
+    Manifest = #{name => cli_exit_3,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% generous step budget so a wrong (timeout) outcome cannot be mistaken for a
+    %% correct one -- if the worker blocked, the timer would fire and we would see
+    %% run.timeout instead.
+    Steps = [#{id => s1, tool => cli_exit_3,
+               args => #{input => <<"ignored">>}, timeout_ms => 5000}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.failed">>, Types),
+    %% never the wrong terminal state the old blocking code produced.
+    false = lists:member(<<"run.timeout">>, Types),
+    FailEvent = event_of_type(StorePid, RunId, <<"tool.failed">>),
+    Payload = maps:get(payload, FailEvent),
+    Reason = maps:get(reason, Payload),
+    %% the exit status 3 rides in the failure payload.
+    {cli_exit_status, 3, _} = Reason,
+    ok.
+
+%% Write a tiny cli helper that exits with the given status. It ignores argv and
+%% never reads stdin, matching the cli adapter's argv input protocol. Returns the
+%% absolute helper path.
+write_exit_helper(Status) ->
+    Base = filename:basedir(user_cache, "soma_cli_failure_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "exit.sh"),
+    Script = iolist_to_binary(
+               ["#!/bin/sh\n",
+                "exit ", integer_to_list(Status), "\n"]),
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Write a file that exists and is readable but has no execute bit (mode 8#644),
 %% so opening a port on it fails with a permission error rather than a missing
