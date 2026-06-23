@@ -5,8 +5,7 @@
 test_register_lookup_returns_descriptor() ->
     Descriptor = #{adapter => erlang_module, module => soma_tool_echo},
     Registry = soma_tool_registry:register(#{}, echo, Descriptor),
-    %% staged red: assert the old bare-module shape first so the assertion fires.
-    ?assertEqual({ok, soma_tool_echo},
+    ?assertEqual({ok, Descriptor},
                  soma_tool_registry:lookup(Registry, echo)).
 
 register_lookup_returns_descriptor_test() ->

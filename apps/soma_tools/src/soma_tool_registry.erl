@@ -1,10 +1,15 @@
 %% @doc The tool registry. Two shapes share this module:
 %%
-%%   * the pure `name => module' map functions `register/3', `lookup/2',
+%%   * the pure `name => descriptor' map functions `register/3', `lookup/2',
 %%     `names/1' (used directly by unit tests); and
 %%   * a `gen_server' wrapper started under `soma_sup' that holds one seeded
 %%     registry map as its state, so the runtime resolves tools through a
 %%     single shared process.
+%%
+%% A descriptor names the adapter that runs a tool and, for an `erlang_module'
+%% tool, the backing module: `#{adapter => erlang_module, module => Module}'.
+%% The `adapter' vocabulary is shared with the manifest contract
+%% (`docs/tool-manifest.md').
 -module(soma_tool_registry).
 
 -behaviour(gen_server).
@@ -18,24 +23,25 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
 
--type registry() :: #{atom() => module()}.
+-type descriptor() :: #{adapter := erlang_module, module := module()}.
+-type registry() :: #{atom() => descriptor()}.
 
--export_type([registry/0]).
+-export_type([descriptor/0, registry/0]).
 
--define(SEED, #{echo => soma_tool_echo,
-                sleep => soma_tool_sleep,
-                fail => soma_tool_fail,
-                file_read => soma_tool_file_read,
-                file_write => soma_tool_file_write}).
+-define(SEED, #{echo => #{adapter => erlang_module, module => soma_tool_echo},
+                sleep => #{adapter => erlang_module, module => soma_tool_sleep},
+                fail => #{adapter => erlang_module, module => soma_tool_fail},
+                file_read => #{adapter => erlang_module, module => soma_tool_file_read},
+                file_write => #{adapter => erlang_module, module => soma_tool_file_write}}).
 
--spec register(registry(), atom(), module()) -> registry().
-register(Registry, Name, Module) ->
-    Registry#{Name => Module}.
+-spec register(registry(), atom(), descriptor()) -> registry().
+register(Registry, Name, Descriptor) ->
+    Registry#{Name => Descriptor}.
 
--spec lookup(registry(), atom()) -> {ok, module()} | {error, not_found}.
+-spec lookup(registry(), atom()) -> {ok, descriptor()} | {error, not_found}.
 lookup(Registry, Name) ->
     case Registry of
-        #{Name := Module} -> {ok, Module};
+        #{Name := Descriptor} -> {ok, Descriptor};
         _ -> {error, not_found}
     end.
 
@@ -60,7 +66,14 @@ init([]) ->
     {ok, ?SEED}.
 
 handle_call({resolve, Name}, _From, Registry) ->
-    {reply, lookup(Registry, Name), Registry};
+    %% `resolve/1' keeps its bare-module shape by reading `module' out of the
+    %% stored descriptor, so the seed map holds descriptors as the one source
+    %% of truth.
+    Reply = case lookup(Registry, Name) of
+                {ok, #{module := Module}} -> {ok, Module};
+                {error, not_found} -> {error, not_found}
+            end,
+    {reply, Reply, Registry};
 handle_call(_Msg, _From, Registry) ->
     {reply, {error, unknown_call}, Registry}.
 
