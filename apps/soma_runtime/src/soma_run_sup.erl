@@ -4,11 +4,15 @@
 
 -behaviour(supervisor).
 
--export([start_link/0]).
+-export([start_link/0, start_run/1]).
 -export([init/1]).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+
+%% Start one `soma_run' child on demand. `Opts' carries the run_id and steps.
+start_run(Opts) when is_map(Opts) ->
+    supervisor:start_child(?MODULE, [Opts]).
 
 init([]) ->
     SupFlags = #{strategy => simple_one_for_one,
