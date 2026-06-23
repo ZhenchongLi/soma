@@ -1,7 +1,8 @@
 {application, soma_runtime, [
     {description, "Soma agent runtime: supervision tree, sessions, runs"},
     {vsn, "0.1.0"},
-    {registered, []},
+    {registered, [soma_sup]},
+    {mod, {soma_app, []}},
     {applications, [kernel, stdlib, soma_event_store, soma_tools]},
     {env, []},
     {modules, []}
