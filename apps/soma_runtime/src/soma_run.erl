@@ -55,8 +55,6 @@ executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
     ToolCallId = new_tool_call_id(),
     emit(Data, <<"step.started">>,
          #{step_id => StepId, tool_call_id => ToolCallId}),
-    emit(Data, <<"tool.started">>,
-         #{step_id => StepId, tool_call_id => ToolCallId}),
     {ok, Module} = soma_tool_registry:resolve(ToolName),
     Ctx = maps:merge(CtxExtra,
                      #{session_id => Data#data.session_id,
@@ -68,6 +66,12 @@ executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
                                              ctx => Ctx,
                                              tool_call_id => ToolCallId,
                                              reply_to => self()}),
+    %% Record `tool.started' after the worker is spawned so the event carries the
+    %% worker pid: the run can prove each invocation ran in its own process, and
+    %% the timeout/cancel paths give a test the pid to confirm the worker died.
+    emit(Data, <<"tool.started">>,
+         #{step_id => StepId, tool_call_id => ToolCallId,
+           tool_call_pid => WorkerPid}),
     %% Monitor the worker so a crash (the tool raises, the worker dies without
     %% replying) reaches the run as a `'DOWN'' message rather than hanging the
     %% wait forever.
