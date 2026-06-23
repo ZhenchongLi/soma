@@ -2,7 +2,7 @@
 %% binding and returns the updated map; `lookup/2' reads a binding back.
 -module(soma_tool_registry).
 
--export([register/3, lookup/2]).
+-export([register/3, lookup/2, names/1]).
 
 -type registry() :: #{atom() => module()}.
 
@@ -18,3 +18,7 @@ lookup(Registry, Name) ->
         #{Name := Module} -> {ok, Module};
         _ -> {error, not_found}
     end.
+
+-spec names(registry()) -> [atom()].
+names(Registry) ->
+    maps:keys(Registry).
