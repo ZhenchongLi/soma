@@ -45,19 +45,21 @@ executing(internal, next_step, Data = #data{pending = []}) ->
 executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
     StepId = maps:get(id, Step),
     ToolName = maps:get(tool, Step),
-    Args = resolve_args(maps:get(args, Step, #{}), Data#data.outputs),
+    Resolved = resolve_args(maps:get(args, Step, #{}), Data#data.outputs),
+    {Input, CtxExtra} = split_ctx_args(Resolved),
     ToolCallId = new_tool_call_id(),
     emit(Data, <<"step.started">>,
          #{step_id => StepId, tool_call_id => ToolCallId}),
     emit(Data, <<"tool.started">>,
          #{step_id => StepId, tool_call_id => ToolCallId}),
     {ok, Module} = soma_tool_registry:resolve(ToolName),
-    Ctx = #{session_id => Data#data.session_id,
-            run_id => Data#data.run_id,
-            step_id => StepId,
-            tool_call_id => ToolCallId},
+    Ctx = maps:merge(CtxExtra,
+                     #{session_id => Data#data.session_id,
+                       run_id => Data#data.run_id,
+                       step_id => StepId,
+                       tool_call_id => ToolCallId}),
     {ok, _WorkerPid} = soma_tool_call:start(#{module => Module,
-                                              input => Args,
+                                              input => Input,
                                               ctx => Ctx,
                                               tool_call_id => ToolCallId,
                                               reply_to => self()}),
@@ -106,6 +108,17 @@ resolve_args(Args, Outputs) when is_map(Args) ->
     maps:map(fun(_K, {from_step, PriorId}) -> maps:get(PriorId, Outputs);
                 (_K, V) -> V
              end, Args).
+
+%% Split resolved args into the tool's input and ctx additions. The sandbox
+%% `root' the file tools read from ctx travels in the step args, so lift it out
+%% of the input and into the ctx.
+split_ctx_args(Args) when is_map(Args) ->
+    case maps:take(root, Args) of
+        {Root, Rest} -> {Rest, #{root => Root}};
+        error -> {Args, #{}}
+    end;
+split_ctx_args(Args) ->
+    {Args, #{}}.
 
 new_tool_call_id() ->
     list_to_binary("tc-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
