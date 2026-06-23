@@ -124,9 +124,8 @@ test_contract_doc_maps_cli_run_reaches_completed_proof() ->
     ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
     ?assert(contains(Block, <<"soma_run">>)),
     ?assert(contains(Block, <<"soma_tool_call">>)),
-    %% staged-red: deliberately-wrong terminal state; proof 3 drives to
-    %% run.completed, not run.failed. Corrected in the following commit.
-    ?assert(contains(Block, <<"run.failed">>)).
+    %% proof 3 drives the run to its completed terminal state
+    ?assert(contains(Block, <<"run.completed">>)).
 
 %% The proof-3 section block: from its heading up to the next "### " heading.
 cli_completed_proof_block(Doc) ->
