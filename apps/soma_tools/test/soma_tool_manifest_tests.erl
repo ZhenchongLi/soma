@@ -346,3 +346,30 @@ test_builtin_manifests_normalize() ->
 
 builtin_manifests_normalize_test() ->
     test_builtin_manifests_normalize().
+
+%% Each built-in's normalized manifest carries the same name, effect,
+%% idempotent, and timeout_ms that the tool's describe/0 returns, so the
+%% manifest's metadata cannot drift from describe/0's.
+test_builtin_manifest_metadata_matches_describe() ->
+    Modules = [
+        soma_tool_echo,
+        soma_tool_sleep,
+        soma_tool_fail,
+        soma_tool_file_read,
+        soma_tool_file_write
+    ],
+    MetaKeys = [name, effect, idempotent, timeout_ms],
+    lists:foreach(
+        fun(Module) ->
+            {ok, Manifest} = soma_tool_manifest:normalize(Module:manifest()),
+            Describe = (Module:describe())#{timeout_ms => -42},
+            ?assertEqual(
+                maps:with(MetaKeys, Describe),
+                maps:with(MetaKeys, Manifest)
+            )
+        end,
+        Modules
+    ).
+
+builtin_manifest_metadata_matches_describe_test() ->
+    test_builtin_manifest_metadata_matches_describe().
