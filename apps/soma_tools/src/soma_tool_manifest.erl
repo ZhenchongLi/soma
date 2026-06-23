@@ -19,4 +19,23 @@ normalize(#{
         adapter => erlang_module,
         module => Module
     },
+    {ok, Manifest};
+normalize(#{
+    name := Name,
+    effect := Effect,
+    idempotent := Idempotent,
+    timeout_ms := TimeoutMs,
+    adapter := cli,
+    executable := Executable,
+    argv := Argv
+}) ->
+    Manifest = #{
+        name => Name,
+        effect => Effect,
+        idempotent => Idempotent,
+        timeout_ms => TimeoutMs,
+        adapter => cli,
+        executable => Executable,
+        argv => Argv
+    },
     {ok, Manifest}.
