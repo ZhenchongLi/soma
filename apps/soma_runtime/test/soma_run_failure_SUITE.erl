@@ -372,26 +372,26 @@ test_get_status_reports_terminal_outcome(_Config) ->
                   args => #{mode => error, reason => boom}}],
     {ok, FailedRunId} = soma_agent_session:start_run(SessionPid, ErrSteps),
     ok = wait_for_event(StorePid, FailedRunId, <<"run.failed">>, 50),
-    ok = wait_for_run_status(SessionPid, FailedRunId, completed, 50),
+    ok = wait_for_run_status(SessionPid, FailedRunId, failed, 50),
     %% overrun run -> timeout
     TimeoutSteps = [#{id => s1, tool => sleep,
                       args => #{ms => 1000}, timeout_ms => 50}],
     {ok, TimeoutRunId} = soma_agent_session:start_run(SessionPid, TimeoutSteps),
     ok = wait_for_event(StorePid, TimeoutRunId, <<"run.timeout">>, 50),
-    ok = wait_for_run_status(SessionPid, TimeoutRunId, completed, 50),
+    ok = wait_for_run_status(SessionPid, TimeoutRunId, timeout, 50),
     %% cancelled run -> cancelled
     CancelSteps = [#{id => s1, tool => sleep, args => #{ms => 5000}}],
     {ok, CancelRunId} = soma_agent_session:start_run(SessionPid, CancelSteps),
     ok = wait_for_event(StorePid, CancelRunId, <<"tool.started">>, 50),
     SessionPid ! {cancel_run, CancelRunId},
     ok = wait_for_event(StorePid, CancelRunId, <<"run.cancelled">>, 50),
-    ok = wait_for_run_status(SessionPid, CancelRunId, completed, 50),
+    ok = wait_for_run_status(SessionPid, CancelRunId, cancelled, 50),
     Status = soma_agent_session:get_status(SessionPid),
     Runs = maps:get(runs, Status),
     %% each non-completed run reports its terminal outcome, never `completed'
-    completed = maps:get(FailedRunId, Runs),
-    completed = maps:get(TimeoutRunId, Runs),
-    completed = maps:get(CancelRunId, Runs),
+    failed = maps:get(FailedRunId, Runs),
+    timeout = maps:get(TimeoutRunId, Runs),
+    cancelled = maps:get(CancelRunId, Runs),
     ok.
 
 %% Read the first event of Type for RunId.
