@@ -9,3 +9,10 @@ test_registry_lookup_hit() ->
 
 registry_lookup_hit_test() ->
     test_registry_lookup_hit().
+
+test_registry_lookup_miss() ->
+    ?assertEqual({error, not_found},
+                 soma_tool_registry:lookup(#{}, echo)).
+
+registry_lookup_miss_test() ->
+    test_registry_lookup_miss().
