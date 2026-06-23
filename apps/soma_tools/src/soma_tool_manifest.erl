@@ -48,8 +48,18 @@ check_adapter_fields(#{adapter := erlang_module} = Manifest) ->
         true -> normalize_complete(Manifest);
         false -> {error, {missing_field, module}}
     end;
+check_adapter_fields(#{adapter := cli, executable := Executable} = Manifest) ->
+    case has_internal_whitespace(Executable) of
+        true -> {error, {invalid_executable, Executable}};
+        false -> normalize_complete(Manifest)
+    end;
 check_adapter_fields(Manifest) ->
     normalize_complete(Manifest).
+
+has_internal_whitespace(Executable) when is_binary(Executable) ->
+    has_internal_whitespace(binary_to_list(Executable));
+has_internal_whitespace(Executable) when is_list(Executable) ->
+    lists:any(fun(C) -> C =:= $\s orelse C =:= $\t end, Executable).
 
 normalize_complete(#{
     name := Name,
