@@ -127,3 +127,19 @@ test_normalize_rejects_unknown_adapter() ->
 
 normalize_rejects_unknown_adapter_test() ->
     test_normalize_rejects_unknown_adapter().
+
+test_normalize_rejects_erlang_module_without_module() ->
+    Manifest = #{
+        name => file_read,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module
+    },
+    ?assertEqual(
+        {error, {missing_field, module}},
+        soma_tool_manifest:normalize(Manifest)
+    ).
+
+normalize_rejects_erlang_module_without_module_test() ->
+    test_normalize_rejects_erlang_module_without_module().
