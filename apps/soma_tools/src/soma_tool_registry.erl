@@ -12,6 +12,9 @@
 register(Registry, Name, Module) ->
     Registry#{Name => Module}.
 
--spec lookup(registry(), atom()) -> {ok, module()}.
+-spec lookup(registry(), atom()) -> {ok, module()} | {error, not_found}.
 lookup(Registry, Name) ->
-    {ok, maps:get(Name, Registry)}.
+    case Registry of
+        #{Name := Module} -> {ok, Module};
+        _ -> {error, not_found}
+    end.
