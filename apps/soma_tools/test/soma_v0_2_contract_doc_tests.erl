@@ -324,8 +324,7 @@ test_contract_doc_maps_cli_cancel_proof() ->
     Lower = string:lowercase(Block),
     ?assert(contains(Block, <<"soma_cli_lifecycle_SUITE">>)),
     %% the reaches-cancelled case and the external-process-dead case
-    %% STAGED-RED: deliberately wrong case name to make the assertion fire.
-    ?assert(contains(Block, <<"test_cli_cancel_reaches_WRONG">>)),
+    ?assert(contains(Block, <<"test_cli_cancel_reaches_cancelled">>)),
     ?assert(contains(Block, <<"test_cli_external_process_dead_after_cancel">>)),
     %% the session entry: the start_run/2 call and the cancel message
     ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
