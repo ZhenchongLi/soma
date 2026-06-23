@@ -46,9 +46,35 @@ run(#{executable := Executable, argv := Argv} = Opts) ->
 %% pid as the worker's first act keeps the run holding it for the whole step.
 run_cli(Executable, Argv, Input, ToolCallId, ReplyTo) ->
     Args = [render_arg(A) || A <- Argv] ++ [render_input(Input)],
-    Port = open_port({spawn_executable, Executable},
-                     [{args, Args}, exit_status, binary, use_stdio,
-                      stderr_to_stdout]),
+    case open_cli_port(Executable, Args) of
+        {ok, Port} ->
+            await_cli(Port, ToolCallId, ReplyTo);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% Open the port for the external program, catching the raise `open_port' makes
+%% when the executable cannot be spawned. The raise kills the worker and is
+%% reported to the run as a raw port exception through the monitor's `'DOWN''
+%% path; catching it lets the worker return a named `{error, Reason}' instead.
+%% `open_port' does not expose a stable, distinct error term for the
+%% missing-path case, so the missing case is identified by a stat on the failure
+%% path (the happy path never stats).
+open_cli_port(Executable, Args) ->
+    try
+        Port = open_port({spawn_executable, Executable},
+                         [{args, Args}, exit_status, binary, use_stdio,
+                          stderr_to_stdout]),
+        {ok, Port}
+    catch
+        error:_ ->
+            case filelib:is_file(Executable) of
+                false ->
+                    {error, {cli_executable_not_found, Executable}}
+            end
+    end.
+
+await_cli(Port, ToolCallId, ReplyTo) ->
     case erlang:port_info(Port, os_pid) of
         {os_pid, OsPid} ->
             ReplyTo ! {tool_started_os_pid, ToolCallId, self(), OsPid};
