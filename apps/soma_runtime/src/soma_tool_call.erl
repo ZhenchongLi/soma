@@ -7,6 +7,12 @@
 
 -export([start/1]).
 
+%% Configured upper bound on the bytes the cli adapter buffers from a program's
+%% merged stdout/stderr. A program that emits more than this is stopped rather
+%% than buffered whole, and the run fails with a reason naming this limit. A
+%% module constant is enough for v0.1: there is no per-tool override.
+-define(CLI_OUTPUT_LIMIT, 65536).
+
 %% Spawn the worker for one invocation. `Opts' carries the tool `module', the
 %% resolved `input', the `ctx', the `tool_call_id', and the `reply_to' pid.
 start(Opts) when is_map(Opts) ->
@@ -85,7 +91,7 @@ await_cli(Port, ToolCallId, ReplyTo) ->
         undefined ->
             ok
     end,
-    collect_cli(Port, []).
+    collect_cli(Port, [], 0).
 
 %% Collect the program's merged stdout/stderr until it exits. A clean exit
 %% (status 0) returns the full captured output as `{ok, Output}'. A non-zero exit
@@ -93,10 +99,24 @@ await_cli(Port, ToolCallId, ReplyTo) ->
 %% status in the payload instead of blocking forever (the old code matched only
 %% status 0, so a non-zero exit fell through to the per-step timeout). `Excerpt'
 %% is the captured merged output.
-collect_cli(Port, Acc) ->
+%%
+%% The loop carries a running byte count alongside the accumulator. When the
+%% bytes seen exceed `?CLI_OUTPUT_LIMIT' before the program exits, the worker
+%% stops collecting, kills the port, and returns
+%% `{error, {cli_output_limit_exceeded, Limit}}' -- it does not keep buffering
+%% past the limit, so a program that floods output cannot make the worker buffer
+%% the whole stream in memory.
+collect_cli(Port, Acc, Bytes) ->
     receive
         {Port, {data, Data}} ->
-            collect_cli(Port, [Data | Acc]);
+            Bytes1 = Bytes + byte_size(Data),
+            case Bytes1 > ?CLI_OUTPUT_LIMIT of
+                true ->
+                    try erlang:port_close(Port) catch _:_ -> ok end,
+                    {error, {cli_output_limit_exceeded, ?CLI_OUTPUT_LIMIT}};
+                false ->
+                    collect_cli(Port, [Data | Acc], Bytes1)
+            end;
         {Port, {exit_status, 0}} ->
             {ok, iolist_to_binary(lists:reverse(Acc))};
         {Port, {exit_status, N}} ->
