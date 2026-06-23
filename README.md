@@ -150,6 +150,8 @@ retries beyond none, and any hard dependency on a real LLM.
   non-negotiable constraints, and the full v0.1 spec. Where the implementation
   refined the design (e.g. step iteration lives inside `soma_run` rather than a
   separate `soma_step` process), this README and the code are authoritative.
+- **[docs/tool-manifest.md](docs/tool-manifest.md)** — the v0.2 tool manifest
+  contract: the shape of a tool entry and which adapter runs it.
 - **[docs/release.md](docs/release.md)** — building and running the release.
 - **[docs/roadmap.md](docs/roadmap.md)** — post-v0.1 ideas.
 ```
