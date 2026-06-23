@@ -157,3 +157,24 @@ has_valid_example_label(Lower) ->
 
 manifest_doc_has_valid_example_test() ->
     test_manifest_doc_has_valid_example().
+
+%% Criterion 8: the doc includes at least one example explicitly labelled as an
+%% invalid manifest, carrying a note on why it is rejected.
+test_manifest_doc_has_invalid_example() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    %% an example is labelled as an invalid manifest
+    ?assert(has_invalid_example_label(Lower)),
+    %% and the doc carries a note explaining why it is rejected
+    ?assert(contains(Lower, <<"rejected">>)).
+
+%% A heading or label line that marks an example as an invalid manifest.
+has_invalid_example_label(Lower) ->
+    Lines = binary:split(Lower, <<"\n">>, [global]),
+    lists:any(fun(L) ->
+                  contains(L, <<"invalid manifest">>)
+                      andalso contains(L, <<"example">>)
+              end, Lines).
+
+manifest_doc_has_invalid_example_test() ->
+    test_manifest_doc_has_invalid_example().
