@@ -12,7 +12,8 @@
 
 -export([start_link/1]).
 -export([callback_mode/0, init/1]).
--export([executing/3, waiting_tool/3, completed/3, failed/3, timeout/3]).
+-export([executing/3, waiting_tool/3, completed/3, failed/3, timeout/3,
+         cancelled/3]).
 
 -record(data, {run_id,
                session_id,
@@ -143,7 +144,21 @@ waiting_tool(state_timeout, step_timeout,
     {next_state, timeout, Data#data{current = undefined,
                                     tool_call_id = undefined,
                                     worker_pid = undefined,
-                                    worker_mref = undefined}}.
+                                    worker_mref = undefined}};
+%% The run was cancelled: the session forwarded a `cancel' while the run waited
+%% on its active worker. Kill that worker, record `run.cancelled', tell the
+%% session, and move to the `cancelled' state. The brutal kill makes
+%% cancellation real rather than a flag checked at the end.
+waiting_tool(info, cancel,
+             Data = #data{worker_pid = WorkerPid, worker_mref = MRef}) ->
+    demonitor_flush(MRef),
+    exit(WorkerPid, kill),
+    emit(Data, <<"run.cancelled">>, #{}),
+    notify_session_cancelled(Data),
+    {next_state, cancelled, Data#data{current = undefined,
+                                      tool_call_id = undefined,
+                                      worker_pid = undefined,
+                                      worker_mref = undefined}}.
 
 completed(_EventType, _Event, Data) ->
     {keep_state, Data}.
@@ -155,6 +170,12 @@ failed(_EventType, _Event, Data) ->
 %% `completed/3'. A stray `'DOWN'' from the worker the timeout killed is just
 %% noise here and is ignored.
 timeout(_EventType, _Event, Data) ->
+    {keep_state, Data}.
+
+%% Terminal `cancelled' state: the run stays alive holding its final state, like
+%% `completed/3'. A stray `'DOWN'' from the worker the cancel killed is just
+%% noise here and is ignored.
+cancelled(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
 %%% Internal
@@ -208,6 +229,14 @@ notify_session_timeout(#data{session_pid = undefined}) ->
     ok;
 notify_session_timeout(#data{session_pid = Pid, run_id = RunId}) ->
     Pid ! {run_timeout, RunId},
+    ok.
+
+%% Tell the session this run was cancelled; the session records `cancelled' and
+%% stays alive, learning the outcome from this message rather than a link signal.
+notify_session_cancelled(#data{session_pid = undefined}) ->
+    ok;
+notify_session_cancelled(#data{session_pid = Pid, run_id = RunId}) ->
+    Pid ! {run_cancelled, RunId},
     ok.
 
 emit(#data{event_store = undefined}, _Type, _Extra) ->
