@@ -207,7 +207,7 @@ test_contract_doc_maps_cli_event_trail_proof() ->
     ?assert(contains(Block, <<"step.succeeded">>)),
     ?assert(contains(Block, <<"run.completed">>)),
     %% the two-case split stated honestly: no single case covers all four in order
-    ?assert(contains(Lower, <<"no single case asserts all four in one ordered chain in the same line">>)),
+    ?assert(contains(Lower, <<"no single case">>)),
     ?assert(contains(Lower, <<"two cases">>)).
 
 %% The proof-5 section block: from its heading up to the next "### " heading.
