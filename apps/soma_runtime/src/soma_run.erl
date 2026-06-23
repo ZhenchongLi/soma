@@ -25,7 +25,8 @@
                current,
                tool_call_id,
                worker_pid,
-               worker_mref}).
+               worker_mref,
+               os_pid}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -113,6 +114,13 @@ start_tool_call(Data, Step, StepId, ToolCallId, Descriptor, Input, CtxExtra) ->
              [{state_timeout, TimeoutMs, step_timeout}]}
     end.
 
+%% A `cli' worker reports the OS pid of the external process it just spawned.
+%% Record it so the timeout/cancel teardown can kill the external process, not
+%% just the BEAM worker. An `erlang_module' worker never sends this, so the
+%% stored pid stays `undefined' and the in-BEAM teardown is unchanged.
+waiting_tool(info, {tool_started_os_pid, ToolCallId, _WorkerPid, OsPid},
+             Data = #data{tool_call_id = ToolCallId}) ->
+    {keep_state, Data#data{os_pid = OsPid}};
 %% Wait for the active tool-call worker's result; only then advance.
 waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {ok, Output}},
              Data = #data{tool_call_id = ToolCallId,
@@ -135,7 +143,8 @@ waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {ok, Output}},
                         outputs = Outputs#{StepId => Output},
                         current = undefined,
                         tool_call_id = undefined,
-                        worker_mref = undefined},
+                        worker_mref = undefined,
+                        os_pid = undefined},
     {next_state, executing, NewData, [{next_event, internal, next_step}]};
 %% The tool returned an error: record the failure trail and move to `failed'.
 %% A crash and an `{error, _}' return land in the same terminal state.
@@ -158,16 +167,19 @@ waiting_tool(info, {'DOWN', MRef, process, WorkerPid, Reason},
 %% than a flag checked later.
 waiting_tool(state_timeout, step_timeout,
              Data = #data{worker_pid = WorkerPid, worker_mref = MRef,
-                          current = Step, tool_call_id = ToolCallId}) ->
+                          current = Step, tool_call_id = ToolCallId,
+                          os_pid = OsPid}) ->
     demonitor_flush(MRef),
     exit(WorkerPid, kill),
+    kill_os_process(OsPid),
     emit(Data, <<"run.timeout">>,
          #{step_id => maps:get(id, Step), tool_call_id => ToolCallId}),
     notify_session_timeout(Data),
     {next_state, timeout, Data#data{current = undefined,
                                     tool_call_id = undefined,
                                     worker_pid = undefined,
-                                    worker_mref = undefined}};
+                                    worker_mref = undefined,
+                                    os_pid = undefined}};
 %% The run was cancelled: the session forwarded a `cancel' while the run waited
 %% on its active worker. Kill that worker, record `run.cancelled', tell the
 %% session, and move to the `cancelled' state. The brutal kill makes
@@ -230,6 +242,18 @@ fail_run(Data, Step, ToolCallId, WorkerPid, Reason) ->
     {next_state, failed, Data#data{current = undefined,
                                    tool_call_id = undefined,
                                    worker_mref = undefined}}.
+
+%% Kill the external OS process a `cli' step launched, if one was reported.
+%% `exit(WorkerPid, kill)' removes only the BEAM worker; the OS child the worker's
+%% port spawned can outlive it as an orphan, so the run signals it directly. The
+%% OS pid is a BEAM-produced integer, never user text, so there is no shell
+%% interpolation surface. An `erlang_module' step reports no OS pid, so this is a
+%% no-op for the in-BEAM teardown.
+kill_os_process(undefined) ->
+    ok;
+kill_os_process(OsPid) when is_integer(OsPid) ->
+    os:cmd("kill -KILL " ++ integer_to_list(OsPid)),
+    ok.
 
 %% Drop a worker monitor and flush any `'DOWN'' it already delivered, so a
 %% worker's clean exit after a successful reply does not reach the crash clause.

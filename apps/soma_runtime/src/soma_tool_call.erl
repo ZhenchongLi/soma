@@ -29,7 +29,7 @@ run(#{executable := Executable, argv := Argv} = Opts) ->
     Input = maps:get(input, Opts),
     ToolCallId = maps:get(tool_call_id, Opts),
     ReplyTo = maps:get(reply_to, Opts),
-    Result = run_cli(Executable, Argv, Input),
+    Result = run_cli(Executable, Argv, Input, ToolCallId, ReplyTo),
     ReplyTo ! {tool_result, ToolCallId, self(), Result},
     ok.
 
@@ -38,11 +38,23 @@ run(#{executable := Executable, argv := Argv} = Opts) ->
 %% step's resolved input travels as the final argument (the port cannot half-close
 %% the child's stdin, so a stdin-reading helper would hang). Collect the program's
 %% stdout and reply `{ok, Stdout}' on exit status 0.
-run_cli(Executable, Argv, Input) ->
+%%
+%% Before blocking in `collect_cli/2', report the spawned child's OS pid up to the
+%% run. `exit(WorkerPid, kill)' is untrappable, so this worker gets no chance to
+%% reap its child on teardown; the run -- which outlives the worker -- holds the
+%% OS pid and kills it when the run times out or is cancelled. Reporting the OS
+%% pid as the worker's first act keeps the run holding it for the whole step.
+run_cli(Executable, Argv, Input, ToolCallId, ReplyTo) ->
     Args = [render_arg(A) || A <- Argv] ++ [render_input(Input)],
     Port = open_port({spawn_executable, Executable},
                      [{args, Args}, exit_status, binary, use_stdio,
                       stderr_to_stdout]),
+    case erlang:port_info(Port, os_pid) of
+        {os_pid, OsPid} ->
+            ReplyTo ! {tool_started_os_pid, ToolCallId, self(), OsPid};
+        undefined ->
+            ok
+    end,
     collect_cli(Port, []).
 
 collect_cli(Port, Acc) ->
