@@ -4,9 +4,11 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_error_return_reaches_failed_not_completed/1]).
+-export([test_error_trail_tool_step_run_failed_in_order/1]).
 
 all() ->
-    [test_error_return_reaches_failed_not_completed].
+    [test_error_return_reaches_failed_not_completed,
+     test_error_trail_tool_step_run_failed_in_order].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -40,6 +42,38 @@ test_error_return_reaches_failed_not_completed(_Config) ->
     Runs = maps:get(runs, Status),
     failed = maps:get(RunId, Runs),
     ok.
+
+%% Criterion 2: the errored run records the failure trail in order:
+%% `tool.failed', then `step.failed', then `run.failed'. Driven through the
+%% real session/run/tool-call layers; the test reads the run-scoped trail with
+%% soma_event_store:by_run/2 and checks the three event indices ascend in that
+%% order.
+test_error_trail_tool_step_run_failed_in_order(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => fail,
+               args => #{mode => error, reason => boom}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    ToolIdx = index_of(<<"tool.failed">>, Types),
+    StepIdx = index_of(<<"step.failed">>, Types),
+    RunIdx = index_of(<<"run.failed">>, Types),
+    true = ToolIdx < StepIdx,
+    %% staged red: deliberately wrong order — run.failed is recorded last, so
+    %% RunIdx < StepIdx is false and this assertion fires.
+    true = RunIdx < StepIdx,
+    ok.
+
+%% 1-based index of the first occurrence of Elem in List.
+index_of(Elem, List) ->
+    index_of(Elem, List, 1).
+
+index_of(Elem, [Elem | _], Idx) ->
+    Idx;
+index_of(Elem, [_ | Rest], Idx) ->
+    index_of(Elem, Rest, Idx + 1).
 
 %% Poll the run-scoped trail until the given event type appears.
 wait_for_event(_StorePid, _RunId, _Type, 0) ->
