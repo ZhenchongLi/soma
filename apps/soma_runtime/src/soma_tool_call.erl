@@ -71,8 +71,8 @@ run_cli(Executable, Argv, Input, ToolCallId, ReplyTo) ->
 open_cli_port(Executable, Args) ->
     try
         Port = open_port({spawn_executable, Executable},
-                         [{args, Args}, exit_status, binary, use_stdio,
-                          stderr_to_stdout]),
+                         [{args, Args}, {env, minimal_env()}, exit_status,
+                          binary, use_stdio, stderr_to_stdout]),
         {ok, Port}
     catch
         error:_ ->
@@ -82,6 +82,21 @@ open_cli_port(Executable, Args) ->
                 true ->
                     {error, {cli_executable_not_executable, Executable}}
             end
+    end.
+
+%% Build the minimal environment for a cli child. `open_port''s `{env, _}' is
+%% additive over the inherited environment, so a minimal env means unsetting
+%% every inherited variable (each cleared with the `false' value) except the
+%% small allowed set the adapter keeps. For v0.1 the allowed set is just `PATH',
+%% taken from the runtime's own `PATH' so `#!/bin/sh' helpers can still find
+%% `printf', `tr', `sleep', and `touch'. A runtime variable not on this list is
+%% absent in the child.
+minimal_env() ->
+    Cleared = [{Name, false} || {Name, _Value} <- os:env(),
+                                Name =/= "PATH"],
+    case os:getenv("PATH") of
+        false -> Cleared;
+        Path -> [{"PATH", Path} | Cleared]
     end.
 
 await_cli(Port, ToolCallId, ReplyTo) ->
