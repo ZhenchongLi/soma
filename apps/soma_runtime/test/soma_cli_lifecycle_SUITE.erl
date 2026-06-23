@@ -3,10 +3,12 @@
 -include_lib("common_test/include/ct.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
--export([test_cli_overrun_reaches_timeout/1]).
+-export([test_cli_overrun_reaches_timeout/1,
+         test_cli_external_process_dead_after_timeout/1]).
 
 all() ->
-    [test_cli_overrun_reaches_timeout].
+    [test_cli_overrun_reaches_timeout,
+     test_cli_external_process_dead_after_timeout].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -49,6 +51,60 @@ test_cli_overrun_reaches_timeout(_Config) ->
     true = lists:member(<<"run.timeout">>, Types),
     false = lists:member(<<"run.completed">>, Types),
     ok.
+
+%% Criterion 2: the external OS process a timed-out `cli' step launched is no
+%% longer alive once the run has reached `timeout'. The proof is a side effect
+%% the helper produces only if it runs to completion: it sleeps past the step's
+%% `timeout_ms', then `touch'es a marker file. The run is driven to `timeout'
+%% through the real session/run/tool-call layers; we then wait past the helper's
+%% sleep window and assert the marker file does NOT exist. A killed process never
+%% writes the marker; a leaked orphan writes it once its sleep elapses, so the
+%% marker's absence is the liveness check.
+test_cli_external_process_dead_after_timeout(_Config) ->
+    {Helper, Marker} = write_marker_helper(),
+    StorePid = event_store_pid(),
+    %% the marker path travels as a literal argv element, so the helper reads it
+    %% verbatim as `$1' -- no shell interpolation, matching the cli adapter's
+    %% executable+argv contract.
+    Manifest = #{name => cli_marker,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => [Marker]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% the helper sleeps 2s then writes the marker; the step budget is 100ms, so
+    %% the per-step timer drives the run to `timeout' long before the sleep ends.
+    Steps = [#{id => s1, tool => cli_marker,
+               args => #{input => <<"ignored">>}, timeout_ms => 100}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 100),
+    %% wait past the helper's 2s sleep window: a leaked orphan would write the
+    %% marker after its sleep elapses, so by now an orphan's side effect is visible.
+    timer:sleep(3000),
+    %% a killed external process never reached its `touch', so the marker is absent.
+    false = filelib:is_file(Marker),
+    ok.
+
+%% Write a cli helper that sleeps past any step budget, then `touch'es the marker
+%% file whose path arrives as its first argv argument. Reaching the touch is the
+%% only way the marker appears, so the marker proves the helper ran to completion
+%% -- i.e. was never killed mid-sleep. Returns `{HelperPath, MarkerPath}'.
+write_marker_helper() ->
+    Base = filename:basedir(user_cache, "soma_cli_lifecycle_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "marker.sh"),
+    Marker = filename:join(Dir, "marker.out"),
+    Script = <<"#!/bin/sh\n"
+               "sleep 2\n"
+               "touch \"$1\"\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    {Path, Marker}.
 
 %% Write a tiny cli helper that sleeps far longer than any step budget, then
 %% exits 0. It never replies in time, so the per-step timer is what ends the
