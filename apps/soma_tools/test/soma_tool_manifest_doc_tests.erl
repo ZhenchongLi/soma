@@ -178,3 +178,20 @@ has_invalid_example_label(Lower) ->
 
 manifest_doc_has_invalid_example_test() ->
     test_manifest_doc_has_invalid_example().
+
+%% Criterion 9: the doc lists the v0.2 non-goals — no MCP adapter, no LLM
+%% planner, no LFE DSL, no DAG execution, no long-running port pool, and no OS
+%% sandbox beyond the adapter safety rules defined here.
+test_manifest_doc_lists_non_goals() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    [?assert(contains(Lower, NonGoal))
+     || NonGoal <- [<<"no mcp adapter">>,
+                    <<"no llm planner">>,
+                    <<"no lfe dsl">>,
+                    <<"no dag execution">>,
+                    <<"no long-running port pool">>,
+                    <<"no os sandbox beyond the adapter safety rules">>]].
+
+manifest_doc_lists_non_goals_test() ->
+    test_manifest_doc_lists_non_goals().
