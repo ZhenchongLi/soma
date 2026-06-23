@@ -5,10 +5,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_error_return_reaches_failed_not_completed/1]).
 -export([test_error_trail_tool_step_run_failed_in_order/1]).
+-export([test_tool_crash_reaches_failed/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
-     test_error_trail_tool_step_run_failed_in_order].
+     test_error_trail_tool_step_run_failed_in_order,
+     test_tool_crash_reaches_failed].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -62,6 +64,30 @@ test_error_trail_tool_step_run_failed_in_order(_Config) ->
     RunIdx = index_of(<<"run.failed">>, Types),
     true = ToolIdx < StepIdx,
     true = StepIdx < RunIdx,
+    ok.
+
+%% Criterion 3: a run whose tool-call process crashes (the tool raises) reaches
+%% the terminal state `failed'. Driven through the real session/run/tool-call
+%% layers: the session starts a run of one `fail' step in crash mode; the
+%% tool-call worker raises and dies, and the run's monitor delivers the `'DOWN''
+%% that drives it to `failed'. The crash is observed through the monitor the run
+%% holds, not staged by the test. The run records `run.failed' and surfaces
+%% `failed' through get_status/1, while `run.completed' never appears.
+test_tool_crash_reaches_failed(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => fail,
+               args => #{mode => crash, reason => boom}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.failed">>, Types),
+    false = lists:member(<<"run.completed">>, Types),
+    ok = wait_for_run_status(SessionPid, RunId, failed, 50),
+    Status = soma_agent_session:get_status(SessionPid),
+    Runs = maps:get(runs, Status),
+    failed = maps:get(RunId, Runs),
     ok.
 
 %% 1-based index of the first occurrence of Elem in List.
