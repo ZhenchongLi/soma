@@ -8,13 +8,15 @@
 -export([test_tool_crash_reaches_failed/1]).
 -export([test_session_alive_after_tool_crash/1]).
 -export([test_overrun_reaches_timeout_records_run_timeout/1]).
+-export([test_hung_worker_dead_after_timeout/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
      test_error_trail_tool_step_run_failed_in_order,
      test_tool_crash_reaches_failed,
      test_session_alive_after_tool_crash,
-     test_overrun_reaches_timeout_records_run_timeout].
+     test_overrun_reaches_timeout_records_run_timeout,
+     test_hung_worker_dead_after_timeout].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -132,6 +134,53 @@ test_overrun_reaches_timeout_records_run_timeout(_Config) ->
     true = lists:member(<<"run.timeout">>, Types),
     false = lists:member(<<"run.completed">>, Types),
     ok.
+
+%% Criterion 6: after the run times out, the hung tool-call worker process is no
+%% longer alive. Driven through the real session/run/tool-call layers: the
+%% session starts a run of one `sleep' step whose `ms' is larger than the step's
+%% `timeout_ms', so the per-step timer wins. The run kills the active worker on
+%% `step_timeout'. The test captures the worker pid (the soma_tool_call process
+%% spawned for the run), waits for `run.timeout', then asserts the worker is gone.
+test_hung_worker_dead_after_timeout(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => sleep,
+               args => #{ms => 1000}, timeout_ms => 50}],
+    Before = erlang:processes(),
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    WorkerPid = wait_for_new_process(Before, 50),
+    true = is_pid(WorkerPid),
+    ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 50),
+    %% the timeout killed the hung worker; it must no longer be alive
+    true = is_process_alive(WorkerPid),
+    ok.
+
+%% Wait for a single new process to appear that was not in the `Before' snapshot,
+%% returning its pid. Used to capture the disposable tool-call worker the run
+%% spawns for its sleeping step.
+wait_for_new_process(_Before, 0) ->
+    {error, timeout};
+wait_for_new_process(Before, N) ->
+    New = [P || P <- erlang:processes(), not lists:member(P, Before),
+                is_tool_call_worker(P)],
+    case New of
+        [Pid | _] -> Pid;
+        [] ->
+            timer:sleep(20),
+            wait_for_new_process(Before, N - 1)
+    end.
+
+%% A tool-call worker is a process whose current/initial call is in the
+%% soma_tool_call module (the disposable per-invocation worker).
+is_tool_call_worker(Pid) ->
+    case process_info(Pid, initial_call) of
+        {initial_call, {soma_tool_call, _, _}} -> true;
+        _ ->
+            case process_info(Pid, current_function) of
+                {current_function, {soma_tool_call, _, _}} -> true;
+                _ -> false
+            end
+    end.
 
 %% 1-based index of the first occurrence of Elem in List.
 index_of(Elem, List) ->
