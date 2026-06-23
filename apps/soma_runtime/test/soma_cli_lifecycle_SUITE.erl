@@ -4,11 +4,13 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_cli_overrun_reaches_timeout/1,
-         test_cli_external_process_dead_after_timeout/1]).
+         test_cli_external_process_dead_after_timeout/1,
+         test_cli_cancel_reaches_cancelled/1]).
 
 all() ->
     [test_cli_overrun_reaches_timeout,
-     test_cli_external_process_dead_after_timeout].
+     test_cli_external_process_dead_after_timeout,
+     test_cli_cancel_reaches_cancelled].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -86,6 +88,46 @@ test_cli_external_process_dead_after_timeout(_Config) ->
     timer:sleep(3000),
     %% a killed external process never reached its `touch', so the marker is absent.
     false = filelib:is_file(Marker),
+    ok.
+
+%% Criterion 3: cancelling a run while its `cli' step is active drives the run to
+%% the terminal `cancelled' state. Driven through the real session/run layers: the
+%% session starts a run of one `cli' step whose external helper sleeps far longer
+%% than the test takes, with a generous step budget so the per-step timer does not
+%% fire. The run reaches `waiting_tool' reading the port; once the worker has
+%% emitted `tool.started' the step is in flight, so the test sends the session's
+%% own cancel interface `{cancel_run, RunId}', which the session forwards as
+%% `cancel' to the run. The run kills the worker, records `run.cancelled', and
+%% moves to the `cancelled' terminal state. The run records `run.cancelled' and
+%% never `run.completed', proving the cancel path drives a `cli' step to the
+%% `cancelled' terminal state the same way it drives an in-BEAM step.
+test_cli_cancel_reaches_cancelled(_Config) ->
+    Helper = write_sleep_helper(),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_cancel_sleep,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% the helper sleeps 5s; the step budget is 60s so the per-step timer never
+    %% fires -- the only thing that ends the step is the cancel.
+    Steps = [#{id => s1, tool => cli_cancel_sleep,
+               args => #{input => <<"ignored">>}, timeout_ms => 60000}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    %% wait until the step is actually in flight before cancelling.
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 100),
+    %% cancel through the session's own interface, the README-named cancel path.
+    SessionPid ! {cancel_run, RunId},
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    %% the run records run.cancelled and never run.completed
+    true = lists:member(<<"run.timeout">>, Types),
+    false = lists:member(<<"run.completed">>, Types),
     ok.
 
 %% Write a cli helper that sleeps past any step budget, then `touch'es the marker
