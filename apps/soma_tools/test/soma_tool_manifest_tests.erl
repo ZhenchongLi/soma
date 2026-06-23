@@ -388,7 +388,7 @@ test_builtin_manifest_names_erlang_module_adapter() ->
     lists:foreach(
         fun({Module, BackingModule}) ->
             {ok, Manifest} = soma_tool_manifest:normalize(Module:manifest()),
-            ?assertEqual(cli, maps:get(adapter, Manifest)),
+            ?assertEqual(erlang_module, maps:get(adapter, Manifest)),
             ?assertEqual(BackingModule, maps:get(module, Manifest))
         end,
         Pairs
