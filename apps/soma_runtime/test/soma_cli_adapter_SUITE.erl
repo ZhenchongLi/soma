@@ -198,8 +198,8 @@ test_cli_step_event_order(Config) ->
     true = is_integer(SucceededIdx),
     true = is_integer(StepIdx),
     %% tool.started precedes tool.succeeded precedes step.succeeded
-    true = (StepIdx < SucceededIdx),
-    true = (SucceededIdx < StartedIdx),
+    true = (StartedIdx < SucceededIdx),
+    true = (SucceededIdx < StepIdx),
     ok.
 
 %% The 1-based index of the first occurrence of the given event type in the
