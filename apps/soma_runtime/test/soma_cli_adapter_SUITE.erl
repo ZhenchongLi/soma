@@ -10,6 +10,7 @@
 -export([test_cli_stdout_is_step_output/1]).
 -export([test_cli_step_event_order/1]).
 -export([test_cli_from_step_round_trip/1]).
+-export([test_cli_child_env_omits_runtime_var/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
@@ -18,7 +19,8 @@ all() ->
      test_cli_argv_metacharacter_is_literal,
      test_cli_stdout_is_step_output,
      test_cli_step_event_order,
-     test_cli_from_step_round_trip].
+     test_cli_from_step_round_trip,
+     test_cli_child_env_omits_runtime_var].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -249,6 +251,53 @@ test_cli_from_step_round_trip(_Config) ->
     %% normal step wiring
     Expected = S3Out,
     ok.
+
+%% Criterion 1: a cli program launched through the live session does not see a
+%% variable that is present in the runtime's own environment. The test sets a
+%% marker variable in the BEAM's environment with os:putenv/2, registers a
+%% helper that prints that variable's value to stdout, runs a one-step cli run
+%% through soma_agent_session:start_run, and asserts the recorded step output is
+%% empty -- proving the adapter passes the child a minimal env that omits the
+%% marker, rather than letting the child inherit the runtime's whole environment.
+test_cli_child_env_omits_runtime_var(_Config) ->
+    Marker = "SOMA_CLI_ENV_LEAK_MARKER",
+    true = os:putenv(Marker, "leaked-value"),
+    Helper = write_print_env_helper(Marker),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_env,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_env, args => #{input => <<"ignored">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Output = step_output(Events),
+    true = is_binary(Output),
+    %% the marker variable was set in the runtime environment but is not on the
+    %% adapter's allowed list, so the child never saw it: it printed nothing.
+    <<>> = Output,
+    ok.
+
+%% Write a tiny cli helper that prints the value of the named environment
+%% variable to stdout, then exits 0. Used to observe whether a runtime
+%% environment variable leaked into the child.
+write_print_env_helper(VarName) ->
+    Base = filename:basedir(user_cache, "soma_cli_adapter_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "print_env.sh"),
+    Script = iolist_to_binary(
+               ["#!/bin/sh\n", "printf '%s' \"$", VarName, "\"\n"]),
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Write a tiny cli helper that wraps its last argv argument in `wrapped[...]'
 %% and prints the result to stdout, then exits 0. The wrap is an observable
