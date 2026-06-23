@@ -13,6 +13,7 @@
 -export([test_each_tool_call_has_distinct_pid/1]).
 -export([test_event_trail_in_order/1]).
 -export([test_per_step_events_carry_real_ids/1]).
+-export([test_from_step_resolves_to_prior_output/1]).
 
 all() ->
     [test_sup_has_four_live_children,
@@ -24,7 +25,8 @@ all() ->
      test_multi_step_runs_sequentially_to_completed,
      test_each_tool_call_has_distinct_pid,
      test_event_trail_in_order,
-     test_per_step_events_carry_real_ids].
+     test_per_step_events_carry_real_ids,
+     test_from_step_resolves_to_prior_output].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -221,6 +223,35 @@ test_per_step_events_carry_real_ids(_Config) ->
              end,
              PerStepEvents),
     ok.
+
+%% Criterion 11: a step whose args reference a prior step through `from_step'
+%% receives that prior step's recorded output as its resolved input. Step one is
+%% an echo whose output is `#{value => <<"a">>}'. Step two is an echo whose args
+%% are a bare `#{from_step => s1}', meaning "the whole input is step one's
+%% recorded output". Echo returns its input unchanged, so step two's recorded
+%% output must equal step one's output -- proving the from_step reference was
+%% resolved to the prior step's output before the tool was invoked.
+test_from_step_resolves_to_prior_output(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+             #{id => s2, tool => echo, args => #{from_step => s1}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    S1Out = step_output(Events, s1),
+    S2Out = step_output(Events, s2),
+    #{value := <<"a">>} = S1Out,
+    %% step two's output reflects step one's recorded output, not its literal args
+    S1Out = S2Out,
+    ok.
+
+%% The recorded output of a step, read from its step.succeeded event payload.
+step_output(Events, StepId) ->
+    [E] = [Ev || Ev <- Events,
+                 maps:get(event_type, Ev) =:= <<"step.succeeded">>,
+                 maps:get(step_id, Ev) =:= StepId],
+    maps:get(output, maps:get(payload, E)).
 
 run_pid(_RunId) ->
     Children = supervisor:which_children(soma_run_sup),
