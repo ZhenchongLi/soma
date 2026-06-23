@@ -14,6 +14,7 @@
 -export([test_cli_child_cwd_is_adapter_dir/1]).
 -export([test_cli_argv_redirect_is_literal/1]).
 -export([test_cli_argv_semicolon_is_literal/1]).
+-export([test_cli_argv_home_is_literal/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
@@ -26,7 +27,8 @@ all() ->
      test_cli_child_env_omits_runtime_var,
      test_cli_child_cwd_is_adapter_dir,
      test_cli_argv_redirect_is_literal,
-     test_cli_argv_semicolon_is_literal].
+     test_cli_argv_semicolon_is_literal,
+     test_cli_argv_home_is_literal].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -401,6 +403,40 @@ test_cli_argv_semicolon_is_literal(_Config) ->
     %% no second program ran: the shell never saw the `;', so `touch' did not
     %% create a file at the target path
     false = filelib:is_file(TargetFile),
+    ok.
+
+%% Criterion 5: an argv element containing the text `$HOME' reaches the external
+%% program as the literal four characters `$HOME', not the runtime's HOME value.
+%% Under a shell, `prog $HOME' would expand `$HOME' to the value of the HOME
+%% environment variable before the program ran. The step's argv carries the
+%% string `"$HOME"'; the helper echoes its first argv argument verbatim. The test
+%% asserts the recorded step output is exactly the four characters `$HOME', and
+%% is not the runtime's HOME value read with os:getenv("HOME") -- proving the
+%% adapter launched the program through a port with separate executable and argv
+%% rather than a shell command string (which would have expanded the variable).
+test_cli_argv_home_is_literal(_Config) ->
+    Helper = write_echo_first_helper(),
+    StorePid = event_store_pid(),
+    HomeRef = "$HOME",
+    Manifest = #{name => cli_home,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => [HomeRef]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_home, args => #{input => <<"ignored">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Output = step_output(Events),
+    true = is_binary(Output),
+    RuntimeHome = os:getenv("HOME"),
+    %% the `$HOME' argument arrived literally, not shell-expanded: the output is
+    %% exactly the `$HOME' bytes, and never the runtime's HOME value.
+    Output = list_to_binary(RuntimeHome),
     ok.
 
 %% A fresh, non-existent path under a temp directory, used as the target a
