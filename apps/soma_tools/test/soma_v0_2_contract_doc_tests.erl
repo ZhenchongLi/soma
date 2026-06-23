@@ -352,3 +352,51 @@ cli_cancel_proof_block(Doc) ->
 contract_doc_maps_cli_cancel_proof_test() ->
     test_contract_doc_maps_cli_cancel_proof().
 
+%% Criterion 10: the "after a cli run reaches `failed`, `timeout`, or
+%% `cancelled`, the same session accepts and completes a fresh run" proof is
+%% listed and mapped to its proving cases. The block names both suites
+%% (`soma_cli_lifecycle_SUITE` and `soma_cli_failure_SUITE`), all three proving
+%% cases (the after-timeout, after-cancel, and after-failure session-reuse
+%% cases), the session entry (`soma_agent_session:start_run/2` called twice on
+%% one session pid), the three prior terminal outcomes it follows from
+%% (`failed`, `timeout`, `cancelled`), and the fresh-run completion guarantee --
+%% all in one contiguous Proof 9 block.
+test_contract_doc_maps_cli_session_reuse_proof() ->
+    Doc = read_doc(),
+    Block = cli_session_reuse_proof_block(Doc),
+    Lower = string:lowercase(Block),
+    %% both suites the three session-reuse cases live in
+    ?assert(contains(Block, <<"soma_cli_lifecycle_SUITE">>)),
+    ?assert(contains(Block, <<"soma_cli_failure_SUITE">>)),
+    %% all three session-reuse cases: after timeout, after cancel, after failure
+    ?assert(contains(Block, <<"test_session_alive_runs_new_cli_run_after_overrun">>)),
+    ?assert(contains(Block, <<"test_session_alive_runs_new_cli_run_after_cancel">>)),
+    ?assert(contains(Block, <<"test_session_alive_runs_new_run_after_cli_failure">>)),
+    %% the session entry: start_run/2 called twice on one session pid
+    ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
+    ?assert(contains(Lower, <<"twice on one session pid">>)),
+    %% the three prior terminal outcomes the fresh run follows from
+    ?assert(contains(Lower, <<"failed">>)),
+    ?assert(contains(Lower, <<"timeout">>)),
+    ?assert(contains(Lower, <<"cancelled">>)),
+    %% the fresh-run completion guarantee
+    ?assert(contains(Lower, <<"completes a fresh run">>)).
+
+%% The proof-9 section block: from its heading up to the next "### " heading.
+cli_session_reuse_proof_block(Doc) ->
+    Heading = <<"### Proof 9 ">>,
+    case binary:match(Doc, Heading) of
+        nomatch -> erlang:error({heading_not_found, Heading});
+        {Start, _} ->
+            Rest = binary:part(Doc, Start, byte_size(Doc) - Start),
+            [_HeadingLine | After] = binary:split(Rest, <<"\n">>),
+            AfterBin = iolist_to_binary(lists:join(<<"\n">>, After)),
+            case binary:match(AfterBin, <<"### ">>) of
+                nomatch -> AfterBin;
+                {NextStart, _} -> binary:part(AfterBin, 0, NextStart)
+            end
+    end.
+
+contract_doc_maps_cli_session_reuse_proof_test() ->
+    test_contract_doc_maps_cli_session_reuse_proof().
+
