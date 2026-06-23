@@ -1,12 +1,14 @@
-# Soma — design north star (v0.1 spec)
+# Soma — design north star
 
-> This is the original v0.1 design spec — the thesis, the intended runtime shape,
-> and the non-negotiable constraints — kept as the project's north star, in the
-> aspirational voice it was written in. For **what is actually built and how to
-> run it**, see the [README](../README.md). Where the implementation refined the
-> design (e.g. step iteration lives inside `soma_run` rather than a separate
-> `soma_step` process, and tools register as `file_read` / `file_write`), the
-> README and the code are authoritative.
+> Soma's design north star — the thesis, the runtime shape, and the
+> non-negotiable constraints — covering the current runtime: v0.1's execution
+> core and v0.2's tool manifests + CLI/port adapter. It keeps the aspirational
+> voice of the original spec; for **what is actually built and how to run it**,
+> see the [README](../README.md). Where the implementation refined the design
+> (e.g. step iteration lives inside `soma_run` rather than a separate `soma_step`
+> process, tools register as `file_read` / `file_write`, and a `cli` tool's port
+> is owned by `soma_tool_call` rather than a separate `soma_port_tool` process),
+> the README and the code are authoritative.
 
 Soma is an Erlang/OTP-native agent runtime.
 
@@ -33,8 +35,8 @@ Agent systems fail in operational ways:
 - every run needs an audit trail;
 - failures must not poison the whole session.
 
-Erlang/OTP is unusually well suited to these problems. Soma v0.1 should use the
-parts of Erlang that are hard to reproduce cleanly elsewhere:
+Erlang/OTP is unusually well suited to these problems. Soma uses the parts of
+Erlang that are hard to reproduce cleanly elsewhere:
 
 - lightweight processes;
 - isolated mailboxes;
@@ -74,59 +76,63 @@ The plan or step list tells the runtime what to start. Erlang/OTP provides the
 execution semantics: message flow, timeout, cancellation, monitoring, failure
 isolation, and restart policy.
 
-## v0.1 Scope
+## Scope
 
-Soma v0.1 is Erlang agent runtime only.
+Soma is an Erlang agent runtime — the execution core plus a tool layer, nothing
+above it.
 
-In scope:
+In scope (built across v0.1 and v0.2):
 
 - session process;
 - run process;
 - sequential steps;
-- supervised tool calls;
-- timeout and cancellation;
-- tool registry;
-- local tool adapter;
-- minimal CLI adapter;
+- supervised tool calls, each behind a process boundary;
+- timeout and cancellation, including teardown of a cli tool's external OS process;
+- a tool registry over normalized manifests (descriptors);
+- in-BEAM tools and a one-shot CLI/port adapter;
+- normalized cli failures (bounded, named errors);
 - event emission and in-memory event store;
 - end-to-end tests around process behavior;
-- Linux release packaging for `x86_64` and `arm64`.
+- a self-contained release (macOS arm64 built; Linux `x86_64` and `arm64` remaining).
 
-Out of scope for v0.1:
+Out of scope (later roadmap layers):
 
+- an LFE DSL over the step list;
+- an MCP client adapter;
+- an LLM planner;
 - DAG parallelism;
 - distributed Erlang;
-- complex planning;
-- retries beyond simple policy;
-- real LLM integration as a hard dependency.
+- persistent run resume.
 
-The first release should be useful because it is reliable, not because it has
-many integrations.
+The release should be useful because it is reliable, not because it has many
+integrations.
 
-## v0.1 Done Means
+## Done Means
 
-v0.1 is done when the runtime can execute a sequential run and prove its failure
-semantics under test.
+A layer is done when the runtime can execute a sequential run and prove its
+failure semantics under test — process survival, not just return values.
 
 Required demo:
 
 ```text
-file.read -> echo -> file.write
+file_read -> echo -> file_write
 ```
 
-Required guarantees:
+Required guarantees (proven for both in-BEAM and cli tools):
 
 - a tool crash does not kill the session;
-- a hanging tool is stopped by timeout;
-- cancelling a run stops the active tool;
+- a hanging tool is stopped by timeout — for a cli tool the external OS process is killed too;
+- cancelling a run stops the active tool, and its external process;
+- a cli tool's operational failures (missing/unrunnable executable, nonzero exit, oversized output) become bounded `{error, _}` data, not a session crash;
 - the event log explains the run from start to terminal state;
 - a session can start another run after failure, timeout, or cancellation.
 
-Release targets:
+Release targets (one artifact per architecture):
 
 ```text
-Linux x86_64
-Linux arm64
+macOS arm64   (built and verified)
+Linux x86_64  (remaining)
+Linux arm64   (remaining)
 ```
 
 ## Runtime Shape
@@ -228,7 +234,7 @@ the session.
 
 ## Steps, Not IR Yet
 
-v0.1 should use a deliberately small step list. Do not call it a full IR yet.
+Soma uses a deliberately small step list — not a full IR yet.
 
 Example:
 
@@ -255,7 +261,7 @@ Example:
 ]
 ```
 
-The executor in v0.1 is sequential:
+The executor is sequential:
 
 ```text
 validate step
@@ -315,11 +321,34 @@ llm.mock    deterministic response, no network
 
 Real LLM providers should wait until the runtime behavior is proven.
 
+### Manifests and adapters
+
+A tool registers through a **manifest** — its `describe/0` metadata plus an
+`adapter` and adapter-specific fields — validated and normalized by
+`soma_tool_manifest:normalize/1` into the descriptor the registry stores
+(`name => descriptor`, resolved with `resolve_descriptor/1`). A manifest missing
+a required field, or carrying a bad `effect` / `idempotent` / `timeout_ms`, is
+rejected before it ever reaches the registry, so malformed tools fail fast rather
+than mid-run.
+
+Two adapters exist:
+
+```text
+erlang_module   an in-BEAM tool:   #{adapter => erlang_module, module => Mod}
+cli             a one-shot external executable: #{adapter => cli, executable, argv}
+```
+
+Each built-in exposes `manifest/0` = `(describe())#{adapter => erlang_module,
+module => ?MODULE}`, so the in-BEAM tools register through the same machinery
+external tools use. A `cli` manifest names a bare `executable` plus a separate
+`argv` list — never a shell command string.
+
 ## External Processes
 
-External tools should be isolated behind tool workers. v0.1 only needs a
-minimal one-shot CLI adapter. Long-running ports can wait until the runtime
-semantics are stable.
+External tools are isolated behind tool workers. The one-shot CLI adapter lives
+in `soma_tool_call`: when a step resolves to a `cli` descriptor, the worker
+launches the executable through a port (`open_port({spawn_executable, ...})`).
+Long-running ports stay out of scope until the runtime semantics need them.
 
 Important rule:
 
@@ -327,16 +356,27 @@ Important rule:
 Use executable + args, not shell command strings.
 ```
 
-The adapter should use executable and argument separation. Shell interpolation
-should not be part of the core.
+The adapter uses executable + argv separation; there is no shell anywhere on the
+path — not for launching a tool, and not for the teardown that kills a child's OS
+process (that goes through `os:find_executable("kill")` + a port, never
+`os:cmd`). Shell interpolation is not part of the core.
+
+The cli protocol: the step input is delivered as the **final argv argument** (an
+Erlang port cannot half-close the child's stdin), the process's stdout is
+captured as the step output, and exit status 0 is success; any other exit, a
+missing/unrunnable executable, or output past a byte limit becomes a bounded
+`{error, _}`. The child runs with a minimal environment (only `PATH`) and a fixed
+working directory. On timeout or cancellation the worker is killed and the
+external OS process with it. The full contract is in
+[tool-manifest.md](tool-manifest.md).
 
 Any external executable used by the release must be packaged per target
-architecture. A Linux `x86_64` release and a Linux `arm64` release are separate
-artifacts.
+architecture — a macOS arm64, a Linux `x86_64`, and a Linux `arm64` release are
+separate artifacts, each carrying only its own helper.
 
 ## Event Log
 
-Events are mandatory in v0.1. Without events, the runtime cannot be audited or
+Events are mandatory. Without events, the runtime cannot be audited or
 debugged.
 
 Minimum events:
@@ -457,9 +497,10 @@ soma/
     roadmap.md
 ```
 
-## v0.1 Test Contract
+## Test Contract
 
-The first end-to-end test should prove:
+Every layer proves its process behavior under test before the next layer is
+added. The v0.1 contract, proven end-to-end:
 
 1. a session starts;
 2. a run is accepted;
@@ -471,6 +512,14 @@ The first end-to-end test should prove:
 8. a hanging tool times out;
 9. cancelling a run stops the active tool;
 10. the session can start another run afterward.
+
+The v0.2 contract extends it without weakening it: manifests validate before
+registration; built-ins run through manifests; a `cli` tool succeeds through the
+real session/run/tool-call layers with its own worker pid and the same event
+trail; and nonzero / missing / hanging / cancelled `cli` runs fail-or-stop — with
+the external OS process verifiably gone — while the session survives and runs
+again. Each proof is mapped to the suite and case that proves it in
+[v0.2-test-contract.md](v0.2-test-contract.md).
 
 This test contract is more important than adding tool integrations.
 
