@@ -49,6 +49,24 @@ into one string — is never a valid form for a `cli` entry. There is no shell o
 the path between the manifest and the process, so there is nothing to interpret
 such a string.
 
+## CLI execution protocol
+
+The `executable` + `argv` schema says *what* to launch; this section says *how*
+the runtime runs it and turns one process invocation into one step result.
+
+- **Input channel — the final argv argument.** A step's resolved input is
+  delivered to the process as the final argv argument: the runtime launches the
+  executable with `argv` followed by the input value appended as the last
+  argument. Input is not written to the process's stdin — an Erlang port cannot
+  half-close the child's stdin, so the input is passed positionally as the final
+  argv argument instead.
+- **Output capture — stdout becomes the step output.** The runtime captures
+  everything the process writes to stdout and records that captured stdout as the
+  step output, the value later steps read through `from_step`.
+- **Exit status — 0 means success.** The runtime waits for the process to exit.
+  Exit status 0 means success: the captured stdout is recorded as the step output
+  and the step succeeds. Any non-zero exit status is a failure of the step.
+
 ## The v0.1 tools under the contract
 
 The five v0.1 built-in tools stay valid under the manifest contract — nothing
