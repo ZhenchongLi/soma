@@ -1,0 +1,8 @@
+{application, soma_tools, [
+    {description, "Soma tool runtime: behaviour, registry, call worker, v0.1 tools"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib, soma_event_store]},
+    {env, []},
+    {modules, []}
+]}.

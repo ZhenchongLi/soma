@@ -1,0 +1,8 @@
+{application, soma_event_store, [
+    {description, "Soma event store (in-memory for v0.1)"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib]},
+    {env, []},
+    {modules, []}
+]}.
