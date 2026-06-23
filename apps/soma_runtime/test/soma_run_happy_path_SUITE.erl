@@ -9,6 +9,7 @@
 -export([test_session_started_event_recorded/1]).
 -export([test_start_run_returns_id_and_spawns_run/1]).
 -export([test_run_accepted_event_recorded/1]).
+-export([test_multi_step_runs_sequentially_to_completed/1]).
 
 all() ->
     [test_sup_has_four_live_children,
@@ -16,7 +17,8 @@ all() ->
      test_session_starts_and_holds_id,
      test_session_started_event_recorded,
      test_start_run_returns_id_and_spawns_run,
-     test_run_accepted_event_recorded].
+     test_run_accepted_event_recorded,
+     test_multi_step_runs_sequentially_to_completed].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -99,6 +101,53 @@ test_run_accepted_event_recorded(_Config) ->
     Types = [maps:get(event_type, E) || E <- Events],
     true = lists:member(<<"run.accepted">>, Types),
     ok.
+
+%% Criterion 7: a multi-step run executes strictly sequentially -- step N+1's
+%% tool call starts only after step N has succeeded -- and the run reaches the
+%% `completed' state. Proven from the recorded event trail: for two steps the
+%% trail must show step one fully done (step.succeeded) before step two starts
+%% (step.started), and end with `run.completed'.
+test_multi_step_runs_sequentially_to_completed(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+             #{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Trail = [{maps:get(event_type, E), maps:get(step_id, E)} || E <- Events],
+    %% step one must succeed before step two even starts
+    S1Done = index_of({<<"step.succeeded">>, s1}, Trail),
+    S2Start = index_of({<<"step.started">>, s2}, Trail),
+    true = is_integer(S1Done),
+    true = is_integer(S2Start),
+    true = S1Done < S2Start,
+    %% and the run reaches completed
+    Types = [T || {T, _} <- Trail],
+    true = lists:member(<<"run.completed">>, Types),
+    ok.
+
+wait_for_run_completed(_StorePid, _RunId, 0) ->
+    {error, timeout};
+wait_for_run_completed(StorePid, RunId, N) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    case lists:member(<<"run.completed">>, Types) of
+        true -> ok;
+        false ->
+            timer:sleep(20),
+            wait_for_run_completed(StorePid, RunId, N - 1)
+    end.
+
+index_of(Elem, List) ->
+    index_of(Elem, List, 1).
+
+index_of(_Elem, [], _N) ->
+    undefined;
+index_of(Elem, [Elem | _], N) ->
+    N;
+index_of(Elem, [_ | Rest], N) ->
+    index_of(Elem, Rest, N + 1).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
