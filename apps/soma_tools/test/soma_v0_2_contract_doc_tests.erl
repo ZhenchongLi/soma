@@ -241,7 +241,7 @@ test_contract_doc_maps_cli_failure_proof() ->
     Lower = string:lowercase(Block),
     ?assert(contains(Block, <<"soma_cli_failure_SUITE">>)),
     %% the three failure-mode cases plus the dedicated session-survival case
-    ?assert(contains(Block, <<"test_nonzero_exit_carries_exit_status">>)),
+    ?assert(contains(Block, <<"test_non_zero_exit_carries_status">>)),
     ?assert(contains(Block, <<"test_missing_executable_named_error">>)),
     ?assert(contains(Block, <<"test_missing_executable_reaches_run_failed_trail">>)),
     ?assert(contains(Block, <<"test_non_executable_permission_error">>)),
