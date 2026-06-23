@@ -26,8 +26,14 @@ check_effect(#{effect := Effect} = Manifest) ->
 
 check_idempotent(#{idempotent := Idempotent} = Manifest) ->
     case is_boolean(Idempotent) of
-        true -> normalize_complete(Manifest);
+        true -> check_timeout_ms(Manifest);
         false -> {error, {invalid_idempotent, Idempotent}}
+    end.
+
+check_timeout_ms(#{timeout_ms := TimeoutMs} = Manifest) ->
+    case is_integer(TimeoutMs) andalso TimeoutMs > 0 of
+        true -> normalize_complete(Manifest);
+        false -> {error, {invalid_timeout_ms, TimeoutMs}}
     end.
 
 normalize_complete(#{
