@@ -6,3 +6,6 @@ erl_crash.dump
 rebar3.crashdump
 .rebar3/
 _checkouts/
+
+# relay per-run state (written into the worktree by the relay pipeline)
+.dispatcher-state.json
