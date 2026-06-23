@@ -64,14 +64,15 @@ executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
      Data#data{current = Step, tool_call_id = ToolCallId}}.
 
 %% Wait for the active tool-call worker's result; only then advance.
-waiting_tool(info, {tool_result, ToolCallId, {ok, Output}},
+waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {ok, Output}},
              Data = #data{tool_call_id = ToolCallId,
                           current = Step,
                           pending = [Step | Rest],
                           outputs = Outputs}) ->
     StepId = maps:get(id, Step),
     emit(Data, <<"tool.succeeded">>,
-         #{step_id => StepId, tool_call_id => ToolCallId}),
+         #{step_id => StepId, tool_call_id => ToolCallId,
+           tool_call_pid => WorkerPid}),
     emit(Data, <<"step.succeeded">>, #{step_id => StepId}),
     NewData = Data#data{pending = Rest,
                         outputs = Outputs#{StepId => Output},
