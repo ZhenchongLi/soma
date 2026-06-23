@@ -342,7 +342,7 @@ test_failure_events_carry_eight_mandatory_fields(_Config) ->
     {ok, TimeoutRunId} = soma_agent_session:start_run(SessionPid, TimeoutSteps),
     ok = wait_for_event(StorePid, TimeoutRunId, <<"run.timeout">>, 50),
     MandatoryKeys = [event_id, timestamp, session_id, run_id, step_id,
-                     tool_call_id, event_type, payload, nonexistent_field],
+                     tool_call_id, event_type, payload],
     Targets = [{ErrRunId, <<"tool.failed">>},
                {ErrRunId, <<"step.failed">>},
                {ErrRunId, <<"run.failed">>},
