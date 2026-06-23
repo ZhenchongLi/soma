@@ -8,3 +8,10 @@ test_fail_error_mode_returns_error() ->
 
 fail_error_mode_returns_error_test() ->
     test_fail_error_mode_returns_error().
+
+test_fail_crash_mode_raises() ->
+    Input = #{mode => crash, reason => boom},
+    ?assertError(boom, soma_tool_fail:invoke(Input, #{})).
+
+fail_crash_mode_raises_test() ->
+    test_fail_crash_mode_raises().
