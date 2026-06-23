@@ -12,7 +12,7 @@
 
 -export([start_link/1]).
 -export([callback_mode/0, init/1]).
--export([executing/3, waiting_tool/3, completed/3]).
+-export([executing/3, waiting_tool/3, completed/3, failed/3]).
 
 -record(data, {run_id,
                session_id,
@@ -86,9 +86,27 @@ waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {ok, Output}},
                         outputs = Outputs#{StepId => Output},
                         current = undefined,
                         tool_call_id = undefined},
-    {next_state, executing, NewData, [{next_event, internal, next_step}]}.
+    {next_state, executing, NewData, [{next_event, internal, next_step}]};
+%% The tool returned an error: record the failure trail and move to `failed'.
+%% A crash and an `{error, _}' return land in the same terminal state.
+waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {error, Reason}},
+             Data = #data{tool_call_id = ToolCallId, current = Step}) ->
+    StepId = maps:get(id, Step),
+    emit(Data, <<"tool.failed">>,
+         #{step_id => StepId, tool_call_id => ToolCallId,
+           tool_call_pid => WorkerPid, payload => #{reason => Reason}}),
+    emit(Data, <<"step.failed">>,
+         #{step_id => StepId, tool_call_id => ToolCallId,
+           payload => #{reason => Reason}}),
+    emit(Data, <<"run.failed">>, #{payload => #{reason => Reason}}),
+    notify_session_failed(Data, Reason),
+    {next_state, failed, Data#data{current = undefined,
+                                   tool_call_id = undefined}}.
 
 completed(_EventType, _Event, Data) ->
+    {keep_state, Data}.
+
+failed(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
 %%% Internal
@@ -100,6 +118,14 @@ notify_session(#data{session_pid = undefined}) ->
     ok;
 notify_session(#data{session_pid = Pid, run_id = RunId, outputs = Outputs}) ->
     Pid ! {run_completed, RunId, Outputs},
+    ok.
+
+%% Tell the session this run failed; the session records `failed' and stays
+%% alive, learning the outcome from this message rather than a link signal.
+notify_session_failed(#data{session_pid = undefined}, _Reason) ->
+    ok;
+notify_session_failed(#data{session_pid = Pid, run_id = RunId}, Reason) ->
+    Pid ! {run_failed, RunId, Reason},
     ok.
 
 emit(#data{event_store = undefined}, _Type, _Extra) ->
