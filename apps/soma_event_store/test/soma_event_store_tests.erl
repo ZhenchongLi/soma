@@ -66,3 +66,14 @@ test_event_id_unique() ->
 
 event_id_unique_test() ->
     test_event_id_unique().
+
+test_timestamp_filled_when_absent() ->
+    {ok, Pid} = soma_event_store:start_link(),
+    ok = soma_event_store:append(Pid, #{event_type => no_ts, payload => #{}}),
+    [Event] = soma_event_store:all(Pid),
+    Timestamp = maps:get(timestamp, Event),
+    ?assertNotEqual(undefined, Timestamp),
+    ?assert(Timestamp =/= undefined).
+
+timestamp_filled_when_absent_test() ->
+    test_timestamp_filled_when_absent().
