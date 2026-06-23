@@ -49,3 +49,14 @@ key_is_explained(Lower, Key) ->
 
 manifest_doc_lists_four_keys_test() ->
     test_manifest_doc_lists_four_keys().
+
+%% Criterion 3: the allowed values of `effect` are recorded as
+%% `identity`, `reader`, or `state`.
+test_manifest_doc_lists_effect_values() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    [?assert(contains(Lower, V)) || V <- [<<"identity">>, <<"reader">>,
+                                          <<"state">>]].
+
+manifest_doc_lists_effect_values_test() ->
+    test_manifest_doc_lists_effect_values().
