@@ -290,7 +290,7 @@ test_failure_payload_never_holds_full_output(_Config) ->
             true = byte_size(Excerpt) =< ?CLI_OUTPUT_LIMIT;
         {cli_output_limit_exceeded, ?CLI_OUTPUT_LIMIT} ->
             %% the reason names only the limit -- no captured output rides along.
-            3 = tuple_size(Reason)
+            2 = tuple_size(Reason)
     end,
     ok.
 
