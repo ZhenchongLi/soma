@@ -203,7 +203,7 @@ test_worker_dead_after_cancel(_Config) ->
     SessionPid ! {cancel_run, RunId},
     ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 50),
     %% the cancel killed the active worker; it must no longer be alive
-    true = is_process_alive(WorkerPid),
+    false = is_process_alive(WorkerPid),
     ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
