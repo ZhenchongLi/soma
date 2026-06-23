@@ -104,7 +104,7 @@ contract_doc_marks_the_gap_case_test() ->
 %% verifiable down to a concrete function on each half.
 test_contract_doc_maps_both_halves_of_register_and_echo_proof() ->
     Doc = read_doc(),
-    ?assert(contains(Doc, <<"test_registry_seeds_descriptors_from_manifests_WRONG">>)),
+    ?assert(contains(Doc, <<"test_registry_seeds_descriptors_from_manifests">>)),
     ?assert(contains(Doc, <<"test_multi_step_runs_sequentially_to_completed">>)).
 
 contract_doc_maps_both_halves_of_register_and_echo_proof_test() ->
