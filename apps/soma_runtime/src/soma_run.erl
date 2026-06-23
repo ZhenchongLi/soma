@@ -65,24 +65,29 @@ executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
             %% failure trail, as any other failure -- not a badmatch crash.
             fail_run(Data, Step, ToolCallId, undefined,
                      {unregistered_tool, ToolName});
-        {ok, #{module := Module}} ->
-            start_tool_call(Data, Step, StepId, ToolCallId, Module, Input,
+        {ok, Descriptor} ->
+            %% Branch on the adapter the descriptor names. An `erlang_module'
+            %% tool runs in-BEAM via `module'; a `cli' tool runs an external
+            %% program via `executable' + `argv'. The worker owns the difference;
+            %% `soma_run' only chooses which opts to hand it.
+            start_tool_call(Data, Step, StepId, ToolCallId, Descriptor, Input,
                             CtxExtra)
     end.
 
 %% Spawn the tool-call worker for a resolved tool, record `tool.started', arm the
 %% per-step timer, and move to `waiting_tool'.
-start_tool_call(Data, Step, StepId, ToolCallId, Module, Input, CtxExtra) ->
+start_tool_call(Data, Step, StepId, ToolCallId, Descriptor, Input, CtxExtra) ->
     Ctx = maps:merge(CtxExtra,
                      #{session_id => Data#data.session_id,
                        run_id => Data#data.run_id,
                        step_id => StepId,
                        tool_call_id => ToolCallId}),
-    {ok, WorkerPid} = soma_tool_call:start(#{module => Module,
-                                             input => Input,
-                                             ctx => Ctx,
-                                             tool_call_id => ToolCallId,
-                                             reply_to => self()}),
+    AdapterOpts = adapter_opts(Descriptor),
+    WorkerOpts = AdapterOpts#{input => Input,
+                              ctx => Ctx,
+                              tool_call_id => ToolCallId,
+                              reply_to => self()},
+    {ok, WorkerPid} = soma_tool_call:start(WorkerOpts),
     %% Record `tool.started' after the worker is spawned so the event carries the
     %% worker pid: the run can prove each invocation ran in its own process, and
     %% the timeout/cancel paths give a test the pid to confirm the worker died.
@@ -199,6 +204,14 @@ cancelled(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
 %%% Internal
+
+%% Translate a resolved descriptor into the worker opts that name how to run it.
+%% An `erlang_module' descriptor hands the worker its backing `module'; a `cli'
+%% descriptor hands it the `executable' and `argv' so the worker opens a port.
+adapter_opts(#{adapter := erlang_module, module := Module}) ->
+    #{module => Module};
+adapter_opts(#{adapter := cli, executable := Executable, argv := Argv}) ->
+    #{executable => Executable, argv => Argv}.
 
 %% Record the failure trail (`tool.failed', `step.failed', `run.failed'), tell
 %% the session, and move to the `failed' state. Shared by the `{error, _}'
