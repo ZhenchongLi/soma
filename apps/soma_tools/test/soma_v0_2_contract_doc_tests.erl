@@ -185,3 +185,46 @@ cli_distinct_pid_proof_block(Doc) ->
 contract_doc_maps_cli_distinct_pid_proof_test() ->
     test_contract_doc_maps_cli_distinct_pid_proof().
 
+%% Criterion 6: the "a successful cli invocation emits the same event-type trail
+%% as an Erlang tool" proof is listed and mapped to its proving case(s), with the
+%% full event trail (tool.started, tool.succeeded, step.succeeded, then
+%% run.completed) and the two-case split stated honestly: test_cli_step_event_order
+%% asserts the first three in order, test_cli_run_reaches_completed asserts
+%% run.completed in the same one-step cli run. The block must name both cases, all
+%% four event types, the session entry, and acknowledge that no single case
+%% asserts all four in one ordered chain — all in one contiguous Proof 5 block.
+test_contract_doc_maps_cli_event_trail_proof() ->
+    Doc = read_doc(),
+    Block = cli_event_trail_proof_block(Doc),
+    Lower = string:lowercase(Block),
+    ?assert(contains(Block, <<"soma_cli_adapter_SUITE">>)),
+    ?assert(contains(Block, <<"test_cli_step_event_order">>)),
+    ?assert(contains(Block, <<"test_cli_run_reaches_completed">>)),
+    ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
+    %% the full four-event trail the proof asserts the cli run emits
+    ?assert(contains(Block, <<"tool.started">>)),
+    ?assert(contains(Block, <<"tool.succeeded">>)),
+    ?assert(contains(Block, <<"step.succeeded">>)),
+    ?assert(contains(Block, <<"run.completed">>)),
+    %% the two-case split stated honestly: no single case covers all four in order
+    ?assert(contains(Lower, <<"no single case asserts all four in one ordered chain in the same line">>)),
+    ?assert(contains(Lower, <<"two cases">>)).
+
+%% The proof-5 section block: from its heading up to the next "### " heading.
+cli_event_trail_proof_block(Doc) ->
+    Heading = <<"### Proof 5 ">>,
+    case binary:match(Doc, Heading) of
+        nomatch -> erlang:error({heading_not_found, Heading});
+        {Start, _} ->
+            Rest = binary:part(Doc, Start, byte_size(Doc) - Start),
+            [_HeadingLine | After] = binary:split(Rest, <<"\n">>),
+            AfterBin = iolist_to_binary(lists:join(<<"\n">>, After)),
+            case binary:match(AfterBin, <<"### ">>) of
+                nomatch -> AfterBin;
+                {NextStart, _} -> binary:part(AfterBin, 0, NextStart)
+            end
+    end.
+
+contract_doc_maps_cli_event_trail_proof_test() ->
+    test_contract_doc_maps_cli_event_trail_proof().
+
