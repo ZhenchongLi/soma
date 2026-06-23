@@ -414,7 +414,7 @@ test_contract_doc_maps_build_gate_coverage() ->
     Block = build_gate_section_block(Doc),
     Lower = string:lowercase(Block),
     %% the gate command the merge gate runs
-    ?assert(contains(Block, <<"rebar3 ct && rebar3 eunit">>)),
+    ?assert(contains(Block, <<"rebar3 eunit && rebar3 ct">>)),
     %% Common Test covers the cli runtime/process guarantees
     ?assert(contains(Lower, <<"common test">>)),
     ?assert(contains(Lower, <<"cli">>)),
