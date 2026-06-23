@@ -15,6 +15,7 @@
 -export([test_cli_argv_redirect_is_literal/1]).
 -export([test_cli_argv_semicolon_is_literal/1]).
 -export([test_cli_argv_home_is_literal/1]).
+-export([test_cli_modules_have_no_shell_launch/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
@@ -28,7 +29,8 @@ all() ->
      test_cli_child_cwd_is_adapter_dir,
      test_cli_argv_redirect_is_literal,
      test_cli_argv_semicolon_is_literal,
-     test_cli_argv_home_is_literal].
+     test_cli_argv_home_is_literal,
+     test_cli_modules_have_no_shell_launch].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -439,6 +441,52 @@ test_cli_argv_home_is_literal(_Config) ->
     Output = list_to_binary(HomeRef),
     true = (Output =/= list_to_binary(RuntimeHome)),
     ok.
+
+%% Criterion 6: neither `soma_tool_call' nor `soma_run' contains a shell launch
+%% path. The criterion is about source text, not runtime behaviour: a shell-free
+%% runtime could still gain a shell call in a future edit, so the pin reads each
+%% module's source and asserts neither contains `os:cmd', an `open_port'
+%% `{spawn,' command-string form, or a `sh -c' invocation -- on either the cli
+%% launch path or the timeout/cancel teardown path.
+test_cli_modules_have_no_shell_launch(_Config) ->
+    lists:foreach(
+      fun(Module) ->
+              Src = read_module_source(Module),
+              nomatch = re:run(Src, "os:cmd", [{capture, none}]),
+              nomatch = re:run(Src, "open_port\\(\\s*\\{\\s*spawn\\s*,",
+                               [{capture, none}]),
+              nomatch = re:run(Src, "sh -c", [{capture, none}])
+      end,
+      [soma_tool_call, soma_run]),
+    ok.
+
+%% Read the .erl source of a runtime module from the project's app source tree.
+%% The test beams run out of `_build', so locate the project root by walking up
+%% from the test module's own beam until an `apps' directory is found, then read
+%% `apps/soma_runtime/src/<module>.erl'.
+read_module_source(Module) ->
+    Root = project_root(),
+    Path = filename:join([Root, "apps", "soma_runtime", "src",
+                          atom_to_list(Module) ++ ".erl"]),
+    {ok, Bin} = file:read_file(Path),
+    Bin.
+
+%% Find the project root by walking up the directory tree from this test
+%% module's beam until a directory containing an `apps' subdirectory is found.
+project_root() ->
+    Beam = code:which(?MODULE),
+    walk_up_to_apps(filename:dirname(Beam)).
+
+walk_up_to_apps(Dir) ->
+    case filelib:is_dir(filename:join(Dir, "apps")) of
+        true -> Dir;
+        false ->
+            Parent = filename:dirname(Dir),
+            case Parent of
+                Dir -> erlang:error(project_root_not_found);
+                _ -> walk_up_to_apps(Parent)
+            end
+    end.
 
 %% A fresh, non-existent path under a temp directory, used as the target a
 %% second program would create. If a shell ran `; touch file', a file would
