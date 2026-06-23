@@ -11,6 +11,7 @@
 -export([test_hung_worker_dead_after_timeout/1]).
 -export([test_cancel_run_reaches_cancelled_records_event/1]).
 -export([test_worker_dead_after_cancel/1]).
+-export([test_session_alive_after_cancel/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
@@ -20,7 +21,8 @@ all() ->
      test_overrun_reaches_timeout_records_run_timeout,
      test_hung_worker_dead_after_timeout,
      test_cancel_run_reaches_cancelled_records_event,
-     test_worker_dead_after_cancel].
+     test_worker_dead_after_cancel,
+     test_session_alive_after_cancel].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -204,6 +206,27 @@ test_worker_dead_after_cancel(_Config) ->
     ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 50),
     %% the cancel killed the active worker; it must no longer be alive
     false = is_process_alive(WorkerPid),
+    ok.
+
+%% Criterion 9: the `soma_agent_session' process survives a run that is
+%% cancelled. Driven through the real session/run/tool-call layers: the session
+%% starts a run of one slow `sleep' step; while the run waits on that worker the
+%% test sends `{cancel_run, RunId}' to the session, the real cancel path. The
+%% run reaches `cancelled', and the session — which never linked to the run — is
+%% still alive afterward. The session must survive cancelled runs just as it
+%% survives failed and timed-out ones.
+test_session_alive_after_cancel(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 5000}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    %% wait until the run is actually waiting on the worker before cancelling
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 50),
+    SessionPid ! {cancel_run, RunId},
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 50),
+    %% the run has reached `cancelled'; the session that owns it must have
+    %% survived the cancel
+    false = is_process_alive(SessionPid),
     ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
