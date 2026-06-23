@@ -25,3 +25,17 @@ test_release_doc_states_priv_location() ->
 
 release_doc_states_priv_location_test() ->
     test_release_doc_states_priv_location().
+
+%% Criterion 6: docs/release.md documents that a tool names its packaged
+%% executable by a release-relative path resolved through `code:priv_dir/1`,
+%% instead of an absolute build path baked in at registration.
+test_release_doc_states_priv_dir_convention() ->
+    Doc = read_doc(),
+    %% the runtime resolution function the doc must name
+    ?assert(contains(Doc, <<"code:priv_dir/1 at registration time only">>)),
+    %% and the doc must contrast it against baking in an absolute build path
+    Lower = string:lowercase(Doc),
+    ?assert(contains(Lower, <<"absolute build path">>)).
+
+release_doc_states_priv_dir_convention_test() ->
+    test_release_doc_states_priv_dir_convention().
