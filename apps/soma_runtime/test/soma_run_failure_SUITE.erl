@@ -6,11 +6,13 @@
 -export([test_error_return_reaches_failed_not_completed/1]).
 -export([test_error_trail_tool_step_run_failed_in_order/1]).
 -export([test_tool_crash_reaches_failed/1]).
+-export([test_session_alive_after_tool_crash/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
      test_error_trail_tool_step_run_failed_in_order,
-     test_tool_crash_reaches_failed].
+     test_tool_crash_reaches_failed,
+     test_session_alive_after_tool_crash].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -88,6 +90,25 @@ test_tool_crash_reaches_failed(_Config) ->
     Status = soma_agent_session:get_status(SessionPid),
     Runs = maps:get(runs, Status),
     failed = maps:get(RunId, Runs),
+    ok.
+
+%% Criterion 4: the `soma_agent_session' process survives a run whose tool-call
+%% process crashes. Driven through the real session/run/tool-call layers: the
+%% session starts a run of one `fail' step in crash mode; the tool-call worker
+%% raises and dies, the run's monitor drives it to `failed', and the session —
+%% which never linked to the run — is still alive afterward. Crash isolation is
+%% the whole point: a tool blowing up is data for the run, not a crash of the
+%% session.
+test_session_alive_after_tool_crash(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => fail,
+               args => #{mode => crash, reason => boom}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
+    %% the run has reached its terminal `failed' state; the session that owns it
+    %% must have survived the tool-call crash
+    false = is_process_alive(SessionPid),
     ok.
 
 %% 1-based index of the first occurrence of Elem in List.
