@@ -93,8 +93,8 @@ test_cli_tool_call_has_distinct_pid(Config) ->
     %% the same worker pid travels on both events
     true = is_pid(StartedPid),
     StartedPid = SucceededPid,
-    %% the worker pid is the run pid (deliberately wrong: staged red)
-    true = (StartedPid =:= RunPid),
+    %% the cli call ran in its own worker, not inside the run
+    true = (StartedPid =/= RunPid),
     ok.
 
 %% Read the tool_call_pid off the single event of the given type for the cli
