@@ -1,0 +1,7 @@
+#!/bin/sh
+# Sample CLI helper packaged in soma_tools/priv. It reads its last argv
+# argument, uppercases it, and prints the result to stdout, then exits 0.
+# It never reads stdin, matching the cli adapter's argv input protocol.
+# A plain shell script: runs on a host with no Erlang installed.
+for a in "$@"; do last="$a"; done
+printf '%s' "$last" | tr '[:lower:]' '[:upper:]'
