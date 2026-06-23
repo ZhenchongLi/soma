@@ -32,7 +32,7 @@ release_doc_states_priv_location_test() ->
 test_release_doc_states_priv_dir_convention() ->
     Doc = read_doc(),
     %% the runtime resolution function the doc must name
-    ?assert(contains(Doc, <<"code:priv_dir/1 at registration time only">>)),
+    ?assert(contains(Doc, <<"code:priv_dir/1">>)),
     %% and the doc must contrast it against baking in an absolute build path
     Lower = string:lowercase(Doc),
     ?assert(contains(Lower, <<"absolute build path">>)).

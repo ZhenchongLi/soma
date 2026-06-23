@@ -69,10 +69,24 @@ lib/soma_tools-<vsn>/priv/...
 
 For the committed sample helper the full release-relative location is
 `lib/soma_tools-<vsn>/priv/cli/soma_sample_upper` (with `<vsn>` the `soma_tools`
-app version, e.g. `lib/soma_tools-0.1.0/priv/cli/soma_sample_upper`). A tool
-never bakes in an absolute build path: it resolves the helper at runtime via
-`code:priv_dir(soma_tools)` and joins the relative path `cli/...`, which returns
-this `lib/soma_tools-<vsn>/priv` directory wherever the app is loaded from.
+app version, e.g. `lib/soma_tools-0.1.0/priv/cli/soma_sample_upper`).
+
+### Naming the executable: `code:priv_dir/1`, not an absolute build path
+
+A tool **names its packaged executable by a release-relative path**, not by the
+absolute filesystem location it happened to be built at. At registration the
+tool declares only the path relative to its app's `priv` directory (here
+`cli/soma_sample_upper`); it does **not** bake in an absolute build path such as
+`/Users/.../_build/prod/.../priv/cli/soma_sample_upper`. That absolute path is
+correct only on the build host and is wrong in any unpacked release.
+
+The release-relative name is resolved to a concrete file at invocation time with
+`code:priv_dir/1`: the tool calls `code:priv_dir(soma_tools)` to get the
+loaded app's `priv` directory — which is `lib/soma_tools-<vsn>/priv` inside an
+unpacked release — and joins its declared `cli/...` suffix onto it. Because
+`code:priv_dir/1` reports wherever the app is actually loaded from, the same
+registered name works in the build tree and in every relocated release without
+any absolute path being baked in.
 
 ## Linux x86_64 / arm64 artifacts
 
