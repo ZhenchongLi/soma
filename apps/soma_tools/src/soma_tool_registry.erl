@@ -23,16 +23,27 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
 
--type descriptor() :: #{adapter := erlang_module, module := module()}.
+%% A descriptor is the normalized manifest of a built-in tool:
+%% `#{name, effect, idempotent, timeout_ms, adapter, module}'. `resolve/1' reads
+%% `module' out of it; `resolve_descriptor/1' hands it back whole.
+-type descriptor() :: #{name := atom(),
+                        effect := atom(),
+                        idempotent := boolean(),
+                        timeout_ms := non_neg_integer(),
+                        adapter := erlang_module,
+                        module := module()}.
 -type registry() :: #{atom() => descriptor()}.
 
 -export_type([descriptor/0, registry/0]).
 
--define(SEED, #{echo => #{adapter => erlang_module, module => soma_tool_echo},
-                sleep => #{adapter => erlang_module, module => soma_tool_sleep},
-                fail => #{adapter => erlang_module, module => soma_tool_fail},
-                file_read => #{adapter => erlang_module, module => soma_tool_file_read},
-                file_write => #{adapter => erlang_module, module => soma_tool_file_write}}).
+%% The backing modules for the five built-in tools. Each one exports
+%% `manifest/0'; the seed is built by normalizing those manifests, so the
+%% registry descriptors come from the same contract the manifest tests check.
+-define(BUILTIN_MODULES, [soma_tool_echo,
+                          soma_tool_sleep,
+                          soma_tool_fail,
+                          soma_tool_file_read,
+                          soma_tool_file_write]).
 
 -spec register(registry(), atom(), descriptor()) -> registry().
 register(Registry, Name, Descriptor) ->
@@ -68,7 +79,23 @@ resolve_descriptor(Name) ->
 %%% gen_server callbacks
 
 init([]) ->
-    {ok, ?SEED}.
+    {ok, seed()}.
+
+%% Build the seed registry from the built-in manifests: normalize each module's
+%% `manifest/0' and key the resulting descriptor by its declared `name'. A
+%% manifest that fails `normalize/1' crashes the seed build, so a malformed
+%% built-in manifest stops the registry from starting rather than seeding a bad
+%% descriptor.
+-spec seed() -> registry().
+seed() ->
+    lists:foldl(
+      fun(Module, Acc) ->
+          {ok, Descriptor} = soma_tool_manifest:normalize(Module:manifest()),
+          #{name := Name} = Descriptor,
+          Acc#{Name => Descriptor}
+      end,
+      #{},
+      ?BUILTIN_MODULES).
 
 handle_call({resolve, Name}, _From, Registry) ->
     %% `resolve/1' keeps its bare-module shape by reading `module' out of the
