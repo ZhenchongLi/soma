@@ -64,3 +64,19 @@ about them needs to change. Each is an in-BEAM module implementing the
 Their existing `describe/0` metadata already supplies the four required keys, so
 each becomes a conforming manifest entry with `erlang_module` as its adapter and
 no behavioral change.
+
+## Example: a valid manifest
+
+The following is a complete, valid manifest example for the `file_read` tool,
+carrying the four required metadata keys and naming the `erlang_module` adapter:
+
+```erlang
+#{
+    name => file_read,
+    effect => reader,
+    idempotent => true,
+    timeout_ms => 5000,
+    adapter => erlang_module,
+    module => soma_tool_file_read
+}
+```
