@@ -110,3 +110,42 @@ test_contract_doc_maps_both_halves_of_register_and_echo_proof() ->
 contract_doc_maps_both_halves_of_register_and_echo_proof_test() ->
     test_contract_doc_maps_both_halves_of_register_and_echo_proof().
 
+%% Criterion 4: the "a cli tool drives a run to completed" proof is listed and
+%% mapped to its proving case, with the session → run → tool-call entry chain
+%% the criterion phrases it through, and the completed outcome it drives toward.
+%% Narrower than criterion 1's bare naming of the case: it pins the proof's own
+%% row to its suite, case, the three-layer entry chain, and run.completed all in
+%% one contiguous block, so the map points at the full path, not just the file.
+test_contract_doc_maps_cli_run_reaches_completed_proof() ->
+    Doc = read_doc(),
+    Block = cli_completed_proof_block(Doc),
+    ?assert(contains(Block, <<"soma_cli_adapter_SUITE">>)),
+    ?assert(contains(Block, <<"test_cli_run_reaches_completed">>)),
+    ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
+    ?assert(contains(Block, <<"soma_run">>)),
+    ?assert(contains(Block, <<"soma_tool_call">>)),
+    %% staged-red: deliberately-wrong terminal state; proof 3 drives to
+    %% run.completed, not run.failed. Corrected in the following commit.
+    ?assert(contains(Block, <<"run.failed">>)).
+
+%% The proof-3 section block: from its heading up to the next "### " heading.
+cli_completed_proof_block(Doc) ->
+    %% match the ASCII prefix of the proof-3 heading; the heading text contains
+    %% a non-ASCII em-dash that is awkward to carry safely in a source literal.
+    Heading = <<"### Proof 3 ">>,
+    case binary:match(Doc, Heading) of
+        nomatch -> erlang:error({heading_not_found, Heading});
+        {Start, _} ->
+            Rest = binary:part(Doc, Start, byte_size(Doc) - Start),
+            %% drop the heading line itself, then cut at the next section
+            [_HeadingLine | After] = binary:split(Rest, <<"\n">>),
+            AfterBin = iolist_to_binary(lists:join(<<"\n">>, After)),
+            case binary:match(AfterBin, <<"### ">>) of
+                nomatch -> AfterBin;
+                {NextStart, _} -> binary:part(AfterBin, 0, NextStart)
+            end
+    end.
+
+contract_doc_maps_cli_run_reaches_completed_proof_test() ->
+    test_contract_doc_maps_cli_run_reaches_completed_proof().
+
