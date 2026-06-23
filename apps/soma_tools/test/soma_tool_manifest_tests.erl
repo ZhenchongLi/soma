@@ -70,3 +70,20 @@ test_normalize_rejects_bad_effect() ->
 
 normalize_rejects_bad_effect_test() ->
     test_normalize_rejects_bad_effect().
+
+test_normalize_rejects_non_boolean_idempotent() ->
+    Manifest = #{
+        name => file_read,
+        effect => reader,
+        idempotent => yes,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_file_read
+    },
+    ?assertEqual(
+        {error, {invalid_idempotent, yes}},
+        soma_tool_manifest:normalize(Manifest)
+    ).
+
+normalize_rejects_non_boolean_idempotent_test() ->
+    test_normalize_rejects_non_boolean_idempotent().
