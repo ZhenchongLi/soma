@@ -2,8 +2,22 @@
 
 -export([normalize/1]).
 
+-define(SHARED_FIELDS, [name, effect, idempotent, timeout_ms, adapter]).
+
 -spec normalize(map()) -> {ok, map()} | {error, term()}.
-normalize(#{
+normalize(Manifest) when is_map(Manifest) ->
+    case missing_shared_field(Manifest) of
+        {missing, Key} -> {error, {missing_field, Key}};
+        none -> normalize_complete(Manifest)
+    end.
+
+missing_shared_field(Manifest) ->
+    case [K || K <- ?SHARED_FIELDS, not maps:is_key(K, Manifest)] of
+        [Key | _] -> {missing, Key};
+        [] -> none
+    end.
+
+normalize_complete(#{
     name := Name,
     effect := Effect,
     idempotent := Idempotent,
@@ -20,7 +34,7 @@ normalize(#{
         module => Module
     },
     {ok, Manifest};
-normalize(#{
+normalize_complete(#{
     name := Name,
     effect := Effect,
     idempotent := Idempotent,
