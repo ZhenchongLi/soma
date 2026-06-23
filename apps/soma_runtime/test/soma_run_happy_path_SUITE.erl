@@ -15,6 +15,7 @@
 -export([test_per_step_events_carry_real_ids/1]).
 -export([test_from_step_resolves_to_prior_output/1]).
 -export([test_demo_file_read_echo_file_write/1]).
+-export([test_session_alive_and_reports_completed/1]).
 
 all() ->
     [test_sup_has_four_live_children,
@@ -28,7 +29,8 @@ all() ->
      test_event_trail_in_order,
      test_per_step_events_carry_real_ids,
      test_from_step_resolves_to_prior_output,
-     test_demo_file_read_echo_file_write].
+     test_demo_file_read_echo_file_write,
+     test_session_alive_and_reports_completed].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -277,6 +279,41 @@ test_demo_file_read_echo_file_write(_Config) ->
     Types = [maps:get(event_type, E) || E <- Events],
     true = lists:member(<<"run.completed">>, Types),
     ok.
+
+%% Criterion 13: after a run reaches `completed' the long-lived
+%% soma_agent_session process is still alive, and it reports that run as
+%% completed through get_status/1. The run notifies the session with
+%% `{run_completed, RunId, Result}' when it finishes; the session survives that
+%% and surfaces the run's status in its get_status/1 view.
+test_session_alive_and_reports_completed(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+             #{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    %% the run-completed message reaches the session; give it a tick to apply
+    ok = wait_for_run_status(SessionPid, RunId, completed, 50),
+    %% the session is still alive after the run finished
+    true = is_process_alive(SessionPid),
+    %% and it reports that run as completed
+    Status = soma_agent_session:get_status(SessionPid),
+    Runs = maps:get(runs, Status),
+    completed = maps:get(RunId, Runs),
+    ok.
+
+%% Poll the session's get_status/1 until it reports RunId at the expected status.
+wait_for_run_status(_SessionPid, _RunId, _Expected, 0) ->
+    {error, timeout};
+wait_for_run_status(SessionPid, RunId, Expected, N) ->
+    Status = soma_agent_session:get_status(SessionPid),
+    Runs = maps:get(runs, Status, #{}),
+    case maps:get(RunId, Runs, undefined) of
+        Expected -> ok;
+        _ ->
+            timer:sleep(20),
+            wait_for_run_status(SessionPid, RunId, Expected, N - 1)
+    end.
 
 %% The recorded output of a step, read from its step.succeeded event payload.
 step_output(Events, StepId) ->
