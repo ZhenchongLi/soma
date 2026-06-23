@@ -57,10 +57,10 @@ check_adapter_fields(#{adapter := cli, executable := Executable, argv := Argv} =
                 false -> {error, {invalid_argv, Argv}}
             end
     end;
-check_adapter_fields(#{adapter := cli, executable := Executable} = Manifest) ->
-    case has_internal_whitespace(Executable) of
-        true -> {error, {invalid_executable, Executable}};
-        false -> normalize_complete(Manifest)
+check_adapter_fields(#{adapter := cli} = Manifest) ->
+    case [K || K <- [executable, argv], not maps:is_key(K, Manifest)] of
+        [Key | _] -> {error, {missing_field, Key}};
+        [] -> normalize_complete(Manifest)
     end;
 check_adapter_fields(Manifest) ->
     normalize_complete(Manifest).
