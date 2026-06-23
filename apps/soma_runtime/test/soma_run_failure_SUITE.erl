@@ -9,6 +9,7 @@
 -export([test_session_alive_after_tool_crash/1]).
 -export([test_overrun_reaches_timeout_records_run_timeout/1]).
 -export([test_hung_worker_dead_after_timeout/1]).
+-export([test_cancel_run_reaches_cancelled_records_event/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
@@ -16,7 +17,8 @@ all() ->
      test_tool_crash_reaches_failed,
      test_session_alive_after_tool_crash,
      test_overrun_reaches_timeout_records_run_timeout,
-     test_hung_worker_dead_after_timeout].
+     test_hung_worker_dead_after_timeout,
+     test_cancel_run_reaches_cancelled_records_event].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -154,6 +156,30 @@ test_hung_worker_dead_after_timeout(_Config) ->
     ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 50),
     %% the timeout killed the hung worker; it must no longer be alive
     false = is_process_alive(WorkerPid),
+    ok.
+
+%% Criterion 7: sending `{cancel_run, RunId}' to the session drives that run to
+%% the terminal state `cancelled' and records `run.cancelled'. Driven through
+%% the real session/run/tool-call layers: the session starts a run of one slow
+%% `sleep' step; while the run waits on that worker the test sends the cancel
+%% message to the session's message interface (`SessionPid ! {cancel_run,
+%% RunId}'), the real cancel path the README names. The session forwards a
+%% `cancel' to the run, which records `run.cancelled' and never `run.completed'.
+test_cancel_run_reaches_cancelled_records_event(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 5000}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    %% wait until the run is actually waiting on the worker before cancelling, so
+    %% the cancel lands in `waiting_tool', not before the step has started
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 50),
+    SessionPid ! {cancel_run, RunId},
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    %% the run records run.cancelled and never run.completed
+    true = lists:member(<<"run.cancelled">>, Types),
+    false = lists:member(<<"run.completed">>, Types),
     ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
