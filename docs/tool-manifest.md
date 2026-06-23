@@ -31,3 +31,20 @@ how to run the tool:
   behaviour, the same way every v0.1 tool runs today.
 - `cli` — runs an external one-shot executable as a separate process, given an
   executable path and an argv list (never a shell command string).
+
+## CLI adapter schema
+
+A `cli` manifest entry carries the adapter-specific schema that says how to
+launch the external process. The schema has two fields:
+
+- `executable` — the path to the program to run, resolved and launched
+  directly by the runtime.
+- `argv` — a separate list of argument strings passed to that executable, one
+  list element per argument, with no shell parsing applied.
+
+The executable and its argv are always kept apart so the runtime spawns the
+process directly without a shell. A single shell command string — a `/bin/sh -c`
+line, or an `executable` field that smuggles arguments, pipes, or redirection
+into one string — is never a valid form for a `cli` entry. There is no shell on
+the path between the manifest and the process, so there is nothing to interpret
+such a string.
