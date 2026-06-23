@@ -60,3 +60,26 @@ test_manifest_doc_lists_effect_values() ->
 
 manifest_doc_lists_effect_values_test() ->
     test_manifest_doc_lists_effect_values().
+
+%% Criterion 4: exactly two adapter types are defined — `erlang_module` and
+%% `cli` — each on a line that also says what it runs.
+test_manifest_doc_defines_two_adapters() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    [?assert(contains(Lower, A)) || A <- [<<"erlang_module">>, <<"cli">>]],
+    %% each adapter name appears on a line that also describes what it runs
+    ?assert(adapter_describes_run(Lower, <<"erlang_module">>)),
+    ?assert(adapter_describes_run(Lower, <<"cli">>)).
+
+%% An adapter "says what it runs" when its name shares a line with the word
+%% "run" plus enough prose to be a description, not just a bare mention.
+adapter_describes_run(Lower, Adapter) ->
+    Lines = binary:split(Lower, <<"\n">>, [global]),
+    AdapterLines = [L || L <- Lines, contains(L, Adapter)],
+    lists:any(fun(L) ->
+                  contains(L, <<"run">>)
+                      andalso byte_size(L) > byte_size(Adapter) + 12
+              end, AdapterLines).
+
+manifest_doc_defines_two_adapters_test() ->
+    test_manifest_doc_defines_two_adapters().
