@@ -255,8 +255,31 @@ fail_run(Data, Step, ToolCallId, WorkerPid, Reason) ->
 kill_os_process(undefined) ->
     ok;
 kill_os_process(OsPid) when is_integer(OsPid) ->
-    os:cmd("kill -KILL " ++ integer_to_list(OsPid)),
-    ok.
+    case os:find_executable("kill") of
+        false ->
+            ok;
+        Kill ->
+            Port = open_port(
+                     {spawn_executable, Kill},
+                     [{args, ["-KILL", integer_to_list(OsPid)]},
+                      exit_status, binary, use_stdio, stderr_to_stdout]),
+            wait_kill_done(Port),
+            ok
+    end.
+
+%% Drain the kill port to completion so its `exit_status' message never leaks
+%% into the run's gen_statem mailbox. `kill -KILL' is near-instant; a short bound
+%% guards against a stuck child, after which the port is force-closed.
+wait_kill_done(Port) ->
+    receive
+        {Port, {exit_status, _}} ->
+            ok;
+        {Port, {data, _}} ->
+            wait_kill_done(Port)
+    after 1000 ->
+        try erlang:port_close(Port) catch _:_ -> ok end,
+        ok
+    end.
 
 %% Drop a worker monitor and flush any `'DOWN'' it already delivered, so a
 %% worker's clean exit after a successful reply does not reach the crash clause.
