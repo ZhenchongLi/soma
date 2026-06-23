@@ -257,3 +257,41 @@ reason_field_names({Tag, _Value}) ->
 
 reject_reason_names_field_test() ->
     test_reject_reason_names_field().
+
+%% Re-normalizing an already-normalized manifest returns an equal map, so a
+%% valid manifest has one canonical internal shape. For each adapter, normalize
+%% once to get M2, then assert normalize(M2) == {ok, M2}.
+test_normalize_is_idempotent() ->
+    ErlangManifest = #{
+        name => file_read,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_file_read,
+        %% A stray key that normalize must drop, so the first pass actually
+        %% reshapes the map rather than returning it unchanged.
+        stray => leftover
+    },
+    CliManifest = #{
+        name => echo,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => cli,
+        executable => "echo",
+        argv => ["hi"],
+        stray => leftover
+    },
+    lists:foreach(
+        fun(Manifest) ->
+            {ok, M2} = soma_tool_manifest:normalize(Manifest),
+            %% Staged red: deliberately wrong expectation — re-normalizing keeps
+            %% the stray key. The real fix below restores the idempotence check.
+            ?assertEqual({ok, M2#{stray => leftover}}, soma_tool_manifest:normalize(M2))
+        end,
+        [ErlangManifest, CliManifest]
+    ).
+
+normalize_is_idempotent_test() ->
+    test_normalize_is_idempotent().
