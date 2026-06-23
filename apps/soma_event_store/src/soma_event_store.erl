@@ -59,11 +59,18 @@ handle_cast(_Msg, State) ->
          event_type, payload]).
 
 normalize(Event) ->
+    WithId = case maps:is_key(event_id, Event) of
+                 true -> Event;
+                 false -> Event#{event_id => make_event_id()}
+             end,
     lists:foldl(fun(Key, Acc) ->
                         case maps:is_key(Key, Acc) of
                             true -> Acc;
                             false -> Acc#{Key => undefined}
                         end
                 end,
-                Event,
+                WithId,
                 ?MANDATORY_KEYS).
+
+make_event_id() ->
+    list_to_binary(erlang:ref_to_list(make_ref())).
