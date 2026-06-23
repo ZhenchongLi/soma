@@ -61,9 +61,7 @@ test_error_trail_tool_step_run_failed_in_order(_Config) ->
     StepIdx = index_of(<<"step.failed">>, Types),
     RunIdx = index_of(<<"run.failed">>, Types),
     true = ToolIdx < StepIdx,
-    %% staged red: deliberately wrong order — run.failed is recorded last, so
-    %% RunIdx < StepIdx is false and this assertion fires.
-    true = RunIdx < StepIdx,
+    true = StepIdx < RunIdx,
     ok.
 
 %% 1-based index of the first occurrence of Elem in List.
