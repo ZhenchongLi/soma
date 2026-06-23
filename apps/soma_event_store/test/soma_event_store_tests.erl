@@ -37,3 +37,20 @@ test_by_session_filters() ->
 
 by_session_filters_test() ->
     test_by_session_filters().
+
+test_event_has_all_eight_fields() ->
+    {ok, Pid} = soma_event_store:start_link(),
+    ok = soma_event_store:append(Pid, #{session_id => sess_a,
+                                        run_id => run_a,
+                                        event_type => 'session.started',
+                                        payload => #{}}),
+    [Event] = soma_event_store:all(Pid),
+    Keys = lists:sort(maps:keys(Event)),
+    ?assertEqual([event_id, event_type, payload, run_id,
+                  session_id, step_id, timestamp, tool_call_id],
+                 Keys),
+    ?assertEqual(undefined, maps:get(step_id, Event)),
+    ?assertEqual(undefined, maps:get(tool_call_id, Event)).
+
+event_has_all_eight_fields_test() ->
+    test_event_has_all_eight_fields().
