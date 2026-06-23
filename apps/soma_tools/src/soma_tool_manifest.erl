@@ -20,8 +20,14 @@ missing_shared_field(Manifest) ->
 
 check_effect(#{effect := Effect} = Manifest) ->
     case lists:member(Effect, ?EFFECTS) of
-        true -> normalize_complete(Manifest);
+        true -> check_idempotent(Manifest);
         false -> {error, {invalid_effect, Effect}}
+    end.
+
+check_idempotent(#{idempotent := Idempotent} = Manifest) ->
+    case is_boolean(Idempotent) of
+        true -> normalize_complete(Manifest);
+        false -> {error, {invalid_idempotent, Idempotent}}
     end.
 
 normalize_complete(#{
