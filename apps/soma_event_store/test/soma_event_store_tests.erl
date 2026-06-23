@@ -90,7 +90,7 @@ empty_store_returns_empty_list_test() ->
 test_store_survives_empty_query() ->
     {ok, Pid} = soma_event_store:start_link(),
     [] = soma_event_store:all(Pid),
-    ?assertEqual(false, is_process_alive(Pid)).
+    ?assertEqual(true, is_process_alive(Pid)).
 
 store_survives_empty_query_test() ->
     test_store_survives_empty_query().
