@@ -85,6 +85,29 @@ handle_info({run_timeout, RunId}, State) ->
                    State#state.runs
            end,
     {noreply, State#state{runs = Runs}};
+%% A run reached the `cancelled' terminal state and reported back; record it as
+%% cancelled. The session survives the run being cancelled.
+handle_info({run_cancelled, RunId}, State) ->
+    Runs = case maps:find(RunId, State#state.runs) of
+               {ok, Run} ->
+                   maps:put(RunId, Run#{status => cancelled}, State#state.runs);
+               error ->
+                   State#state.runs
+           end,
+    {noreply, State#state{runs = Runs}};
+%% Cancel an active run. The README names the session as the cancel entry point:
+%% the request arrives here, the session looks up the run pid and forwards a
+%% `cancel' to it. The run does the real work -- killing the active worker and
+%% recording `run.cancelled' -- and reports back; the session never executes
+%% tool logic itself.
+handle_info({cancel_run, RunId}, State) ->
+    case maps:find(RunId, State#state.runs) of
+        {ok, #{pid := RunPid}} ->
+            RunPid ! cancel;
+        error ->
+            ok
+    end,
+    {noreply, State};
 handle_info(_Msg, State) ->
     {noreply, State}.
 
