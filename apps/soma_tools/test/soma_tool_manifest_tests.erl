@@ -53,3 +53,20 @@ test_normalize_rejects_missing_shared_field() ->
 
 normalize_rejects_missing_shared_field_test() ->
     test_normalize_rejects_missing_shared_field().
+
+test_normalize_rejects_bad_effect() ->
+    Manifest = #{
+        name => file_read,
+        effect => destroyer,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_file_read
+    },
+    ?assertEqual(
+        {error, {invalid_effect, destroyer}},
+        soma_tool_manifest:normalize(Manifest)
+    ).
+
+normalize_rejects_bad_effect_test() ->
+    test_normalize_rejects_bad_effect().
