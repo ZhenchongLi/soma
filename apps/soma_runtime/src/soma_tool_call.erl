@@ -71,7 +71,8 @@ run_cli(Executable, Argv, Input, ToolCallId, ReplyTo) ->
 open_cli_port(Executable, Args) ->
     try
         Port = open_port({spawn_executable, Executable},
-                         [{args, Args}, {env, minimal_env()}, exit_status,
+                         [{args, Args}, {env, minimal_env()},
+                          {cd, adapter_cwd()}, exit_status,
                           binary, use_stdio, stderr_to_stdout]),
         {ok, Port}
     catch
@@ -98,6 +99,16 @@ minimal_env() ->
         false -> Cleared;
         Path -> [{"PATH", Path} | Cleared]
     end.
+
+%% The fixed working directory the adapter sets for every cli child. It is a
+%% stable, adapter-chosen directory that is not the runtime process cwd, so the
+%% child never inherits the directory the BEAM happens to sit in. The system
+%% temp directory satisfies this for v0.1: it exists, is writable, and is not
+%% where the runtime was started. Per-tool cwd is out of scope for this issue.
+adapter_cwd() ->
+    Dir = filename:basedir(user_cache, "soma_cli"),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Dir.
 
 await_cli(Port, ToolCallId, ReplyTo) ->
     case erlang:port_info(Port, os_pid) of
