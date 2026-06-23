@@ -51,8 +51,7 @@ test_release_doc_states_per_architecture_rule() ->
     ?assert(contains(Lower, <<"linux x86_64">>)),
     ?assert(contains(Lower, <<"linux arm64">>)),
     %% and the doc states a build carries only its own architecture's helper
-    %% (staged-red: deliberately-wrong expected value, corrected on green)
-    ?assert(contains(Lower, <<"carries every architecture's helper">>)).
+    ?assert(contains(Lower, <<"only that architecture's helper">>)).
 
 release_doc_states_per_architecture_rule_test() ->
     test_release_doc_states_per_architecture_rule().

@@ -88,6 +88,19 @@ unpacked release — and joins its declared `cli/...` suffix onto it. Because
 registered name works in the build tree and in every relocated release without
 any absolute path being baked in.
 
+## Per-architecture CLI helpers
+
+An external CLI executable is a native binary, so it is **packaged separately
+for each target architecture**. Soma's three packaging targets are macOS arm64,
+Linux x86_64, and Linux arm64, and each gets its own helper build.
+
+A release is built on the host whose architecture it targets, and a build on one
+architecture carries **only that architecture's helper** — the macOS arm64
+release bundles the macOS arm64 binary, the Linux x86_64 release bundles the
+Linux x86_64 binary, and the Linux arm64 release bundles the Linux arm64 binary.
+No single tarball carries helpers for more than its own architecture; you cannot
+relocate a packaged helper to a different architecture's release.
+
 ## Linux x86_64 / arm64 artifacts
 
 Build the same `prod` profile on each Linux target (a Linux container or CI
