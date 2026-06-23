@@ -228,3 +228,46 @@ cli_event_trail_proof_block(Doc) ->
 contract_doc_maps_cli_event_trail_proof_test() ->
     test_contract_doc_maps_cli_event_trail_proof().
 
+%% Criterion 7: the "a cli tool whose executable exits nonzero, and one pointed
+%% at a missing/unrunnable executable, each drive the run to failed while the
+%% soma_agent_session stays alive" proof is listed and mapped to its proving
+%% cases. The block names the suite, all five proving cases (three failure-mode
+%% cases plus the dedicated session-survival case), the session entry, the
+%% failed / run.failed terminal outcome, and the session-stays-alive guarantee —
+%% all in one contiguous Proof 6 block.
+test_contract_doc_maps_cli_failure_proof() ->
+    Doc = read_doc(),
+    Block = cli_failure_proof_block(Doc),
+    Lower = string:lowercase(Block),
+    ?assert(contains(Block, <<"soma_cli_failure_SUITE">>)),
+    %% the three failure-mode cases plus the dedicated session-survival case
+    ?assert(contains(Block, <<"test_nonzero_exit_carries_exit_status">>)),
+    ?assert(contains(Block, <<"test_missing_executable_named_error">>)),
+    ?assert(contains(Block, <<"test_missing_executable_reaches_run_failed_trail">>)),
+    ?assert(contains(Block, <<"test_non_executable_permission_error">>)),
+    ?assert(contains(Block, <<"test_session_alive_runs_new_run_after_cli_failure">>)),
+    ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
+    %% the failed terminal outcome the cli failures drive toward
+    ?assert(contains(Lower, <<"failed">>)),
+    %% the session-stays-alive guarantee
+    ?assert(contains(Lower, <<"is_process_alive">>)),
+    ?assert(contains(Lower, <<"stays alive">>)).
+
+%% The proof-6 section block: from its heading up to the next "### " heading.
+cli_failure_proof_block(Doc) ->
+    Heading = <<"### Proof 6 ">>,
+    case binary:match(Doc, Heading) of
+        nomatch -> erlang:error({heading_not_found, Heading});
+        {Start, _} ->
+            Rest = binary:part(Doc, Start, byte_size(Doc) - Start),
+            [_HeadingLine | After] = binary:split(Rest, <<"\n">>),
+            AfterBin = iolist_to_binary(lists:join(<<"\n">>, After)),
+            case binary:match(AfterBin, <<"### ">>) of
+                nomatch -> AfterBin;
+                {NextStart, _} -> binary:part(AfterBin, 0, NextStart)
+            end
+    end.
+
+contract_doc_maps_cli_failure_proof_test() ->
+    test_contract_doc_maps_cli_failure_proof().
+
