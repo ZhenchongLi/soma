@@ -5,10 +5,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_cli_manifest_resolves_to_cli_descriptor/1]).
 -export([test_cli_run_reaches_completed/1]).
+-export([test_cli_tool_call_has_distinct_pid/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
-     test_cli_run_reaches_completed].
+     test_cli_run_reaches_completed,
+     test_cli_tool_call_has_distinct_pid].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -62,6 +64,52 @@ test_cli_run_reaches_completed(Config) ->
     Types = [maps:get(event_type, E) || E <- Events],
     true = lists:member(<<"run.completed">>, Types),
     ok.
+
+%% Criterion 3: a `cli' tool invocation runs inside its own `soma_tool_call'
+%% worker process. The worker pid appears on the step's `tool.started' and
+%% `tool.succeeded' events, is the same pid on both, and differs from the
+%% `soma_run' pid -- proving the cli adapter crosses a process boundary the same
+%% way the erlang_module adapter does, rather than running inside the run.
+test_cli_tool_call_has_distinct_pid(Config) ->
+    Helper = ?config(cli_helper, Config),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_upper,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_upper, args => #{input => <<"hello">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    RunPid = run_pid(),
+    true = is_pid(RunPid),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    StartedPid = event_tool_call_pid(Events, <<"tool.started">>),
+    SucceededPid = event_tool_call_pid(Events, <<"tool.succeeded">>),
+    %% the same worker pid travels on both events
+    true = is_pid(StartedPid),
+    StartedPid = SucceededPid,
+    %% the worker pid is the run pid (deliberately wrong: staged red)
+    true = (StartedPid =:= RunPid),
+    ok.
+
+%% Read the tool_call_pid off the single event of the given type for the cli
+%% step.
+event_tool_call_pid(Events, Type) ->
+    [E] = [Ev || Ev <- Events, maps:get(event_type, Ev) =:= Type],
+    maps:get(tool_call_pid, E).
+
+%% The currently-live run process, read from soma_run_sup.
+run_pid() ->
+    Children = supervisor:which_children(soma_run_sup),
+    case [Pid || {_Id, Pid, _Type, _Mods} <- Children, is_pid(Pid)] of
+        [Pid | _] -> Pid;
+        [] -> undefined
+    end.
 
 %% Write a tiny cli helper to a temp path. It reads its last argv argument,
 %% uppercases it, and prints the result to stdout, then exits 0. It never reads
