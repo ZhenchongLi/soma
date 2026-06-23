@@ -20,6 +20,12 @@ artifacts.
 
 ## The idea
 
+Soma is built on the **actor model**: every session, run, and tool call is an
+*actor* — an isolated process with a private mailbox that talks only by messages.
+Erlang is the canonical actor runtime; OTP then layers supervision and monitoring
+on top, turning plain actors into *actors that fail safely*. That second layer is
+the point.
+
 Agent systems fail in operational ways: model calls hang, tools time out,
 external programs crash, sessions stay alive for a long time, cancellation has to
 be real, and every run needs an audit trail — and one run's failure must not
