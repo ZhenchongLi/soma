@@ -18,7 +18,7 @@
 -export([register/3, lookup/2, names/1]).
 
 %% Process API
--export([start_link/0, resolve/1]).
+-export([start_link/0, resolve/1, resolve_descriptor/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
@@ -60,6 +60,11 @@ start_link() ->
 resolve(Name) ->
     gen_server:call(?MODULE, {resolve, Name}).
 
+%% @doc Resolve a tool name to its full descriptor through the running registry.
+-spec resolve_descriptor(atom()) -> {ok, descriptor()} | {error, not_found}.
+resolve_descriptor(Name) ->
+    gen_server:call(?MODULE, {resolve_descriptor, Name}).
+
 %%% gen_server callbacks
 
 init([]) ->
@@ -74,6 +79,8 @@ handle_call({resolve, Name}, _From, Registry) ->
                 {error, not_found} -> {error, not_found}
             end,
     {reply, Reply, Registry};
+handle_call({resolve_descriptor, Name}, _From, Registry) ->
+    {reply, lookup(Registry, Name), Registry};
 handle_call(_Msg, _From, Registry) ->
     {reply, {error, unknown_call}, Registry}.
 
