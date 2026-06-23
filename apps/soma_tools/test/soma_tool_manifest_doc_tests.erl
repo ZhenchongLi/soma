@@ -139,3 +139,21 @@ v01_tools_section(Lower) ->
 
 manifest_doc_v01_tools_map_to_erlang_module_test() ->
     test_manifest_doc_v01_tools_map_to_erlang_module().
+
+%% Criterion 7: the doc includes at least one example explicitly labelled as a
+%% valid manifest.
+test_manifest_doc_has_valid_example() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    ?assert(has_valid_example_label(Lower)).
+
+%% A heading or label line that marks an example as a valid manifest.
+has_valid_example_label(Lower) ->
+    Lines = binary:split(Lower, <<"\n">>, [global]),
+    lists:any(fun(L) ->
+                  contains(L, <<"valid manifest">>)
+                      andalso contains(L, <<"example">>)
+              end, Lines).
+
+manifest_doc_has_valid_example_test() ->
+    test_manifest_doc_has_valid_example().
