@@ -54,3 +54,15 @@ test_event_has_all_eight_fields() ->
 
 event_has_all_eight_fields_test() ->
     test_event_has_all_eight_fields().
+
+test_event_id_unique() ->
+    {ok, Pid} = soma_event_store:start_link(),
+    ok = soma_event_store:append(Pid, #{event_type => same, payload => #{x => 1}}),
+    ok = soma_event_store:append(Pid, #{event_type => same, payload => #{x => 1}}),
+    ok = soma_event_store:append(Pid, #{event_type => other, payload => #{x => 2}}),
+    Events = soma_event_store:all(Pid),
+    Ids = [maps:get(event_id, E) || E <- Events],
+    ?assertEqual(length(Ids), length(lists:usort(Ids))).
+
+event_id_unique_test() ->
+    test_event_id_unique().
