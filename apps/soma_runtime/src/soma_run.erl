@@ -22,7 +22,8 @@
                pending = [],
                outputs = #{},
                current,
-               tool_call_id}).
+               tool_call_id,
+               worker_mref}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -61,20 +62,29 @@ executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
                        run_id => Data#data.run_id,
                        step_id => StepId,
                        tool_call_id => ToolCallId}),
-    {ok, _WorkerPid} = soma_tool_call:start(#{module => Module,
-                                              input => Input,
-                                              ctx => Ctx,
-                                              tool_call_id => ToolCallId,
-                                              reply_to => self()}),
+    {ok, WorkerPid} = soma_tool_call:start(#{module => Module,
+                                             input => Input,
+                                             ctx => Ctx,
+                                             tool_call_id => ToolCallId,
+                                             reply_to => self()}),
+    %% Monitor the worker so a crash (the tool raises, the worker dies without
+    %% replying) reaches the run as a `'DOWN'' message rather than hanging the
+    %% wait forever.
+    MRef = erlang:monitor(process, WorkerPid),
     {next_state, waiting_tool,
-     Data#data{current = Step, tool_call_id = ToolCallId}}.
+     Data#data{current = Step, tool_call_id = ToolCallId, worker_mref = MRef}}.
 
 %% Wait for the active tool-call worker's result; only then advance.
 waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {ok, Output}},
              Data = #data{tool_call_id = ToolCallId,
                           current = Step,
                           pending = [Step | Rest],
-                          outputs = Outputs}) ->
+                          outputs = Outputs,
+                          worker_mref = MRef}) ->
+    %% The worker exits `normal' right after this reply. Demonitor-and-flush so
+    %% its clean `'DOWN'' never reaches the crash clause and is not mistaken for
+    %% a failure.
+    demonitor_flush(MRef),
     StepId = maps:get(id, Step),
     emit(Data, <<"tool.succeeded">>,
          #{step_id => StepId, tool_call_id => ToolCallId,
@@ -85,12 +95,38 @@ waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {ok, Output}},
     NewData = Data#data{pending = Rest,
                         outputs = Outputs#{StepId => Output},
                         current = undefined,
-                        tool_call_id = undefined},
+                        tool_call_id = undefined,
+                        worker_mref = undefined},
     {next_state, executing, NewData, [{next_event, internal, next_step}]};
 %% The tool returned an error: record the failure trail and move to `failed'.
 %% A crash and an `{error, _}' return land in the same terminal state.
 waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {error, Reason}},
-             Data = #data{tool_call_id = ToolCallId, current = Step}) ->
+             Data = #data{tool_call_id = ToolCallId, current = Step,
+                          worker_mref = MRef}) ->
+    demonitor_flush(MRef),
+    fail_run(Data, Step, ToolCallId, WorkerPid, Reason);
+%% The tool-call worker crashed: the tool raised and the process died without
+%% replying. The monitor delivers `'DOWN'' with a non-`normal' reason. A crash
+%% and an `{error, _}' return land in the same terminal `failed' state.
+waiting_tool(info, {'DOWN', MRef, process, WorkerPid, Reason},
+             Data = #data{worker_mref = MRef, current = Step,
+                          tool_call_id = ToolCallId})
+  when Reason =/= normal ->
+    fail_run(Data, Step, ToolCallId, WorkerPid, Reason).
+
+completed(_EventType, _Event, Data) ->
+    {keep_state, Data}.
+
+failed(_EventType, _Event, Data) ->
+    {keep_state, Data}.
+
+%%% Internal
+
+%% Record the failure trail (`tool.failed', `step.failed', `run.failed'), tell
+%% the session, and move to the `failed' state. Shared by the `{error, _}'
+%% return and the worker-crash `'DOWN'' paths, which the issue collapses into
+%% one terminal state.
+fail_run(Data, Step, ToolCallId, WorkerPid, Reason) ->
     StepId = maps:get(id, Step),
     emit(Data, <<"tool.failed">>,
          #{step_id => StepId, tool_call_id => ToolCallId,
@@ -101,15 +137,16 @@ waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {error, Reason}},
     emit(Data, <<"run.failed">>, #{payload => #{reason => Reason}}),
     notify_session_failed(Data, Reason),
     {next_state, failed, Data#data{current = undefined,
-                                   tool_call_id = undefined}}.
+                                   tool_call_id = undefined,
+                                   worker_mref = undefined}}.
 
-completed(_EventType, _Event, Data) ->
-    {keep_state, Data}.
-
-failed(_EventType, _Event, Data) ->
-    {keep_state, Data}.
-
-%%% Internal
+%% Drop a worker monitor and flush any `'DOWN'' it already delivered, so a
+%% worker's clean exit after a successful reply does not reach the crash clause.
+demonitor_flush(undefined) ->
+    ok;
+demonitor_flush(MRef) ->
+    erlang:demonitor(MRef, [flush]),
+    ok.
 
 %% Tell the session this run reached a terminal state. The session updates its
 %% status view and stays alive; it learns the outcome from this message, not
