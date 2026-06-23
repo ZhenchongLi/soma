@@ -201,3 +201,59 @@ test_normalize_rejects_non_list_argv() ->
 
 normalize_rejects_non_list_argv_test() ->
     test_normalize_rejects_non_list_argv().
+
+%% Every rejection's error reason must name the field it blames: the reason is a
+%% {Tag, ...} tuple whose tag (or payload, for missing_field) carries the
+%% offending field name. One malformed manifest per blamed field.
+test_reject_reason_names_field() ->
+    ErlangBase = #{
+        name => file_read,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_file_read
+    },
+    CliBase = #{
+        name => echo,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => cli,
+        executable => "echo",
+        argv => ["hi"]
+    },
+    Cases = [
+        {maps:remove(name, ErlangBase), name},
+        {ErlangBase#{effect => destroyer}, idempotent},
+        {ErlangBase#{idempotent => yes}, idempotent},
+        {ErlangBase#{timeout_ms => 0}, timeout_ms},
+        {ErlangBase#{adapter => grpc}, adapter},
+        {maps:remove(module, ErlangBase), module},
+        {CliBase#{executable => "echo hi"}, executable},
+        {CliBase#{argv => not_a_list}, argv}
+    ],
+    lists:foreach(
+        fun({Manifest, Field}) ->
+            {error, Reason} = soma_tool_manifest:normalize(Manifest),
+            ?assert(reason_names_field(Reason, Field))
+        end,
+        Cases
+    ).
+
+%% A reason names a field when the field atom appears anywhere in the reason
+%% tuple — either as the payload (missing_field) or encoded in the tag
+%% (invalid_<field>).
+reason_names_field(Reason, Field) ->
+    lists:member(Field, reason_field_names(Reason)).
+
+reason_field_names({missing_field, Field}) ->
+    [Field];
+reason_field_names({Tag, _Value}) ->
+    case atom_to_list(Tag) of
+        "invalid_" ++ FieldStr -> [list_to_atom(FieldStr)];
+        _ -> []
+    end.
+
+reject_reason_names_field_test() ->
+    test_reject_reason_names_field().
