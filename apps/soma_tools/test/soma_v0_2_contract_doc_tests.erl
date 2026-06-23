@@ -310,3 +310,46 @@ cli_timeout_proof_block(Doc) ->
 contract_doc_maps_cli_timeout_proof_test() ->
     test_contract_doc_maps_cli_timeout_proof().
 
+%% Criterion 9: the "cancelling a run with an active `cli` tool stops the
+%% external process and reaches `cancelled`" proof is listed and mapped to its
+%% proving cases. The block names the suite, both proving cases (the
+%% reaches-cancelled case and the external-process-dead case), the session entry
+%% (`soma_agent_session:start_run/2` and the `{cancel_run, RunId}` cancel
+%% message), the cancelled terminal outcome, and the external-OS-process-stopped
+%% guarantee (the marker-file liveness check) -- all in one contiguous Proof 8
+%% block.
+test_contract_doc_maps_cli_cancel_proof() ->
+    Doc = read_doc(),
+    Block = cli_cancel_proof_block(Doc),
+    Lower = string:lowercase(Block),
+    ?assert(contains(Block, <<"soma_cli_lifecycle_SUITE">>)),
+    %% the reaches-cancelled case and the external-process-dead case
+    %% STAGED-RED: deliberately wrong case name to make the assertion fire.
+    ?assert(contains(Block, <<"test_cli_cancel_reaches_WRONG">>)),
+    ?assert(contains(Block, <<"test_cli_external_process_dead_after_cancel">>)),
+    %% the session entry: the start_run/2 call and the cancel message
+    ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
+    ?assert(contains(Block, <<"{cancel_run, RunId}">>)),
+    %% the cancelled terminal outcome the active-cli cancel drives toward
+    ?assert(contains(Lower, <<"cancelled">>)),
+    %% the external-OS-process-stopped guarantee: the marker-file liveness check
+    ?assert(contains(Lower, <<"marker file">>)).
+
+%% The proof-8 section block: from its heading up to the next "### " heading.
+cli_cancel_proof_block(Doc) ->
+    Heading = <<"### Proof 8 ">>,
+    case binary:match(Doc, Heading) of
+        nomatch -> erlang:error({heading_not_found, Heading});
+        {Start, _} ->
+            Rest = binary:part(Doc, Start, byte_size(Doc) - Start),
+            [_HeadingLine | After] = binary:split(Rest, <<"\n">>),
+            AfterBin = iolist_to_binary(lists:join(<<"\n">>, After)),
+            case binary:match(AfterBin, <<"### ">>) of
+                nomatch -> AfterBin;
+                {NextStart, _} -> binary:part(AfterBin, 0, NextStart)
+            end
+    end.
+
+contract_doc_maps_cli_cancel_proof_test() ->
+    test_contract_doc_maps_cli_cancel_proof().
+
