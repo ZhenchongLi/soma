@@ -18,6 +18,7 @@
 -export([test_failure_events_carry_eight_mandatory_fields/1]).
 -export([test_timeout_cancelled_carry_real_step_and_tool_call_ids/1]).
 -export([test_get_status_reports_terminal_outcome/1]).
+-export([test_unregistered_tool_reaches_failed_not_crash/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
@@ -34,7 +35,8 @@ all() ->
      test_session_runs_new_run_after_cancelled,
      test_failure_events_carry_eight_mandatory_fields,
      test_timeout_cancelled_carry_real_step_and_tool_call_ids,
-     test_get_status_reports_terminal_outcome].
+     test_get_status_reports_terminal_outcome,
+     test_unregistered_tool_reaches_failed_not_crash].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -424,6 +426,45 @@ test_get_status_reports_terminal_outcome(_Config) ->
     timeout = maps:get(TimeoutRunId, Runs),
     cancelled = maps:get(CancelRunId, Runs),
     ok.
+
+%% Criterion 5 (issue #16): a run whose step names an unregistered tool reaches
+%% the terminal `failed' state with an error payload, instead of the run process
+%% crashing with a badmatch. Driven through the real session/run layers: the
+%% session starts a run of one step naming `no_such_tool', which was never
+%% registered. `soma_tool_registry:resolve_descriptor/1' returns `{error,
+%% not_found}', and the run must record the failure trail and reach `failed'
+%% rather than blowing up on a blind `{ok, Module}' match. The test captures the
+%% run pid before the resolve site runs, then asserts the run process is still
+%% alive after it reached `failed' -- the survival assertion the project's test
+%% contract demands, proving the missing tool became data, not a crash.
+test_unregistered_tool_reaches_failed_not_crash(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => no_such_tool, args => #{}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    RunPid = run_pid(),
+    true = is_pid(RunPid),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    %% the run records run.failed and never run.completed
+    true = lists:member(<<"run.failed">>, Types),
+    false = lists:member(<<"run.completed">>, Types),
+    %% the run.failed event carries an error payload naming the missing tool
+    FailEvent = event_of_type(StorePid, RunId, <<"run.failed">>),
+    Payload = maps:get(payload, FailEvent),
+    true = maps:is_key(reason, Payload),
+    %% the run process reached `failed' without crashing on a badmatch: same pid,
+    %% still alive
+    true = is_process_alive(RunPid),
+    %% and the session reports the run as failed
+    ok = wait_for_run_status(SessionPid, RunId, failed, 50),
+    ok.
+
+%% The single run process under soma_run_sup for the current session.
+run_pid() ->
+    [{_, Pid, _, _} | _] = supervisor:which_children(soma_run_sup),
+    Pid.
 
 %% Read the first event of Type for RunId.
 event_of_type(StorePid, RunId, Type) ->
