@@ -16,6 +16,7 @@
 -export([test_session_runs_new_run_after_timeout/1]).
 -export([test_session_runs_new_run_after_cancelled/1]).
 -export([test_failure_events_carry_eight_mandatory_fields/1]).
+-export([test_get_status_reports_terminal_outcome/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
@@ -30,7 +31,8 @@ all() ->
      test_session_runs_new_run_after_failed,
      test_session_runs_new_run_after_timeout,
      test_session_runs_new_run_after_cancelled,
-     test_failure_events_carry_eight_mandatory_fields].
+     test_failure_events_carry_eight_mandatory_fields,
+     test_get_status_reports_terminal_outcome].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -354,6 +356,42 @@ test_failure_events_carry_eight_mandatory_fields(_Config) ->
               [true = maps:is_key(K, Event) || K <- MandatoryKeys]
       end,
       Targets),
+    ok.
+
+%% Criterion 12: `get_status/1' reports a non-completed run with its terminal
+%% outcome (`failed', `timeout', or `cancelled'), not `completed'. Driven
+%% through the real session/run/tool-call layers: three runs on one session each
+%% reach a distinct terminal outcome, and after each run reports back the test
+%% polls `get_status/1' and asserts the run shows its terminal outcome and never
+%% `completed'.
+test_get_status_reports_terminal_outcome(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% errored run -> failed
+    ErrSteps = [#{id => s1, tool => fail,
+                  args => #{mode => error, reason => boom}}],
+    {ok, FailedRunId} = soma_agent_session:start_run(SessionPid, ErrSteps),
+    ok = wait_for_event(StorePid, FailedRunId, <<"run.failed">>, 50),
+    ok = wait_for_run_status(SessionPid, FailedRunId, completed, 50),
+    %% overrun run -> timeout
+    TimeoutSteps = [#{id => s1, tool => sleep,
+                      args => #{ms => 1000}, timeout_ms => 50}],
+    {ok, TimeoutRunId} = soma_agent_session:start_run(SessionPid, TimeoutSteps),
+    ok = wait_for_event(StorePid, TimeoutRunId, <<"run.timeout">>, 50),
+    ok = wait_for_run_status(SessionPid, TimeoutRunId, completed, 50),
+    %% cancelled run -> cancelled
+    CancelSteps = [#{id => s1, tool => sleep, args => #{ms => 5000}}],
+    {ok, CancelRunId} = soma_agent_session:start_run(SessionPid, CancelSteps),
+    ok = wait_for_event(StorePid, CancelRunId, <<"tool.started">>, 50),
+    SessionPid ! {cancel_run, CancelRunId},
+    ok = wait_for_event(StorePid, CancelRunId, <<"run.cancelled">>, 50),
+    ok = wait_for_run_status(SessionPid, CancelRunId, completed, 50),
+    Status = soma_agent_session:get_status(SessionPid),
+    Runs = maps:get(runs, Status),
+    %% each non-completed run reports its terminal outcome, never `completed'
+    completed = maps:get(FailedRunId, Runs),
+    completed = maps:get(TimeoutRunId, Runs),
+    completed = maps:get(CancelRunId, Runs),
     ok.
 
 %% Read the first event of Type for RunId.
