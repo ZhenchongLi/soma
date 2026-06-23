@@ -87,12 +87,21 @@ await_cli(Port, ToolCallId, ReplyTo) ->
     end,
     collect_cli(Port, []).
 
+%% Collect the program's merged stdout/stderr until it exits. A clean exit
+%% (status 0) returns the full captured output as `{ok, Output}'. A non-zero exit
+%% returns `{error, {cli_exit_status, N, Excerpt}}' so the run fails with the exit
+%% status in the payload instead of blocking forever (the old code matched only
+%% status 0, so a non-zero exit fell through to the per-step timeout). `Excerpt'
+%% is the captured merged output.
 collect_cli(Port, Acc) ->
     receive
         {Port, {data, Data}} ->
             collect_cli(Port, [Data | Acc]);
         {Port, {exit_status, 0}} ->
-            {ok, iolist_to_binary(lists:reverse(Acc))}
+            {ok, iolist_to_binary(lists:reverse(Acc))};
+        {Port, {exit_status, N}} ->
+            Excerpt = iolist_to_binary(lists:reverse(Acc)),
+            {error, {cli_exit_status, N, Excerpt}}
     end.
 
 %% Render one argv element as a flat string for the port. argv elements are
