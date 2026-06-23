@@ -322,3 +322,27 @@ test_normalize_rejects_cli_without_executable_or_argv() ->
 
 normalize_rejects_cli_without_executable_or_argv_test() ->
     test_normalize_rejects_cli_without_executable_or_argv().
+
+%% Each of the five built-in tools exposes a production manifest/0 whose output
+%% normalizes to {ok, _}. The manifest is read live from the module, not a
+%% hand-written fixture.
+test_builtin_manifests_normalize() ->
+    Modules = [
+        soma_tool_echo,
+        soma_tool_sleep,
+        soma_tool_fail,
+        soma_tool_file_read,
+        soma_tool_file_write
+    ],
+    lists:foreach(
+        fun(Module) ->
+            ?assertMatch(
+                {ok, _},
+                soma_tool_manifest:normalize(Module:manifest())
+            )
+        end,
+        Modules
+    ).
+
+builtin_manifests_normalize_test() ->
+    test_builtin_manifests_normalize().
