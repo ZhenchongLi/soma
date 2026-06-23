@@ -220,8 +220,7 @@ test_session_alive_runs_new_cli_run_after_timeout(_Config) ->
     ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 250),
     Events = soma_event_store:by_run(StorePid, RunId2),
     Types = [maps:get(event_type, E) || E <- Events],
-    %% staged-red: deliberately wrong expected value so the assertion fires.
-    true = lists:member(<<"run.never_emitted">>, Types),
+    true = lists:member(<<"run.completed">>, Types),
     ok.
 
 %% Criterion 5 (cancel half): after a `cli' run reaches `cancelled', the session
@@ -272,8 +271,7 @@ test_session_alive_runs_new_cli_run_after_cancel(_Config) ->
     ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 250),
     Events = soma_event_store:by_run(StorePid, RunId2),
     Types = [maps:get(event_type, E) || E <- Events],
-    %% staged-red: deliberately wrong expected value so the assertion fires.
-    true = lists:member(<<"run.never_emitted">>, Types),
+    true = lists:member(<<"run.completed">>, Types),
     ok.
 
 %% Write a tiny cli helper that exits 0 immediately. Used as the second, short run
