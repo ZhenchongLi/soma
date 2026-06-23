@@ -126,9 +126,11 @@ test_cli_argv_metacharacter_is_literal(_Config) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     Output = step_output(Events),
     true = is_binary(Output),
-    %% the metacharacter argument arrived literally, not shell-expanded to "pwned"
-    {match, _} = re:run(Output, "pwned\\)"),
-    nomatch = re:run(Output, "\\$\\(echo pwned\\)"),
+    %% the metacharacter argument arrived literally, not shell-expanded: the
+    %% output is exactly the `$(echo pwned)' bytes, and never the shell-expanded
+    %% bare `pwned'.
+    Output = list_to_binary(Metachar),
+    nomatch = re:run(Output, "^pwned$"),
     ok.
 
 %% Read the step output recorded on the cli step's `step.succeeded' event.
