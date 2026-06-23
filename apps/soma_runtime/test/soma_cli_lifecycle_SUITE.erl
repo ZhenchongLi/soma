@@ -6,13 +6,17 @@
 -export([test_cli_overrun_reaches_timeout/1,
          test_cli_external_process_dead_after_timeout/1,
          test_cli_cancel_reaches_cancelled/1,
-         test_cli_external_process_dead_after_cancel/1]).
+         test_cli_external_process_dead_after_cancel/1,
+         test_session_alive_runs_new_cli_run_after_timeout/1,
+         test_session_alive_runs_new_cli_run_after_cancel/1]).
 
 all() ->
     [test_cli_overrun_reaches_timeout,
      test_cli_external_process_dead_after_timeout,
      test_cli_cancel_reaches_cancelled,
-     test_cli_external_process_dead_after_cancel].
+     test_cli_external_process_dead_after_cancel,
+     test_session_alive_runs_new_cli_run_after_timeout,
+     test_session_alive_runs_new_cli_run_after_cancel].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -171,6 +175,121 @@ test_cli_external_process_dead_after_cancel(_Config) ->
     %% a killed external process never reached its `touch', so the marker is absent.
     false = filelib:is_file(Marker),
     ok.
+
+%% Criterion 5 (timeout half): after a `cli' run reaches `timeout', the session
+%% process is still alive and a second short `cli' run started on the same session
+%% runs to completion. Driven entirely through the real entry points: the first
+%% run is driven to `timeout' exactly as `test_cli_overrun_reaches_timeout' does
+%% (helper sleeps past a tiny step budget), then we assert the session pid is
+%% still alive and call `soma_agent_session:start_run/2' a second time on the same
+%% session with a fast-exiting `cli' step, which must reach `run.completed'. The
+%% session surviving a timed-out run and accepting a fresh run is the proof that
+%% the failed run did not take the session down with it.
+test_session_alive_runs_new_cli_run_after_timeout(_Config) ->
+    Helper = write_sleep_helper(),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_alive_to_sleep,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% drive the first run to `timeout': helper sleeps 5s, step budget is 100ms.
+    Steps1 = [#{id => s1, tool => cli_alive_to_sleep,
+                args => #{input => <<"ignored">>}, timeout_ms => 100}],
+    {ok, RunId1} = soma_agent_session:start_run(SessionPid, Steps1),
+    ok = wait_for_event(StorePid, RunId1, <<"run.timeout">>, 100),
+    %% the session survives the timed-out run.
+    true = is_process_alive(SessionPid),
+    %% a fresh short `cli' run on the same session runs to completion.
+    Fast = write_fast_helper(),
+    Manifest2 = #{name => cli_alive_to_fast,
+                  effect => reader,
+                  idempotent => true,
+                  timeout_ms => 5000,
+                  adapter => cli,
+                  executable => Fast,
+                  argv => []},
+    ok = soma_tool_registry:register_tool(Manifest2),
+    Steps2 = [#{id => s1, tool => cli_alive_to_fast,
+                args => #{input => <<"ignored">>}, timeout_ms => 5000}],
+    {ok, RunId2} = soma_agent_session:start_run(SessionPid, Steps2),
+    ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 250),
+    Events = soma_event_store:by_run(StorePid, RunId2),
+    Types = [maps:get(event_type, E) || E <- Events],
+    %% staged-red: deliberately wrong expected value so the assertion fires.
+    true = lists:member(<<"run.never_emitted">>, Types),
+    ok.
+
+%% Criterion 5 (cancel half): after a `cli' run reaches `cancelled', the session
+%% process is still alive and a second short `cli' run started on the same session
+%% runs to completion. Driven entirely through the real entry points: the first
+%% run is driven to `cancelled' exactly as `test_cli_cancel_reaches_cancelled'
+%% does (helper sleeps under a generous budget; cancel via `{cancel_run, RunId}'),
+%% then we assert the session pid is still alive and call
+%% `soma_agent_session:start_run/2' a second time on the same session with a
+%% fast-exiting `cli' step, which must reach `run.completed'. The session
+%% surviving a cancelled run and accepting a fresh run is the proof that
+%% cancellation tore down only the run, not the session.
+test_session_alive_runs_new_cli_run_after_cancel(_Config) ->
+    Helper = write_sleep_helper(),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_alive_cancel_sleep,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% drive the first run to `cancelled': helper sleeps 5s, step budget 60s so the
+    %% per-step timer never fires -- only the cancel ends the step.
+    Steps1 = [#{id => s1, tool => cli_alive_cancel_sleep,
+                args => #{input => <<"ignored">>}, timeout_ms => 60000}],
+    {ok, RunId1} = soma_agent_session:start_run(SessionPid, Steps1),
+    ok = wait_for_event(StorePid, RunId1, <<"tool.started">>, 100),
+    SessionPid ! {cancel_run, RunId1},
+    ok = wait_for_event(StorePid, RunId1, <<"run.cancelled">>, 100),
+    %% the session survives the cancelled run.
+    true = is_process_alive(SessionPid),
+    %% a fresh short `cli' run on the same session runs to completion.
+    Fast = write_fast_helper(),
+    Manifest2 = #{name => cli_alive_cancel_fast,
+                  effect => reader,
+                  idempotent => true,
+                  timeout_ms => 5000,
+                  adapter => cli,
+                  executable => Fast,
+                  argv => []},
+    ok = soma_tool_registry:register_tool(Manifest2),
+    Steps2 = [#{id => s1, tool => cli_alive_cancel_fast,
+                args => #{input => <<"ignored">>}, timeout_ms => 5000}],
+    {ok, RunId2} = soma_agent_session:start_run(SessionPid, Steps2),
+    ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 250),
+    Events = soma_event_store:by_run(StorePid, RunId2),
+    Types = [maps:get(event_type, E) || E <- Events],
+    %% staged-red: deliberately wrong expected value so the assertion fires.
+    true = lists:member(<<"run.never_emitted">>, Types),
+    ok.
+
+%% Write a tiny cli helper that exits 0 immediately. Used as the second, short run
+%% that must reach `run.completed' after the first run's terminal state, proving
+%% the session still accepts and completes fresh runs.
+write_fast_helper() ->
+    Base = filename:basedir(user_cache, "soma_cli_lifecycle_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "fast.sh"),
+    Script = <<"#!/bin/sh\n"
+               "exit 0\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Write a cli helper that sleeps past any step budget, then `touch'es the marker
 %% file whose path arrives as its first argv argument. Reaching the touch is the
