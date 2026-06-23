@@ -195,3 +195,22 @@ test_manifest_doc_lists_non_goals() ->
 
 manifest_doc_lists_non_goals_test() ->
     test_manifest_doc_lists_non_goals().
+
+%% Criterion 8 (issue): the doc documents the v0.2 `cli` execution protocol —
+%% the input channel a step's input is delivered on (the final argv argument),
+%% that the process's stdout is captured and recorded as the step output, and
+%% that exit status 0 means success.
+test_manifest_doc_describes_cli_execution_protocol() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    %% the input channel: the step input is delivered as the final argv argument
+    ?assert(contains(Lower, <<"final argv argument">>)),
+    %% stdout is captured and recorded as the step output
+    ?assert(contains(Lower, <<"stdout">>)),
+    ?assert(contains(Lower, <<"step output">>)),
+    %% exit status 0 means success
+    ?assert(contains(Lower, <<"exit status 0">>)),
+    ?assert(contains(Lower, <<"success">>)).
+
+manifest_doc_describes_cli_execution_protocol_test() ->
+    test_manifest_doc_describes_cli_execution_protocol().
