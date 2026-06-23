@@ -56,7 +56,23 @@ executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
     ToolCallId = new_tool_call_id(),
     emit(Data, <<"step.started">>,
          #{step_id => StepId, tool_call_id => ToolCallId}),
-    {ok, #{module := Module}} = soma_tool_registry:resolve_descriptor(ToolName),
+    case soma_tool_registry:resolve_descriptor(ToolName) of
+        {error, not_found} ->
+            %% The step names a tool that was never registered. Resolve fails
+            %% before any worker is spawned, so there is no `tool_call_pid' to
+            %% kill: reuse `fail_run/5' with `undefined' for the worker pid so the
+            %% run lands in the same terminal `failed' state, with the same
+            %% failure trail, as any other failure -- not a badmatch crash.
+            fail_run(Data, Step, ToolCallId, undefined,
+                     {unregistered_tool, ToolName});
+        {ok, #{module := Module}} ->
+            start_tool_call(Data, Step, StepId, ToolCallId, Module, Input,
+                            CtxExtra)
+    end.
+
+%% Spawn the tool-call worker for a resolved tool, record `tool.started', arm the
+%% per-step timer, and move to `waiting_tool'.
+start_tool_call(Data, Step, StepId, ToolCallId, Module, Input, CtxExtra) ->
     Ctx = maps:merge(CtxExtra,
                      #{session_id => Data#data.session_id,
                        run_id => Data#data.run_id,
