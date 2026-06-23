@@ -48,3 +48,19 @@ line, or an `executable` field that smuggles arguments, pipes, or redirection
 into one string — is never a valid form for a `cli` entry. There is no shell on
 the path between the manifest and the process, so there is nothing to interpret
 such a string.
+
+## The v0.1 tools under the contract
+
+The five v0.1 built-in tools stay valid under the manifest contract — nothing
+about them needs to change. Each is an in-BEAM module implementing the
+`soma_tool` behaviour, so each maps onto the `erlang_module` adapter:
+
+- `echo` — `erlang_module`
+- `sleep` — `erlang_module`
+- `fail` — `erlang_module`
+- `file_read` — `erlang_module`
+- `file_write` — `erlang_module`
+
+Their existing `describe/0` metadata already supplies the four required keys, so
+each becomes a conforming manifest entry with `erlang_module` as its adapter and
+no behavioral change.
