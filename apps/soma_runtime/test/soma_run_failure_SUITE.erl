@@ -255,10 +255,10 @@ test_session_runs_new_run_after_failed(_Config) ->
     {ok, GoodRunId} = soma_agent_session:start_run(SessionPid, GoodSteps),
     ok = wait_for_event(StorePid, GoodRunId, <<"run.completed">>, 50),
     %% the new run reaches `completed' and the session reports it as such
-    ok = wait_for_run_status(SessionPid, GoodRunId, failed, 50),
+    ok = wait_for_run_status(SessionPid, GoodRunId, completed, 50),
     Status = soma_agent_session:get_status(SessionPid),
     Runs = maps:get(runs, Status),
-    failed = maps:get(GoodRunId, Runs),
+    completed = maps:get(GoodRunId, Runs),
     ok.
 
 %% Criterion 10: after a run that ended `timeout', the same session accepts and
@@ -278,10 +278,10 @@ test_session_runs_new_run_after_timeout(_Config) ->
     {ok, GoodRunId} = soma_agent_session:start_run(SessionPid, GoodSteps),
     ok = wait_for_event(StorePid, GoodRunId, <<"run.completed">>, 50),
     %% the new run reaches `completed' and the session reports it as such
-    ok = wait_for_run_status(SessionPid, GoodRunId, failed, 50),
+    ok = wait_for_run_status(SessionPid, GoodRunId, completed, 50),
     Status = soma_agent_session:get_status(SessionPid),
     Runs = maps:get(runs, Status),
-    failed = maps:get(GoodRunId, Runs),
+    completed = maps:get(GoodRunId, Runs),
     ok.
 
 %% Criterion 10: after a run that ended `cancelled', the same session accepts and
@@ -303,10 +303,10 @@ test_session_runs_new_run_after_cancelled(_Config) ->
     {ok, GoodRunId} = soma_agent_session:start_run(SessionPid, GoodSteps),
     ok = wait_for_event(StorePid, GoodRunId, <<"run.completed">>, 50),
     %% the new run reaches `completed' and the session reports it as such
-    ok = wait_for_run_status(SessionPid, GoodRunId, failed, 50),
+    ok = wait_for_run_status(SessionPid, GoodRunId, completed, 50),
     Status = soma_agent_session:get_status(SessionPid),
     Runs = maps:get(runs, Status),
-    failed = maps:get(GoodRunId, Runs),
+    completed = maps:get(GoodRunId, Runs),
     ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
