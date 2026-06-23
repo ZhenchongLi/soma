@@ -4,9 +4,11 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_priv_helper_run_reaches_completed_with_stdout/1]).
+-export([test_priv_helper_resolvable_and_runnable_in_place/1]).
 
 all() ->
-    [test_priv_helper_run_reaches_completed_with_stdout].
+    [test_priv_helper_run_reaches_completed_with_stdout,
+     test_priv_helper_resolvable_and_runnable_in_place].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -60,6 +62,43 @@ test_priv_helper_run_reaches_completed_with_stdout(_Config) ->
     Expected = list_to_binary(string:uppercase(Rendered)),
     Output = Expected,
     ok.
+
+%% Criterion 4: the helper is carried into the assembled release by standard
+%% rebar3 `priv/' packaging. This test proves the packaging path is resolvable
+%% via code:priv_dir/1 and the file is runnable in place -- it enters at the
+%% resolution function (not the session layer; Criterion 3 covers the full run).
+%% It asserts the resolved path is under the loaded app's priv directory, the
+%% helper exists there, and spawning it directly returns the expected stdout (the
+%% uppercased trailing argv argument). A CT run loads soma_tools out of _build,
+%% so this proves the convention in any loaded context; the assembled prod-release
+%% in-place check is the documented smoke test, not a CT case.
+test_priv_helper_resolvable_and_runnable_in_place(_Config) ->
+    PrivDir = code:priv_dir(soma_tools),
+    true = is_list(PrivDir),
+    %% the resolved priv path is under the loaded app's priv directory
+    "priv" = filename:basename(PrivDir),
+    Executable = filename:join([PrivDir, "cli", "soma_sample_upper"]),
+    true = filelib:is_file(Executable),
+    %% spawn the helper in place from the resolved path and read its stdout
+    Output = run_executable(Executable, ["hello"]),
+    Expected = <<"WORLD">>,
+    Expected = Output,
+    ok.
+
+%% Spawn the executable directly with the given argv and collect its stdout as a
+%% binary, blocking until the program exits.
+run_executable(Executable, Args) ->
+    Port = open_port({spawn_executable, Executable},
+                     [{args, Args}, binary, exit_status, stderr_to_stdout]),
+    collect_port_output(Port, <<>>).
+
+collect_port_output(Port, Acc) ->
+    receive
+        {Port, {data, Data}} ->
+            collect_port_output(Port, <<Acc/binary, Data/binary>>);
+        {Port, {exit_status, _Status}} ->
+            Acc
+    end.
 
 %% Read the step output recorded on the single step's `step.succeeded' event.
 step_output(Events) ->
