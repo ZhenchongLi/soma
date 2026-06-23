@@ -108,7 +108,7 @@ test_session_alive_after_tool_crash(_Config) ->
     ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
     %% the run has reached its terminal `failed' state; the session that owns it
     %% must have survived the tool-call crash
-    false = is_process_alive(SessionPid),
+    true = is_process_alive(SessionPid),
     ok.
 
 %% 1-based index of the first occurrence of Elem in List.
