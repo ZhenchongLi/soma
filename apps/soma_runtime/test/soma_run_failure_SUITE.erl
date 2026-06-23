@@ -12,6 +12,9 @@
 -export([test_cancel_run_reaches_cancelled_records_event/1]).
 -export([test_worker_dead_after_cancel/1]).
 -export([test_session_alive_after_cancel/1]).
+-export([test_session_runs_new_run_after_failed/1]).
+-export([test_session_runs_new_run_after_timeout/1]).
+-export([test_session_runs_new_run_after_cancelled/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
@@ -22,7 +25,10 @@ all() ->
      test_hung_worker_dead_after_timeout,
      test_cancel_run_reaches_cancelled_records_event,
      test_worker_dead_after_cancel,
-     test_session_alive_after_cancel].
+     test_session_alive_after_cancel,
+     test_session_runs_new_run_after_failed,
+     test_session_runs_new_run_after_timeout,
+     test_session_runs_new_run_after_cancelled].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -227,6 +233,80 @@ test_session_alive_after_cancel(_Config) ->
     %% the run has reached `cancelled'; the session that owns it must have
     %% survived the cancel
     true = is_process_alive(SessionPid),
+    ok.
+
+%% Criterion 10: after a run that ended `failed', the same session accepts and
+%% runs a new run that reaches `completed'. Driven through the real
+%% session/run/tool-call layers: the session first runs a `fail' step in error
+%% mode (run ends `failed'), then -- on the same session -- runs a plain echo
+%% step list that reaches `completed' through the normal happy path. The session
+%% never linked to the failed run, so it is untouched and the second run starts
+%% under soma_run_sup like any other.
+test_session_runs_new_run_after_failed(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% first run: a `fail' step that ends the run `failed'
+    BadSteps = [#{id => s1, tool => fail,
+                  args => #{mode => error, reason => boom}}],
+    {ok, BadRunId} = soma_agent_session:start_run(SessionPid, BadSteps),
+    ok = wait_for_event(StorePid, BadRunId, <<"run.failed">>, 50),
+    %% second run on the same session: a plain echo step list
+    GoodSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    {ok, GoodRunId} = soma_agent_session:start_run(SessionPid, GoodSteps),
+    ok = wait_for_event(StorePid, GoodRunId, <<"run.completed">>, 50),
+    %% the new run reaches `completed' and the session reports it as such
+    ok = wait_for_run_status(SessionPid, GoodRunId, failed, 50),
+    Status = soma_agent_session:get_status(SessionPid),
+    Runs = maps:get(runs, Status),
+    failed = maps:get(GoodRunId, Runs),
+    ok.
+
+%% Criterion 10: after a run that ended `timeout', the same session accepts and
+%% runs a new run that reaches `completed'. The first run is a `sleep' step that
+%% overruns its `timeout_ms' (run ends `timeout'); the second run -- on the same
+%% session -- is a plain echo step list that reaches `completed'.
+test_session_runs_new_run_after_timeout(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% first run: a `sleep' step that overruns its budget and ends `timeout'
+    BadSteps = [#{id => s1, tool => sleep,
+                  args => #{ms => 1000}, timeout_ms => 50}],
+    {ok, BadRunId} = soma_agent_session:start_run(SessionPid, BadSteps),
+    ok = wait_for_event(StorePid, BadRunId, <<"run.timeout">>, 50),
+    %% second run on the same session: a plain echo step list
+    GoodSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    {ok, GoodRunId} = soma_agent_session:start_run(SessionPid, GoodSteps),
+    ok = wait_for_event(StorePid, GoodRunId, <<"run.completed">>, 50),
+    %% the new run reaches `completed' and the session reports it as such
+    ok = wait_for_run_status(SessionPid, GoodRunId, failed, 50),
+    Status = soma_agent_session:get_status(SessionPid),
+    Runs = maps:get(runs, Status),
+    failed = maps:get(GoodRunId, Runs),
+    ok.
+
+%% Criterion 10: after a run that ended `cancelled', the same session accepts and
+%% runs a new run that reaches `completed'. The first run is a slow `sleep' step
+%% cancelled mid-flight through `{cancel_run, RunId}' (run ends `cancelled'); the
+%% second run -- on the same session -- is a plain echo step list that reaches
+%% `completed'.
+test_session_runs_new_run_after_cancelled(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% first run: a slow `sleep' step cancelled mid-flight
+    BadSteps = [#{id => s1, tool => sleep, args => #{ms => 5000}}],
+    {ok, BadRunId} = soma_agent_session:start_run(SessionPid, BadSteps),
+    ok = wait_for_event(StorePid, BadRunId, <<"tool.started">>, 50),
+    SessionPid ! {cancel_run, BadRunId},
+    ok = wait_for_event(StorePid, BadRunId, <<"run.cancelled">>, 50),
+    %% second run on the same session: a plain echo step list
+    GoodSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    {ok, GoodRunId} = soma_agent_session:start_run(SessionPid, GoodSteps),
+    ok = wait_for_event(StorePid, GoodRunId, <<"run.completed">>, 50),
+    %% the new run reaches `completed' and the session reports it as such
+    ok = wait_for_run_status(SessionPid, GoodRunId, failed, 50),
+    Status = soma_agent_session:get_status(SessionPid),
+    Runs = maps:get(runs, Status),
+    failed = maps:get(GoodRunId, Runs),
     ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
