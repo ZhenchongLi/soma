@@ -358,7 +358,7 @@ test_cli_argv_redirect_is_literal(_Config) ->
     {match, _} = re:run(Output, "\\Q" ++ TargetFile ++ "\\E"),
     %% no redirection happened: the shell never saw the `>', so no file exists at
     %% the target path
-    true = filelib:is_file(TargetFile),
+    false = filelib:is_file(TargetFile),
     ok.
 
 %% A fresh, non-existent path under a temp directory, used as a redirection
