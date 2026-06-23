@@ -46,8 +46,8 @@ test_cli_overrun_reaches_timeout(_Config) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     Types = [maps:get(event_type, E) || E <- Events],
     %% the run records run.timeout and never run.completed
-    true = lists:member(<<"run.completed">>, Types),
-    false = lists:member(<<"run.timeout">>, Types),
+    true = lists:member(<<"run.timeout">>, Types),
+    false = lists:member(<<"run.completed">>, Types),
     ok.
 
 %% Write a tiny cli helper that sleeps far longer than any step budget, then
