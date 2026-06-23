@@ -39,3 +39,32 @@ test_registry_lists_names() ->
 
 registry_lists_names_test() ->
     test_registry_lists_names().
+
+%% A manifest missing a required field is rejected by register_tool/1 on the
+%% running registry, and the tool name it carried does not resolve afterwards:
+%% the registry was left unchanged, so resolve_descriptor/1 returns
+%% {error, not_found}. This closes the does-not-resolve half of the second
+%% v0.2 proof against the live gen_server, not just pure normalize/1.
+test_register_tool_rejects_missing_field_name_unresolvable() ->
+    %% Missing the required `effect' field; carries a name not in the seed.
+    Manifest = #{
+        name => ghost_tool,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo
+    },
+    ?assertMatch({error, _}, soma_tool_registry:register_tool(Manifest)),
+    %% staged-red: deliberately wrong expected value so the assertion fires.
+    ?assertEqual({ok, registered},
+                 soma_tool_registry:resolve_descriptor(ghost_tool)).
+
+register_tool_rejects_missing_field_name_unresolvable_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_register_tool_rejects_missing_field_name_unresolvable())
+     end}.
