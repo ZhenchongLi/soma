@@ -80,9 +80,9 @@ timestamp_filled_when_absent_test() ->
 
 test_empty_store_returns_empty_list() ->
     {ok, Pid} = soma_event_store:start_link(),
-    ?assertEqual([sentinel], soma_event_store:all(Pid)),
-    ?assertEqual([sentinel], soma_event_store:by_run(Pid, some_run)),
-    ?assertEqual([sentinel], soma_event_store:by_session(Pid, some_session)).
+    ?assertEqual([], soma_event_store:all(Pid)),
+    ?assertEqual([], soma_event_store:by_run(Pid, some_run)),
+    ?assertEqual([], soma_event_store:by_session(Pid, some_session)).
 
 empty_store_returns_empty_list_test() ->
     test_empty_store_returns_empty_list().
