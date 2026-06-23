@@ -83,3 +83,33 @@ adapter_describes_run(Lower, Adapter) ->
 
 manifest_doc_defines_two_adapters_test() ->
     test_manifest_doc_defines_two_adapters().
+
+%% Criterion 5: the `cli` adapter schema specifies an executable plus a
+%% separate argv list, and states that a shell command string is never a
+%% valid form. The schema lives in its own section so the rule is part of
+%% the schema, not just an aside on the adapter-types list.
+test_manifest_doc_cli_schema_no_shell() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    %% a dedicated heading introduces the cli adapter schema
+    ?assert(has_cli_schema_heading(Lower)),
+    %% the schema names a separate executable and argv list
+    ?assert(contains(Lower, <<"executable">>)),
+    ?assert(contains(Lower, <<"argv">>)),
+    %% and states a shell command string is never a valid form
+    ?assert(contains(Lower, <<"shell command string">>)),
+    ?assert(contains(Lower, <<"never a valid form">>)).
+
+%% A heading line that names the cli adapter schema.
+has_cli_schema_heading(Lower) ->
+    Lines = binary:split(Lower, <<"\n">>, [global]),
+    lists:any(fun(L) ->
+                  is_heading(L) andalso contains(L, <<"cli">>)
+                      andalso contains(L, <<"schema">>)
+              end, Lines).
+
+is_heading(<<"#", _/binary>>) -> true;
+is_heading(_) -> false.
+
+manifest_doc_cli_schema_no_shell_test() ->
+    test_manifest_doc_cli_schema_no_shell().
