@@ -394,11 +394,13 @@ test_cli_argv_semicolon_is_literal(_Config) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     Output = step_output(Events),
     true = is_binary(Output),
-    %% STAGED RED (deliberately wrong): assert the shell-expanded outcome -- the
-    %% `;' terminated the command so it never reached the child's argv, and a
-    %% second program `touch' ran and created the target file.
-    nomatch = re:run(Output, "\\Q;\\E"),
-    true = filelib:is_file(TargetFile),
+    %% the `;' and the second word arrived in the child's argv literally
+    {match, _} = re:run(Output, "\\Q;\\E"),
+    {match, _} = re:run(Output, "\\Qtouch\\E"),
+    {match, _} = re:run(Output, "\\Q" ++ TargetFile ++ "\\E"),
+    %% no second program ran: the shell never saw the `;', so `touch' did not
+    %% create a file at the target path
+    false = filelib:is_file(TargetFile),
     ok.
 
 %% A fresh, non-existent path under a temp directory, used as the target a
