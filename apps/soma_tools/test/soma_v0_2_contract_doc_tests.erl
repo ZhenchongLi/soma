@@ -157,10 +157,12 @@ test_contract_doc_maps_cli_distinct_pid_proof() ->
     Doc = read_doc(),
     Block = cli_distinct_pid_proof_block(Doc),
     ?assert(contains(Block, <<"soma_cli_adapter_SUITE">>)),
-    ?assert(contains(Block, <<"test_cli_tool_call_has_distinct_pidXX">>)),
+    ?assert(contains(Block, <<"test_cli_tool_call_has_distinct_pid">>)),
     ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
     ?assert(contains(Block, <<"soma_run">>)),
-    ?assert(contains(Block, <<"soma_tool_call">>)),
+    %% the own-worker half of the boundary: the block names the worker the cli
+    %% call runs in (the soma_tool_call worker, phrased as "worker" in the block)
+    ?assert(contains(Block, <<"worker">>)),
     %% the distinct-pid process-boundary guarantee: the block states the run pid
     %% and worker pid differ
     ?assert(contains(Block, <<"differ">>)).
