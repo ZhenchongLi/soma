@@ -402,3 +402,42 @@ cli_session_reuse_proof_block(Doc) ->
 contract_doc_maps_cli_session_reuse_proof_test() ->
     test_contract_doc_maps_cli_session_reuse_proof().
 
+%% Criterion 12: the build-gate coverage section names the gate command and
+%% states the coverage split honestly — Common Test covers the cli
+%% runtime/process guarantees (the cli suites), and EUnit covers manifest
+%% validation (`soma_tool_manifest_tests`) and registry behaviour
+%% (`soma_tool_registry_tests`). The block names the `rebar3 eunit && rebar3 ct`
+%% gate command, the CT-covers-cli split, and both EUnit-covered modules -- all
+%% in one contiguous "## Coverage and the build gate" section.
+test_contract_doc_maps_build_gate_coverage() ->
+    Doc = read_doc(),
+    Block = build_gate_section_block(Doc),
+    Lower = string:lowercase(Block),
+    %% the gate command the merge gate runs
+    ?assert(contains(Block, <<"rebar3 ct && rebar3 eunit">>)),
+    %% Common Test covers the cli runtime/process guarantees
+    ?assert(contains(Lower, <<"common test">>)),
+    ?assert(contains(Lower, <<"cli">>)),
+    %% EUnit covers manifest validation and registry behaviour, named by module
+    ?assert(contains(Lower, <<"eunit">>)),
+    ?assert(contains(Block, <<"soma_tool_manifest_tests">>)),
+    ?assert(contains(Block, <<"soma_tool_registry_tests">>)).
+
+%% The build-gate section block: from its heading up to the next "## " heading.
+build_gate_section_block(Doc) ->
+    Heading = <<"## Coverage and the build gate">>,
+    case binary:match(Doc, Heading) of
+        nomatch -> erlang:error({heading_not_found, Heading});
+        {Start, _} ->
+            Rest = binary:part(Doc, Start, byte_size(Doc) - Start),
+            [_HeadingLine | After] = binary:split(Rest, <<"\n">>),
+            AfterBin = iolist_to_binary(lists:join(<<"\n">>, After)),
+            case binary:match(AfterBin, <<"## ">>) of
+                nomatch -> AfterBin;
+                {NextStart, _} -> binary:part(AfterBin, 0, NextStart)
+            end
+    end.
+
+contract_doc_maps_build_gate_coverage_test() ->
+    test_contract_doc_maps_build_gate_coverage().
+
