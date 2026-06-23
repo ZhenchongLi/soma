@@ -179,3 +179,25 @@ test_normalize_rejects_shell_string_executable() ->
 
 normalize_rejects_shell_string_executable_test() ->
     test_normalize_rejects_shell_string_executable().
+
+test_normalize_rejects_non_list_argv() ->
+    Base = #{
+        name => echo,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => cli,
+        executable => "echo"
+    },
+    lists:foreach(
+        fun(Value) ->
+            ?assertEqual(
+                {error, {invalid_argv, Value}},
+                soma_tool_manifest:normalize(Base#{argv => Value})
+            )
+        end,
+        [not_a_list, <<"hi">>, #{}, 42]
+    ).
+
+normalize_rejects_non_list_argv_test() ->
+    test_normalize_rejects_non_list_argv().
