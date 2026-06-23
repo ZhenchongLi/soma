@@ -18,20 +18,29 @@
 -export([register/3, lookup/2, names/1]).
 
 %% Process API
--export([start_link/0, resolve/1, resolve_descriptor/1]).
+-export([start_link/0, register_tool/1, resolve/1, resolve_descriptor/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
 
-%% A descriptor is the normalized manifest of a built-in tool:
-%% `#{name, effect, idempotent, timeout_ms, adapter, module}'. `resolve/1' reads
-%% `module' out of it; `resolve_descriptor/1' hands it back whole.
+%% A descriptor is a normalized manifest. Two shapes share the type: an
+%% `erlang_module' tool carries `module'; a `cli' tool carries `executable' and
+%% `argv'. `resolve/1' reads `module' out of a descriptor and so is only valid
+%% for `erlang_module' tools; `resolve_descriptor/1' hands the descriptor back
+%% whole and is the path a `cli' caller branches on `adapter' through.
 -type descriptor() :: #{name := atom(),
                         effect := atom(),
                         idempotent := boolean(),
                         timeout_ms := non_neg_integer(),
                         adapter := erlang_module,
-                        module := module()}.
+                        module := module()}
+                    | #{name := atom(),
+                        effect := atom(),
+                        idempotent := boolean(),
+                        timeout_ms := non_neg_integer(),
+                        adapter := cli,
+                        executable := string() | binary(),
+                        argv := [string() | binary()]}.
 -type registry() :: #{atom() => descriptor()}.
 
 -export_type([descriptor/0, registry/0]).
@@ -66,6 +75,14 @@ names(Registry) ->
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+%% @doc Register a tool manifest into the running registry. The manifest is
+%% normalized through `soma_tool_manifest:normalize/1' first — the same rule the
+%% seed build follows — so a malformed manifest is rejected before it lands in
+%% the registry map. The resulting descriptor is keyed by its declared `name'.
+-spec register_tool(map()) -> ok | {error, term()}.
+register_tool(Manifest) ->
+    gen_server:call(?MODULE, {register_tool, Manifest}).
+
 %% @doc Resolve a tool name to its module through the running registry.
 -spec resolve(atom()) -> {ok, module()} | {error, not_found}.
 resolve(Name) ->
@@ -97,6 +114,14 @@ seed() ->
       #{},
       ?BUILTIN_MODULES).
 
+handle_call({register_tool, Manifest}, _From, Registry) ->
+    case soma_tool_manifest:normalize(Manifest) of
+        {ok, Descriptor} ->
+            #{name := Name} = Descriptor,
+            {reply, ok, register(Registry, Name, Descriptor)};
+        {error, _} = Error ->
+            {reply, Error, Registry}
+    end;
 handle_call({resolve, Name}, _From, Registry) ->
     %% `resolve/1' keeps its bare-module shape by reading `module' out of the
     %% stored descriptor, so the seed map holds descriptors as the one source
