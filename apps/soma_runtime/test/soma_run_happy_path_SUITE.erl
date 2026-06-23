@@ -6,11 +6,13 @@
 -export([test_sup_has_four_live_children/1]).
 -export([test_registry_seeded_with_v01_tools/1]).
 -export([test_session_starts_and_holds_id/1]).
+-export([test_session_started_event_recorded/1]).
 
 all() ->
     [test_sup_has_four_live_children,
      test_registry_seeded_with_v01_tools,
-     test_session_starts_and_holds_id].
+     test_session_starts_and_holds_id,
+     test_session_started_event_recorded].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -59,3 +61,20 @@ test_session_starts_and_holds_id(_Config) ->
     SessionId = maps:get(session_id, Status),
     true = SessionId =/= undefined,
     ok.
+
+%% Criterion 4: when a session starts, a `session.started' event is recorded in
+%% the event store for that session, readable back via by_session/2.
+test_session_started_event_recorded(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, Pid} = soma_agent_session:start_link(#{}),
+    SessionId = maps:get(session_id, soma_agent_session:get_status(Pid)),
+    Events = soma_event_store:by_session(StorePid, SessionId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"session.started">>, Types),
+    ok.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
