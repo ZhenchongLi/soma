@@ -80,3 +80,26 @@ carrying the four required metadata keys and naming the `erlang_module` adapter:
     module => soma_tool_file_read
 }
 ```
+
+## Example: an invalid manifest
+
+The following is an invalid manifest example for a hypothetical `grep` tool. It
+declares the `cli` adapter but folds the executable and its arguments into a
+single shell command string:
+
+```erlang
+#{
+    name => grep,
+    effect => reader,
+    idempotent => true,
+    timeout_ms => 5000,
+    adapter => cli,
+    executable => "/bin/sh -c 'grep -n foo *.txt | head'"
+}
+```
+
+This entry is **rejected** because the `cli` adapter schema requires a bare
+`executable` path plus a separate `argv` list, and a shell command string is
+never a valid form. Here the `executable` field smuggles arguments, a glob, and
+a pipe into one string and the required `argv` list is missing, so the runtime
+has no way to launch the process directly without a shell.
