@@ -9,6 +9,7 @@
 -export([test_non_zero_exit_carries_status/1]).
 -export([test_failure_payload_carries_output_excerpt/1]).
 -export([test_output_over_limit_fails_with_limit_reason/1]).
+-export([test_failure_payload_never_holds_full_output/1]).
 
 %% The cli adapter's configured output byte limit. Pinned here to the module-level
 %% constant in soma_tool_call so the limit-exceeded reason can be asserted exactly.
@@ -20,7 +21,8 @@ all() ->
      test_non_executable_permission_error,
      test_non_zero_exit_carries_status,
      test_failure_payload_carries_output_excerpt,
-     test_output_over_limit_fails_with_limit_reason].
+     test_output_over_limit_fails_with_limit_reason,
+     test_failure_payload_never_holds_full_output].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -251,6 +253,64 @@ test_output_over_limit_fails_with_limit_reason(_Config) ->
     %% the reason names the configured byte limit.
     {cli_output_limit_exceeded, ?CLI_OUTPUT_LIMIT} = Reason,
     ok.
+
+%% Criterion 7: no cli-adapter failure payload ever carries the program's full
+%% captured output -- it is absent or truncated to the configured byte limit.
+%% Driven through the full session/run/tool-call stack via
+%% soma_agent_session:start_run/2. The helper emits far more than the limit's worth
+%% of bytes and then `exit 1', so the failure payload was built from a program that
+%% produced more output than the limit. The proof reads the `tool.failed' event's
+%% `payload.reason': if it is `{cli_exit_status, _, Excerpt}', the excerpt is
+%% truncated to at most the limit; if it is `{cli_output_limit_exceeded, Limit}',
+%% the reason names only the limit and carries no captured output at all. Either
+%% way the full over-limit output is absent from the payload.
+test_failure_payload_never_holds_full_output(_Config) ->
+    StorePid = event_store_pid(),
+    Helper = write_overflow_then_exit_helper(?CLI_OUTPUT_LIMIT, 1),
+    Manifest = #{name => cli_overflow_exit,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_overflow_exit,
+               args => #{input => <<"ignored">>}, timeout_ms => 5000}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 100),
+    FailEvent = event_of_type(StorePid, RunId, <<"tool.failed">>),
+    Payload = maps:get(payload, FailEvent),
+    Reason = maps:get(reason, Payload),
+    %% the full over-limit output is never present in the failure payload.
+    case Reason of
+        {cli_exit_status, _N, Excerpt} ->
+            true = is_binary(Excerpt),
+            true = byte_size(Excerpt) =< ?CLI_OUTPUT_LIMIT;
+        {cli_output_limit_exceeded, ?CLI_OUTPUT_LIMIT} ->
+            %% the reason names only the limit -- no captured output rides along.
+            3 = tuple_size(Reason)
+    end,
+    ok.
+
+%% Write a cli helper that floods stdout with far more than Limit bytes, then
+%% exits with the given status. Returns the absolute helper path.
+write_overflow_then_exit_helper(Limit, Status) ->
+    Base = filename:basedir(user_cache, "soma_cli_failure_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "overflow_exit.sh"),
+    Lines = (Limit * 4) div 1024 + 1,
+    Script = iolist_to_binary(
+               ["#!/bin/sh\n",
+                "yes \"", lists:duplicate(1023, $A), "\" | head -n ",
+                integer_to_list(Lines), "\n",
+                "exit ", integer_to_list(Status), "\n"]),
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Write a cli helper that floods stdout with far more than Limit bytes, then
 %% sleeps far past any step budget. The flood is emitted in chunks so the running
