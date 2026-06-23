@@ -10,6 +10,7 @@
 -export([test_overrun_reaches_timeout_records_run_timeout/1]).
 -export([test_hung_worker_dead_after_timeout/1]).
 -export([test_cancel_run_reaches_cancelled_records_event/1]).
+-export([test_worker_dead_after_cancel/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
@@ -18,7 +19,8 @@ all() ->
      test_session_alive_after_tool_crash,
      test_overrun_reaches_timeout_records_run_timeout,
      test_hung_worker_dead_after_timeout,
-     test_cancel_run_reaches_cancelled_records_event].
+     test_cancel_run_reaches_cancelled_records_event,
+     test_worker_dead_after_cancel].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -180,6 +182,28 @@ test_cancel_run_reaches_cancelled_records_event(_Config) ->
     %% the run records run.cancelled and never run.completed
     true = lists:member(<<"run.cancelled">>, Types),
     false = lists:member(<<"run.completed">>, Types),
+    ok.
+
+%% Criterion 8: after the run is cancelled, the active tool-call worker process
+%% is no longer alive. Driven through the real session/run/tool-call layers: the
+%% session starts a run of one slow `sleep' step; while the run waits on that
+%% worker the test sends `{cancel_run, RunId}' to the session, the real cancel
+%% path. The run's cancel clause kills the active worker. The test reads the
+%% worker pid from the run's `tool.started' event, waits for `run.cancelled',
+%% then asserts the worker is gone.
+test_worker_dead_after_cancel(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 5000}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    %% the worker pid travels on the run's `tool.started' event
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 50),
+    WorkerPid = tool_call_pid_from(StorePid, RunId, <<"tool.started">>),
+    true = is_pid(WorkerPid),
+    SessionPid ! {cancel_run, RunId},
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 50),
+    %% the cancel killed the active worker; it must no longer be alive
+    true = is_process_alive(WorkerPid),
     ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
