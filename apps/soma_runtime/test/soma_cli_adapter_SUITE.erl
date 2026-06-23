@@ -241,9 +241,7 @@ test_cli_from_step_round_trip(_Config) ->
     %% the single trailing argv argument the way the adapter renders a non-binary
     %% term; the helper wraps that argument in `wrapped[...]'.
     RenderedInput = lists:flatten(io_lib:format("~p", [S1Out])),
-    %% staged red: deliberately wrong expected so the round-trip assertion fires
-    %% before the real expected value is pinned.
-    Expected = list_to_binary("NOT-THE-WRAPPED-OUTPUT[" ++ RenderedInput ++ "]"),
+    Expected = list_to_binary("wrapped[" ++ RenderedInput ++ "]"),
     %% the cli program's stdout (the wrapped input) is step two's output
     Expected = S2Out,
     %% and step three consumed that stdout through from_step unchanged, so the
