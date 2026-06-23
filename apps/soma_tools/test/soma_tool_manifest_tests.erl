@@ -143,3 +143,39 @@ test_normalize_rejects_erlang_module_without_module() ->
 
 normalize_rejects_erlang_module_without_module_test() ->
     test_normalize_rejects_erlang_module_without_module().
+
+test_normalize_rejects_shell_string_executable() ->
+    Base = #{
+        name => echo,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => cli,
+        argv => ["hi"]
+    },
+    %% A single-token executable still passes (string or binary).
+    ?assertMatch(
+        {ok, _},
+        soma_tool_manifest:normalize(Base#{executable => "echo"})
+    ),
+    ?assertMatch(
+        {ok, _},
+        soma_tool_manifest:normalize(Base#{executable => "/bin/echo"})
+    ),
+    ?assertMatch(
+        {ok, _},
+        soma_tool_manifest:normalize(Base#{executable => <<"/bin/echo">>})
+    ),
+    %% An executable carrying internal whitespace is rejected.
+    lists:foreach(
+        fun(Value) ->
+            ?assertEqual(
+                {error, {invalid_executable, Value}},
+                soma_tool_manifest:normalize(Base#{executable => Value})
+            )
+        end,
+        ["echo hi", "/bin/sh -c 'echo hi'", "echo\thi", <<"echo hi">>]
+    ).
+
+normalize_rejects_shell_string_executable_test() ->
+    test_normalize_rejects_shell_string_executable().
