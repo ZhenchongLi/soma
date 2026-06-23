@@ -13,7 +13,9 @@ tools already emit from `describe/0`:
 - `name` — the atom the tool registers under and that a step references to
   invoke it (for example `echo`); it must be unique across the registry.
 - `effect` — what kind of effect the tool has on the world, used to reason about
-  safety and replay.
+  safety and replay. Its allowed values are `identity` (no observable effect),
+  `reader` (observes external state without changing it), or `state` (changes
+  external state).
 - `idempotent` — a boolean saying whether invoking the tool twice with the same
   input is equivalent to invoking it once, which governs whether a call is safe
   to retry.
