@@ -110,3 +110,20 @@ test_normalize_rejects_bad_timeout_ms() ->
 
 normalize_rejects_bad_timeout_ms_test() ->
     test_normalize_rejects_bad_timeout_ms().
+
+test_normalize_rejects_unknown_adapter() ->
+    Manifest = #{
+        name => file_read,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => grpc,
+        module => soma_tool_file_read
+    },
+    ?assertEqual(
+        {error, {invalid_adapter, grpc}},
+        soma_tool_manifest:normalize(Manifest)
+    ).
+
+normalize_rejects_unknown_adapter_test() ->
+    test_normalize_rejects_unknown_adapter().
