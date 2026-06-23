@@ -293,3 +293,32 @@ test_normalize_is_idempotent() ->
 
 normalize_is_idempotent_test() ->
     test_normalize_is_idempotent().
+
+%% A cli manifest is malformed unless it carries both executable and argv.
+%% Dropping either must be rejected with {error, {missing_field, _}}, not crash
+%% with function_clause.
+test_normalize_rejects_cli_without_executable_or_argv() ->
+    Base = #{
+        name => echo,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => cli,
+        executable => "echo",
+        argv => ["hi"]
+    },
+    ?assertEqual(
+        {error, {missing_field, argv}},
+        soma_tool_manifest:normalize(maps:remove(argv, Base))
+    ),
+    ?assertEqual(
+        {error, {missing_field, executable}},
+        soma_tool_manifest:normalize(maps:remove(executable, Base))
+    ),
+    ?assertEqual(
+        {error, {missing_field, executable}},
+        soma_tool_manifest:normalize(maps:without([executable, argv], Base))
+    ).
+
+normalize_rejects_cli_without_executable_or_argv_test() ->
+    test_normalize_rejects_cli_without_executable_or_argv().
