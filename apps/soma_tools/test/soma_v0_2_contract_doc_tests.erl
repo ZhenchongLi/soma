@@ -89,9 +89,9 @@ contract_doc_names_proving_suites_and_cases_test() ->
 test_contract_doc_marks_the_gap_case() ->
     Doc = read_doc(),
     Lower = string:lowercase(Doc),
-    %% DELIBERATELY WRONG EXPECTED VALUE for the staged-red step: the doc closes
-    %% the gap with register_tool, not with a fictional "gap_placeholder" case.
-    ?assert(contains(Doc, <<"test_gap_placeholder_does_not_exist">>)),
+    %% the doc closes the one gap with the new registry case and labels it as
+    %% the gap-closing proof
+    ?assert(contains(Doc, <<"test_register_tool_rejects_missing_field_name_unresolvable">>)),
     ?assert(contains(Lower, <<"gap">>)).
 
 contract_doc_marks_the_gap_case_test() ->
