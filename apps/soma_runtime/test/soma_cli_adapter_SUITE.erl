@@ -16,6 +16,7 @@
 -export([test_cli_argv_semicolon_is_literal/1]).
 -export([test_cli_argv_home_is_literal/1]).
 -export([test_cli_modules_have_no_shell_launch/1]).
+-export([test_manifest_doc_states_env_and_cwd_defaults/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
@@ -30,7 +31,8 @@ all() ->
      test_cli_argv_redirect_is_literal,
      test_cli_argv_semicolon_is_literal,
      test_cli_argv_home_is_literal,
-     test_cli_modules_have_no_shell_launch].
+     test_cli_modules_have_no_shell_launch,
+     test_manifest_doc_states_env_and_cwd_defaults].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -459,6 +461,33 @@ test_cli_modules_have_no_shell_launch(_Config) ->
       end,
       [soma_tool_call, soma_run]),
     ok.
+
+%% Criterion 9: `docs/tool-manifest.md' states the default environment policy and
+%% the default working-directory policy for cli tools. The deliverable is
+%% documentation, so the test reads the manifest doc and asserts it records both
+%% adapter defaults: the minimal env policy (the child sees only `PATH' and not
+%% the runtime's other named variables) and the fixed-cwd policy (an
+%% adapter-chosen stable directory that is not the runtime process cwd).
+test_manifest_doc_states_env_and_cwd_defaults(_Config) ->
+    Doc = read_doc("tool-manifest.md"),
+    %% the env policy: a minimal environment, PATH only, the child not inheriting
+    %% the runtime's other named variables.
+    match = re:run(Doc, "minimal", [caseless, {capture, none}]),
+    match = re:run(Doc, "PATH", [{capture, none}]),
+    %% the working-directory policy: an adapter-chosen directory that is not the
+    %% runtime process cwd.
+    match = re:run(Doc, "working[ -]directory", [caseless, {capture, none}]),
+    match = re:run(Doc, "not the runtime", [caseless, {capture, none}]),
+    ok.
+
+%% Read a documentation file from the project's `docs' directory. The test beams
+%% run out of `_build', so locate the project root by walking up to the `apps'
+%% directory (which sits at the repo root alongside `docs').
+read_doc(Name) ->
+    Root = project_root(),
+    Path = filename:join([Root, "docs", Name]),
+    {ok, Bin} = file:read_file(Path),
+    Bin.
 
 %% Read the .erl source of a runtime module from the project's app source tree.
 %% The test beams run out of `_build', so locate the project root by walking up
