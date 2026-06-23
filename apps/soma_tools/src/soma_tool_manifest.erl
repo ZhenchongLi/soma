@@ -39,9 +39,17 @@ check_timeout_ms(#{timeout_ms := TimeoutMs} = Manifest) ->
 
 check_adapter(#{adapter := Adapter} = Manifest) ->
     case lists:member(Adapter, ?ADAPTERS) of
-        true -> normalize_complete(Manifest);
+        true -> check_adapter_fields(Manifest);
         false -> {error, {invalid_adapter, Adapter}}
     end.
+
+check_adapter_fields(#{adapter := erlang_module} = Manifest) ->
+    case maps:is_key(module, Manifest) of
+        true -> normalize_complete(Manifest);
+        false -> {error, {missing_field, module}}
+    end;
+check_adapter_fields(Manifest) ->
+    normalize_complete(Manifest).
 
 normalize_complete(#{
     name := Name,
