@@ -8,7 +8,7 @@
 -export([start_link/1, get_status/1]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
--record(state, {session_id}).
+-record(state, {session_id, event_store}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
@@ -18,7 +18,11 @@ get_status(Pid) ->
 
 init(_Opts) ->
     SessionId = new_session_id(),
-    {ok, #state{session_id = SessionId}}.
+    StorePid = event_store_pid(),
+    soma_event_store:append(StorePid,
+                            #{session_id => SessionId,
+                              event_type => <<"session.started">>}),
+    {ok, #state{session_id = SessionId, event_store = StorePid}}.
 
 handle_call(get_status, _From, State) ->
     {reply, #{session_id => State#state.session_id}, State}.
@@ -28,3 +32,10 @@ handle_cast(_Msg, State) ->
 
 new_session_id() ->
     list_to_binary("sess-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
+
+%% Locate the running event store pid from the booted supervision tree.
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
