@@ -45,7 +45,7 @@ executing(internal, next_step, Data = #data{pending = []}) ->
 executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
     StepId = maps:get(id, Step),
     ToolName = maps:get(tool, Step),
-    Args = maps:get(args, Step, #{}),
+    Args = resolve_args(maps:get(args, Step, #{}), Data#data.outputs),
     ToolCallId = new_tool_call_id(),
     emit(Data, <<"step.started">>,
          #{step_id => StepId, tool_call_id => ToolCallId}),
@@ -75,7 +75,8 @@ waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {ok, Output}},
          #{step_id => StepId, tool_call_id => ToolCallId,
            tool_call_pid => WorkerPid}),
     emit(Data, <<"step.succeeded">>,
-         #{step_id => StepId, tool_call_id => ToolCallId}),
+         #{step_id => StepId, tool_call_id => ToolCallId,
+           payload => #{output => Output}}),
     NewData = Data#data{pending = Rest,
                         outputs = Outputs#{StepId => Output},
                         current = undefined,
@@ -95,6 +96,16 @@ emit(Data, Type, Extra) ->
              event_type => Type},
     soma_event_store:append(Data#data.event_store, maps:merge(Base, Extra)),
     ok.
+
+%% Resolve a step's args against prior step outputs. A bare `from_step' key
+%% means the whole input is the referenced step's recorded output. Otherwise any
+%% `{from_step, Id}' value is replaced by that step's recorded output.
+resolve_args(#{from_step := PriorId}, Outputs) ->
+    maps:get(PriorId, Outputs);
+resolve_args(Args, Outputs) when is_map(Args) ->
+    maps:map(fun(_K, {from_step, PriorId}) -> maps:get(PriorId, Outputs);
+                (_K, V) -> V
+             end, Args).
 
 new_tool_call_id() ->
     list_to_binary("tc-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
