@@ -303,9 +303,7 @@ test_demo_file_read_echo_file_write(_Config) ->
       fun(Name) ->
           {ok, #{module := DescModule}} =
               soma_tool_registry:resolve_descriptor(Name),
-          %% staged red: deliberately wrong expected module so the assertion
-          %% fires; corrected to DescModule in the green commit.
-          {ok, not_the_descriptor_module} = {ok, DescModule}
+          {ok, DescModule} = soma_tool_registry:resolve(Name)
       end,
       [file_read, echo, file_write]),
     ok.

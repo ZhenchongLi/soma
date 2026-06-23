@@ -56,7 +56,7 @@ executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
     ToolCallId = new_tool_call_id(),
     emit(Data, <<"step.started">>,
          #{step_id => StepId, tool_call_id => ToolCallId}),
-    {ok, Module} = soma_tool_registry:resolve(ToolName),
+    {ok, #{module := Module}} = soma_tool_registry:resolve_descriptor(ToolName),
     Ctx = maps:merge(CtxExtra,
                      #{session_id => Data#data.session_id,
                        run_id => Data#data.run_id,
