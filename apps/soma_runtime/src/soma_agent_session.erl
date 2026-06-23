@@ -65,6 +65,16 @@ handle_info({run_completed, RunId, _Result}, State) ->
                    State#state.runs
            end,
     {noreply, State#state{runs = Runs}};
+%% A run reached the `failed' terminal state and reported back; record it as
+%% failed. The session survives the run failing.
+handle_info({run_failed, RunId, _Reason}, State) ->
+    Runs = case maps:find(RunId, State#state.runs) of
+               {ok, Run} ->
+                   maps:put(RunId, Run#{status => failed}, State#state.runs);
+               error ->
+                   State#state.runs
+           end,
+    {noreply, State#state{runs = Runs}};
 handle_info(_Msg, State) ->
     {noreply, State}.
 
