@@ -11,6 +11,7 @@
 -export([test_run_accepted_event_recorded/1]).
 -export([test_multi_step_runs_sequentially_to_completed/1]).
 -export([test_each_tool_call_has_distinct_pid/1]).
+-export([test_event_trail_in_order/1]).
 
 all() ->
     [test_sup_has_four_live_children,
@@ -20,7 +21,8 @@ all() ->
      test_start_run_returns_id_and_spawns_run,
      test_run_accepted_event_recorded,
      test_multi_step_runs_sequentially_to_completed,
-     test_each_tool_call_has_distinct_pid].
+     test_each_tool_call_has_distinct_pid,
+     test_event_trail_in_order].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -154,6 +156,41 @@ test_each_tool_call_has_distinct_pid(_Config) ->
     3 = length(lists:usort(ToolPids)),
     %% no worker pid is the run pid
     false = lists:member(RunPid, ToolPids),
+    ok.
+
+%% Criterion 9: after a successful run the event store holds the full ordered
+%% trail. `session.started' (readable via by_session/2) precedes the run trail;
+%% the run trail (readable via by_run/2) is `run.accepted -> run.started', then
+%% per step `step.started -> tool.started -> tool.succeeded -> step.succeeded',
+%% then `run.completed', in that exact order.
+test_event_trail_in_order(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    SessionId = maps:get(session_id, soma_agent_session:get_status(SessionPid)),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+             #{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    %% the run-scoped trail, in append order
+    RunEvents = soma_event_store:by_run(StorePid, RunId),
+    RunTrail = [maps:get(event_type, E) || E <- RunEvents],
+    ExpectedRunTrail =
+        [<<"run.accepted">>,
+         <<"run.started">>,
+         <<"tool.started">>, <<"step.started">>,
+         <<"tool.succeeded">>, <<"step.succeeded">>,
+         <<"step.started">>, <<"tool.started">>,
+         <<"tool.succeeded">>, <<"step.succeeded">>,
+         <<"run.completed">>],
+    ExpectedRunTrail = RunTrail,
+    %% session.started is recorded against the session and precedes the run
+    SessionEvents = soma_event_store:by_session(StorePid, SessionId),
+    SessionTrail = [maps:get(event_type, E) || E <- SessionEvents],
+    SStarted = index_of(<<"session.started">>, SessionTrail),
+    RAccepted = index_of(<<"run.accepted">>, SessionTrail),
+    true = is_integer(SStarted),
+    true = is_integer(RAccepted),
+    true = SStarted < RAccepted,
     ok.
 
 run_pid(_RunId) ->
