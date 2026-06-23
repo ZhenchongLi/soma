@@ -436,7 +436,8 @@ test_cli_argv_home_is_literal(_Config) ->
     RuntimeHome = os:getenv("HOME"),
     %% the `$HOME' argument arrived literally, not shell-expanded: the output is
     %% exactly the `$HOME' bytes, and never the runtime's HOME value.
-    Output = list_to_binary(RuntimeHome),
+    Output = list_to_binary(HomeRef),
+    true = (Output =/= list_to_binary(RuntimeHome)),
     ok.
 
 %% A fresh, non-existent path under a temp directory, used as the target a
