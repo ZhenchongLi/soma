@@ -9,6 +9,7 @@
 -export([test_cli_argv_metacharacter_is_literal/1]).
 -export([test_cli_stdout_is_step_output/1]).
 -export([test_cli_step_event_order/1]).
+-export([test_cli_from_step_round_trip/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
@@ -16,7 +17,8 @@ all() ->
      test_cli_tool_call_has_distinct_pid,
      test_cli_argv_metacharacter_is_literal,
      test_cli_stdout_is_step_output,
-     test_cli_step_event_order].
+     test_cli_step_event_order,
+     test_cli_from_step_round_trip].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -201,6 +203,78 @@ test_cli_step_event_order(Config) ->
     true = (StartedIdx < SucceededIdx),
     true = (SucceededIdx < StepIdx),
     ok.
+
+%% Criterion 7: a multi-step run flows run data into the external `cli' program
+%% and back out through the normal `from_step' step wiring. Step one is an
+%% `erlang_module' tool (echo) that produces an output. Step two is the `cli'
+%% helper: it takes step one's output as its input through `from_step', the
+%% adapter hands that resolved input to the external program as its trailing
+%% argv argument, the program transforms it (wraps it) and prints the result to
+%% stdout, and that stdout becomes step two's recorded output. Step three is an
+%% `erlang_module' tool (echo) that takes step two's stdout through `from_step'.
+%% The test asserts step three's recorded output equals the cli helper's
+%% transform applied to step one's output -- proving the run's data went into
+%% the external process and came back out through the same step wiring, with no
+%% layer bypassed.
+test_cli_from_step_round_trip(_Config) ->
+    Helper = write_wrap_helper(),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_wrap,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"payload">>}},
+             #{id => s2, tool => cli_wrap, args => #{from_step => s1}},
+             #{id => s3, tool => echo, args => #{from_step => s2}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    S1Out = step_output_for(Events, s1),
+    S2Out = step_output_for(Events, s2),
+    S3Out = step_output_for(Events, s3),
+    %% the cli step's resolved input is step one's recorded output, rendered to
+    %% the single trailing argv argument the way the adapter renders a non-binary
+    %% term; the helper wraps that argument in `wrapped[...]'.
+    RenderedInput = lists:flatten(io_lib:format("~p", [S1Out])),
+    %% staged red: deliberately wrong expected so the round-trip assertion fires
+    %% before the real expected value is pinned.
+    Expected = list_to_binary("NOT-THE-WRAPPED-OUTPUT[" ++ RenderedInput ++ "]"),
+    %% the cli program's stdout (the wrapped input) is step two's output
+    Expected = S2Out,
+    %% and step three consumed that stdout through from_step unchanged, so the
+    %% transformed data flowed into the external process and back out through the
+    %% normal step wiring
+    Expected = S3Out,
+    ok.
+
+%% Write a tiny cli helper that wraps its last argv argument in `wrapped[...]'
+%% and prints the result to stdout, then exits 0. The wrap is an observable
+%% transform so the round-trip test can assert the program received and
+%% transformed the resolved step input.
+write_wrap_helper() ->
+    Base = filename:basedir(user_cache, "soma_cli_adapter_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "wrap.sh"),
+    Script = <<"#!/bin/sh\n"
+               "for a in \"$@\"; do last=\"$a\"; done\n"
+               "printf 'wrapped[%s]' \"$last\"\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
+
+%% Read the output recorded on a named step's `step.succeeded' event.
+step_output_for(Events, StepId) ->
+    [E] = [Ev || Ev <- Events,
+                 maps:get(event_type, Ev) =:= <<"step.succeeded">>,
+                 maps:get(step_id, Ev) =:= StepId],
+    maps:get(output, maps:get(payload, E)).
 
 %% The 1-based index of the first occurrence of the given event type in the
 %% ordered list of event types.
