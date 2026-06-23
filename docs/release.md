@@ -71,6 +71,17 @@ For the committed sample helper the full release-relative location is
 `lib/soma_tools-<vsn>/priv/cli/soma_sample_upper` (with `<vsn>` the `soma_tools`
 app version, e.g. `lib/soma_tools-0.1.0/priv/cli/soma_sample_upper`).
 
+To confirm the helper actually shipped, run it directly out of the unpacked
+release — no Erlang toolchain, just the packaged binary. It uppercases its last
+argv argument (it does not read stdin):
+
+```bash
+_build/prod/rel/soma/lib/soma_tools-0.1.0/priv/cli/soma_sample_upper hello
+```
+
+Expect it to print `HELLO`. Substitute the `soma_tools` version in
+`soma_tools-<vsn>` to match the release you unpacked.
+
 ### Naming the executable: `code:priv_dir/1`, not an absolute build path
 
 A tool **names its packaged executable by a release-relative path**, not by the
