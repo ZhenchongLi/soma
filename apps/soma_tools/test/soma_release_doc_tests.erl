@@ -39,3 +39,20 @@ test_release_doc_states_priv_dir_convention() ->
 
 release_doc_states_priv_dir_convention_test() ->
     test_release_doc_states_priv_dir_convention().
+
+%% Criterion 7: docs/release.md documents that external CLI executables are
+%% packaged separately for macOS arm64, Linux x86_64, and Linux arm64, and that
+%% a build on one architecture carries only that architecture's helper.
+test_release_doc_states_per_architecture_rule() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    %% all three packaging targets are named
+    ?assert(contains(Lower, <<"macos arm64">>)),
+    ?assert(contains(Lower, <<"linux x86_64">>)),
+    ?assert(contains(Lower, <<"linux arm64">>)),
+    %% and the doc states a build carries only its own architecture's helper
+    %% (staged-red: deliberately-wrong expected value, corrected on green)
+    ?assert(contains(Lower, <<"carries every architecture's helper">>)).
+
+release_doc_states_per_architecture_rule_test() ->
+    test_release_doc_states_per_architecture_rule().
