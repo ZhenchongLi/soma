@@ -271,3 +271,42 @@ cli_failure_proof_block(Doc) ->
 contract_doc_maps_cli_failure_proof_test() ->
     test_contract_doc_maps_cli_failure_proof().
 
+%% Criterion 8: the "a hanging cli tool hits the step timeout, the run reaches
+%% timeout, and the external OS process it spawned is no longer running" proof is
+%% listed and mapped to its proving cases. The block names the suite, both
+%% proving cases (the reaches-timeout case and the external-process-dead case),
+%% the session entry, the timeout terminal outcome, and the external-OS-process-
+%% gone guarantee (the marker-file liveness check) — all in one contiguous Proof
+%% 7 block.
+test_contract_doc_maps_cli_timeout_proof() ->
+    Doc = read_doc(),
+    Block = cli_timeout_proof_block(Doc),
+    Lower = string:lowercase(Block),
+    ?assert(contains(Block, <<"soma_cli_lifecycle_SUITE">>)),
+    %% the reaches-timeout case and the external-process-dead case
+    ?assert(contains(Block, <<"test_cli_overrun_reaches_timeout">>)),
+    ?assert(contains(Block, <<"test_cli_external_process_dead_after_timeout">>)),
+    ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
+    %% the timeout terminal outcome the hanging cli run drives toward
+    ?assert(contains(Lower, <<"reaches `completed`">>)),
+    %% the external-OS-process-gone guarantee: the marker-file liveness check
+    ?assert(contains(Lower, <<"marker file">>)).
+
+%% The proof-7 section block: from its heading up to the next "### " heading.
+cli_timeout_proof_block(Doc) ->
+    Heading = <<"### Proof 7 ">>,
+    case binary:match(Doc, Heading) of
+        nomatch -> erlang:error({heading_not_found, Heading});
+        {Start, _} ->
+            Rest = binary:part(Doc, Start, byte_size(Doc) - Start),
+            [_HeadingLine | After] = binary:split(Rest, <<"\n">>),
+            AfterBin = iolist_to_binary(lists:join(<<"\n">>, After)),
+            case binary:match(AfterBin, <<"### ">>) of
+                nomatch -> AfterBin;
+                {NextStart, _} -> binary:part(AfterBin, 0, NextStart)
+            end
+    end.
+
+contract_doc_maps_cli_timeout_proof_test() ->
+    test_contract_doc_maps_cli_timeout_proof().
+
