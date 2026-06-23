@@ -10,6 +10,7 @@
 -export([test_start_run_returns_id_and_spawns_run/1]).
 -export([test_run_accepted_event_recorded/1]).
 -export([test_multi_step_runs_sequentially_to_completed/1]).
+-export([test_each_tool_call_has_distinct_pid/1]).
 
 all() ->
     [test_sup_has_four_live_children,
@@ -18,7 +19,8 @@ all() ->
      test_session_started_event_recorded,
      test_start_run_returns_id_and_spawns_run,
      test_run_accepted_event_recorded,
-     test_multi_step_runs_sequentially_to_completed].
+     test_multi_step_runs_sequentially_to_completed,
+     test_each_tool_call_has_distinct_pid].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -126,6 +128,40 @@ test_multi_step_runs_sequentially_to_completed(_Config) ->
     Types = [T || {T, _} <- Trail],
     true = lists:member(<<"run.completed">>, Types),
     ok.
+
+%% Criterion 8: each step's tool invocation runs in its own soma_tool_call
+%% process whose pid differs from the soma_run pid and from every other step's
+%% tool-call pid. Proven by reading each tool call's worker pid from the event
+%% trail and asserting they are all distinct from one another and from the run.
+test_each_tool_call_has_distinct_pid(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+             #{id => s2, tool => echo, args => #{value => <<"b">>}},
+             #{id => s3, tool => echo, args => #{value => <<"c">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    RunPid = run_pid(RunId),
+    true = is_pid(RunPid),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    AllPids = [maps:get(tool_call_pid, E, undefined) || E <- Events],
+    ToolPids = [P || P <- AllPids, P =/= undefined],
+    %% one tool-call worker pid per step
+    3 = length(ToolPids),
+    %% every worker pid is actually a pid
+    true = lists:all(fun erlang:is_pid/1, ToolPids),
+    %% all worker pids are distinct from each other
+    3 = length(lists:usort(ToolPids)),
+    %% no worker pid is the run pid
+    false = lists:member(RunPid, ToolPids),
+    ok.
+
+run_pid(_RunId) ->
+    Children = supervisor:which_children(soma_run_sup),
+    case [Pid || {_Id, Pid, _Type, _Mods} <- Children, is_pid(Pid)] of
+        [Pid | _] -> Pid;
+        [] -> undefined
+    end.
 
 wait_for_run_completed(_StorePid, _RunId, 0) ->
     {error, timeout};
