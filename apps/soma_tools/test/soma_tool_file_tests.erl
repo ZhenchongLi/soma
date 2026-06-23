@@ -46,6 +46,38 @@ test_file_dotdot_escape_rejected() ->
 file_dotdot_escape_rejected_test() ->
     test_file_dotdot_escape_rejected().
 
+test_file_absolute_outside_root_rejected() ->
+    Root = make_temp_root(),
+    Ctx = #{root => Root},
+    %% Write: an absolute path pointing outside the root must be rejected and
+    %% must not create the file at that absolute destination.
+    Outside = absolute_outside_root(Root),
+    OutsideWrite = filename:join(Outside, "abs_write.txt"),
+    ok = filelib:ensure_dir(OutsideWrite),
+    ok = ensure_absent(OutsideWrite),
+    %% STAGED RED: deliberately wrong expectation so the assertion fires first.
+    ?assertMatch({ok, _},
+                 soma_tool_file_write:invoke(
+                   #{path => list_to_binary(OutsideWrite),
+                     bytes => <<"nope">>},
+                   Ctx)),
+    ?assertNot(filelib:is_regular(OutsideWrite)),
+    %% Read: a real file at an absolute path outside the root must not be
+    %% reachable.
+    OutsideRead = filename:join(Outside, "abs_read.txt"),
+    ok = file:write_file(OutsideRead, <<"secret outside the sandbox">>),
+    ?assertMatch({ok, _},
+                 soma_tool_file_read:invoke(
+                   #{path => list_to_binary(OutsideRead)}, Ctx)).
+
+file_absolute_outside_root_rejected_test() ->
+    test_file_absolute_outside_root_rejected().
+
+absolute_outside_root(Root) ->
+    %% A sibling directory of Root: absolute, and not under Root.
+    Parent = filename:dirname(Root),
+    filename:join(Parent, "outside_sandbox").
+
 ensure_absent(Path) ->
     case file:delete(Path) of
         ok -> ok;
