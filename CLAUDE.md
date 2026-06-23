@@ -12,6 +12,8 @@ Done so far: the in-memory event store; the tool behaviour + registry + the five
 
 An Erlang/OTP-native agent runtime. The core thesis: an agent run is **not a function that calls tools in a loop** — it's a supervised OTP process tree. Erlang/OTP provides the execution semantics (timeouts, cancellation, monitoring, crash isolation, restart policy); the step list only says *what* to run.
 
+The mental model is the **actor model + OTP supervision**: every session, run, and tool call is an actor (isolated process, private mailbox, message-passing only), and OTP's supervision/monitors add the fault-tolerance layer that is the actual thesis. Don't let future work collapse a run back into an in-process loop, or reach for defensive `try/catch` where a process boundary + monitor is the design.
+
 v0.1 is runtime-only: sequential steps, supervised tool calls, real timeout/cancellation, an in-memory event store, and a Linux x86_64 + arm64 release. Explicitly **out of scope for v0.1**: DAG parallelism, distributed Erlang, complex planning, retries beyond a simple policy, and any hard dependency on a real LLM. Don't pull roadmap items (LFE DSL, MCP, LLM planner, DAG) into v0.1.
 
 ## Architecture (the load-bearing parts)

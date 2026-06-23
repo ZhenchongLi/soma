@@ -48,6 +48,11 @@ parts of Erlang that are hard to reproduce cleanly elsewhere:
 
 ## Core Principle
 
+Soma is built on the **actor model**: every session, run, and tool call is an
+actor — an isolated process with a private mailbox, communicating only by
+message-passing. Erlang/OTP is the canonical actor runtime; its supervision trees
+and monitors add the fault-tolerance layer the thesis depends on.
+
 Do not implement an agent run as a normal function.
 
 Implement it as an OTP process tree:
