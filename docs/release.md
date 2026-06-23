@@ -56,6 +56,24 @@ hostname resolution locally. The node itself boots fine (it registers with epmd)
 only the external control path is flaky. Use `console` / `foreground` to run and
 smoke-test on macOS. On Linux the control commands work normally.
 
+## Packaged CLI helpers
+
+A tool's external CLI helper ships inside the release as part of the
+`soma_tools` app's `priv` directory. Standard rebar3/relx packaging copies
+`apps/soma_tools/priv` into the release tree, so in an unpacked release a
+packaged helper lives at a release-relative path under
+
+```
+lib/soma_tools-<vsn>/priv/...
+```
+
+For the committed sample helper the full release-relative location is
+`lib/soma_tools-<vsn>/priv/cli/soma_sample_upper` (with `<vsn>` the `soma_tools`
+app version, e.g. `lib/soma_tools-0.1.0/priv/cli/soma_sample_upper`). A tool
+never bakes in an absolute build path: it resolves the helper at runtime via
+`code:priv_dir(soma_tools)` and joins the relative path `cli/...`, which returns
+this `lib/soma_tools-<vsn>/priv` directory wherever the app is loaded from.
+
 ## Linux x86_64 / arm64 artifacts
 
 Build the same `prod` profile on each Linux target (a Linux container or CI
