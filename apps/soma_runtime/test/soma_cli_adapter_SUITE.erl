@@ -13,6 +13,7 @@
 -export([test_cli_child_env_omits_runtime_var/1]).
 -export([test_cli_child_cwd_is_adapter_dir/1]).
 -export([test_cli_argv_redirect_is_literal/1]).
+-export([test_cli_argv_semicolon_is_literal/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
@@ -24,7 +25,8 @@ all() ->
      test_cli_from_step_round_trip,
      test_cli_child_env_omits_runtime_var,
      test_cli_child_cwd_is_adapter_dir,
-     test_cli_argv_redirect_is_literal].
+     test_cli_argv_redirect_is_literal,
+     test_cli_argv_semicolon_is_literal].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -360,6 +362,54 @@ test_cli_argv_redirect_is_literal(_Config) ->
     %% the target path
     false = filelib:is_file(TargetFile),
     ok.
+
+%% Criterion 4: an argv element `;' followed by a second word reaches the
+%% external program as literal arguments and runs no second program. Under a
+%% shell, `prog ; touch file' would terminate the first command at the `;' and
+%% run `touch file' as a separate program, creating `file', and neither `;' nor
+%% `touch' nor the filename would reach prog's argv. The step's argv carries
+%% `";"', the word `"touch"', and a target filename in a fresh temp directory;
+%% the helper echoes its whole argv to stdout. The test asserts the recorded
+%% step output contains the literal `;', `touch', and the target filename, and
+%% that no file exists at that path -- proving the adapter launched the program
+%% through a port with separate executable and argv rather than a shell command
+%% string (which would have run the second program).
+test_cli_argv_semicolon_is_literal(_Config) ->
+    Helper = write_echo_argv_helper(),
+    TargetFile = semicolon_target_path(),
+    false = filelib:is_file(TargetFile),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_semicolon,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => [";", "touch", TargetFile]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_semicolon, args => #{input => <<"ignored">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Output = step_output(Events),
+    true = is_binary(Output),
+    %% STAGED RED (deliberately wrong): assert the shell-expanded outcome -- the
+    %% `;' terminated the command so it never reached the child's argv, and a
+    %% second program `touch' ran and created the target file.
+    nomatch = re:run(Output, "\\Q;\\E"),
+    true = filelib:is_file(TargetFile),
+    ok.
+
+%% A fresh, non-existent path under a temp directory, used as the target a
+%% second program would create. If a shell ran `; touch file', a file would
+%% appear here.
+semicolon_target_path() ->
+    Base = filename:basedir(user_cache, "soma_cli_adapter_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    filename:join(Dir, "semicolon_target.out").
 
 %% A fresh, non-existent path under a temp directory, used as a redirection
 %% target. If a shell expanded a `>' redirect, a file would appear here.
