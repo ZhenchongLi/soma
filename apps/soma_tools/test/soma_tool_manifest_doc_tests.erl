@@ -113,3 +113,29 @@ is_heading(_) -> false.
 
 manifest_doc_cli_schema_no_shell_test() ->
     test_manifest_doc_cli_schema_no_shell().
+
+%% Criterion 6: the five v0.1 built-in tools stay valid under the manifest
+%% contract, each mapping onto the `erlang_module` adapter. The doc names all
+%% five tools and ties them to `erlang_module` in a section that states they
+%% remain valid under the contract.
+test_manifest_doc_v01_tools_map_to_erlang_module() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    %% all five v0.1 tool names appear
+    [?assert(contains(Lower, T)) || T <- [<<"echo">>, <<"sleep">>, <<"fail">>,
+                                          <<"file_read">>, <<"file_write">>]],
+    %% a section ties the five tools to the erlang_module adapter and says they
+    %% stay valid under the contract
+    ?assert(v01_tools_section(Lower)).
+
+%% A section names every v0.1 tool, the `erlang_module` adapter, and states the
+%% tools remain valid under the contract.
+v01_tools_section(Lower) ->
+    contains(Lower, <<"erlang_module">>)
+        andalso contains(Lower, <<"valid under">>)
+        andalso lists:all(fun(T) -> contains(Lower, T) end,
+                          [<<"echo">>, <<"sleep">>, <<"fail">>,
+                           <<"file_read">>, <<"file_write">>]).
+
+manifest_doc_v01_tools_map_to_erlang_module_test() ->
+    test_manifest_doc_v01_tools_map_to_erlang_module().
