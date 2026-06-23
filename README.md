@@ -144,6 +144,32 @@ In scope: the runtime, the failure semantics, the event log, and a self-containe
 release. Out of scope: DAG parallelism, distributed Erlang, complex planning,
 retries beyond none, and any hard dependency on a real LLM.
 
+## What v0.2 adds
+
+v0.2 keeps the v0.1 runtime intact and adds three pieces on top:
+
+- **Tool manifests.** A tool declares itself with a manifest (a data map),
+  validated by `soma_tool_manifest:normalize/1`. A manifest missing a required
+  field is rejected, and that tool name never resolves through the registry.
+- **The descriptor registry.** `soma_tool_registry` holds normalized descriptors;
+  the built-in tools register through manifest validation, and a run resolves a
+  tool by looking up its descriptor.
+- **A one-shot `cli` adapter.** A tool can run an external executable once, through
+  a port, in its own `soma_tool_call` worker. The adapter covers **lifecycle**
+  teardown (a timed-out or cancelled cli call kills the external OS process, not
+  just the Erlang side), **failure normalization** (a nonzero exit or a
+  missing/unrunnable executable becomes a named `{error, _}` that fails the run
+  while the session stays alive), and **argv/env/cwd safety** (executable + args,
+  never shell strings; an explicit environment and working directory).
+
+Every v0.2 line above is proven by a named test. The full proof→test map is in
+**[docs/v0.2-test-contract.md](docs/v0.2-test-contract.md)**.
+
+**Out of scope (v0.2).** The later roadmap layers stay out: the LFE DSL, MCP, an
+LLM planner, DAG parallelism, and persistent run resume. The Linux x86_64 + arm64
+release packaging is also still open — macOS arm64 is built and verified, but the
+x86_64 and arm64 Linux artifacts are not yet produced in CI.
+
 ## Docs
 
 - **[docs/design.md](docs/design.md)** — the north star: thesis, runtime shape,
@@ -152,6 +178,9 @@ retries beyond none, and any hard dependency on a real LLM.
   separate `soma_step` process), this README and the code are authoritative.
 - **[docs/tool-manifest.md](docs/tool-manifest.md)** — the v0.2 tool manifest
   contract: the shape of a tool entry and which adapter runs it.
+- **[docs/v0.2-test-contract.md](docs/v0.2-test-contract.md)** — the v0.2
+  process-behaviour test contract: each proof mapped to the suite and case that
+  proves it.
 - **[docs/release.md](docs/release.md)** — building and running the release.
 - **[docs/roadmap.md](docs/roadmap.md)** — post-v0.1 ideas.
 ```
