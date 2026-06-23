@@ -87,3 +87,26 @@ test_normalize_rejects_non_boolean_idempotent() ->
 
 normalize_rejects_non_boolean_idempotent_test() ->
     test_normalize_rejects_non_boolean_idempotent().
+
+test_normalize_rejects_bad_timeout_ms() ->
+    Base = #{
+        name => file_read,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_file_read
+    },
+    lists:foreach(
+        fun(Value) ->
+            Manifest = Base#{timeout_ms => Value},
+            ?assertEqual(
+                {error, {invalid_timeout_ms, Value}},
+                soma_tool_manifest:normalize(Manifest)
+            )
+        end,
+        [0, -1, "1000"]
+    ).
+
+normalize_rejects_bad_timeout_ms_test() ->
+    test_normalize_rejects_bad_timeout_ms().
