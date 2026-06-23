@@ -288,7 +288,7 @@ test_contract_doc_maps_cli_timeout_proof() ->
     ?assert(contains(Block, <<"test_cli_external_process_dead_after_timeout">>)),
     ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
     %% the timeout terminal outcome the hanging cli run drives toward
-    ?assert(contains(Lower, <<"reaches `completed`">>)),
+    ?assert(contains(Lower, <<"reaches `timeout`">>)),
     %% the external-OS-process-gone guarantee: the marker-file liveness check
     ?assert(contains(Lower, <<"marker file">>)).
 
