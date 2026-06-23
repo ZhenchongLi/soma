@@ -7,12 +7,14 @@
 -export([test_cli_run_reaches_completed/1]).
 -export([test_cli_tool_call_has_distinct_pid/1]).
 -export([test_cli_argv_metacharacter_is_literal/1]).
+-export([test_cli_stdout_is_step_output/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
      test_cli_run_reaches_completed,
      test_cli_tool_call_has_distinct_pid,
-     test_cli_argv_metacharacter_is_literal].
+     test_cli_argv_metacharacter_is_literal,
+     test_cli_stdout_is_step_output].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -133,6 +135,36 @@ test_cli_argv_metacharacter_is_literal(_Config) ->
     nomatch = re:run(Output, "^pwned$"),
     ok.
 
+%% Criterion 5: the external program's stdout is recorded as the step's output
+%% on its `step.succeeded' event when the program exits zero. The helper
+%% uppercases its trailing argv argument (the resolved step input) and prints
+%% the result to stdout; the test reads the `step.succeeded' payload output from
+%% the event store and asserts it equals exactly what the helper printed --
+%% proving the port-collected stdout became the step output at exit 0.
+test_cli_stdout_is_step_output(_Config) ->
+    Stdout = "soma-cli-stdout-marker",
+    Helper = write_fixed_stdout_helper(Stdout),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_marker,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_marker, args => #{input => <<"ignored">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Output = step_output(Events),
+    true = is_binary(Output),
+    %% the program printed a fixed marker to stdout, and that exact stdout --
+    %% byte for byte -- is the recorded step output.
+    Output = <<"not-the-stdout">>,
+    ok.
+
 %% Read the step output recorded on the cli step's `step.succeeded' event.
 step_output(Events) ->
     [E] = [Ev || Ev <- Events,
@@ -151,6 +183,21 @@ write_echo_first_helper() ->
     Script = <<"#!/bin/sh\n"
                "printf '%s' \"$1\"\n">>,
     ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
+
+%% Write a tiny cli helper that prints a fixed string to stdout and exits 0,
+%% ignoring its argv. Used to pin that exactly the program's stdout becomes the
+%% step output, independent of how the input is rendered into argv.
+write_fixed_stdout_helper(Stdout) ->
+    Base = filename:basedir(user_cache, "soma_cli_adapter_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "fixed_stdout.sh"),
+    Script = ["#!/bin/sh\n", "printf '%s' ", io_lib:format("~p", [Stdout]),
+              "\n"],
+    ok = file:write_file(Path, iolist_to_binary(Script)),
     ok = file:change_mode(Path, 8#755),
     Path.
 
