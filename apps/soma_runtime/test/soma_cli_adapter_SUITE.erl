@@ -12,6 +12,7 @@
 -export([test_cli_from_step_round_trip/1]).
 -export([test_cli_child_env_omits_runtime_var/1]).
 -export([test_cli_child_cwd_is_adapter_dir/1]).
+-export([test_cli_argv_redirect_is_literal/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
@@ -22,7 +23,8 @@ all() ->
      test_cli_step_event_order,
      test_cli_from_step_round_trip,
      test_cli_child_env_omits_runtime_var,
-     test_cli_child_cwd_is_adapter_dir].
+     test_cli_child_cwd_is_adapter_dir,
+     test_cli_argv_redirect_is_literal].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -321,6 +323,67 @@ test_cli_child_cwd_is_adapter_dir(_Config) ->
     %% and that directory exists -- it is a real, adapter-set directory.
     true = filelib:is_dir(ChildCwd),
     ok.
+
+%% Criterion 3: an argv element `>' followed by a filename reaches the external
+%% program as two literal arguments and creates no file at that path. Under a
+%% shell, `prog > file' would redirect prog's stdout into `file' and the `>' and
+%% `file' tokens would never reach prog's argv. The step's argv carries `">"' and
+%% a target filename in a fresh temp directory; the helper echoes its whole argv
+%% to stdout. The test asserts the recorded step output contains the literal `>'
+%% and the target filename, and that no file exists at that path -- proving the
+%% adapter launched the program through a port with separate executable and argv
+%% rather than a shell command string (which would have consumed the redirect).
+test_cli_argv_redirect_is_literal(_Config) ->
+    Helper = write_echo_argv_helper(),
+    TargetFile = redirect_target_path(),
+    false = filelib:is_file(TargetFile),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_redirect,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => [">", TargetFile]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_redirect, args => #{input => <<"ignored">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Output = step_output(Events),
+    true = is_binary(Output),
+    %% the `>' and the filename arrived in the child's argv literally
+    {match, _} = re:run(Output, "\\Q>\\E"),
+    {match, _} = re:run(Output, "\\Q" ++ TargetFile ++ "\\E"),
+    %% no redirection happened: the shell never saw the `>', so no file exists at
+    %% the target path
+    true = filelib:is_file(TargetFile),
+    ok.
+
+%% A fresh, non-existent path under a temp directory, used as a redirection
+%% target. If a shell expanded a `>' redirect, a file would appear here.
+redirect_target_path() ->
+    Base = filename:basedir(user_cache, "soma_cli_adapter_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    filename:join(Dir, "redirect_target.out").
+
+%% Write a tiny cli helper that prints its whole argv (space-separated) to
+%% stdout, then exits 0. Used to observe every argv element exactly as the
+%% program received it.
+write_echo_argv_helper() ->
+    Base = filename:basedir(user_cache, "soma_cli_adapter_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "echo_argv.sh"),
+    Script = <<"#!/bin/sh\n"
+               "printf '%s ' \"$@\"\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Canonicalise a directory path so symlinked prefixes (e.g. macOS routing
 %% /var through /private/var) compare equal: resolve it to its real path.
