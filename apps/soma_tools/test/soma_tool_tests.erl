@@ -13,8 +13,7 @@ behaviour_declares_callbacks_test() ->
 test_describe_has_required_keys() ->
     Modules = [soma_tool_echo, soma_tool_sleep, soma_tool_fail,
                soma_tool_file_read, soma_tool_file_write],
-    %% staged red: bogus_key is intentionally not a real describe/0 key
-    RequiredKeys = [name, effect, idempotent, timeout_ms, bogus_key],
+    RequiredKeys = [name, effect, idempotent, timeout_ms],
     ValidEffects = [identity, reader, state],
     lists:foreach(
         fun(Module) ->
