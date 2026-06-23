@@ -97,3 +97,16 @@ test_contract_doc_marks_the_gap_case() ->
 contract_doc_marks_the_gap_case_test() ->
     test_contract_doc_marks_the_gap_case().
 
+%% Criterion 3: the built-ins-register-through-manifest + echo-end-to-end proof
+%% lists and maps *both* its halves, naming the proving case for each. The
+%% register-through-manifest half resolves to the seeded-registry case and the
+%% echo half to the multi-step run case; both must be named so the proof is
+%% verifiable down to a concrete function on each half.
+test_contract_doc_maps_both_halves_of_register_and_echo_proof() ->
+    Doc = read_doc(),
+    ?assert(contains(Doc, <<"test_registry_seeds_descriptors_from_manifests_WRONG">>)),
+    ?assert(contains(Doc, <<"test_multi_step_runs_sequentially_to_completed">>)).
+
+contract_doc_maps_both_halves_of_register_and_echo_proof_test() ->
+    test_contract_doc_maps_both_halves_of_register_and_echo_proof().
+
