@@ -12,7 +12,7 @@
 
 -export([start_link/1]).
 -export([callback_mode/0, init/1]).
--export([executing/3, waiting_tool/3, completed/3, failed/3]).
+-export([executing/3, waiting_tool/3, completed/3, failed/3, timeout/3]).
 
 -record(data, {run_id,
                session_id,
@@ -23,6 +23,7 @@
                outputs = #{},
                current,
                tool_call_id,
+               worker_pid,
                worker_mref}).
 
 start_link(Opts) when is_map(Opts) ->
@@ -71,8 +72,20 @@ executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
     %% replying) reaches the run as a `'DOWN'' message rather than hanging the
     %% wait forever.
     MRef = erlang:monitor(process, WorkerPid),
-    {next_state, waiting_tool,
-     Data#data{current = Step, tool_call_id = ToolCallId, worker_mref = MRef}}.
+    %% Arm a per-step timer when the step asks for one. A `gen_statem' state
+    %% timeout fits: if the reply comes first, leaving `waiting_tool' cancels
+    %% the timer; if the timer fires first, `waiting_tool' gets `step_timeout'
+    %% while the worker pid is still known. A step with no `timeout_ms' gets no
+    %% timer, matching the unbounded wait for steps that don't ask for one.
+    NewData = Data#data{current = Step, tool_call_id = ToolCallId,
+                        worker_pid = WorkerPid, worker_mref = MRef},
+    case maps:get(timeout_ms, Step, undefined) of
+        undefined ->
+            {next_state, waiting_tool, NewData};
+        TimeoutMs ->
+            {next_state, waiting_tool, NewData,
+             [{state_timeout, TimeoutMs, step_timeout}]}
+    end.
 
 %% Wait for the active tool-call worker's result; only then advance.
 waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {ok, Output}},
@@ -112,12 +125,32 @@ waiting_tool(info, {'DOWN', MRef, process, WorkerPid, Reason},
              Data = #data{worker_mref = MRef, current = Step,
                           tool_call_id = ToolCallId})
   when Reason =/= normal ->
-    fail_run(Data, Step, ToolCallId, WorkerPid, Reason).
+    fail_run(Data, Step, ToolCallId, WorkerPid, Reason);
+%% The step ran longer than its `timeout_ms': the state timer fired before the
+%% reply. Kill the active worker, record `run.timeout', tell the session, and
+%% move to the `timeout' state. The brutal kill makes cancellation real rather
+%% than a flag checked later.
+waiting_tool(state_timeout, step_timeout,
+             Data = #data{worker_pid = WorkerPid, worker_mref = MRef}) ->
+    demonitor_flush(MRef),
+    exit(WorkerPid, kill),
+    emit(Data, <<"run.timeout">>, #{}),
+    notify_session_timeout(Data),
+    {next_state, timeout, Data#data{current = undefined,
+                                    tool_call_id = undefined,
+                                    worker_pid = undefined,
+                                    worker_mref = undefined}}.
 
 completed(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
 failed(_EventType, _Event, Data) ->
+    {keep_state, Data}.
+
+%% Terminal `timeout' state: the run stays alive holding its final state, like
+%% `completed/3'. A stray `'DOWN'' from the worker the timeout killed is just
+%% noise here and is ignored.
+timeout(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
 %%% Internal
@@ -163,6 +196,14 @@ notify_session_failed(#data{session_pid = undefined}, _Reason) ->
     ok;
 notify_session_failed(#data{session_pid = Pid, run_id = RunId}, Reason) ->
     Pid ! {run_failed, RunId, Reason},
+    ok.
+
+%% Tell the session this run timed out; the session records `timeout' and stays
+%% alive, learning the outcome from this message rather than a link signal.
+notify_session_timeout(#data{session_pid = undefined}) ->
+    ok;
+notify_session_timeout(#data{session_pid = Pid, run_id = RunId}) ->
+    Pid ! {run_timeout, RunId},
     ok.
 
 emit(#data{event_store = undefined}, _Type, _Extra) ->
