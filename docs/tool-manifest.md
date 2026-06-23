@@ -67,6 +67,27 @@ the runtime runs it and turns one process invocation into one step result.
   Exit status 0 means success: the captured stdout is recorded as the step output
   and the step succeeds. Any non-zero exit status is a failure of the step.
 
+## CLI adapter defaults: environment and working directory
+
+Beyond *what* to launch and *how* to run it, the `cli` adapter applies two fixed
+defaults to every external process. These are adapter-level policy, the same for
+every `cli` tool; they are not manifest fields, and per-tool overrides are out of
+scope for v0.2.
+
+- **Default environment policy — a minimal environment, `PATH` only.** The child
+  process does not inherit the runtime's whole environment. The adapter passes a
+  minimal environment that keeps only `PATH` (taken from the runtime's own `PATH`
+  so an external `#!/bin/sh` helper can still find common programs) and clears
+  every other named runtime variable. A variable set in the runtime's
+  environment but not on the allowed set — for v0.2 that set is just `PATH` — is
+  absent in the child.
+- **Default working-directory policy — an adapter-chosen stable directory.** The
+  child process runs in a fixed, adapter-chosen directory. That directory is
+  **not the runtime process cwd**: the adapter sets the child's working directory
+  rather than letting the child inherit whatever directory the runtime happens to
+  sit in, so the child's working directory is stable and controlled by the
+  adapter.
+
 ## The v0.1 tools under the contract
 
 The five v0.1 built-in tools stay valid under the manifest contract — nothing
