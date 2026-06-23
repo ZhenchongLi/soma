@@ -7,12 +7,14 @@
 -export([test_error_trail_tool_step_run_failed_in_order/1]).
 -export([test_tool_crash_reaches_failed/1]).
 -export([test_session_alive_after_tool_crash/1]).
+-export([test_overrun_reaches_timeout_records_run_timeout/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
      test_error_trail_tool_step_run_failed_in_order,
      test_tool_crash_reaches_failed,
-     test_session_alive_after_tool_crash].
+     test_session_alive_after_tool_crash,
+     test_overrun_reaches_timeout_records_run_timeout].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -109,6 +111,26 @@ test_session_alive_after_tool_crash(_Config) ->
     %% the run has reached its terminal `failed' state; the session that owns it
     %% must have survived the tool-call crash
     true = is_process_alive(SessionPid),
+    ok.
+
+%% Criterion 5: a run whose tool runs longer than the step's `timeout_ms'
+%% reaches the terminal state `timeout' and records `run.timeout'. Driven
+%% through the real session/run/tool-call layers: the session starts a run of
+%% one `sleep' step whose `ms' is larger than the step's `timeout_ms', so the
+%% per-step timer wins the race against the reply. The run records `run.timeout'
+%% and never `run.completed'.
+test_overrun_reaches_timeout_records_run_timeout(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => sleep,
+               args => #{ms => 1000}, timeout_ms => 50}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    %% the run records run.timeout and never run.completed
+    true = lists:member(<<"run.timeout">>, Types),
+    false = lists:member(<<"run.completed">>, Types),
     ok.
 
 %% 1-based index of the first occurrence of Elem in List.
