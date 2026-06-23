@@ -5,10 +5,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_sup_has_four_live_children/1]).
 -export([test_registry_seeded_with_v01_tools/1]).
+-export([test_session_starts_and_holds_id/1]).
 
 all() ->
     [test_sup_has_four_live_children,
-     test_registry_seeded_with_v01_tools].
+     test_registry_seeded_with_v01_tools,
+     test_session_starts_and_holds_id].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -45,4 +47,15 @@ test_registry_seeded_with_v01_tools(_Config) ->
     {ok, soma_tool_fail} = soma_tool_registry:resolve(fail),
     {ok, soma_tool_file_read} = soma_tool_registry:resolve(file_read),
     {ok, soma_tool_file_write} = soma_tool_registry:resolve(file_write),
+    ok.
+
+%% Criterion 3: starting a session returns a live soma_agent_session process
+%% that holds a session_id, reported back through get_status/1.
+test_session_starts_and_holds_id(_Config) ->
+    {ok, Pid} = soma_agent_session:start_link(#{}),
+    true = is_pid(Pid),
+    true = is_process_alive(Pid),
+    Status = soma_agent_session:get_status(Pid),
+    SessionId = maps:get(session_id, Status),
+    true = SessionId =/= undefined,
     ok.
