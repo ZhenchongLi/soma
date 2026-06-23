@@ -28,7 +28,7 @@ sample_helper_committed_and_executable_test() ->
 test_sample_helper_is_shell_script_not_escript() ->
     {ok, Bin} = file:read_file(?HELPER_PATH),
     [FirstLine | _] = binary:split(Bin, <<"\n">>),
-    ?assertEqual(<<"#!/usr/bin/env escript">>, FirstLine),
+    ?assertEqual(<<"#!/bin/sh">>, FirstLine),
     ?assertEqual(nomatch, binary:match(Bin, <<"escript">>)),
     ?assertEqual(nomatch, binary:match(Bin, <<"%%!">>)).
 
