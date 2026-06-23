@@ -286,9 +286,7 @@ test_normalize_is_idempotent() ->
     lists:foreach(
         fun(Manifest) ->
             {ok, M2} = soma_tool_manifest:normalize(Manifest),
-            %% Staged red: deliberately wrong expectation — re-normalizing keeps
-            %% the stray key. The real fix below restores the idempotence check.
-            ?assertEqual({ok, M2#{stray => leftover}}, soma_tool_manifest:normalize(M2))
+            ?assertEqual({ok, M2}, soma_tool_manifest:normalize(M2))
         end,
         [ErlangManifest, CliManifest]
     ).
