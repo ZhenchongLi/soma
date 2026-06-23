@@ -37,7 +37,10 @@ handle_call({start_run, Steps}, _From, State) ->
                             #{session_id => State#state.session_id,
                               run_id => RunId,
                               event_type => <<"run.accepted">>}),
-    {ok, RunPid} = soma_run_sup:start_run(#{run_id => RunId, steps => Steps}),
+    {ok, RunPid} = soma_run_sup:start_run(#{run_id => RunId,
+                                            session_id => State#state.session_id,
+                                            event_store => State#state.event_store,
+                                            steps => Steps}),
     Runs = maps:put(RunId, RunPid, State#state.runs),
     {reply, {ok, RunId}, State#state{runs = Runs}}.
 
