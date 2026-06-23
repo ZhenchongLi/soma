@@ -5,6 +5,7 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_sup_has_four_live_children/1]).
 -export([test_registry_seeded_with_v01_tools/1]).
+-export([test_registry_resolves_erlang_module_descriptors/1]).
 -export([test_session_starts_and_holds_id/1]).
 -export([test_session_started_event_recorded/1]).
 -export([test_start_run_returns_id_and_spawns_run/1]).
@@ -20,6 +21,7 @@
 all() ->
     [test_sup_has_four_live_children,
      test_registry_seeded_with_v01_tools,
+     test_registry_resolves_erlang_module_descriptors,
      test_session_starts_and_holds_id,
      test_session_started_event_recorded,
      test_start_run_returns_id_and_spawns_run,
@@ -67,6 +69,21 @@ test_registry_seeded_with_v01_tools(_Config) ->
     {ok, soma_tool_fail} = soma_tool_registry:resolve(fail),
     {ok, soma_tool_file_read} = soma_tool_registry:resolve(file_read),
     {ok, soma_tool_file_write} = soma_tool_registry:resolve(file_write),
+    ok.
+
+%% Issue #16, criterion 3: each of the five v0.1 names resolves through the
+%% running registry to an `erlang_module' descriptor -- a map carrying the
+%% `erlang_module' adapter marker and a backing module -- via the new
+%% resolve_descriptor/1 path (distinct from resolve/1's bare-module shape).
+test_registry_resolves_erlang_module_descriptors(_Config) ->
+    Names = [echo, sleep, fail, file_read, file_write],
+    lists:foreach(
+      fun(Name) ->
+          {ok, Descriptor} = soma_tool_registry:resolve_descriptor(Name),
+          erlang_module = maps:get(adapter, Descriptor),
+          true = is_atom(maps:get(module, Descriptor))
+      end,
+      Names),
     ok.
 
 %% Criterion 3: starting a session returns a live soma_agent_session process
