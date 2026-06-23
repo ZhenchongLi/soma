@@ -6,6 +6,7 @@
 -export([test_sup_has_four_live_children/1]).
 -export([test_registry_seeded_with_v01_tools/1]).
 -export([test_registry_resolves_erlang_module_descriptors/1]).
+-export([test_registry_seeds_descriptors_from_manifests/1]).
 -export([test_session_starts_and_holds_id/1]).
 -export([test_session_started_event_recorded/1]).
 -export([test_start_run_returns_id_and_spawns_run/1]).
@@ -22,6 +23,7 @@ all() ->
     [test_sup_has_four_live_children,
      test_registry_seeded_with_v01_tools,
      test_registry_resolves_erlang_module_descriptors,
+     test_registry_seeds_descriptors_from_manifests,
      test_session_starts_and_holds_id,
      test_session_started_event_recorded,
      test_start_run_returns_id_and_spawns_run,
@@ -84,6 +86,27 @@ test_registry_resolves_erlang_module_descriptors(_Config) ->
           true = is_atom(maps:get(module, Descriptor))
       end,
       Names),
+    ok.
+
+%% Issue #17, criterion 4: the running registry seeds each built-in entry from
+%% its normalized manifest. For each built-in name the descriptor handed back by
+%% the live soma_tool_registry:resolve_descriptor/1 must equal the {ok, M}
+%% payload of normalize(Module:manifest()) for that name's backing module --
+%% equality against the freshly normalized manifest proves the seed was built
+%% from the manifest, not a hand-written literal.
+test_registry_seeds_descriptors_from_manifests(_Config) ->
+    Builtins = [{echo, soma_tool_echo},
+                {sleep, soma_tool_sleep},
+                {fail, soma_tool_fail},
+                {file_read, soma_tool_file_read},
+                {file_write, soma_tool_file_write}],
+    lists:foreach(
+      fun({Name, Module}) ->
+          {ok, Expected} = soma_tool_manifest:normalize(Module:manifest()),
+          {ok, Descriptor} = soma_tool_registry:resolve_descriptor(Name),
+          Expected = Descriptor
+      end,
+      Builtins),
     ok.
 
 %% Criterion 3: starting a session returns a live soma_agent_session process
