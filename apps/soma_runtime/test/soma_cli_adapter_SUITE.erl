@@ -11,6 +11,7 @@
 -export([test_cli_step_event_order/1]).
 -export([test_cli_from_step_round_trip/1]).
 -export([test_cli_child_env_omits_runtime_var/1]).
+-export([test_cli_child_cwd_is_adapter_dir/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
@@ -20,7 +21,8 @@ all() ->
      test_cli_stdout_is_step_output,
      test_cli_step_event_order,
      test_cli_from_step_round_trip,
-     test_cli_child_env_omits_runtime_var].
+     test_cli_child_env_omits_runtime_var,
+     test_cli_child_cwd_is_adapter_dir].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -283,6 +285,64 @@ test_cli_child_env_omits_runtime_var(_Config) ->
     %% adapter's allowed list, so the child never saw it: it printed nothing.
     <<>> = Output,
     ok.
+
+%% Criterion 2: a cli program launched through the live session runs in a
+%% directory the adapter sets, not the cwd of the runtime process. The test
+%% registers a helper that prints its own working directory (`pwd'), reads the
+%% runtime's cwd with file:get_cwd/0, runs a one-step cli run through
+%% soma_agent_session:start_run, and asserts the recorded step output IS the
+%% adapter's chosen directory and is NOT the runtime cwd -- proving the adapter
+%% passes the child a fixed working directory rather than letting it inherit the
+%% runtime process cwd.
+test_cli_child_cwd_is_adapter_dir(_Config) ->
+    {ok, RuntimeCwdRaw} = file:get_cwd(),
+    RuntimeCwd = canonical_dir(RuntimeCwdRaw),
+    Helper = write_print_cwd_helper(),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_cwd,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_cwd, args => #{input => <<"ignored">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Output = step_output(Events),
+    true = is_binary(Output),
+    ChildCwd = canonical_dir(binary_to_list(Output)),
+    %% the child reported a working directory the adapter chose, and it is not
+    %% the cwd the runtime process itself sits in.
+    true = (ChildCwd =/= RuntimeCwd),
+    %% and that directory exists -- it is a real, adapter-set directory.
+    true = filelib:is_dir(ChildCwd),
+    ok.
+
+%% Canonicalise a directory path so symlinked prefixes (e.g. macOS routing
+%% /var through /private/var) compare equal: resolve it to its real path.
+canonical_dir(Dir) ->
+    case file:read_link_all(Dir) of
+        {ok, Real} -> Real;
+        {error, _} -> filename:absname(Dir)
+    end.
+
+%% Write a tiny cli helper that prints its own working directory to stdout,
+%% then exits 0. Used to observe the directory the child ran in.
+write_print_cwd_helper() ->
+    Base = filename:basedir(user_cache, "soma_cli_adapter_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "print_cwd.sh"),
+    Script = <<"#!/bin/sh\n"
+               "printf '%s' \"$(pwd)\"\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Write a tiny cli helper that prints the value of the named environment
 %% variable to stdout, then exits 0. Used to observe whether a runtime
