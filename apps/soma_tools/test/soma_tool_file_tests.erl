@@ -55,8 +55,7 @@ test_file_absolute_outside_root_rejected() ->
     OutsideWrite = filename:join(Outside, "abs_write.txt"),
     ok = filelib:ensure_dir(OutsideWrite),
     ok = ensure_absent(OutsideWrite),
-    %% STAGED RED: deliberately wrong expectation so the assertion fires first.
-    ?assertMatch({ok, _},
+    ?assertMatch({error, _},
                  soma_tool_file_write:invoke(
                    #{path => list_to_binary(OutsideWrite),
                      bytes => <<"nope">>},
@@ -66,7 +65,7 @@ test_file_absolute_outside_root_rejected() ->
     %% reachable.
     OutsideRead = filename:join(Outside, "abs_read.txt"),
     ok = file:write_file(OutsideRead, <<"secret outside the sandbox">>),
-    ?assertMatch({ok, _},
+    ?assertMatch({error, _},
                  soma_tool_file_read:invoke(
                    #{path => list_to_binary(OutsideRead)}, Ctx)).
 
