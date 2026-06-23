@@ -16,6 +16,7 @@
 -export([test_session_runs_new_run_after_timeout/1]).
 -export([test_session_runs_new_run_after_cancelled/1]).
 -export([test_failure_events_carry_eight_mandatory_fields/1]).
+-export([test_timeout_cancelled_carry_real_step_and_tool_call_ids/1]).
 -export([test_get_status_reports_terminal_outcome/1]).
 
 all() ->
@@ -32,6 +33,7 @@ all() ->
      test_session_runs_new_run_after_timeout,
      test_session_runs_new_run_after_cancelled,
      test_failure_events_carry_eight_mandatory_fields,
+     test_timeout_cancelled_carry_real_step_and_tool_call_ids,
      test_get_status_reports_terminal_outcome].
 
 init_per_testcase(_Case, Config) ->
@@ -356,6 +358,35 @@ test_failure_events_carry_eight_mandatory_fields(_Config) ->
               [true = maps:is_key(K, Event) || K <- MandatoryKeys]
       end,
       Targets),
+    ok.
+
+%% Criterion 11 (regression pin): the terminal `run.timeout' and `run.cancelled'
+%% events carry the *real* `step_id' and `tool_call_id' of the step that ended
+%% the run, not `undefined'. The run holds both values when the timer fires or
+%% the cancel lands, and the failure events (`tool.failed'/`step.failed') already
+%% pass them; a consumer reading a timed-out or cancelled run's trail must be
+%% able to tell which step and which tool call ended it. This goes beyond the
+%% presence-only criterion-11 check, which `undefined' satisfies.
+test_timeout_cancelled_carry_real_step_and_tool_call_ids(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% timed-out run: run.timeout
+    TimeoutSteps = [#{id => s1, tool => sleep,
+                      args => #{ms => 1000}, timeout_ms => 50}],
+    {ok, TimeoutRunId} = soma_agent_session:start_run(SessionPid, TimeoutSteps),
+    ok = wait_for_event(StorePid, TimeoutRunId, <<"run.timeout">>, 50),
+    TimeoutEvent = event_of_type(StorePid, TimeoutRunId, <<"run.timeout">>),
+    s1 = maps:get(step_id, TimeoutEvent),
+    true = maps:get(tool_call_id, TimeoutEvent) =/= undefined,
+    %% cancelled run: run.cancelled
+    CancelSteps = [#{id => s1, tool => sleep, args => #{ms => 5000}}],
+    {ok, CancelRunId} = soma_agent_session:start_run(SessionPid, CancelSteps),
+    ok = wait_for_event(StorePid, CancelRunId, <<"tool.started">>, 50),
+    SessionPid ! {cancel_run, CancelRunId},
+    ok = wait_for_event(StorePid, CancelRunId, <<"run.cancelled">>, 50),
+    CancelEvent = event_of_type(StorePid, CancelRunId, <<"run.cancelled">>),
+    s1 = maps:get(step_id, CancelEvent),
+    true = maps:get(tool_call_id, CancelEvent) =/= undefined,
     ok.
 
 %% Criterion 12: `get_status/1' reports a non-completed run with its terminal
