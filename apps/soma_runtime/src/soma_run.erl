@@ -186,16 +186,19 @@ waiting_tool(state_timeout, step_timeout,
 %% cancellation real rather than a flag checked at the end.
 waiting_tool(info, cancel,
              Data = #data{worker_pid = WorkerPid, worker_mref = MRef,
-                          current = Step, tool_call_id = ToolCallId}) ->
+                          current = Step, tool_call_id = ToolCallId,
+                          os_pid = OsPid}) ->
     demonitor_flush(MRef),
     exit(WorkerPid, kill),
+    kill_os_process(OsPid),
     emit(Data, <<"run.cancelled">>,
          #{step_id => maps:get(id, Step), tool_call_id => ToolCallId}),
     notify_session_cancelled(Data),
     {next_state, cancelled, Data#data{current = undefined,
                                       tool_call_id = undefined,
                                       worker_pid = undefined,
-                                      worker_mref = undefined}}.
+                                      worker_mref = undefined,
+                                      os_pid = undefined}}.
 
 completed(_EventType, _Event, Data) ->
     {keep_state, Data}.
