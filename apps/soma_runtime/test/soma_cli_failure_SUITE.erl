@@ -199,10 +199,9 @@ test_failure_payload_carries_output_excerpt(_Config) ->
     Payload = maps:get(payload, FailEvent),
     Reason = maps:get(reason, Payload),
     {cli_exit_status, 1, Excerpt} = Reason,
-    %% staged red: assert the excerpt carries a marker the helper never prints, so
-    %% the assertion fires against the real captured output.
+    %% the merged captured output rode into the failure payload.
     true = is_binary(Excerpt),
-    true = contains(Excerpt, <<"NEVER-PRINTED-MARKER">>),
+    true = contains(Excerpt, Marker),
     ok.
 
 %% Write a cli helper that prints the given marker to stdout, then exits with the
