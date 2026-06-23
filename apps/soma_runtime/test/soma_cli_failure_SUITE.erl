@@ -8,13 +8,19 @@
 -export([test_non_executable_permission_error/1]).
 -export([test_non_zero_exit_carries_status/1]).
 -export([test_failure_payload_carries_output_excerpt/1]).
+-export([test_output_over_limit_fails_with_limit_reason/1]).
+
+%% The cli adapter's configured output byte limit. Pinned here to the module-level
+%% constant in soma_tool_call so the limit-exceeded reason can be asserted exactly.
+-define(CLI_OUTPUT_LIMIT, 65536).
 
 all() ->
     [test_missing_executable_named_error,
      test_missing_executable_reaches_run_failed_trail,
      test_non_executable_permission_error,
      test_non_zero_exit_carries_status,
-     test_failure_payload_carries_output_excerpt].
+     test_failure_payload_carries_output_excerpt,
+     test_output_over_limit_fails_with_limit_reason].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -203,6 +209,72 @@ test_failure_payload_carries_output_excerpt(_Config) ->
     true = is_binary(Excerpt),
     true = contains(Excerpt, Marker),
     ok.
+
+%% Criterion 6: when the external program's merged output exceeds the adapter's
+%% configured byte limit, the worker stops collecting rather than buffering the
+%% whole stream, kills the port, and fails the run with a reason that names the
+%% limit. Driven through the full session/run/tool-call stack via
+%% soma_agent_session:start_run/2. The helper emits far more than the limit's worth
+%% of bytes and then sleeps far past any step budget: a worker that kept buffering
+%% would never finish, so the only way the run reaches `run.failed' (and not
+%% `run.timeout') is the bounded collect loop tripping the limit. The proof is that
+%% the `tool.failed' event's `payload.reason' matches
+%% `{cli_output_limit_exceeded, Limit}', with `Limit' equal to the configured byte
+%% limit.
+test_output_over_limit_fails_with_limit_reason(_Config) ->
+    StorePid = event_store_pid(),
+    Helper = write_flood_helper(?CLI_OUTPUT_LIMIT),
+    Manifest = #{name => cli_flood,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% generous step budget: a worker that kept buffering would hit the timeout and
+    %% the run would land on run.timeout. The bounded loop must trip the limit and
+    %% fail the run well before this budget elapses.
+    Steps = [#{id => s1, tool => cli_flood,
+               args => #{input => <<"ignored">>}, timeout_ms => 5000}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.failed">>, Types),
+    %% never the wrong terminal state a buffering worker would produce.
+    false = lists:member(<<"run.timeout">>, Types),
+    FailEvent = event_of_type(StorePid, RunId, <<"tool.failed">>),
+    Payload = maps:get(payload, FailEvent),
+    Reason = maps:get(reason, Payload),
+    %% the reason names the configured byte limit.
+    {cli_output_limit_exceeded, ?CLI_OUTPUT_LIMIT} = Reason,
+    ok.
+
+%% Write a cli helper that floods stdout with far more than Limit bytes, then
+%% sleeps far past any step budget. The flood is emitted in chunks so the running
+%% byte count crosses the limit before the program would ever exit; the trailing
+%% sleep means a worker that kept buffering would block here rather than finish, so
+%% only a bounded collect loop can drive the run to a clean limit failure. Returns
+%% the absolute helper path.
+write_flood_helper(Limit) ->
+    Base = filename:basedir(user_cache, "soma_cli_failure_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "flood.sh"),
+    %% emit ~4x the limit in 1 KiB lines via `yes', then sleep so a buffering
+    %% worker never reaches an exit.
+    Lines = (Limit * 4) div 1024 + 1,
+    Script = iolist_to_binary(
+               ["#!/bin/sh\n",
+                "yes \"", lists:duplicate(1023, $A), "\" | head -n ",
+                integer_to_list(Lines), "\n",
+                "sleep 30\n"]),
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Write a cli helper that prints the given marker to stdout, then exits with the
 %% given status. The marker is short (well under the adapter's byte limit), so the
