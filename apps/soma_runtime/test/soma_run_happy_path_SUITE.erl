@@ -7,12 +7,14 @@
 -export([test_registry_seeded_with_v01_tools/1]).
 -export([test_session_starts_and_holds_id/1]).
 -export([test_session_started_event_recorded/1]).
+-export([test_start_run_returns_id_and_spawns_run/1]).
 
 all() ->
     [test_sup_has_four_live_children,
      test_registry_seeded_with_v01_tools,
      test_session_starts_and_holds_id,
-     test_session_started_event_recorded].
+     test_session_started_event_recorded,
+     test_start_run_returns_id_and_spawns_run].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -71,6 +73,18 @@ test_session_started_event_recorded(_Config) ->
     Events = soma_event_store:by_session(StorePid, SessionId),
     Types = [maps:get(event_type, E) || E <- Events],
     true = lists:member(<<"session.started">>, Types),
+    ok.
+
+%% Criterion 5: submitting a run request returns a run_id and starts a soma_run
+%% process under soma_run_sup, without bypassing the session layer.
+test_start_run_returns_id_and_spawns_run(_Config) ->
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, []),
+    true = RunId =/= undefined,
+    Children = supervisor:which_children(soma_run_sup),
+    RunPids = [Pid || {_Id, Pid, _Type, _Mods} <- Children, is_pid(Pid)],
+    1 = length(RunPids),
+    true = lists:all(fun(Pid) -> is_process_alive(Pid) end, RunPids),
     ok.
 
 event_store_pid() ->
