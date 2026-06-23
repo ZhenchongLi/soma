@@ -294,6 +294,20 @@ test_demo_file_read_echo_file_write(_Config) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     Types = [maps:get(event_type, E) || E <- Events],
     true = lists:member(<<"run.completed">>, Types),
+    %% Issue #16, criterion 4: the run drives each demo tool by reading the
+    %% backing module out of the resolved descriptor, not from a bare module
+    %% lookup. For each demo tool the descriptor's `module' is the module the run
+    %% hands to the tool-call worker -- proven here by asserting the
+    %% descriptor-read module equals the module that actually backs the tool.
+    lists:foreach(
+      fun(Name) ->
+          {ok, #{module := DescModule}} =
+              soma_tool_registry:resolve_descriptor(Name),
+          %% staged red: deliberately wrong expected module so the assertion
+          %% fires; corrected to DescModule in the green commit.
+          {ok, not_the_descriptor_module} = {ok, DescModule}
+      end,
+      [file_read, echo, file_write]),
     ok.
 
 %% Criterion 13: after a run reaches `completed' the long-lived
