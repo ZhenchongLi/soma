@@ -10,6 +10,7 @@
 -export([test_failure_payload_carries_output_excerpt/1]).
 -export([test_output_over_limit_fails_with_limit_reason/1]).
 -export([test_failure_payload_never_holds_full_output/1]).
+-export([test_session_alive_runs_new_run_after_cli_failure/1]).
 
 %% The cli adapter's configured output byte limit. Pinned here to the module-level
 %% constant in soma_tool_call so the limit-exceeded reason can be asserted exactly.
@@ -22,7 +23,8 @@ all() ->
      test_non_zero_exit_carries_status,
      test_failure_payload_carries_output_excerpt,
      test_output_over_limit_fails_with_limit_reason,
-     test_failure_payload_never_holds_full_output].
+     test_failure_payload_never_holds_full_output,
+     test_session_alive_runs_new_run_after_cli_failure].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -293,6 +295,72 @@ test_failure_payload_never_holds_full_output(_Config) ->
             2 = tuple_size(Reason)
     end,
     ok.
+
+%% Criterion 8: after a `cli' run has failed, the `soma_agent_session' process is
+%% still alive and a second `cli' run started on the same session runs to
+%% completion. Driven entirely through the real entry points: the first run is
+%% driven to `run.failed' exactly as `test_non_zero_exit_carries_status' does
+%% (helper does `exit 3' under a generous step budget so a wrong timeout outcome
+%% cannot masquerade as the failure), then we assert the session pid is still
+%% alive and call `soma_agent_session:start_run/2' a second time on the same
+%% session with a fast-exiting `cli' step, which must reach `run.completed'. The
+%% session surviving a failed run and accepting a fresh run is the proof that the
+%% failed run tore down only the run, not the session -- same shape as
+%% `test_session_alive_runs_new_cli_run_after_timeout' in the lifecycle suite.
+test_session_alive_runs_new_run_after_cli_failure(_Config) ->
+    StorePid = event_store_pid(),
+    Helper = write_exit_helper(3),
+    Manifest = #{name => cli_alive_exit_3,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% drive the first run to `run.failed': helper exits 3 under a generous step
+    %% budget so a wrong timeout outcome cannot be mistaken for the failure.
+    Steps1 = [#{id => s1, tool => cli_alive_exit_3,
+                args => #{input => <<"ignored">>}, timeout_ms => 5000}],
+    {ok, RunId1} = soma_agent_session:start_run(SessionPid, Steps1),
+    ok = wait_for_event(StorePid, RunId1, <<"run.failed">>, 100),
+    %% the session survives the failed run.
+    true = is_process_alive(SessionPid),
+    %% a fresh short `cli' run on the same session runs to completion.
+    Fast = write_fast_helper(),
+    Manifest2 = #{name => cli_alive_failure_fast,
+                  effect => reader,
+                  idempotent => true,
+                  timeout_ms => 5000,
+                  adapter => cli,
+                  executable => Fast,
+                  argv => []},
+    ok = soma_tool_registry:register_tool(Manifest2),
+    Steps2 = [#{id => s1, tool => cli_alive_failure_fast,
+                args => #{input => <<"ignored">>}, timeout_ms => 5000}],
+    {ok, RunId2} = soma_agent_session:start_run(SessionPid, Steps2),
+    ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 250),
+    Events = soma_event_store:by_run(StorePid, RunId2),
+    Types = [maps:get(event_type, E) || E <- Events],
+    %% STAGED RED: the second run actually completes, so asserting it failed fires.
+    true = lists:member(<<"run.failed">>, Types),
+    ok.
+
+%% Write a tiny cli helper that exits 0 immediately. Used as the second, short run
+%% that must reach `run.completed' after the first run's failure, proving the
+%% session still accepts and completes fresh runs.
+write_fast_helper() ->
+    Base = filename:basedir(user_cache, "soma_cli_failure_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "fast.sh"),
+    Script = <<"#!/bin/sh\n"
+               "exit 0\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Write a cli helper that floods stdout with far more than Limit bytes, then
 %% exits with the given status. Returns the absolute helper path.
