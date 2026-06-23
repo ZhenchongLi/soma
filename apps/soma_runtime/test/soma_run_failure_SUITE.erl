@@ -226,7 +226,7 @@ test_session_alive_after_cancel(_Config) ->
     ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 50),
     %% the run has reached `cancelled'; the session that owns it must have
     %% survived the cancel
-    false = is_process_alive(SessionPid),
+    true = is_process_alive(SessionPid),
     ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
