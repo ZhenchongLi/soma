@@ -6,8 +6,11 @@
 -behaviour(gen_server).
 
 -export([start_link/1, get_status/1, start_run/2]).
--export([init/1, handle_call/3, handle_cast/2]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
+%% `runs' tracks each run the session has started: `RunId => #{pid, status}'.
+%% A run reports `{run_completed, RunId, Result}' on reaching a terminal state;
+%% the session records the status and survives, never linking on a normal exit.
 -record(state, {session_id, event_store, runs = #{}}).
 
 start_link(Opts) when is_map(Opts) ->
@@ -30,7 +33,9 @@ init(_Opts) ->
     {ok, #state{session_id = SessionId, event_store = StorePid}}.
 
 handle_call(get_status, _From, State) ->
-    {reply, #{session_id => State#state.session_id}, State};
+    RunStatuses = maps:map(fun(_RunId, Run) -> maps:get(status, Run) end,
+                           State#state.runs),
+    {reply, #{session_id => State#state.session_id, runs => RunStatuses}, State};
 handle_call({start_run, Steps}, _From, State) ->
     RunId = new_run_id(),
     soma_event_store:append(State#state.event_store,
@@ -39,12 +44,28 @@ handle_call({start_run, Steps}, _From, State) ->
                               event_type => <<"run.accepted">>}),
     {ok, RunPid} = soma_run_sup:start_run(#{run_id => RunId,
                                             session_id => State#state.session_id,
+                                            session_pid => self(),
                                             event_store => State#state.event_store,
                                             steps => Steps}),
-    Runs = maps:put(RunId, RunPid, State#state.runs),
+    Runs = maps:put(RunId, #{pid => RunPid, status => running},
+                    State#state.runs),
     {reply, {ok, RunId}, State#state{runs = Runs}}.
 
 handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+%% A run reached a terminal state and reported back; record it as completed.
+%% The session survives the run finishing -- it learns the outcome from this
+%% message, not from a link signal.
+handle_info({run_completed, RunId, _Result}, State) ->
+    Runs = case maps:find(RunId, State#state.runs) of
+               {ok, Run} ->
+                   maps:put(RunId, Run#{status => completed}, State#state.runs);
+               error ->
+                   State#state.runs
+           end,
+    {noreply, State#state{runs = Runs}};
+handle_info(_Msg, State) ->
     {noreply, State}.
 
 new_session_id() ->

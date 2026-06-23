@@ -16,6 +16,7 @@
 
 -record(data, {run_id,
                session_id,
+               session_pid,
                event_store,
                steps = [],
                pending = [],
@@ -32,6 +33,7 @@ callback_mode() ->
 init(Opts) ->
     Data = #data{run_id = maps:get(run_id, Opts),
                  session_id = maps:get(session_id, Opts, undefined),
+                 session_pid = maps:get(session_pid, Opts, undefined),
                  event_store = maps:get(event_store, Opts, undefined),
                  steps = maps:get(steps, Opts, []),
                  pending = maps:get(steps, Opts, [])},
@@ -41,6 +43,7 @@ init(Opts) ->
 %% Drive the next step, or finish the run when none remain.
 executing(internal, next_step, Data = #data{pending = []}) ->
     emit(Data, <<"run.completed">>, #{}),
+    notify_session(Data),
     {next_state, completed, Data};
 executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
     StepId = maps:get(id, Step),
@@ -89,6 +92,15 @@ completed(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
 %%% Internal
+
+%% Tell the session this run reached a terminal state. The session updates its
+%% status view and stays alive; it learns the outcome from this message, not
+%% from a link signal.
+notify_session(#data{session_pid = undefined}) ->
+    ok;
+notify_session(#data{session_pid = Pid, run_id = RunId, outputs = Outputs}) ->
+    Pid ! {run_completed, RunId, Outputs},
+    ok.
 
 emit(#data{event_store = undefined}, _Type, _Extra) ->
     ok;
