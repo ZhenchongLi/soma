@@ -38,7 +38,8 @@ init([]) ->
     {ok, #state{}}.
 
 handle_call({append, Event}, _From, State = #state{events = Events}) ->
-    {reply, ok, State#state{events = [Event | Events]}};
+    Normalized = normalize(Event),
+    {reply, ok, State#state{events = [Normalized | Events]}};
 handle_call(all, _From, State = #state{events = Events}) ->
     {reply, lists:reverse(Events), State};
 handle_call({by_run, RunId}, _From, State = #state{events = Events}) ->
@@ -50,3 +51,19 @@ handle_call({by_session, SessionId}, _From, State = #state{events = Events}) ->
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
+
+%%% Internal
+
+-define(MANDATORY_KEYS,
+        [event_id, timestamp, session_id, run_id, step_id, tool_call_id,
+         event_type, payload]).
+
+normalize(Event) ->
+    lists:foldl(fun(Key, Acc) ->
+                        case maps:is_key(Key, Acc) of
+                            true -> Acc;
+                            false -> Acc#{Key => undefined}
+                        end
+                end,
+                Event,
+                ?MANDATORY_KEYS).
