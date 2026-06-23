@@ -51,9 +51,14 @@ test_priv_helper_run_reaches_completed_with_stdout(_Config) ->
     true = lists:member(<<"run.completed">>, Types),
     Output = step_output(Events),
     true = is_binary(Output),
-    %% the helper uppercased the resolved step input "hello" and printed it; that
-    %% stdout is the recorded step output.
-    Output = <<"hello">>,
+    %% the helper uppercased the trailing argv argument (the cli adapter renders
+    %% the resolved step input -- here the args map -- to its `~p' form and hands
+    %% it to the program as that argument) and printed the result; that program
+    %% stdout is the recorded step output. The expected value is exactly the
+    %% uppercase of the adapter's rendering of the resolved input.
+    Rendered = lists:flatten(io_lib:format("~p", [#{input => <<"hello">>}])),
+    Expected = list_to_binary(string:uppercase(Rendered)),
+    Output = Expected,
     ok.
 
 %% Read the step output recorded on the single step's `step.succeeded' event.
