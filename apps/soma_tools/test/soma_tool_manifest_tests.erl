@@ -373,3 +373,26 @@ test_builtin_manifest_metadata_matches_describe() ->
 
 builtin_manifest_metadata_matches_describe_test() ->
     test_builtin_manifest_metadata_matches_describe().
+
+%% Each built-in's normalized manifest names erlang_module as its adapter and
+%% points module at the backing tool module, so a built-in resolves to the
+%% Erlang module that implements it.
+test_builtin_manifest_names_erlang_module_adapter() ->
+    Pairs = [
+        {soma_tool_echo, soma_tool_echo},
+        {soma_tool_sleep, soma_tool_sleep},
+        {soma_tool_fail, soma_tool_fail},
+        {soma_tool_file_read, soma_tool_file_read},
+        {soma_tool_file_write, soma_tool_file_write}
+    ],
+    lists:foreach(
+        fun({Module, BackingModule}) ->
+            {ok, Manifest} = soma_tool_manifest:normalize(Module:manifest()),
+            ?assertEqual(cli, maps:get(adapter, Manifest)),
+            ?assertEqual(BackingModule, maps:get(module, Manifest))
+        end,
+        Pairs
+    ).
+
+builtin_manifest_names_erlang_module_adapter_test() ->
+    test_builtin_manifest_names_erlang_module_adapter().
