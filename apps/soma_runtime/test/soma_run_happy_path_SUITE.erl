@@ -12,6 +12,7 @@
 -export([test_multi_step_runs_sequentially_to_completed/1]).
 -export([test_each_tool_call_has_distinct_pid/1]).
 -export([test_event_trail_in_order/1]).
+-export([test_per_step_events_carry_real_ids/1]).
 
 all() ->
     [test_sup_has_four_live_children,
@@ -22,7 +23,8 @@ all() ->
      test_run_accepted_event_recorded,
      test_multi_step_runs_sequentially_to_completed,
      test_each_tool_call_has_distinct_pid,
-     test_event_trail_in_order].
+     test_event_trail_in_order,
+     test_per_step_events_carry_real_ids].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -191,6 +193,33 @@ test_event_trail_in_order(_Config) ->
     true = is_integer(SStarted),
     true = is_integer(RAccepted),
     true = SStarted < RAccepted,
+    ok.
+
+%% Criterion 10: every per-step event a run emits (step.started, tool.started,
+%% tool.succeeded, step.succeeded) carries the real step_id and tool_call_id for
+%% that step -- never `undefined'. Proven by reading the per-step events back
+%% from the store and asserting both ids are present on each.
+test_per_step_events_carry_real_ids(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+             #{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    PerStepTypes = [<<"step.started">>, <<"tool.started">>,
+                    <<"tool.succeeded">>, <<"step.succeeded">>],
+    PerStepEvents = [E || E <- Events,
+                          lists:member(maps:get(event_type, E), PerStepTypes)],
+    %% two steps, four per-step events each
+    8 = length(PerStepEvents),
+    %% none of them carries an undefined step_id or tool_call_id
+    true = lists:all(
+             fun(E) ->
+                 maps:get(step_id, E) =/= undefined andalso
+                 maps:get(tool_call_id, E) =/= undefined
+             end,
+             PerStepEvents),
     ok.
 
 run_pid(_RunId) ->
