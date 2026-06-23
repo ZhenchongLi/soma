@@ -103,3 +103,23 @@ This entry is **rejected** because the `cli` adapter schema requires a bare
 never a valid form. Here the `executable` field smuggles arguments, a glob, and
 a pipe into one string and the required `argv` list is missing, so the runtime
 has no way to launch the process directly without a shell.
+
+## Non-goals
+
+The v0.2 manifest contract is deliberately narrow. The following are explicitly
+out of scope for this work:
+
+- No MCP adapter — the manifest defines only the `erlang_module` and `cli`
+  adapter types; an MCP adapter is not part of v0.2.
+- No LLM planner — the manifest describes tools, not how a run's steps are
+  chosen; planning a step list with an LLM stays out of scope.
+- No LFE DSL — manifests are plain Erlang maps; there is no Lisp-flavoured
+  Erlang surface syntax for authoring them.
+- No DAG execution — the runtime stays strictly sequential; the manifest adds no
+  branching, fan-out, or dependency-graph execution.
+- No long-running port pool — a `cli` tool is a one-shot external process per
+  call; there is no persistent pool of warm ports to reuse.
+- No OS sandbox beyond the adapter safety rules defined here — the only sandbox
+  guarantees are the no-shell `executable` + `argv` rule for `cli` and the
+  in-BEAM `erlang_module` boundary; no container, seccomp, or namespace
+  isolation is introduced.
