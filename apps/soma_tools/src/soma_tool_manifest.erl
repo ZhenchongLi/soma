@@ -4,6 +4,7 @@
 
 -define(SHARED_FIELDS, [name, effect, idempotent, timeout_ms, adapter]).
 -define(EFFECTS, [identity, reader, state]).
+-define(ADAPTERS, [erlang_module, cli]).
 
 -spec normalize(map()) -> {ok, map()} | {error, term()}.
 normalize(Manifest) when is_map(Manifest) ->
@@ -32,8 +33,14 @@ check_idempotent(#{idempotent := Idempotent} = Manifest) ->
 
 check_timeout_ms(#{timeout_ms := TimeoutMs} = Manifest) ->
     case is_integer(TimeoutMs) andalso TimeoutMs > 0 of
-        true -> normalize_complete(Manifest);
+        true -> check_adapter(Manifest);
         false -> {error, {invalid_timeout_ms, TimeoutMs}}
+    end.
+
+check_adapter(#{adapter := Adapter} = Manifest) ->
+    case lists:member(Adapter, ?ADAPTERS) of
+        true -> normalize_complete(Manifest);
+        false -> {error, {invalid_adapter, Adapter}}
     end.
 
 normalize_complete(#{
