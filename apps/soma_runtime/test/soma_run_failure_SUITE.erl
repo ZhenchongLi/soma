@@ -15,6 +15,7 @@
 -export([test_session_runs_new_run_after_failed/1]).
 -export([test_session_runs_new_run_after_timeout/1]).
 -export([test_session_runs_new_run_after_cancelled/1]).
+-export([test_failure_events_carry_eight_mandatory_fields/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
@@ -28,7 +29,8 @@ all() ->
      test_session_alive_after_cancel,
      test_session_runs_new_run_after_failed,
      test_session_runs_new_run_after_timeout,
-     test_session_runs_new_run_after_cancelled].
+     test_session_runs_new_run_after_cancelled,
+     test_failure_events_carry_eight_mandatory_fields].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -308,6 +310,57 @@ test_session_runs_new_run_after_cancelled(_Config) ->
     Runs = maps:get(runs, Status),
     completed = maps:get(GoodRunId, Runs),
     ok.
+
+%% Criterion 11: each of the five failure events -- `tool.failed',
+%% `step.failed', `run.failed', `run.cancelled', `run.timeout' -- carries all
+%% eight mandatory event fields (`event_id', `timestamp', `session_id',
+%% `run_id', `step_id', `tool_call_id', `event_type', `payload'). Driven through
+%% the real session/run/tool-call layers: one run errors (emitting
+%% `tool.failed'/`step.failed'/`run.failed'), one run is cancelled (emitting
+%% `run.cancelled'), one run overruns (emitting `run.timeout'). The test reads
+%% each event back with soma_event_store:by_run/2 and asserts every one of the
+%% eight keys is present (key exists), not that it is non-`undefined' -- the
+%% store defaults unset keys to `undefined' and not every field applies to
+%% every event.
+test_failure_events_carry_eight_mandatory_fields(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% error run: tool.failed, step.failed, run.failed
+    ErrSteps = [#{id => s1, tool => fail,
+                  args => #{mode => error, reason => boom}}],
+    {ok, ErrRunId} = soma_agent_session:start_run(SessionPid, ErrSteps),
+    ok = wait_for_event(StorePid, ErrRunId, <<"run.failed">>, 50),
+    %% cancelled run: run.cancelled
+    CancelSteps = [#{id => s1, tool => sleep, args => #{ms => 5000}}],
+    {ok, CancelRunId} = soma_agent_session:start_run(SessionPid, CancelSteps),
+    ok = wait_for_event(StorePid, CancelRunId, <<"tool.started">>, 50),
+    SessionPid ! {cancel_run, CancelRunId},
+    ok = wait_for_event(StorePid, CancelRunId, <<"run.cancelled">>, 50),
+    %% timed-out run: run.timeout
+    TimeoutSteps = [#{id => s1, tool => sleep,
+                      args => #{ms => 1000}, timeout_ms => 50}],
+    {ok, TimeoutRunId} = soma_agent_session:start_run(SessionPid, TimeoutSteps),
+    ok = wait_for_event(StorePid, TimeoutRunId, <<"run.timeout">>, 50),
+    MandatoryKeys = [event_id, timestamp, session_id, run_id, step_id,
+                     tool_call_id, event_type, payload, nonexistent_field],
+    Targets = [{ErrRunId, <<"tool.failed">>},
+               {ErrRunId, <<"step.failed">>},
+               {ErrRunId, <<"run.failed">>},
+               {CancelRunId, <<"run.cancelled">>},
+               {TimeoutRunId, <<"run.timeout">>}],
+    lists:foreach(
+      fun({RunId, Type}) ->
+              Event = event_of_type(StorePid, RunId, Type),
+              [true = maps:is_key(K, Event) || K <- MandatoryKeys]
+      end,
+      Targets),
+    ok.
+
+%% Read the first event of Type for RunId.
+event_of_type(StorePid, RunId, Type) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    [Event | _] = [E || E <- Events, maps:get(event_type, E) =:= Type],
+    Event.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
