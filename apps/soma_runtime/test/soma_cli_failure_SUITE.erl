@@ -343,8 +343,8 @@ test_session_alive_runs_new_run_after_cli_failure(_Config) ->
     ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 250),
     Events = soma_event_store:by_run(StorePid, RunId2),
     Types = [maps:get(event_type, E) || E <- Events],
-    %% STAGED RED: the second run actually completes, so asserting it failed fires.
-    true = lists:member(<<"run.failed">>, Types),
+    %% the fresh run on the still-alive session ran to completion.
+    true = lists:member(<<"run.completed">>, Types),
     ok.
 
 %% Write a tiny cli helper that exits 0 immediately. Used as the second, short run
