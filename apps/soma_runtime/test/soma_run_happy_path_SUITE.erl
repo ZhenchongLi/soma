@@ -155,13 +155,12 @@ test_each_tool_call_has_distinct_pid(_Config) ->
     true = is_pid(RunPid),
     Events = soma_event_store:by_run(StorePid, RunId),
     AllPids = [maps:get(tool_call_pid, E, undefined) || E <- Events],
-    ToolPids = [P || P <- AllPids, P =/= undefined],
-    %% one tool-call worker pid per step
+    ToolPids = lists:usort([P || P <- AllPids, P =/= undefined]),
+    %% one distinct tool-call worker pid per step (the pid travels on both
+    %% `tool.started' and `tool.succeeded', so de-duplicate before counting)
     3 = length(ToolPids),
     %% every worker pid is actually a pid
     true = lists:all(fun erlang:is_pid/1, ToolPids),
-    %% all worker pids are distinct from each other
-    3 = length(lists:usort(ToolPids)),
     %% no worker pid is the run pid
     false = lists:member(RunPid, ToolPids),
     ok.
