@@ -29,3 +29,23 @@ contains(Haystack, Needle) ->
 
 manifest_doc_has_heading_test() ->
     test_manifest_doc_has_heading().
+
+%% Criterion 2: the four required metadata keys are listed and explained.
+test_manifest_doc_lists_four_keys() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    [?assert(contains(Lower, K)) || K <- [<<"name">>, <<"effect">>,
+                                          <<"idempotent">>, <<"timeout_ms">>]],
+    %% each key is accompanied by an explanation of what it means
+    [?assert(key_is_explained(Lower, K)) || K <- [<<"name">>, <<"effect">>,
+                                                  <<"idempotent">>, <<"timeout_ms">>]].
+
+%% A key is explained when it appears on a line that also carries prose
+%% describing it (the line is longer than the bare key reference).
+key_is_explained(Lower, Key) ->
+    Lines = binary:split(Lower, <<"\n">>, [global]),
+    KeyLines = [L || L <- Lines, contains(L, Key)],
+    lists:any(fun(L) -> byte_size(L) > byte_size(Key) + 12 end, KeyLines).
+
+manifest_doc_lists_four_keys_test() ->
+    test_manifest_doc_lists_four_keys().
