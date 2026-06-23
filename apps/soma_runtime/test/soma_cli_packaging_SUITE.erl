@@ -81,7 +81,7 @@ test_priv_helper_resolvable_and_runnable_in_place(_Config) ->
     true = filelib:is_file(Executable),
     %% spawn the helper in place from the resolved path and read its stdout
     Output = run_executable(Executable, ["hello"]),
-    Expected = <<"WORLD">>,
+    Expected = <<"HELLO">>,
     Expected = Output,
     ok.
 
