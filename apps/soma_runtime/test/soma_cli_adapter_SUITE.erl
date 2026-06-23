@@ -6,11 +6,13 @@
 -export([test_cli_manifest_resolves_to_cli_descriptor/1]).
 -export([test_cli_run_reaches_completed/1]).
 -export([test_cli_tool_call_has_distinct_pid/1]).
+-export([test_cli_argv_metacharacter_is_literal/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
      test_cli_run_reaches_completed,
-     test_cli_tool_call_has_distinct_pid].
+     test_cli_tool_call_has_distinct_pid,
+     test_cli_argv_metacharacter_is_literal].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -96,6 +98,59 @@ test_cli_tool_call_has_distinct_pid(Config) ->
     %% the cli call ran in its own worker, not inside the run
     true = (StartedPid =/= RunPid),
     ok.
+
+%% Criterion 4: an argv element containing a shell metacharacter reaches the
+%% external program as one literal argument. The step's argv carries
+%% `"$(echo pwned)"' -- a command substitution a shell would expand to `pwned'.
+%% The helper echoes its first argv argument verbatim to stdout, and the test
+%% asserts the recorded step output contains the literal `$(echo pwned)',
+%% proving the adapter launched the program through a port with separate
+%% executable and argv rather than a shell command string (which would have
+%% substituted it away).
+test_cli_argv_metacharacter_is_literal(_Config) ->
+    Helper = write_echo_first_helper(),
+    StorePid = event_store_pid(),
+    Metachar = "$(echo pwned)",
+    Manifest = #{name => cli_echo,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => [Metachar]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_echo, args => #{input => <<"ignored">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Output = step_output(Events),
+    true = is_binary(Output),
+    %% the metacharacter argument arrived literally, not shell-expanded to "pwned"
+    {match, _} = re:run(Output, "pwned\\)"),
+    nomatch = re:run(Output, "\\$\\(echo pwned\\)"),
+    ok.
+
+%% Read the step output recorded on the cli step's `step.succeeded' event.
+step_output(Events) ->
+    [E] = [Ev || Ev <- Events,
+                 maps:get(event_type, Ev) =:= <<"step.succeeded">>],
+    maps:get(output, maps:get(payload, E)).
+
+%% Write a tiny cli helper that prints its first argv argument verbatim to
+%% stdout, then exits 0. Used to observe one chosen argv element exactly as the
+%% program received it.
+write_echo_first_helper() ->
+    Base = filename:basedir(user_cache, "soma_cli_adapter_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "echo_first.sh"),
+    Script = <<"#!/bin/sh\n"
+               "printf '%s' \"$1\"\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Read the tool_call_pid off the single event of the given type for the cli
 %% step.
