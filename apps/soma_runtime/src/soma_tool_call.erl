@@ -58,8 +58,10 @@ run_cli(Executable, Argv, Input, ToolCallId, ReplyTo) ->
 %% reported to the run as a raw port exception through the monitor's `'DOWN''
 %% path; catching it lets the worker return a named `{error, Reason}' instead.
 %% `open_port' does not expose a stable, distinct error term for the
-%% missing-path case, so the missing case is identified by a stat on the failure
-%% path (the happy path never stats).
+%% missing-path versus not-executable cases, so the failure path stats the file
+%% to tell them apart (the happy path never stats): a path that is not a file is
+%% the missing case; a path that is a file but still failed to spawn is the
+%% permission / not-executable case.
 open_cli_port(Executable, Args) ->
     try
         Port = open_port({spawn_executable, Executable},
@@ -70,7 +72,9 @@ open_cli_port(Executable, Args) ->
         error:_ ->
             case filelib:is_file(Executable) of
                 false ->
-                    {error, {cli_executable_not_found, Executable}}
+                    {error, {cli_executable_not_found, Executable}};
+                true ->
+                    {error, {cli_executable_not_executable, Executable}}
             end
     end.
 
