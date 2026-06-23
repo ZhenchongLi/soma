@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %% Public API
--export([start_link/0, append/2, all/1]).
+-export([start_link/0, append/2, all/1, by_run/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
@@ -24,6 +24,10 @@ append(Pid, Event) when is_map(Event) ->
 all(Pid) ->
     gen_server:call(Pid, all).
 
+-spec by_run(pid(), term()) -> [map()].
+by_run(Pid, RunId) ->
+    gen_server:call(Pid, {by_run, RunId}).
+
 %%% gen_server callbacks
 
 init([]) ->
@@ -32,7 +36,10 @@ init([]) ->
 handle_call({append, Event}, _From, State = #state{events = Events}) ->
     {reply, ok, State#state{events = [Event | Events]}};
 handle_call(all, _From, State = #state{events = Events}) ->
-    {reply, lists:reverse(Events), State}.
+    {reply, lists:reverse(Events), State};
+handle_call({by_run, RunId}, _From, State = #state{events = Events}) ->
+    Matching = [E || E <- lists:reverse(Events), maps:get(run_id, E, undefined) =:= RunId],
+    {reply, Matching, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
