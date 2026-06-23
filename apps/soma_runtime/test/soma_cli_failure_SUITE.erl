@@ -82,7 +82,7 @@ test_missing_executable_reaches_run_failed_trail(_Config) ->
     ToolIdx = index_of(<<"tool.failed">>, Types),
     StepIdx = index_of(<<"step.failed">>, Types),
     RunIdx = index_of(<<"run.failed">>, Types),
-    true = ToolIdx > StepIdx,
+    true = ToolIdx < StepIdx,
     true = StepIdx < RunIdx,
     ok.
 
