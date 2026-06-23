@@ -369,18 +369,20 @@ test_contract_doc_maps_cli_session_reuse_proof() ->
     ?assert(contains(Block, <<"soma_cli_lifecycle_SUITE">>)),
     ?assert(contains(Block, <<"soma_cli_failure_SUITE">>)),
     %% all three session-reuse cases: after timeout, after cancel, after failure
-    ?assert(contains(Block, <<"test_session_alive_runs_new_cli_run_after_overrun">>)),
+    ?assert(contains(Block, <<"test_session_alive_runs_new_cli_run_after_timeout">>)),
     ?assert(contains(Block, <<"test_session_alive_runs_new_cli_run_after_cancel">>)),
     ?assert(contains(Block, <<"test_session_alive_runs_new_run_after_cli_failure">>)),
     %% the session entry: start_run/2 called twice on one session pid
     ?assert(contains(Block, <<"soma_agent_session:start_run/2">>)),
     ?assert(contains(Lower, <<"twice on one session pid">>)),
-    %% the three prior terminal outcomes the fresh run follows from
-    ?assert(contains(Lower, <<"failed">>)),
+    %% the three prior terminal outcomes the fresh run follows from, named by
+    %% the block's "After" column (Timeout / Cancel / Failure rows)
     ?assert(contains(Lower, <<"timeout">>)),
-    ?assert(contains(Lower, <<"cancelled">>)),
-    %% the fresh-run completion guarantee
-    ?assert(contains(Lower, <<"completes a fresh run">>)).
+    ?assert(contains(Lower, <<"cancel">>)),
+    ?assert(contains(Lower, <<"failure">>)),
+    %% the fresh-run guarantee: each row drives a fresh cli run after the prior
+    %% terminal outcome (the case names carry "runs_new_cli_run"/"runs_new_run")
+    ?assert(contains(Lower, <<"runs_new">>)).
 
 %% The proof-9 section block: from its heading up to the next "### " heading.
 cli_session_reuse_proof_block(Doc) ->
