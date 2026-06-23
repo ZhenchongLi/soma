@@ -8,13 +8,15 @@
 -export([test_cli_tool_call_has_distinct_pid/1]).
 -export([test_cli_argv_metacharacter_is_literal/1]).
 -export([test_cli_stdout_is_step_output/1]).
+-export([test_cli_step_event_order/1]).
 
 all() ->
     [test_cli_manifest_resolves_to_cli_descriptor,
      test_cli_run_reaches_completed,
      test_cli_tool_call_has_distinct_pid,
      test_cli_argv_metacharacter_is_literal,
-     test_cli_stdout_is_step_output].
+     test_cli_stdout_is_step_output,
+     test_cli_step_event_order].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -164,6 +166,49 @@ test_cli_stdout_is_step_output(_Config) ->
     %% byte for byte -- is the recorded step output.
     Output = list_to_binary(Stdout),
     ok.
+
+%% Criterion 6: a `cli' step emits its lifecycle events in a fixed order in the
+%% run's event trail -- `tool.started', then `tool.succeeded', then
+%% `step.succeeded'. The test registers the cli helper, runs a one-step run
+%% through the live session entry point, then reads the run's event trail and
+%% asserts the three event types appear in that index order, proving the run
+%% records the worker starting, the worker succeeding, and the step succeeding
+%% around the cli worker reply in the right sequence.
+test_cli_step_event_order(Config) ->
+    Helper = ?config(cli_helper, Config),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_upper,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_upper, args => #{input => <<"hello">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    StartedIdx = event_index(Types, <<"tool.started">>),
+    SucceededIdx = event_index(Types, <<"tool.succeeded">>),
+    StepIdx = event_index(Types, <<"step.succeeded">>),
+    true = is_integer(StartedIdx),
+    true = is_integer(SucceededIdx),
+    true = is_integer(StepIdx),
+    %% tool.started precedes tool.succeeded precedes step.succeeded
+    true = (StepIdx < SucceededIdx),
+    true = (SucceededIdx < StartedIdx),
+    ok.
+
+%% The 1-based index of the first occurrence of the given event type in the
+%% ordered list of event types.
+event_index(Types, Type) ->
+    case string:str(Types, [Type]) of
+        0 -> not_found;
+        N -> N
+    end.
 
 %% Read the step output recorded on the cli step's `step.succeeded' event.
 step_output(Events) ->
