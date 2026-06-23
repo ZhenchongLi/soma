@@ -30,3 +30,26 @@ test_normalize_accepts_cli() ->
 
 normalize_accepts_cli_test() ->
     test_normalize_accepts_cli().
+
+test_normalize_rejects_missing_shared_field() ->
+    Base = #{
+        name => file_read,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_file_read
+    },
+    lists:foreach(
+        fun(Key) ->
+            Manifest = maps:remove(Key, Base),
+            ?assertEqual(
+                {error, {missing_field, Key}},
+                soma_tool_manifest:normalize(Manifest)
+            )
+        end,
+        [name, effect, idempotent, timeout_ms, adapter]
+    ).
+
+normalize_rejects_missing_shared_field_test() ->
+    test_normalize_rejects_missing_shared_field().
