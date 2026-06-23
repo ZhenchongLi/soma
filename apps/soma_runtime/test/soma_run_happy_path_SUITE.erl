@@ -14,6 +14,7 @@
 -export([test_event_trail_in_order/1]).
 -export([test_per_step_events_carry_real_ids/1]).
 -export([test_from_step_resolves_to_prior_output/1]).
+-export([test_demo_file_read_echo_file_write/1]).
 
 all() ->
     [test_sup_has_four_live_children,
@@ -26,7 +27,8 @@ all() ->
      test_each_tool_call_has_distinct_pid,
      test_event_trail_in_order,
      test_per_step_events_carry_real_ids,
-     test_from_step_resolves_to_prior_output].
+     test_from_step_resolves_to_prior_output,
+     test_demo_file_read_echo_file_write].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -246,6 +248,36 @@ test_from_step_resolves_to_prior_output(_Config) ->
     S1Out = S2Out,
     ok.
 
+%% Criterion 12: the README demo runs end to end. A step list
+%% `file_read -> echo -> file_write' wired with `from_step' reads a sandbox
+%% input file, passes its bytes through echo, and writes them to a sandbox
+%% output path. After the run completes the output file holds the input bytes
+%% and the run reaches `completed'. The whole demo path runs through the real
+%% session/run/tool-call layers; nothing is bypassed.
+test_demo_file_read_echo_file_write(_Config) ->
+    StorePid = event_store_pid(),
+    Root = make_temp_root(),
+    Bytes = <<"bytes that flow read -> echo -> write">>,
+    ok = file:write_file(filename:join(Root, "in.txt"), Bytes),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => read, tool => file_read,
+               args => #{path => <<"in.txt">>, root => Root}},
+             #{id => echo, tool => echo,
+               args => #{from_step => read}},
+             #{id => write, tool => file_write,
+               args => #{path => <<"out.txt">>, root => Root,
+                         bytes => {from_step, echo}}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    %% the output file under the sandbox root holds the original input bytes
+    {ok, Written} = file:read_file(filename:join(Root, "out.txt")),
+    Bytes = Written,
+    %% and the run reached completed
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.completed">>, Types),
+    ok.
+
 %% The recorded output of a step, read from its step.succeeded event payload.
 step_output(Events, StepId) ->
     [E] = [Ev || Ev <- Events,
@@ -287,3 +319,12 @@ event_store_pid() ->
     {soma_event_store, Pid, _Type, _Mods} =
         lists:keyfind(soma_event_store, 1, Children),
     Pid.
+
+%% A fresh sandbox root for the demo's file tools, mirroring the file-tools
+%% suite's pattern.
+make_temp_root() ->
+    Base = filename:basedir(user_cache, "soma_run_happy_path_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Root = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Root, "x")),
+    Root.
