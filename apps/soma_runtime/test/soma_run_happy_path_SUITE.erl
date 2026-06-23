@@ -8,13 +8,15 @@
 -export([test_session_starts_and_holds_id/1]).
 -export([test_session_started_event_recorded/1]).
 -export([test_start_run_returns_id_and_spawns_run/1]).
+-export([test_run_accepted_event_recorded/1]).
 
 all() ->
     [test_sup_has_four_live_children,
      test_registry_seeded_with_v01_tools,
      test_session_starts_and_holds_id,
      test_session_started_event_recorded,
-     test_start_run_returns_id_and_spawns_run].
+     test_start_run_returns_id_and_spawns_run,
+     test_run_accepted_event_recorded].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -85,6 +87,17 @@ test_start_run_returns_id_and_spawns_run(_Config) ->
     RunPids = [Pid || {_Id, Pid, _Type, _Mods} <- Children, is_pid(Pid)],
     1 = length(RunPids),
     true = lists:all(fun(Pid) -> is_process_alive(Pid) end, RunPids),
+    ok.
+
+%% Criterion 6: when a run request is accepted, a `run.accepted' event is
+%% recorded in the event store for that run, readable back via by_run/2.
+test_run_accepted_event_recorded(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, []),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.accepted">>, Types),
     ok.
 
 event_store_pid() ->
