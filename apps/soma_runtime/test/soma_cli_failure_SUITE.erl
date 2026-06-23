@@ -7,12 +7,14 @@
 -export([test_missing_executable_reaches_run_failed_trail/1]).
 -export([test_non_executable_permission_error/1]).
 -export([test_non_zero_exit_carries_status/1]).
+-export([test_failure_payload_carries_output_excerpt/1]).
 
 all() ->
     [test_missing_executable_named_error,
      test_missing_executable_reaches_run_failed_trail,
      test_non_executable_permission_error,
-     test_non_zero_exit_carries_status].
+     test_non_zero_exit_carries_status,
+     test_failure_payload_carries_output_excerpt].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -165,6 +167,64 @@ test_non_zero_exit_carries_status(_Config) ->
     %% the exit status 3 rides in the failure payload.
     {cli_exit_status, 3, _} = Reason,
     ok.
+
+%% Criterion 5: when the external program emits diagnostic output before failing,
+%% the failure payload's excerpt carries that captured output. Driven through the
+%% full session/run/tool-call stack via soma_agent_session:start_run/2. The helper
+%% prints a known short marker (well under the byte limit) to stdout, then
+%% `exit 1'. Because a spawn_executable port merges stdout and stderr, the marker
+%% lands in the merged stream `collect_cli/2' captures, and the non-zero exit
+%% builds `{cli_exit_status, 1, Excerpt}' from it. The proof is that the
+%% `tool.failed' event's `payload.reason' is `{cli_exit_status, 1, Excerpt}' and
+%% `Excerpt' contains the marker bytes -- the merged captured output rode into the
+%% failure payload.
+test_failure_payload_carries_output_excerpt(_Config) ->
+    StorePid = event_store_pid(),
+    Marker = <<"DIAGNOSTIC-MARKER-9f3a">>,
+    Helper = write_diagnostic_helper(Marker, 1),
+    Manifest = #{name => cli_diag_excerpt,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cli_diag_excerpt,
+               args => #{input => <<"ignored">>}, timeout_ms => 5000}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 100),
+    FailEvent = event_of_type(StorePid, RunId, <<"tool.failed">>),
+    Payload = maps:get(payload, FailEvent),
+    Reason = maps:get(reason, Payload),
+    {cli_exit_status, 1, Excerpt} = Reason,
+    %% staged red: assert the excerpt carries a marker the helper never prints, so
+    %% the assertion fires against the real captured output.
+    true = is_binary(Excerpt),
+    true = contains(Excerpt, <<"NEVER-PRINTED-MARKER">>),
+    ok.
+
+%% Write a cli helper that prints the given marker to stdout, then exits with the
+%% given status. The marker is short (well under the adapter's byte limit), so the
+%% excerpt carries it whole. Returns the absolute helper path.
+write_diagnostic_helper(Marker, Status) ->
+    Base = filename:basedir(user_cache, "soma_cli_failure_SUITE"),
+    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(Base, Unique),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "diag.sh"),
+    Script = iolist_to_binary(
+               ["#!/bin/sh\n",
+                "printf '%s' '", Marker, "'\n",
+                "exit ", integer_to_list(Status), "\n"]),
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
+
+%% True if Haystack contains Needle as a substring of bytes.
+contains(Haystack, Needle) ->
+    binary:match(Haystack, Needle) =/= nomatch.
 
 %% Write a tiny cli helper that exits with the given status. It ignores argv and
 %% never reads stdin, matching the cli adapter's argv input protocol. Returns the
