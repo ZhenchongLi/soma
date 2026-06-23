@@ -362,7 +362,7 @@ test_builtin_manifest_metadata_matches_describe() ->
     lists:foreach(
         fun(Module) ->
             {ok, Manifest} = soma_tool_manifest:normalize(Module:manifest()),
-            Describe = (Module:describe())#{timeout_ms => -42},
+            Describe = Module:describe(),
             ?assertEqual(
                 maps:with(MetaKeys, Describe),
                 maps:with(MetaKeys, Manifest)
