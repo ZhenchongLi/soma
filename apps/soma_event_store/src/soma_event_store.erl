@@ -63,13 +63,17 @@ normalize(Event) ->
                  true -> Event;
                  false -> Event#{event_id => make_event_id()}
              end,
+    WithTimestamp = case maps:get(timestamp, WithId, undefined) of
+                        undefined -> WithId#{timestamp => erlang:system_time(nanosecond)};
+                        _ -> WithId
+                    end,
     lists:foldl(fun(Key, Acc) ->
                         case maps:is_key(Key, Acc) of
                             true -> Acc;
                             false -> Acc#{Key => undefined}
                         end
                 end,
-                WithId,
+                WithTimestamp,
                 ?MANDATORY_KEYS).
 
 make_event_id() ->
