@@ -177,7 +177,7 @@ test_event_trail_in_order(_Config) ->
     ExpectedRunTrail =
         [<<"run.accepted">>,
          <<"run.started">>,
-         <<"tool.started">>, <<"step.started">>,
+         <<"step.started">>, <<"tool.started">>,
          <<"tool.succeeded">>, <<"step.succeeded">>,
          <<"step.started">>, <<"tool.started">>,
          <<"tool.succeeded">>, <<"step.succeeded">>,
