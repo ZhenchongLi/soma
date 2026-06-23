@@ -5,12 +5,14 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_cli_overrun_reaches_timeout/1,
          test_cli_external_process_dead_after_timeout/1,
-         test_cli_cancel_reaches_cancelled/1]).
+         test_cli_cancel_reaches_cancelled/1,
+         test_cli_external_process_dead_after_cancel/1]).
 
 all() ->
     [test_cli_overrun_reaches_timeout,
      test_cli_external_process_dead_after_timeout,
-     test_cli_cancel_reaches_cancelled].
+     test_cli_cancel_reaches_cancelled,
+     test_cli_external_process_dead_after_cancel].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -128,6 +130,46 @@ test_cli_cancel_reaches_cancelled(_Config) ->
     %% the run records run.cancelled and never run.completed
     true = lists:member(<<"run.cancelled">>, Types),
     false = lists:member(<<"run.completed">>, Types),
+    ok.
+
+%% Criterion 4: the external OS process a cancelled `cli' step launched is no
+%% longer alive once the run has reached `cancelled'. The proof mirrors the
+%% timeout case: the helper sleeps, then `touch'es a marker file only if it runs
+%% to completion. The run is driven through the real session/run layers with a
+%% generous step budget so the per-step timer never fires; once the step is in
+%% flight (the worker has emitted `tool.started') the test cancels through the
+%% session's own `{cancel_run, RunId}' interface, driving the run to `cancelled'.
+%% We then wait past the helper's sleep window and assert the marker does NOT
+%% exist: a killed external process never reaches its `touch', while a leaked
+%% orphan writes the marker once its sleep elapses, so the marker's absence is
+%% the liveness check that the cancel path killed the external process too.
+test_cli_external_process_dead_after_cancel(_Config) ->
+    {Helper, Marker} = write_marker_helper(),
+    StorePid = event_store_pid(),
+    Manifest = #{name => cli_cancel_marker,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 60000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => [Marker]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    %% the helper sleeps 2s then writes the marker; the step budget is 60s so the
+    %% per-step timer never fires -- only the cancel ends the step.
+    Steps = [#{id => s1, tool => cli_cancel_marker,
+               args => #{input => <<"ignored">>}, timeout_ms => 60000}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    %% wait until the step is actually in flight before cancelling.
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 100),
+    %% cancel through the session's own interface, the README-named cancel path.
+    SessionPid ! {cancel_run, RunId},
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    %% wait past the helper's 2s sleep window: a leaked orphan would write the
+    %% marker after its sleep elapses, so by now an orphan's side effect is visible.
+    timer:sleep(3000),
+    %% a killed external process never reached its `touch', so the marker is absent.
+    false = filelib:is_file(Marker),
     ok.
 
 %% Write a cli helper that sleeps past any step budget, then `touch'es the marker
