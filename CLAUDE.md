@@ -4,9 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-The **v0.1 runtime is built and merged**: the rebar3 umbrella (`apps/soma_runtime`, `apps/soma_tools`, `apps/soma_event_store`) is in place, the Erlang toolchain (Erlang/OTP 29, rebar3 3.27) is installed, and all ten proofs of the v0.1 test contract pass (EUnit 21, CT 28, all green on `main`). `README.md` remains the authoritative spec — read it before extending anything; the sections below summarize what shapes day-to-day work.
+The **v0.1 and v0.2 runtimes are built and merged** — all green on `main` (EUnit 72, CT 61), Erlang/OTP 29 + rebar3 3.27. `README.md` remains the authoritative spec — read it before extending anything; the sections below summarize what shapes day-to-day work.
 
-Done so far: the in-memory event store; the tool behaviour + registry + the five v0.1 tools; the session/run/tool-call execution core (sequential steps, `from_step` wiring, the `file_read → echo → file_write` demo); and the full failure semantics (error, crash isolation, timeout, cancellation). What remains for the *full* README "v0.1 Done Means": the Linux x86_64 + arm64 release packaging (build/CI work, not runtime logic).
+**v0.1** (the runtime core): the in-memory event store; the tool behaviour + registry + the five v0.1 tools; the session/run/tool-call execution core (sequential steps, `from_step` wiring, the `file_read → echo → file_write` demo); and the full failure semantics (error, crash isolation, timeout, cancellation). All ten proofs of the v0.1 test contract pass.
+
+**v0.2** (tool manifests + CLI/port adapter, issues #14–#23): a normalized tool **manifest** contract (`docs/tool-manifest.md`) validated by `soma_tool_manifest:normalize/1`; the registry upgraded from `name => module` to `name => descriptor` (`resolve_descriptor/1`), with built-ins registering through their own `manifest/0`; and a one-shot **`cli` adapter** in `soma_tool_call` that launches an external executable through a port (executable + argv, no shell) with real timeout/cancel teardown of the external OS process, normalized failures, a minimal environment, and a fixed cwd. The v0.2 process-behaviour proof set is published in `docs/v0.2-test-contract.md`.
+
+What remains for the *full* README "Done Means": the Linux x86_64 + arm64 release packaging (build/CI work, not runtime logic) — macOS arm64 is built and verified.
 
 ## What Soma is
 
@@ -31,7 +35,7 @@ soma_sup
 
 - **`soma_agent_session`** (`gen_server`, long-lived): owns `session_id` and session metadata, accepts run requests, starts `soma_run` under `soma_run_sup`, tracks active runs, and must **survive failed/timed-out/cancelled runs**. It never executes tool logic directly.
 - **`soma_run`** (`gen_statem`, short-lived): owns one execution attempt — step cursor, step results, active tool-call pid, run timeout timer, cancellation, and event emission. Terminal states are explicit: `completed | failed | cancelled | timeout`. It starts each tool call as a monitored worker; **a tool crash is data for the run, not a crash of the session**. Steps are iterated inside `soma_run` itself — its `executing` / `waiting_tool` states are the step cursor, so there is no separate per-step process (the design's `soma_step` was folded into the state machine); `soma_tool_call` is the only worker it spawns. The per-step timeout is a `state_timeout`; a crashing tool arrives as the worker monitor's `'DOWN'`.
-- **`soma_tool_call`** (disposable worker): executes exactly one tool invocation, returns a result/error message to `soma_run`, then dies.
+- **`soma_tool_call`** (disposable worker): executes exactly one tool invocation, returns a result/error message to `soma_run`, then dies. It branches on the resolved descriptor's `adapter`: an `erlang_module` tool runs `Module:invoke/2` in-BEAM; a `cli` tool launches an external executable through a port (`open_port({spawn_executable, …})`, executable + argv, no shell) and reports the spawned external **OS pid** up to `soma_run` — because `exit(WorkerPid, kill)` is untrappable, the longer-lived run holds the pid and kills the external process (shell-free, via `os:find_executable("kill")`) on timeout/cancel, so a hanging cli program cannot outlive its run.
 
 ## Non-negotiable constraints
 
@@ -58,6 +62,8 @@ A tool is an Erlang behaviour:
 
 Tool metadata declares `effect` (`identity` | `reader` | `state`), `idempotent`, and `timeout_ms`. v0.1 tools (built): `echo`, `sleep`, `fail` (errors/crashes, for tests), and `file_read` / `file_write` (sandboxed root, sharing `soma_tool_file` for path resolution). They register under those atom names — the README's `file.read` / `file.write` map to `file_read` / `file_write`. `llm.mock` was left out of v0.1; real LLM providers wait until runtime behavior is proven.
 
+**v0.2 manifests + adapters.** A tool now also has a **manifest** — its `describe/0` metadata plus an `adapter` and adapter-specific fields — validated and normalized by `soma_tool_manifest:normalize/1` into the descriptor the registry stores (so the registry holds `name => descriptor`, resolved via `resolve_descriptor/1`). Two adapters exist: `erlang_module` (the in-BEAM built-ins, each exposing `manifest/0` = `(describe())#{adapter => erlang_module, module => ?MODULE}`) and `cli` (`#{adapter => cli, executable, argv}`) for one-shot external executables. The `cli` execution protocol — input delivered as the **final argv argument** (Erlang ports can't half-close stdin), stdout captured as the step output, exit 0 = success — is documented in `docs/tool-manifest.md`. A packaged sample helper lives at `apps/soma_tools/priv/cli/soma_sample_upper`, referenced at runtime via `code:priv_dir/1`. CLI failures normalize to named bounded `{error, _}` (missing/non-executable, nonzero exit with status, output over a byte limit); the cli child gets a minimal env (only `PATH`) and a fixed cwd; argv is never shell-interpreted.
+
 ## Steps (not an IR yet)
 
 v0.1 uses a deliberately small step-list format — a list of maps with `id`, `tool`, `args` (with simple `from_step` references to prior output), and `timeout_ms`. The executor is strictly sequential: validate step → start tool call → wait for result → record event → next step. No branching, loops, DAG, or variables. The runtime must not depend on where steps came from (future planners all compile down to this format).
@@ -67,6 +73,8 @@ v0.1 uses a deliberately small step-list format — a list of maps with `id`, `t
 Per `README.md`, the v0.1 end-to-end test (demo: `file_read -> echo -> file_write`) matters more than adding integrations. Tests must **assert process survival, not just return values**. The ten required proofs: session starts; run accepted; steps run sequentially; each tool call has its own process; events emitted; a failing tool fails the run; a crashed tool doesn't kill the session; a hanging tool times out; cancelling a run stops the active tool; the session can start another run afterward.
 
 All ten are implemented and green: the happy-path proofs live in `apps/soma_runtime/test/soma_run_happy_path_SUITE.erl` and the failure-mode proofs in `soma_run_failure_SUITE.erl`. Hold this bar (real process-survival assertions) for any extension.
+
+v0.2 extends the contract without weakening it. Its process-behaviour proof set — manifests validate before registration; built-ins run through manifests; a `cli` tool succeeds through the real session → run → tool-call layers with a distinct worker pid and the same event trail; nonzero / missing / hanging / cancelled `cli` runs fail-or-stop (and the external OS process is verifiably gone) while the session survives and runs again — is published in `docs/v0.2-test-contract.md`, each proof mapped to the suite and case that proves it (`soma_cli_adapter_SUITE`, `soma_cli_lifecycle_SUITE`, `soma_cli_failure_SUITE`, `soma_cli_packaging_SUITE`, `soma_tool_manifest_tests`, `soma_tool_registry_tests`). Same bar applies.
 
 ## Build commands
 

@@ -1,13 +1,15 @@
 # Roadmap
 
 This document tracks ideas that should wait until the Erlang runtime is solid.
-The README intentionally focuses on v0.1 implementation work.
+
+**Status:** v0.1 (runtime core) and v0.2 (tool manifests + CLI/port adapter) are
+built and merged. v0.3 and beyond below are still future layers.
 
 ## Sequence
 
 ```text
-v0.1  Erlang/OTP agent runtime
-v0.2  tool manifests and CLI/port adapter hardening
+v0.1  Erlang/OTP agent runtime                       [done]
+v0.2  tool manifests and CLI/port adapter hardening  [done]
 v0.3  LFE DSL -> steps
 v0.4  MCP client adapter
 v0.5  LLM planner adapter
