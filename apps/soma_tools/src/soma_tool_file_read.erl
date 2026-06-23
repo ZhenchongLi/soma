@@ -17,8 +17,12 @@ describe() ->
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
     {ok, soma_tool:output()} | {error, soma_tool:error()}.
 invoke(#{path := Path}, #{root := Root}) ->
-    Full = filename:join(Root, Path),
-    case file:read_file(Full) of
-        {ok, Bytes} -> {ok, Bytes};
-        {error, Reason} -> {error, Reason}
+    case soma_tool_file:resolve_under_root(Root, Path) of
+        {ok, Full} ->
+            case file:read_file(Full) of
+                {ok, Bytes} -> {ok, Bytes};
+                {error, Reason} -> {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
     end.
