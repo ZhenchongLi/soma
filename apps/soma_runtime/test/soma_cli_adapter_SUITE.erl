@@ -162,7 +162,7 @@ test_cli_stdout_is_step_output(_Config) ->
     true = is_binary(Output),
     %% the program printed a fixed marker to stdout, and that exact stdout --
     %% byte for byte -- is the recorded step output.
-    Output = <<"not-the-stdout">>,
+    Output = list_to_binary(Stdout),
     ok.
 
 %% Read the step output recorded on the cli step's `step.succeeded' event.
