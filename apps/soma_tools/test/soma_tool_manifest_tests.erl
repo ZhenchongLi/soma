@@ -225,7 +225,7 @@ test_reject_reason_names_field() ->
     },
     Cases = [
         {maps:remove(name, ErlangBase), name},
-        {ErlangBase#{effect => destroyer}, idempotent},
+        {ErlangBase#{effect => destroyer}, effect},
         {ErlangBase#{idempotent => yes}, idempotent},
         {ErlangBase#{timeout_ms => 0}, timeout_ms},
         {ErlangBase#{adapter => grpc}, adapter},
