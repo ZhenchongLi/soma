@@ -126,7 +126,7 @@ test_cli_cancel_reaches_cancelled(_Config) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     Types = [maps:get(event_type, E) || E <- Events],
     %% the run records run.cancelled and never run.completed
-    true = lists:member(<<"run.timeout">>, Types),
+    true = lists:member(<<"run.cancelled">>, Types),
     false = lists:member(<<"run.completed">>, Types),
     ok.
 
