@@ -136,10 +136,12 @@ waiting_tool(info, {'DOWN', MRef, process, WorkerPid, Reason},
 %% move to the `timeout' state. The brutal kill makes cancellation real rather
 %% than a flag checked later.
 waiting_tool(state_timeout, step_timeout,
-             Data = #data{worker_pid = WorkerPid, worker_mref = MRef}) ->
+             Data = #data{worker_pid = WorkerPid, worker_mref = MRef,
+                          current = Step, tool_call_id = ToolCallId}) ->
     demonitor_flush(MRef),
     exit(WorkerPid, kill),
-    emit(Data, <<"run.timeout">>, #{}),
+    emit(Data, <<"run.timeout">>,
+         #{step_id => maps:get(id, Step), tool_call_id => ToolCallId}),
     notify_session_timeout(Data),
     {next_state, timeout, Data#data{current = undefined,
                                     tool_call_id = undefined,
@@ -150,10 +152,12 @@ waiting_tool(state_timeout, step_timeout,
 %% session, and move to the `cancelled' state. The brutal kill makes
 %% cancellation real rather than a flag checked at the end.
 waiting_tool(info, cancel,
-             Data = #data{worker_pid = WorkerPid, worker_mref = MRef}) ->
+             Data = #data{worker_pid = WorkerPid, worker_mref = MRef,
+                          current = Step, tool_call_id = ToolCallId}) ->
     demonitor_flush(MRef),
     exit(WorkerPid, kill),
-    emit(Data, <<"run.cancelled">>, #{}),
+    emit(Data, <<"run.cancelled">>,
+         #{step_id => maps:get(id, Step), tool_call_id => ToolCallId}),
     notify_session_cancelled(Data),
     {next_state, cancelled, Data#data{current = undefined,
                                       tool_call_id = undefined,
