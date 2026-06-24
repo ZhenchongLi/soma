@@ -88,8 +88,9 @@ test_dsl_demo_event_trail(_Config) ->
     ok = wait_for_event(StorePid, RunId, <<"run.completed">>, 100),
     RunEvents = soma_event_store:by_run(StorePid, RunId),
     RunTrail = [maps:get(event_type, E) || E <- RunEvents],
-    %% STAGED RED: wrong expected trail — extra phantom event forces failure.
-    %% Green phase removes this phantom entry.
+    %% Exact ordered trail for a three-step run. This is a pin: any change to
+    %% how soma_run emits events (e.g. adding a new event type between existing
+    %% ones) will break this test intentionally.
     ExpectedRunTrail =
         [<<"run.accepted">>,
          <<"run.started">>,
@@ -99,8 +100,7 @@ test_dsl_demo_event_trail(_Config) ->
          <<"tool.succeeded">>, <<"step.succeeded">>,
          <<"step.started">>, <<"tool.started">>,
          <<"tool.succeeded">>, <<"step.succeeded">>,
-         <<"run.completed">>,
-         <<"phantom.event.that.does.not.exist">>],
+         <<"run.completed">>],
     ExpectedRunTrail = RunTrail,
     ok.
 
