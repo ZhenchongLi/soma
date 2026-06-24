@@ -63,6 +63,7 @@
 -export([cancel_status_cancelled_and_actor_alive/1]).
 -export([ask_cancelled_returns_error_cancelled/1]).
 -export([cancel_unknown_task_returns_error/1]).
+-export([cancel_completed_task_returns_error/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -123,7 +124,8 @@ all() ->
      cancel_emits_actor_task_cancelled_event,
      cancel_status_cancelled_and_actor_alive,
      ask_cancelled_returns_error_cancelled,
-     cancel_unknown_task_returns_error].
+     cancel_unknown_task_returns_error,
+     cancel_completed_task_returns_error].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -197,7 +199,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= cancel_kills_tool_call_worker;
        TestCase =:= cancel_emits_actor_task_cancelled_event;
        TestCase =:= cancel_status_cancelled_and_actor_alive;
-       TestCase =:= ask_cancelled_returns_error_cancelled ->
+       TestCase =:= ask_cancelled_returns_error_cancelled;
+       TestCase =:= cancel_completed_task_returns_error ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -275,7 +278,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= cancel_kills_tool_call_worker;
        TestCase =:= cancel_emits_actor_task_cancelled_event;
        TestCase =:= cancel_status_cancelled_and_actor_alive;
-       TestCase =:= ask_cancelled_returns_error_cancelled ->
+       TestCase =:= ask_cancelled_returns_error_cancelled;
+       TestCase =:= cancel_completed_task_returns_error ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1909,6 +1913,36 @@ cancel_unknown_task_returns_error(_Config) ->
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
     UnknownTaskId = <<"task-never-accepted">>,
     {error, _Reason} = soma_actor:cancel(Pid, UnknownTaskId),
+    true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 7 (slice p10/p11): soma_actor:cancel/2 for an already-completed task
+%% returns {error, Reason} without crashing the actor — there is no live run left
+%% to cancel. The runtime is booted so soma_run_sup and soma_tool_registry are
+%% alive; the actor is started through soma_actor_sup:start_actor/1 with the booted
+%% runtime's event store so the actor and the run share one store. Enters through
+%% the real soma_actor:send/2 then soma_actor:cancel/2 calls, no layer bypassed.
+%% The single fast echo step runs to completion, so {run_completed, ...} flips the
+%% task to completed; the test polls the task table to completed before cancelling,
+%% so the run is no longer in flight. cancel/2 finds the task but no live run and
+%% replies {error, Reason}. The test asserts the reply matches {error, _} and the
+%% actor pid is still alive afterward via is_process_alive/1.
+cancel_completed_task_returns_error(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-cancel-completed">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-cancel-completed">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    completed = wait_for_task_status(Pid, TaskId, completed, 100),
+    {error, _Reason} = soma_actor:cancel(Pid, TaskId),
     true = is_process_alive(Pid),
     ok.
 
