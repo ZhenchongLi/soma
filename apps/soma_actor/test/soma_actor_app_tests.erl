@@ -28,7 +28,7 @@ test_sup_registered_and_alive_test() ->
         {ok, _} = application:ensure_all_started(soma_actor),
         Pid = whereis(soma_actor_sup),
         ?assert(is_pid(Pid)),
-        ?assertEqual(false, is_process_alive(Pid))
+        ?assertEqual(true, is_process_alive(Pid))
     after
         application:stop(soma_actor),
         application:unload(soma_actor)
