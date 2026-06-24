@@ -141,8 +141,8 @@ idle({call, From}, {cancel, TaskId}, Data) ->
         undefined ->
             {keep_state, Data, [{reply, From, {error, not_found}}]};
         Task ->
-            case maps:get(run_pid, Task, undefined) of
-                RunPid when is_pid(RunPid) ->
+            case {maps:get(status, Task), maps:get(run_pid, Task, undefined)} of
+                {running, RunPid} when is_pid(RunPid) ->
                     RunPid ! cancel,
                     {keep_state, Data, [{reply, From, ok}]};
                 _ ->
