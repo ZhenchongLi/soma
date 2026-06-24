@@ -1,8 +1,8 @@
 # Roadmap
 
-v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), and v0.3 (LFE
-DSL compile-only layer) are built and merged. The sequence below is what comes
-next.
+v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), v0.3 (LFE DSL
+compile-only layer), and v0.4 (the `soma_actor` agent-entity skeleton) are built
+and merged. The sequence below is what comes next.
 
 ## Sequence
 
@@ -10,13 +10,13 @@ next.
 v0.1  Erlang/OTP agent runtime                       [done]
 v0.2  tool manifests and CLI/port adapter            [done]
 v0.3  LFE DSL → steps                               [done]
-v0.4  soma_actor — agent entity skeleton
+v0.4  soma_actor — agent entity skeleton             [done]
 v0.5  soma_actor + LLM planner
 v0.6  DAG execution
 v0.7  persistent resume
 ```
 
-## v0.4 — soma_actor skeleton
+## v0.4 — soma_actor skeleton [done]
 
 `soma_actor` is the agent entity: a long-lived OTP process that receives
 messages, creates tasks, starts runs, and returns results. The minimum slice
