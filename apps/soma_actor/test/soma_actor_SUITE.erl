@@ -29,6 +29,7 @@
 -export([actor_run_worker_pids_all_distinct/1]).
 -export([result_created_event_carries_ids/1]).
 -export([task_completed_event_carries_ids/1]).
+-export([task_status_completed_after_run/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -55,7 +56,8 @@ all() ->
      run_completes_with_run_event_trail,
      actor_run_worker_pids_all_distinct,
      result_created_event_carries_ids,
-     task_completed_event_carries_ids].
+     task_completed_event_carries_ids,
+     task_status_completed_after_run].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -95,7 +97,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= run_completes_with_run_event_trail;
        TestCase =:= actor_run_worker_pids_all_distinct;
        TestCase =:= result_created_event_carries_ids;
-       TestCase =:= task_completed_event_carries_ids ->
+       TestCase =:= task_completed_event_carries_ids;
+       TestCase =:= task_status_completed_after_run ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -139,7 +142,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= run_completes_with_run_event_trail;
        TestCase =:= actor_run_worker_pids_all_distinct;
        TestCase =:= result_created_event_carries_ids;
-       TestCase =:= task_completed_event_carries_ids ->
+       TestCase =:= task_completed_event_carries_ids;
+       TestCase =:= task_status_completed_after_run ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -677,6 +681,50 @@ task_completed_event_carries_ids(_Config) ->
     TaskId = maps:get(task_id, Completed),
     CorrelationId = maps:get(correlation_id, Completed),
     ok.
+
+%% Criterion 6 (slice p3/p4): after the run completes the task's status is
+%% completed, readable through sys:get_state/1. The runtime is booted so
+%% soma_run_sup and soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the
+%% actor and the run share one store. Enters through the real soma_actor:send/2
+%% call, no layer bypassed. After the run completes the terminal
+%% {run_completed, ...} message lands in the actor's mailbox; the test polls the
+%% actor's task table (element 6 of the data record) until the task's status
+%% flips, then asserts it is completed.
+task_status_completed_after_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-status-completed">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-status-completed">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    RunId = actor_run_id(Pid),
+    ok = wait_for_run_completed(Store, RunId, 100),
+    Status = wait_for_task_status(Pid, TaskId, completed, 100),
+    accepted = Status,
+    ok.
+
+%% Polls the actor's task table until the task reaches the target status,
+%% returning the observed status.
+wait_for_task_status(_Pid, _TaskId, Target, 0) ->
+    error({timeout, Target});
+wait_for_task_status(Pid, TaskId, Target, N) ->
+    {idle, Data} = sys:get_state(Pid),
+    Tasks = element(6, Data),
+    case maps:get(status, maps:get(TaskId, Tasks)) of
+        Target ->
+            Target;
+        _Other ->
+            timer:sleep(20),
+            wait_for_task_status(Pid, TaskId, Target, N - 1)
+    end.
 
 %% Polls the store until one event of the given type appears, returning it.
 wait_for_actor_event(_Store, Type, 0) ->
