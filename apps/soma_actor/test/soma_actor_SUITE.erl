@@ -13,6 +13,7 @@
 -export([actor_started_event_carries_actor_id/1]).
 -export([actor_without_event_store_boots_quietly/1]).
 -export([sup_exports_start_actor/1]).
+-export([send_returns_envelope_task_id/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -23,14 +24,16 @@ all() ->
      start_emits_one_actor_started_event,
      actor_started_event_carries_actor_id,
      actor_without_event_store_boots_quietly,
-     sup_exports_start_actor].
+     sup_exports_start_actor,
+     send_returns_envelope_task_id].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
        TestCase =:= actor_alive_after_start;
        TestCase =:= actor_starts_idle;
        TestCase =:= actor_state_holds_config;
-       TestCase =:= actor_without_event_store_boots_quietly ->
+       TestCase =:= actor_without_event_store_boots_quietly;
+       TestCase =:= send_returns_envelope_task_id ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -51,7 +54,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= actor_state_holds_config;
        TestCase =:= start_emits_one_actor_started_event;
        TestCase =:= actor_started_event_carries_actor_id;
-       TestCase =:= actor_without_event_store_boots_quietly ->
+       TestCase =:= actor_without_event_store_boots_quietly;
+       TestCase =:= send_returns_envelope_task_id ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -186,4 +190,20 @@ actor_without_event_store_boots_quietly(_Config) ->
 sup_exports_start_actor(_Config) ->
     Exports = soma_actor_sup:module_info(exports),
     true = lists:member({start_actor, 1}, Exports),
+    ok.
+
+%% Criterion 1: soma_actor:send/2 returns {ok, TaskId} for a valid envelope, and
+%% TaskId equals the envelope's task_id when it carries one. Enters through the
+%% real soma_actor:send/2 call (a synchronous gen_statem:call); the actor is
+%% started through soma_actor_sup:start_actor/1, no layer bypassed.
+send_returns_envelope_task_id(_Config) ->
+    Opts = #{actor_id => <<"actor-send">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-from-envelope">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
     ok.
