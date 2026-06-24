@@ -61,6 +61,7 @@
 -export([cancel_kills_tool_call_worker/1]).
 -export([cancel_emits_actor_task_cancelled_event/1]).
 -export([cancel_status_cancelled_and_actor_alive/1]).
+-export([ask_cancelled_returns_error_cancelled/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -119,7 +120,8 @@ all() ->
      cancel_drives_run_to_cancelled,
      cancel_kills_tool_call_worker,
      cancel_emits_actor_task_cancelled_event,
-     cancel_status_cancelled_and_actor_alive].
+     cancel_status_cancelled_and_actor_alive,
+     ask_cancelled_returns_error_cancelled].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -191,7 +193,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= cancel_drives_run_to_cancelled;
        TestCase =:= cancel_kills_tool_call_worker;
        TestCase =:= cancel_emits_actor_task_cancelled_event;
-       TestCase =:= cancel_status_cancelled_and_actor_alive ->
+       TestCase =:= cancel_status_cancelled_and_actor_alive;
+       TestCase =:= ask_cancelled_returns_error_cancelled ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -267,7 +270,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= cancel_drives_run_to_cancelled;
        TestCase =:= cancel_kills_tool_call_worker;
        TestCase =:= cancel_emits_actor_task_cancelled_event;
-       TestCase =:= cancel_status_cancelled_and_actor_alive ->
+       TestCase =:= cancel_status_cancelled_and_actor_alive;
+       TestCase =:= ask_cancelled_returns_error_cancelled ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1833,6 +1837,55 @@ cancel_status_cancelled_and_actor_alive(_Config) ->
     cancelled = wait_for_task_status(Pid, TaskId, cancelled, 100),
     Status = soma_actor:get_task_status(Pid, TaskId),
     cancelled = maps:get(status, Status),
+    true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 5 (slice p10/p11): an ask/3 whose task gets cancelled returns
+%% {error, cancelled} instead of hanging, and the actor pid stays alive. The
+%% runtime is booted so soma_run_sup and soma_tool_registry are alive; the actor
+%% is started through soma_actor_sup:start_actor/1 with the booted runtime's event
+%% store so the actor and the run share one store. The ask/3 call blocks inside
+%% its own gen_statem:call, so it is issued from a separate process whose reply is
+%% relayed back to the test process; the test process is then free to call
+%% soma_actor:cancel/2. The single 500ms sleep step parks the run in waiting_tool
+%% while ask/3 holds the caller's From; cancel/2 sends cancel to the run pid, which
+%% kills the worker, emits run.cancelled, and reports {run_cancelled, RunId} back
+%% to the actor. The actor's handler replies {error, cancelled} to the parked
+%% waiter, ending the off-process ask/3 call. The test asserts that reply matches
+%% {error, cancelled} and that the actor pid is still alive via is_process_alive/1.
+ask_cancelled_returns_error_cancelled(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-cancelled">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-cancelled">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    %% ask/3 blocks inside its own gen_statem:call, so run it off the test process
+    %% and relay its return value back; the test process stays free to cancel.
+    Self = self(),
+    spawn(fun() ->
+              Reply = soma_actor:ask(Pid, Envelope, 5000),
+              Self ! {ask_reply, Reply}
+          end),
+    %% The 500ms sleep step holds the run in waiting_tool while ask/3 parks its
+    %% caller. Poll the task table to running so the run is genuinely in flight
+    %% before issuing the cancel.
+    running = wait_for_task_status(Pid, TaskId, running, 100),
+    ok = soma_actor:cancel(Pid, TaskId),
+    %% The cancel reaches the run, which reports {run_cancelled, RunId} back; the
+    %% actor replies {error, cancelled} to the parked waiter, ending the ask/3 call.
+    AskReply = receive
+                   {ask_reply, R} -> R
+               after 5000 ->
+                   error(ask_reply_timeout)
+               end,
+    {error, wrong_atom} = AskReply,
     true = is_process_alive(Pid),
     ok.
 
