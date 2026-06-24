@@ -1347,7 +1347,7 @@ failed_run_sets_task_status_failed(_Config) ->
                  steps => Steps},
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     Status = wait_for_task_status(Pid, TaskId, failed, 100),
-    completed = Status,
+    failed = Status,
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
