@@ -46,7 +46,7 @@ for it. See [docs/design.md](docs/design.md) for the full thesis.
 
 ## Architecture
 
-![Soma supervision tree — soma_sup supervises the in-memory event store, the tool registry, a session supervisor over the long-lived soma_agent_session (gen_server), and a run supervisor over soma_run (a per-run gen_statem) which spawns a disposable soma_tool_call worker per tool call; a cli tool's external OS process hangs off that worker.](docs/diagrams/supervision-tree.svg)
+![Soma supervision tree — soma_sup (apps/soma_runtime) supervises the in-memory event store, the tool registry, a session supervisor over the long-lived soma_agent_session (gen_server), and a run supervisor over soma_run (a per-run gen_statem) which spawns a disposable soma_tool_call worker per tool call; a cli tool's external OS process hangs off that worker. Below it, a separate app apps/soma_actor has its own soma_actor_sup over the soma_actor agent entity (gen_statem), which starts runs directly under soma_run_sup.](docs/diagrams/supervision-tree.svg)
 
 - **`soma_agent_session`** (`gen_server`) owns a `session_id`, accepts run
   requests, starts runs, tracks them, and **survives any run's failure**. It
@@ -111,6 +111,28 @@ file:read_file("/tmp/somademo/out.txt").   %% => {ok, <<"hi soma">>}
 
 A run executes asynchronously; `get_status/1` reflects its terminal status once
 it finishes.
+
+### Drive an actor (v0.4)
+
+The `soma_actor` layer takes a message and runs it for you. `ask/3` blocks for
+the result:
+
+```erlang
+application:ensure_all_started(soma_actor).
+{ok, Store} = soma_event_store:start_link().
+{ok, A} = soma_actor_sup:start_actor(#{actor_id => <<"a1">>,
+                                       model_config => #{}, tool_policy => #{},
+                                       event_store => Store}).
+soma_actor:ask(A, #{type => <<"chat">>, payload => #{},
+                    steps => [#{id => s1, tool => echo,
+                                args => #{value => <<"hello">>}}]}, 5000).
+%% => {ok, #{s1 => #{value => <<"hello">>}}}
+```
+
+`examples/soma_actor_demo.erl` walks the rest — `send` + polling, the
+`by_correlation/2` event chain, real mid-run cancellation, and surviving a
+failure (`c("examples/soma_actor_demo").` in the shell). The full actor API is
+in [docs/usage.md](docs/usage.md).
 
 ## What it does
 
