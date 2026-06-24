@@ -25,7 +25,7 @@ LLM/rules 只产生 proposal；状态转移、policy 校验和执行权属于 so
 结果通过 task_id / correlation_id 关联，并通过 reply、event stream 或 polling 获取。
 ```
 
-注：OTP 是 **Open Telecom Platform**，不是 "one time process"。Erlang/OTP 基础概念见 [erlang-otp-primer.zh.md](erlang-otp-primer.zh.md)。
+注：OTP 是 **Open Telecom Platform**——Erlang 构建可靠并发系统的标准库、框架和设计模式。Erlang/OTP 基础概念见 [erlang-otp-primer.zh.md](erlang-otp-primer.zh.md)。
 
 ## 核心定义
 

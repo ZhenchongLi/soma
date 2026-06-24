@@ -141,9 +141,7 @@ ActorPid ! {actor_message, Envelope}
 
 ## OTP 是什么
 
-OTP 是 **Open Telecom Platform** 的缩写，不是 “one time process”。
-
-今天的 OTP 通常指 Erlang 生态里构建可靠并发系统的一套标准库、框架和设计模式。
+OTP 是 **Open Telecom Platform** 的缩写。今天的 OTP 通常指 Erlang 生态里构建可靠并发系统的一套标准库、框架和设计模式。
 
 可以这样理解：
 

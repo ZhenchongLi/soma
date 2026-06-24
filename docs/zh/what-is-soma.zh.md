@@ -4,8 +4,8 @@ Soma 是一个 Erlang/OTP 原生的 agent runtime。它使用 Erlang/OTP 的 act
 model 构建 agent entity：`soma_actor`；`soma_actor` 发起的工作，由一套可靠跑
 steps 的执行机制承载。
 
-这里的 OTP 是 **Open Telecom Platform**，不是 “one time process”。Erlang/OTP
-的基础概念见 [erlang-otp-primer.zh.md](erlang-otp-primer.zh.md)。
+这里的 OTP 是 **Open Telecom Platform**——Erlang 构建可靠并发系统的标准库、框架
+和设计模式。Erlang/OTP 的基础概念见 [erlang-otp-primer.zh.md](erlang-otp-primer.zh.md)。
 
 `soma_actor` 是更高层的 agent 抽象。它是一个长期存在、具备 LLM 能力的
 entity，拥有 memory/context、model config、mailbox、tool policy，以及它启动
