@@ -11,6 +11,7 @@
 -export([ask/3]).
 -export([get_task_status/2]).
 -export([get_task_result/2]).
+-export([cancel/2]).
 -export([callback_mode/0, init/1]).
 -export([idle/3]).
 
@@ -54,6 +55,17 @@ get_task_status(ActorRef, TaskId) ->
 %% never bypassed.
 get_task_result(ActorRef, TaskId) ->
     gen_statem:call(ActorRef, {get_task_result, TaskId}).
+
+%% @doc Requests cancellation of a task's in-flight run. Looks the task up and
+%% sends the atom `cancel' to the live run pid, which kills the active tool-call
+%% worker, records `run.cancelled', and reports back with `{run_cancelled,
+%% RunId}'. Returns `ok' for "cancel requested" (not "cancel finished") when
+%% there is a live run, `{error, not_found}' for an unknown task, and
+%% `{error, not_running}' for a task with no live run. The actor never kills the
+%% worker itself -- that crosses a process boundary, which is the design. The
+%% call runs inside the actor via `idle/3', so the actor is never bypassed.
+cancel(ActorRef, TaskId) ->
+    gen_statem:call(ActorRef, {cancel, TaskId}).
 
 callback_mode() ->
     state_functions.
@@ -124,6 +136,19 @@ idle({call, From}, {get_task_result, TaskId}, Data) ->
                     end
             end,
     {keep_state, Data, [{reply, From, Reply}]};
+idle({call, From}, {cancel, TaskId}, Data) ->
+    case maps:get(TaskId, Data#data.tasks, undefined) of
+        undefined ->
+            {keep_state, Data, [{reply, From, {error, not_found}}]};
+        Task ->
+            case maps:get(run_pid, Task, undefined) of
+                RunPid when is_pid(RunPid) ->
+                    RunPid ! cancel,
+                    {keep_state, Data, [{reply, From, ok}]};
+                _ ->
+                    {keep_state, Data, [{reply, From, {error, not_running}}]}
+            end
+    end;
 idle(info, {run_completed, RunId, Outputs}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
@@ -203,10 +228,12 @@ maybe_start_run(Envelope, TaskId, CorrelationId, Data) ->
                         event_store => Data#data.event_store,
                         steps => Steps,
                         correlation_id => CorrelationId},
-            {ok, _RunPid} = soma_run_sup:start_run(RunOpts),
+            {ok, RunPid} = soma_run_sup:start_run(RunOpts),
             Runs = maps:put(RunId, TaskId, Data#data.runs),
             Task = maps:get(TaskId, Data#data.tasks),
-            Tasks = maps:put(TaskId, Task#{status => running}, Data#data.tasks),
+            Task1 = Task#{status => running, run_id => RunId,
+                          run_pid => RunPid},
+            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
             Data#data{runs = Runs, tasks = Tasks};
         _ ->
             Data
