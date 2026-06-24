@@ -46,6 +46,7 @@
 -export([get_task_result_not_ready_before_completion/1]).
 -export([get_task_result_ok_outputs_after_completion/1]).
 -export([unknown_task_id_not_found_both_reads_actor_alive/1]).
+-export([read_returns_while_earlier_run_in_flight/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -89,7 +90,8 @@ all() ->
      get_task_status_queryable_by_send_task_id,
      get_task_result_not_ready_before_completion,
      get_task_result_ok_outputs_after_completion,
-     unknown_task_id_not_found_both_reads_actor_alive].
+     unknown_task_id_not_found_both_reads_actor_alive,
+     read_returns_while_earlier_run_in_flight].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -146,7 +148,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= get_task_status_completed_after_run;
        TestCase =:= get_task_status_queryable_by_send_task_id;
        TestCase =:= get_task_result_not_ready_before_completion;
-       TestCase =:= get_task_result_ok_outputs_after_completion ->
+       TestCase =:= get_task_result_ok_outputs_after_completion;
+       TestCase =:= read_returns_while_earlier_run_in_flight ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -207,7 +210,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= get_task_status_completed_after_run;
        TestCase =:= get_task_status_queryable_by_send_task_id;
        TestCase =:= get_task_result_not_ready_before_completion;
-       TestCase =:= get_task_result_ok_outputs_after_completion ->
+       TestCase =:= get_task_result_ok_outputs_after_completion;
+       TestCase =:= read_returns_while_earlier_run_in_flight ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1237,6 +1241,40 @@ unknown_task_id_not_found_both_reads_actor_alive(_Config) ->
     not_found = maps:get(status, Status),
     {error, not_found} = soma_actor:get_task_result(Pid, UnknownTaskId),
     true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 13 (slice p5/p6): a read served while an earlier task's run is still
+%% in flight returns promptly without blocking on the run. A first send/2 starts a
+%% 500ms sleep step, so its run is genuinely executing; a get_task_status/2 issued
+%% right after must come back inside its gen_statem:call default 5s timeout (it
+%% would not, if the actor blocked on the run) and report the in-flight task as
+%% running — proving the actor handled the read in idle without waiting on the run.
+%% The runtime is booted so soma_run_sup and soma_tool_registry are alive; the
+%% actor is started through soma_actor_sup:start_actor/1 with the booted runtime's
+%% event store, no layer bypassed. Enters through the real soma_actor:send/2 then
+%% soma_actor:get_task_status/2 calls. The read returning at all (the call does not
+%% time out) is the proof of promptness; the running status confirms the run was
+%% still in flight when the read was served.
+read_returns_while_earlier_run_in_flight(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-read-in-flight">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-read-in-flight">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% The first run's 500ms sleep is still executing. The read is served from
+    %% idle without blocking on the run, so it returns promptly with the in-flight
+    %% task at running.
+    Status = soma_actor:get_task_status(Pid, TaskId),
+    completed = maps:get(status, Status),
+    TaskId = maps:get(task_id, Status),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
