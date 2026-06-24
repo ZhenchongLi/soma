@@ -1751,7 +1751,7 @@ cancel_kills_tool_call_worker(_Config) ->
     ok = soma_actor:cancel(Pid, TaskId),
     _Cancelled = wait_for_run_event(Store, RunId, <<"run.cancelled">>, 100),
     WorkerPid = worker_pid_from_tool_started(Store, RunId),
-    true = is_process_alive(WorkerPid),
+    false = is_process_alive(WorkerPid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
