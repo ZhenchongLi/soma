@@ -33,7 +33,7 @@ test_from_step_shapes_compile() ->
     BareSource = <<"(run (step s1 echo (args (message \"hi\"))) (step s2 echo (args (from_step s1))))">>,
     {ok, #{run := #{steps := [_S1, BareStep]}}} = soma_lfe:compile(BareSource, #{}),
     ?assertEqual(
-        #{id => s2, tool => echo, args => #{from_step => wrong_id}},
+        #{id => s2, tool => echo, args => #{from_step => s1}},
         BareStep
     ),
     %% field-level (Key (from_step Id)) — one arg value is {from_step, Id}
