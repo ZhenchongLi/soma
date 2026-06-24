@@ -1434,7 +1434,7 @@ tool_crash_isolated_by_process_boundary(_Config) ->
     true = ActorPid =/= WorkerPid,
     true = RunPid =/= WorkerPid,
     %% The crash arrived as a message, not a signal: the actor is still alive.
-    false = is_process_alive(ActorPid),
+    true = is_process_alive(ActorPid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
