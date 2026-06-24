@@ -185,5 +185,5 @@ actor_without_event_store_boots_quietly(_Config) ->
 %% criteria 2-7; this pins the export name itself via module introspection.
 sup_exports_start_actor(_Config) ->
     Exports = soma_actor_sup:module_info(exports),
-    false = lists:member({start_actor, 1}, Exports),
+    true = lists:member({start_actor, 1}, Exports),
     ok.
