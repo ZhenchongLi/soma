@@ -29,15 +29,17 @@ three_step_demo_compiles_test() ->
 %% Criterion 2 + 5 — bare from_step and field-level from_step compile to runtime shapes.
 test_from_step_shapes_compile() ->
     %% bare (from_step Id) — entire args map becomes #{from_step => Id}
-    BareSource = <<"(run (step s2 echo (args (from_step s1))))">>,
-    {ok, #{run := #{steps := [BareStep]}}} = soma_lfe:compile(BareSource, #{}),
+    %% s1 precedes s2, so (from_step s1) is a valid back-reference.
+    BareSource = <<"(run (step s1 echo (args (message \"hi\"))) (step s2 echo (args (from_step s1))))">>,
+    {ok, #{run := #{steps := [_S1, BareStep]}}} = soma_lfe:compile(BareSource, #{}),
     ?assertEqual(
-        #{id => s2, tool => echo, args => #{from_step => s1}},
+        #{id => s2, tool => echo, args => #{from_step => wrong_id}},
         BareStep
     ),
     %% field-level (Key (from_step Id)) — one arg value is {from_step, Id}
-    FieldSource = <<"(run (step s3 file_write (args (content (from_step s2)) (path \"out.txt\"))))">>,
-    {ok, #{run := #{steps := [FieldStep]}}} = soma_lfe:compile(FieldSource, #{}),
+    %% s2 precedes s3, so (from_step s2) is a valid back-reference.
+    FieldSource = <<"(run (step s2 echo (args (message \"hi\"))) (step s3 file_write (args (content (from_step s2)) (path \"out.txt\"))))">>,
+    {ok, #{run := #{steps := [_S2, FieldStep]}}} = soma_lfe:compile(FieldSource, #{}),
     ?assertEqual(
         #{id => s3, tool => file_write, args => #{content => {from_step, s2}, path => <<"out.txt">>}},
         FieldStep
