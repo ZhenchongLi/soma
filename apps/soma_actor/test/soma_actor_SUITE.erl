@@ -1146,7 +1146,7 @@ get_task_status_queryable_by_send_task_id(_Config) ->
                  steps => Steps},
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     Status = soma_actor:get_task_status(Pid, TaskId),
-    <<"not-the-returned-task-id">> = maps:get(task_id, Status),
+    TaskId = maps:get(task_id, Status),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
