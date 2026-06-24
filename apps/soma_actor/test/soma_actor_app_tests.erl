@@ -34,6 +34,20 @@ test_sup_registered_and_alive_test() ->
         application:unload(soma_actor)
     end.
 
+%% Criterion 5: `soma_actor_sup' uses the `simple_one_for_one' strategy. Boot
+%% the app and read the live supervisor's strategy off its internal state
+%% (`element(3, sys:get_state/1)' is the supervisor's `strategy' field).
+%% Stops/unloads the app afterward for a clean teardown.
+test_sup_strategy_simple_one_for_one_test() ->
+    try
+        {ok, _} = application:ensure_all_started(soma_actor),
+        Strategy = element(3, sys:get_state(soma_actor_sup)),
+        ?assertEqual(one_for_one, Strategy)
+    after
+        application:stop(soma_actor),
+        application:unload(soma_actor)
+    end.
+
 %% Locate `apps/soma_actor/src/soma_actor.app.src' relative to this test
 %% module's compiled `.beam', which rebar3 places under
 %% `_build/<profile>/lib/soma_actor/test/'.
