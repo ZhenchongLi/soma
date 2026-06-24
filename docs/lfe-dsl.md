@@ -156,15 +156,13 @@ multiple diagnostics.
 
 ## Non-goals
 
-The LFE DSL is intentionally minimal. These items are out of scope for v0.3
+The LFE DSL is intentionally minimal. These items are out of scope for this layer
 and must not be added to the compiler:
 
-- **LLM planner integration** — v0.3 includes only the compiler. An LLM or agent
+- **LLM planner integration** — this layer is compiler-only. An LLM or agent
   may author this syntax, but planner prompting, repair loops, and policy gates
   live outside this compiler.
-- **MCP adapter** — not part of this layer.
-- **DAG execution** — the runtime is strictly sequential in v0.3; steps run
-  in list order.
+- **DAG execution** — steps run in list order; no parallel branches.
 - **Loops or branches** — no control flow beyond a flat step list.
 - **Variables or bindings** — `from_step` references are the only
   data-threading mechanism.
