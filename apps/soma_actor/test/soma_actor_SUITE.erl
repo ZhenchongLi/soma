@@ -32,6 +32,7 @@
 -export([task_status_completed_after_run/1]).
 -export([task_result_holds_outputs_after_run/1]).
 -export([send_returns_before_run_completes/1]).
+-export([second_steps_envelope_starts_second_run/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -61,7 +62,8 @@ all() ->
      task_completed_event_carries_ids,
      task_status_completed_after_run,
      task_result_holds_outputs_after_run,
-     send_returns_before_run_completes].
+     send_returns_before_run_completes,
+     second_steps_envelope_starts_second_run].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -104,7 +106,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= task_completed_event_carries_ids;
        TestCase =:= task_status_completed_after_run;
        TestCase =:= task_result_holds_outputs_after_run;
-       TestCase =:= send_returns_before_run_completes ->
+       TestCase =:= send_returns_before_run_completes;
+       TestCase =:= second_steps_envelope_starts_second_run ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -151,7 +154,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= task_completed_event_carries_ids;
        TestCase =:= task_status_completed_after_run;
        TestCase =:= task_result_holds_outputs_after_run;
-       TestCase =:= send_returns_before_run_completes ->
+       TestCase =:= send_returns_before_run_completes;
+       TestCase =:= second_steps_envelope_starts_second_run ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -786,6 +790,51 @@ send_returns_before_run_completes(_Config) ->
     completed = wait_for_task_status(Pid, TaskId, completed, 100),
     true = is_process_alive(Pid),
     ok.
+
+%% Criterion 9 (slice p3/p4): after one run completes a second envelope with a
+%% valid steps list returns {ok, TaskId2} and starts a second run that reaches
+%% run.completed under a distinct run id, proving the actor is not single-shot.
+%% The runtime is booted so soma_run_sup and soma_tool_registry are alive; the
+%% actor is started through soma_actor_sup:start_actor/1 with the booted
+%% runtime's event store so the actor and both runs share one store. Enters
+%% through the real soma_actor:send/2 call twice on the same actor pid, no layer
+%% bypassed. Each run id is read from the actor's runs map (element 7, keyed by
+%% run_id => task_id) by task id; the two run ids are asserted distinct and the
+%% second run's trail is read back via soma_event_store:by_run/2.
+second_steps_envelope_starts_second_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-second-run">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    TaskId1 = <<"task-run-one">>,
+    Envelope1 = #{type => <<"chat">>,
+                  payload => #{text => <<"first">>},
+                  task_id => TaskId1,
+                  steps => Steps},
+    {ok, TaskId1} = soma_actor:send(Pid, Envelope1),
+    RunId1 = run_id_for_task(Pid, TaskId1),
+    ok = wait_for_run_completed(Store, RunId1, 100),
+    TaskId2 = <<"task-run-two">>,
+    Envelope2 = #{type => <<"chat">>,
+                  payload => #{text => <<"second">>},
+                  task_id => TaskId2,
+                  steps => Steps},
+    {ok, TaskId2} = soma_actor:send(Pid, Envelope2),
+    RunId2 = run_id_for_task(Pid, TaskId2),
+    true = RunId1 =:= RunId2,
+    ok = wait_for_run_completed(Store, RunId2, 100),
+    ok.
+
+%% Reads the run id the actor tracks for a given task id from its runs map
+%% (element 7 of the data record, keyed by run_id => task_id).
+run_id_for_task(Pid, TaskId) ->
+    {idle, Data} = sys:get_state(Pid),
+    Runs = element(7, Data),
+    [RunId] = [R || {R, T} <- maps:to_list(Runs), T =:= TaskId],
+    RunId.
 
 %% Reads the current status for the task from the actor's task table.
 task_status(Pid, TaskId) ->
