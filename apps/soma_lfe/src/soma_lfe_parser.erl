@@ -49,7 +49,7 @@ parse_steps([Other | _], _Acc) ->
                line => 0}]}.
 
 parse_step([Id, Tool | ChildForms]) when is_atom(Id), is_atom(Tool) ->
-    case parse_step_children(ChildForms, #{args => #{}, timeout_ms => 5000}) of
+    case parse_step_children(ChildForms, #{args => #{}}) of
         {ok, Partial} ->
             {ok, Partial#{id => Id, tool => Tool}};
         {error, Diags} ->
@@ -84,6 +84,8 @@ parse_step_children([Other | _], _Acc) ->
 
 parse_args([], Acc) ->
     {ok, Acc};
+parse_args([[from_step, Id]], _Acc) ->
+    {ok, #{from_step => Id}};
 parse_args([[Key, Value] | Rest], Acc) when is_atom(Key) ->
     RealValue = coerce_value(Value),
     parse_args(Rest, Acc#{Key => RealValue});
@@ -99,4 +101,5 @@ parse_args([Other | _], _Acc) ->
 coerce_value(V) when is_binary(V) -> V;
 coerce_value(V) when is_integer(V) -> V;
 coerce_value(V) when is_atom(V) -> V;
+coerce_value([from_step, Id]) -> {from_step, Id};
 coerce_value(V) when is_list(V) -> V.
