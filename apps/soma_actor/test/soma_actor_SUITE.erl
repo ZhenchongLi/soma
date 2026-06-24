@@ -43,6 +43,7 @@
 -export([get_task_status_running_before_completion/1]).
 -export([get_task_status_completed_after_run/1]).
 -export([get_task_status_queryable_by_send_task_id/1]).
+-export([get_task_result_not_ready_before_completion/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -83,7 +84,8 @@ all() ->
      ask_invalid_envelope_errors_no_run,
      get_task_status_running_before_completion,
      get_task_status_completed_after_run,
-     get_task_status_queryable_by_send_task_id].
+     get_task_status_queryable_by_send_task_id,
+     get_task_result_not_ready_before_completion].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -137,7 +139,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= ask_invalid_envelope_errors_no_run;
        TestCase =:= get_task_status_running_before_completion;
        TestCase =:= get_task_status_completed_after_run;
-       TestCase =:= get_task_status_queryable_by_send_task_id ->
+       TestCase =:= get_task_status_queryable_by_send_task_id;
+       TestCase =:= get_task_result_not_ready_before_completion ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -195,7 +198,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= ask_invalid_envelope_errors_no_run;
        TestCase =:= get_task_status_running_before_completion;
        TestCase =:= get_task_status_completed_after_run;
-       TestCase =:= get_task_status_queryable_by_send_task_id ->
+       TestCase =:= get_task_status_queryable_by_send_task_id;
+       TestCase =:= get_task_result_not_ready_before_completion ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1147,6 +1151,31 @@ get_task_status_queryable_by_send_task_id(_Config) ->
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     Status = soma_actor:get_task_status(Pid, TaskId),
     TaskId = maps:get(task_id, Status),
+    ok.
+
+%% Criterion 10 (slice p5/p6): get_task_result/2 returns not_ready before the
+%% task completes. The single step sleeps for 500ms, so the run is still in
+%% flight (task at running, no stored result) when the result is read. The
+%% runtime is booted so soma_run_sup and soma_tool_registry are alive; the actor
+%% is started through soma_actor_sup:start_actor/1 with the booted runtime's
+%% event store, no layer bypassed. Enters through the real soma_actor:send/2 then
+%% soma_actor:get_task_result/2 calls.
+get_task_result_not_ready_before_completion(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-result-not-ready">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-result-not-ready">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% The 500ms sleep step is still running, so the result is not ready yet.
+    not_ready = soma_actor:get_task_result(Pid, TaskId),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
