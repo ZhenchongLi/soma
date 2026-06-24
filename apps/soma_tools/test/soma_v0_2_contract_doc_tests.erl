@@ -2,7 +2,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(DOC_PATH, "docs/v0.2-test-contract.md").
+-define(DOC_PATH, "docs/contracts/v0.2-test-contract.md").
 
 read_doc() ->
     case file:read_file(?DOC_PATH) of

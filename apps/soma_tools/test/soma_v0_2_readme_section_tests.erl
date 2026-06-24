@@ -44,4 +44,4 @@ readme_states_out_of_scope_test() ->
     ?assert(contains(Lower, <<"llm">>)).
 
 readme_links_contract_doc_test() ->
-    ?assert(contains(read_doc(), <<"docs/v0.2-test-contract.md">>)).
+    ?assert(contains(read_doc(), <<"docs/contracts/v0.2-test-contract.md">>)).
