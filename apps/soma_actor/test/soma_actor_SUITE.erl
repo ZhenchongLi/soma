@@ -298,6 +298,6 @@ non_map_envelope_errors_actor_survives(_Config) ->
              model_config => #{},
              tool_policy => #{}},
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
-    {ok, _Wrong} = soma_actor:send(Pid, <<"not-a-map">>),
+    {error, _Reason} = soma_actor:send(Pid, <<"not-a-map">>),
     true = is_process_alive(Pid),
     ok.
