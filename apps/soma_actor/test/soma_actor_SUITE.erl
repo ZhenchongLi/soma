@@ -1540,7 +1540,7 @@ ask_timed_out_run_returns_error_timeout(_Config) ->
                  payload => #{text => <<"hello">>},
                  task_id => TaskId,
                  steps => Steps},
-    {ok, _Outputs} = soma_actor:ask(Pid, Envelope, 5000),
+    {error, timeout} = soma_actor:ask(Pid, Envelope, 5000),
     true = is_process_alive(Pid),
     ok.
 
