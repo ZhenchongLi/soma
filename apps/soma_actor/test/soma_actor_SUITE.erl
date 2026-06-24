@@ -917,8 +917,8 @@ ask_caller_and_actor_alive_after_return(_Config) ->
                  task_id => TaskId,
                  steps => Steps},
     {ok, _Result} = soma_actor:ask(Pid, Envelope, 5000),
-    false = is_process_alive(self()),
-    false = is_process_alive(Pid),
+    true = is_process_alive(self()),
+    true = is_process_alive(Pid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
