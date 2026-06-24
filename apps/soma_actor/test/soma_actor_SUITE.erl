@@ -1018,8 +1018,8 @@ ask_timeout_actor_survives_and_completes(_Config) ->
                  task_id => TaskId,
                  steps => Steps},
     timeout = soma_actor:ask(Pid, Envelope, 100),
-    %% Staged red: deliberately-wrong expectation — the actor IS alive here.
-    false = is_process_alive(Pid),
+    %% The caller gave up but the actor still holds the parked From and is alive.
+    true = is_process_alive(Pid),
     %% The actor still drives the run to completion: the task reaches completed.
     completed = wait_for_task_status(Pid, TaskId, completed, 100),
     true = is_process_alive(Pid),
