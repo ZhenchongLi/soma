@@ -26,6 +26,19 @@ test_by_run_filters() ->
 by_run_filters_test() ->
     test_by_run_filters().
 
+test_by_correlation_filters() ->
+    {ok, Pid} = soma_event_store:start_link(),
+    ok = soma_event_store:append(Pid, #{correlation_id => corr_a, event_type => a1}),
+    ok = soma_event_store:append(Pid, #{correlation_id => corr_b, event_type => b1}),
+    ok = soma_event_store:append(Pid, #{event_type => no_corr}),
+    ok = soma_event_store:append(Pid, #{correlation_id => corr_a, event_type => a2}),
+    Events = soma_event_store:by_correlation(Pid, corr_a),
+    Types = [maps:get(event_type, E) || E <- Events],
+    ?assertEqual([a1, a2], Types).
+
+by_correlation_filters_test() ->
+    test_by_correlation_filters().
+
 test_by_session_filters() ->
     {ok, Pid} = soma_event_store:start_link(),
     ok = soma_event_store:append(Pid, #{session_id => sess_a, event_type => a1}),
