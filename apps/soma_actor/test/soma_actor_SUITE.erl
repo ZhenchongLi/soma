@@ -320,6 +320,6 @@ missing_field_envelope_errors_actor_survives(_Config) ->
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
     Envelope = #{type => <<"chat">>,
                  task_id => <<"task-missing-field">>},
-    {ok, _} = soma_actor:send(Pid, Envelope),
+    {error, _Reason} = soma_actor:send(Pid, Envelope),
     true = is_process_alive(Pid),
     ok.
