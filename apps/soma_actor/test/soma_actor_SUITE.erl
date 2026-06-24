@@ -65,5 +65,5 @@ actor_alive_after_start(_Config) ->
              model_config => #{},
              tool_policy => #{}},
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
-    false = is_process_alive(Pid),
+    true = is_process_alive(Pid),
     ok.
