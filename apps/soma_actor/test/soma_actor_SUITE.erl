@@ -1466,9 +1466,7 @@ ask_failed_run_returns_error(_Config) ->
                  payload => #{text => <<"hello">>},
                  task_id => TaskId,
                  steps => Steps},
-    %% Staged red: the correct reply is {error, boom}; this deliberately-wrong
-    %% expected value {ok, boom} makes the match fail so the red phase fires.
-    {ok, boom} = soma_actor:ask(Pid, Envelope, 5000),
+    {error, boom} = soma_actor:ask(Pid, Envelope, 5000),
     true = is_process_alive(Pid),
     ok.
 
