@@ -1670,7 +1670,7 @@ new_run_completes_after_timed_out_run(_Config) ->
     {ok, TaskId2} = soma_actor:send(Pid, Envelope2),
     RunId2 = run_id_for_task(Pid, TaskId2),
     ok = wait_for_run_completed(Store, RunId2, 100),
-    Status = wait_for_task_status(Pid, TaskId2, failed, 100),
+    Status = wait_for_task_status(Pid, TaskId2, completed, 100),
     completed = Status,
     ok.
 
