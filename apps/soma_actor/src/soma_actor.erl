@@ -31,7 +31,7 @@ init(Opts) ->
                  model_config = maps:get(model_config, Opts, undefined),
                  tool_policy = maps:get(tool_policy, Opts, undefined),
                  event_store = maps:get(event_store, Opts, undefined)},
-    emit(Data, <<"actor.started">>),
+    emit(Data, <<"actor.started">>, #{}),
     {ok, idle, Data}.
 
 idle({call, From}, {send, Envelope}, Data) ->
@@ -42,6 +42,8 @@ idle({call, From}, {send, Envelope}, Data) ->
             Task = #{correlation_id => CorrelationId, status => accepted},
             Tasks = maps:put(TaskId, Task, Data#data.tasks),
             Data1 = Data#data{tasks = Tasks},
+            emit(Data1, <<"actor.message.received">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId}),
             {keep_state, Data1, [{reply, From, {ok, TaskId}}]};
         {error, Reason} ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
@@ -70,10 +72,11 @@ mint_task_id() ->
     list_to_binary(
       "task-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
 
-emit(#data{event_store = undefined}, _Type) ->
+emit(#data{event_store = undefined}, _Type, _Extra) ->
     ok;
-emit(Data, Type) ->
-    Event = #{actor_id => Data#data.actor_id,
-              event_type => Type},
+emit(Data, Type, Extra) ->
+    Base = #{actor_id => Data#data.actor_id,
+             event_type => Type},
+    Event = maps:merge(Base, Extra),
     soma_event_store:append(Data#data.event_store, Event),
     ok.
