@@ -480,5 +480,5 @@ second_send_accepts_too(_Config) ->
     Envelope2 = #{type => <<"chat">>,
                   payload => #{text => <<"second">>},
                   task_id => TaskId2},
-    {ok, <<"wrong-expected-id">>} = soma_actor:send(Pid, Envelope2),
+    {ok, TaskId2} = soma_actor:send(Pid, Envelope2),
     ok.
