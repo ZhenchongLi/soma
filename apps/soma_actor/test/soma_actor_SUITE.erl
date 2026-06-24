@@ -743,9 +743,9 @@ task_result_holds_outputs_after_run(_Config) ->
     ok = wait_for_run_completed(Store, RunId, 100),
     completed = wait_for_task_status(Pid, TaskId, completed, 100),
     Result = task_result(Pid, TaskId),
-    %% Staged red: deliberately wrong expected value so the result-equality
-    %% assertion fires. Corrected to the real Outputs in the follow-up commit.
-    Outputs = wrong_sentinel,
+    %% The single echo step s1 echoes its args unchanged, so the run's Outputs
+    %% map is keyed by the step id with the echoed args as the value.
+    Outputs = #{s1 => #{value => <<"a">>}},
     Result = Outputs,
     ok.
 
