@@ -1118,7 +1118,7 @@ get_task_status_completed_after_run(_Config) ->
     ok = wait_for_run_completed(Store, RunId, 100),
     completed = wait_for_task_status(Pid, TaskId, completed, 100),
     Status = soma_actor:get_task_status(Pid, TaskId),
-    running = maps:get(status, Status),
+    completed = maps:get(status, Status),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
