@@ -53,6 +53,7 @@
 -export([tool_crash_isolated_by_process_boundary/1]).
 -export([ask_failed_run_returns_error/1]).
 -export([timed_out_run_emits_task_failed_timeout/1]).
+-export([ask_timed_out_run_returns_error_timeout/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -103,7 +104,8 @@ all() ->
      actor_alive_after_owned_run_fails,
      tool_crash_isolated_by_process_boundary,
      ask_failed_run_returns_error,
-     timed_out_run_emits_task_failed_timeout].
+     timed_out_run_emits_task_failed_timeout,
+     ask_timed_out_run_returns_error_timeout].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -167,7 +169,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= actor_alive_after_owned_run_fails;
        TestCase =:= tool_crash_isolated_by_process_boundary;
        TestCase =:= ask_failed_run_returns_error;
-       TestCase =:= timed_out_run_emits_task_failed_timeout ->
+       TestCase =:= timed_out_run_emits_task_failed_timeout;
+       TestCase =:= ask_timed_out_run_returns_error_timeout ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -235,7 +238,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= actor_alive_after_owned_run_fails;
        TestCase =:= tool_crash_isolated_by_process_boundary;
        TestCase =:= ask_failed_run_returns_error;
-       TestCase =:= timed_out_run_emits_task_failed_timeout ->
+       TestCase =:= timed_out_run_emits_task_failed_timeout;
+       TestCase =:= ask_timed_out_run_returns_error_timeout ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1508,6 +1512,36 @@ timed_out_run_emits_task_failed_timeout(_Config) ->
     TaskId = maps:get(task_id, Failed),
     CorrelationId = maps:get(correlation_id, Failed),
     timeout = maps:get(reason, Failed),
+    ok.
+
+%% Criterion 7 (slice p8/p9/p15): an ask/3 whose run times out returns
+%% {error, timeout} instead of hanging, and the actor pid stays alive afterward.
+%% The runtime is booted so soma_run_sup and soma_tool_registry are alive; the
+%% actor is started through soma_actor_sup:start_actor/1 with the booted
+%% runtime's event store so the actor and the run share one store. Enters through
+%% the real soma_actor:ask/3 call, no layer bypassed. The single sleep step runs
+%% 500ms with a 50ms per-step timeout_ms, so soma_run's state_timeout fires
+%% first; ask/3 parks the caller's From, then soma_run times the run out and
+%% sends {run_timeout, RunId} to the actor, which replies {error, timeout} to the
+%% parked waiter. The TimeoutMs (5000) is longer than the step's timeout_ms, so
+%% the run timeout (not the caller-side timeout) ends the call. After the reply
+%% the test asserts the actor pid is still alive via is_process_alive/1.
+ask_timed_out_run_returns_error_timeout(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-timed-out">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-timed-out">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500},
+               timeout_ms => 50}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, _Outputs} = soma_actor:ask(Pid, Envelope, 5000),
+    true = is_process_alive(Pid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
