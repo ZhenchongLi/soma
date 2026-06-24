@@ -98,8 +98,7 @@ test_no_soma_llm_call_sup_in_tree_test() ->
     ModuleFiles = filelib:wildcard(
         filename:join([AppsRoot, "*", "src", "*soma_llm_call_sup*"])),
     Offenders = [F || F <- Files, file_mentions_soma_llm_call_sup(F)],
-    %% STAGED RED: deliberately wrong expectation so the assertion fires.
-    ?assertEqual([dummy_offender], ModuleFiles ++ Offenders).
+    ?assertEqual([], ModuleFiles ++ Offenders).
 
 %% Returns `true' if the given source file's contents contain the string
 %% "soma_llm_call_sup".
