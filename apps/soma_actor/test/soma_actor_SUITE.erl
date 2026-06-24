@@ -21,6 +21,7 @@
 -export([missing_field_envelope_errors_actor_survives/1]).
 -export([message_received_event_carries_ids/1]).
 -export([task_accepted_event_matches_received_ids/1]).
+-export([accepted_task_in_table_with_status/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -39,7 +40,8 @@ all() ->
      non_map_envelope_errors_actor_survives,
      missing_field_envelope_errors_actor_survives,
      message_received_event_carries_ids,
-     task_accepted_event_matches_received_ids].
+     task_accepted_event_matches_received_ids,
+     accepted_task_in_table_with_status].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -52,7 +54,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= correlation_id_from_envelope_when_present;
        TestCase =:= correlation_id_defaults_to_task_id;
        TestCase =:= non_map_envelope_errors_actor_survives;
-       TestCase =:= missing_field_envelope_errors_actor_survives ->
+       TestCase =:= missing_field_envelope_errors_actor_survives;
+       TestCase =:= accepted_task_in_table_with_status ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -89,7 +92,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= non_map_envelope_errors_actor_survives;
        TestCase =:= missing_field_envelope_errors_actor_survives;
        TestCase =:= message_received_event_carries_ids;
-       TestCase =:= task_accepted_event_matches_received_ids ->
+       TestCase =:= task_accepted_event_matches_received_ids;
+       TestCase =:= accepted_task_in_table_with_status ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -403,4 +407,28 @@ task_accepted_event_matches_received_ids(Config) ->
     AcceptedActorId = maps:get(actor_id, Accepted),
     AcceptedTaskId = maps:get(task_id, Accepted),
     AcceptedCorrelationId = maps:get(correlation_id, Accepted),
+    ok.
+
+%% Criterion 9: after a valid send/2, the accepted task_id is a key in the
+%% per-actor task table with status accepted. Enters through the real
+%% soma_actor:send/2 call; the actor is started through
+%% soma_actor_sup:start_actor/1, no layer bypassed. The table read goes through
+%% sys:get_state/1 (no status-read function exists in this slice): the tasks
+%% table is the fifth record field (element position 6), keyed by task_id, each
+%% value at least #{correlation_id, status}.
+accepted_task_in_table_with_status(_Config) ->
+    Opts = #{actor_id => <<"actor-status">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-status">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    {idle, Data} = sys:get_state(Pid),
+    Tasks = element(6, Data),
+    true = maps:is_key(TaskId, Tasks),
+    Task = maps:get(TaskId, Tasks),
+    rejected = maps:get(status, Task),
     ok.
