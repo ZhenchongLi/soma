@@ -59,6 +59,7 @@
 -export([new_run_completes_after_timed_out_run/1]).
 -export([cancel_drives_run_to_cancelled/1]).
 -export([cancel_kills_tool_call_worker/1]).
+-export([cancel_emits_actor_task_cancelled_event/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -115,7 +116,8 @@ all() ->
      new_run_completes_after_failed_run,
      new_run_completes_after_timed_out_run,
      cancel_drives_run_to_cancelled,
-     cancel_kills_tool_call_worker].
+     cancel_kills_tool_call_worker,
+     cancel_emits_actor_task_cancelled_event].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -185,7 +187,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= new_run_completes_after_failed_run;
        TestCase =:= new_run_completes_after_timed_out_run;
        TestCase =:= cancel_drives_run_to_cancelled;
-       TestCase =:= cancel_kills_tool_call_worker ->
+       TestCase =:= cancel_kills_tool_call_worker;
+       TestCase =:= cancel_emits_actor_task_cancelled_event ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -259,7 +262,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= new_run_completes_after_failed_run;
        TestCase =:= new_run_completes_after_timed_out_run;
        TestCase =:= cancel_drives_run_to_cancelled;
-       TestCase =:= cancel_kills_tool_call_worker ->
+       TestCase =:= cancel_kills_tool_call_worker;
+       TestCase =:= cancel_emits_actor_task_cancelled_event ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1752,6 +1756,43 @@ cancel_kills_tool_call_worker(_Config) ->
     _Cancelled = wait_for_run_event(Store, RunId, <<"run.cancelled">>, 100),
     WorkerPid = worker_pid_from_tool_started(Store, RunId),
     false = is_process_alive(WorkerPid),
+    ok.
+
+%% Criterion 3 (slice p10/p11): after soma_actor:cancel/2 drives a parked run to
+%% cancelled, the actor emits an actor.task.cancelled event carrying the task's
+%% actor_id, task_id, and correlation_id. The runtime is booted so soma_run_sup
+%% and soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the actor
+%% and the run share one store. Enters through the real soma_actor:cancel/2 call,
+%% no layer bypassed. send/2 returns while the 500ms sleep step is still running,
+%% so the run sits in waiting_tool; cancel/2 sends cancel to the run pid, which
+%% kills the worker, emits run.cancelled, and reports {run_cancelled, RunId} back
+%% to the actor. The actor's handler flips the task to cancelled and emits
+%% actor.task.cancelled. The test polls the shared store until that event appears,
+%% then asserts it carries the three ids from the recorded task.
+cancel_emits_actor_task_cancelled_event(_Config) ->
+    Store = event_store_pid(),
+    ActorId = <<"actor-cancel-event">>,
+    Opts = #{actor_id => ActorId,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-cancel-event">>,
+    CorrelationId = <<"corr-cancel-event">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% The 500ms sleep step holds the run in waiting_tool while send/2 returns.
+    ok = soma_actor:cancel(Pid, TaskId),
+    Cancelled = wait_for_actor_event(Store, <<"actor.task.cancelled">>, 100),
+    ActorId = maps:get(actor_id, Cancelled),
+    TaskId = maps:get(task_id, Cancelled),
+    CorrelationId = maps:get(correlation_id, Cancelled),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
