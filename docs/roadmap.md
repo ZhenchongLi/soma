@@ -2,15 +2,16 @@
 
 This document tracks ideas that should wait until the Erlang runtime is solid.
 
-**Status:** v0.1 (runtime core) and v0.2 (tool manifests + CLI/port adapter) are
-built and merged. v0.3 and beyond below are still future layers.
+**Status:** v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), and
+v0.3 (LFE DSL compile-only layer) are built and merged. v0.4 and beyond below
+are still future layers.
 
 ## Sequence
 
 ```text
 v0.1  Erlang/OTP agent runtime                       [done]
 v0.2  tool manifests and CLI/port adapter hardening  [done]
-v0.3  LFE DSL -> steps
+v0.3  LFE DSL -> steps                               [done]
 v0.4  MCP client adapter
 v0.5  LLM planner adapter
 v0.6  DAG execution

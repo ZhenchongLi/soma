@@ -11,12 +11,13 @@ Erlang/OTP provides the execution semantics — timeouts, cancellation, monitori
 crash isolation — while the step list only says *what* to run. The full rationale
 and design live in **[docs/design.md](docs/design.md)**, the project's north star.
 
-**Status — built and green on `main`** (EUnit 72, Common Test 61, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 95, Common Test 70, Erlang/OTP 29).
 The runtime executes sequential runs, isolates failures, and runs both in-BEAM
 Erlang tools and external one-shot CLI tools — each proven under test, asserting
-*process survival*, not just return values. A self-contained macOS arm64 release
-is built and verified; the Linux x86_64 / arm64 artifacts are the one remaining
-packaging task.
+*process survival*, not just return values. An LFE DSL compile-only layer
+(v0.3) is built and proven. A self-contained macOS arm64 release is built and
+verified; the Linux x86_64 / arm64 artifacts are the one remaining packaging
+task.
 
 ## The idea
 
@@ -166,8 +167,8 @@ tools, real timeout/cancellation, normalized failures, the event log, and a
 self-contained release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**):
-an LFE DSL, MCP, an LLM planner, DAG parallelism, distributed Erlang, and
-persistent run resume.
+MCP, an LLM planner, DAG parallelism, distributed Erlang, and persistent run
+resume.
 
 ## Docs
 
@@ -182,5 +183,9 @@ persistent run resume.
   process-behaviour test contract for manifests and the CLI adapter: each proof
   mapped to the suite and case that proves it.
 - **[docs/release.md](docs/release.md)** — building and running the release.
+- **[docs/lfe-dsl.md](docs/lfe-dsl.md)** — the LFE DSL: syntax reference,
+  step-list contract, the demo example, `from_step` forms, diagnostic codes,
+  proof-to-test mapping, and explicit non-goals. The `soma_lfe` app is a
+  compile-only layer; it has no runtime dependency on `soma_runtime`.
 - **[docs/roadmap.md](docs/roadmap.md)** — the future layers beyond the current
   build.
