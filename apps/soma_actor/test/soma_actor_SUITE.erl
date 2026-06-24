@@ -55,6 +55,7 @@
 -export([timed_out_run_emits_task_failed_timeout/1]).
 -export([ask_timed_out_run_returns_error_timeout/1]).
 -export([status_running_promptly_while_run_in_flight/1]).
+-export([new_run_completes_after_failed_run/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -107,7 +108,8 @@ all() ->
      ask_failed_run_returns_error,
      timed_out_run_emits_task_failed_timeout,
      ask_timed_out_run_returns_error_timeout,
-     status_running_promptly_while_run_in_flight].
+     status_running_promptly_while_run_in_flight,
+     new_run_completes_after_failed_run].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -173,7 +175,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= ask_failed_run_returns_error;
        TestCase =:= timed_out_run_emits_task_failed_timeout;
        TestCase =:= ask_timed_out_run_returns_error_timeout;
-       TestCase =:= status_running_promptly_while_run_in_flight ->
+       TestCase =:= status_running_promptly_while_run_in_flight;
+       TestCase =:= new_run_completes_after_failed_run ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -243,7 +246,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= ask_failed_run_returns_error;
        TestCase =:= timed_out_run_emits_task_failed_timeout;
        TestCase =:= ask_timed_out_run_returns_error_timeout;
-       TestCase =:= status_running_promptly_while_run_in_flight ->
+       TestCase =:= status_running_promptly_while_run_in_flight;
+       TestCase =:= new_run_completes_after_failed_run ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1581,6 +1585,47 @@ status_running_promptly_while_run_in_flight(_Config) ->
     Status = soma_actor:get_task_status(Pid, TaskId),
     running = maps:get(status, Status),
     TaskId = maps:get(task_id, Status),
+    ok.
+
+%% Criterion 9 (slice p8/p9/p15): after a run the actor owns fails, a second
+%% steps envelope is accepted on the same actor pid and runs to completed —
+%% proving a failed run leaves the actor responsive, not wedged. The runtime is
+%% booted so soma_run_sup and soma_tool_registry are alive; the actor is started
+%% through soma_actor_sup:start_actor/1 with the booted runtime's event store so
+%% the actor and both runs share one store. Enters through the real
+%% soma_actor:send/2 call twice on the same actor pid, no layer bypassed. The
+%% first envelope's single fail step returns {error, boom}; soma_run fails the
+%% run and sends {run_failed, ...} to the actor, which flips that task to failed.
+%% The test then sends a second envelope with a single echo step; its run id is
+%% read from the actor's runs map by task id (run_id_for_task/2) and its trail
+%% polled to run.completed, then the second task is asserted completed.
+new_run_completes_after_failed_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-new-run-after-fail">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId1 = <<"task-fail-first">>,
+    FailSteps = [#{id => s1, tool => fail,
+                   args => #{mode => error, reason => boom}}],
+    Envelope1 = #{type => <<"chat">>,
+                  payload => #{text => <<"first">>},
+                  task_id => TaskId1,
+                  steps => FailSteps},
+    {ok, TaskId1} = soma_actor:send(Pid, Envelope1),
+    failed = wait_for_task_status(Pid, TaskId1, failed, 100),
+    TaskId2 = <<"task-complete-second">>,
+    EchoSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope2 = #{type => <<"chat">>,
+                  payload => #{text => <<"second">>},
+                  task_id => TaskId2,
+                  steps => EchoSteps},
+    {ok, TaskId2} = soma_actor:send(Pid, Envelope2),
+    RunId2 = run_id_for_task(Pid, TaskId2),
+    ok = wait_for_run_completed(Store, RunId2, 100),
+    Status = wait_for_task_status(Pid, TaskId2, completed, 100),
+    failed = Status,
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
