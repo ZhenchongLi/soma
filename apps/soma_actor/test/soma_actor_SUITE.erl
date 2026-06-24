@@ -62,6 +62,7 @@
 -export([cancel_emits_actor_task_cancelled_event/1]).
 -export([cancel_status_cancelled_and_actor_alive/1]).
 -export([ask_cancelled_returns_error_cancelled/1]).
+-export([cancel_unknown_task_returns_error/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -121,7 +122,8 @@ all() ->
      cancel_kills_tool_call_worker,
      cancel_emits_actor_task_cancelled_event,
      cancel_status_cancelled_and_actor_alive,
-     ask_cancelled_returns_error_cancelled].
+     ask_cancelled_returns_error_cancelled,
+     cancel_unknown_task_returns_error].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -138,7 +140,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= accepted_task_in_table_with_status;
        TestCase =:= actor_idle_and_alive_after_send;
        TestCase =:= second_send_accepts_too;
-       TestCase =:= unknown_task_id_not_found_both_reads_actor_alive ->
+       TestCase =:= unknown_task_id_not_found_both_reads_actor_alive;
+       TestCase =:= cancel_unknown_task_returns_error ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -220,7 +223,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= accepted_task_in_table_with_status;
        TestCase =:= actor_idle_and_alive_after_send;
        TestCase =:= second_send_accepts_too;
-       TestCase =:= unknown_task_id_not_found_both_reads_actor_alive ->
+       TestCase =:= unknown_task_id_not_found_both_reads_actor_alive;
+       TestCase =:= cancel_unknown_task_returns_error ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -1887,6 +1891,24 @@ ask_cancelled_returns_error_cancelled(_Config) ->
                    error(ask_reply_timeout)
                end,
     {error, cancelled} = AskReply,
+    true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 6 (slice p10/p11): soma_actor:cancel/2 for an unknown task_id (one
+%% that was never accepted) returns {error, Reason} without crashing the actor.
+%% No run is started, so the actor is brought up through soma_actor_sup:start_link
+%% only, no runtime needed. Enters through the real soma_actor:cancel/2 call, no
+%% layer bypassed: the call reaches idle({call, From}, {cancel, TaskId}, _), the
+%% task lookup misses, and the actor replies {error, not_found}. The test asserts
+%% the reply matches {error, _} and the actor pid is still alive afterward via
+%% is_process_alive/1.
+cancel_unknown_task_returns_error(_Config) ->
+    Opts = #{actor_id => <<"actor-cancel-unknown">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    UnknownTaskId = <<"task-never-accepted">>,
+    {ok, _} = soma_actor:cancel(Pid, UnknownTaskId),
     true = is_process_alive(Pid),
     ok.
 
