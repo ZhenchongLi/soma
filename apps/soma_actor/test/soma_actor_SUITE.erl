@@ -60,6 +60,7 @@
 -export([cancel_drives_run_to_cancelled/1]).
 -export([cancel_kills_tool_call_worker/1]).
 -export([cancel_emits_actor_task_cancelled_event/1]).
+-export([cancel_status_cancelled_and_actor_alive/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -117,7 +118,8 @@ all() ->
      new_run_completes_after_timed_out_run,
      cancel_drives_run_to_cancelled,
      cancel_kills_tool_call_worker,
-     cancel_emits_actor_task_cancelled_event].
+     cancel_emits_actor_task_cancelled_event,
+     cancel_status_cancelled_and_actor_alive].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -188,7 +190,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= new_run_completes_after_timed_out_run;
        TestCase =:= cancel_drives_run_to_cancelled;
        TestCase =:= cancel_kills_tool_call_worker;
-       TestCase =:= cancel_emits_actor_task_cancelled_event ->
+       TestCase =:= cancel_emits_actor_task_cancelled_event;
+       TestCase =:= cancel_status_cancelled_and_actor_alive ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -263,7 +266,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= new_run_completes_after_timed_out_run;
        TestCase =:= cancel_drives_run_to_cancelled;
        TestCase =:= cancel_kills_tool_call_worker;
-       TestCase =:= cancel_emits_actor_task_cancelled_event ->
+       TestCase =:= cancel_emits_actor_task_cancelled_event;
+       TestCase =:= cancel_status_cancelled_and_actor_alive ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1793,6 +1797,43 @@ cancel_emits_actor_task_cancelled_event(_Config) ->
     ActorId = maps:get(actor_id, Cancelled),
     TaskId = maps:get(task_id, Cancelled),
     CorrelationId = maps:get(correlation_id, Cancelled),
+    ok.
+
+%% Criterion 4 (slice p10/p11): after soma_actor:cancel/2 drives a parked run to
+%% cancelled, the task's status read through get_task_status/2 is cancelled and
+%% the actor pid is still alive. The runtime is booted so soma_run_sup and
+%% soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the actor
+%% and the run share one store. Enters through the real soma_actor:cancel/2 then
+%% soma_actor:get_task_status/2 calls, no layer bypassed. send/2 returns while the
+%% 500ms sleep step is still running, so the run sits in waiting_tool; cancel/2
+%% sends cancel to the run pid, which kills the worker, emits run.cancelled, and
+%% reports {run_cancelled, RunId} back to the actor. The actor's handler flips the
+%% task to cancelled; cancel/2's ok reply precedes that flip, so the test polls the
+%% task table to cancelled before reading status. The status map's status is then
+%% asserted cancelled and the actor pid asserted alive via is_process_alive/1.
+cancel_status_cancelled_and_actor_alive(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-cancel-status">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-cancel-status">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% The 500ms sleep step holds the run in waiting_tool while send/2 returns.
+    ok = soma_actor:cancel(Pid, TaskId),
+    %% cancel/2's ok reply precedes the status flip, which lands when
+    %% {run_cancelled, RunId} comes back; poll the task table to cancelled first.
+    cancelled = wait_for_task_status(Pid, TaskId, cancelled, 100),
+    Status = soma_actor:get_task_status(Pid, TaskId),
+    running = maps:get(status, Status),
+    true = is_process_alive(Pid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
