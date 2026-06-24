@@ -45,6 +45,7 @@
 -export([get_task_status_queryable_by_send_task_id/1]).
 -export([get_task_result_not_ready_before_completion/1]).
 -export([get_task_result_ok_outputs_after_completion/1]).
+-export([unknown_task_id_not_found_both_reads_actor_alive/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -87,7 +88,8 @@ all() ->
      get_task_status_completed_after_run,
      get_task_status_queryable_by_send_task_id,
      get_task_result_not_ready_before_completion,
-     get_task_result_ok_outputs_after_completion].
+     get_task_result_ok_outputs_after_completion,
+     unknown_task_id_not_found_both_reads_actor_alive].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -103,7 +105,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= missing_field_envelope_errors_actor_survives;
        TestCase =:= accepted_task_in_table_with_status;
        TestCase =:= actor_idle_and_alive_after_send;
-       TestCase =:= second_send_accepts_too ->
+       TestCase =:= second_send_accepts_too;
+       TestCase =:= unknown_task_id_not_found_both_reads_actor_alive ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -168,7 +171,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= task_accepted_event_matches_received_ids;
        TestCase =:= accepted_task_in_table_with_status;
        TestCase =:= actor_idle_and_alive_after_send;
-       TestCase =:= second_send_accepts_too ->
+       TestCase =:= second_send_accepts_too;
+       TestCase =:= unknown_task_id_not_found_both_reads_actor_alive ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -1212,6 +1216,27 @@ get_task_result_ok_outputs_after_completion(_Config) ->
     %% map is keyed by the step id with the echoed args as the value.
     Outputs = #{s1 => #{value => <<"a">>}},
     {ok, Outputs} = soma_actor:get_task_result(Pid, TaskId),
+    ok.
+
+%% Criterion 12 (slice p5/p6): get_task_status/2 and get_task_result/2 for an
+%% unknown task_id both report not-found, and the actor pid stays alive across the
+%% pair of calls. No task is ever accepted for the queried id, so each read hits
+%% the not-found path. get_task_result/2 returns {error, not_found}; for
+%% get_task_status/2 the return type stays a map, so it carries status => not_found.
+%% The actor is started through soma_actor_sup:start_actor/1, no layer bypassed;
+%% no runtime is needed because the reads never start a run. Enters through the
+%% real soma_actor:get_task_status/2 and soma_actor:get_task_result/2 calls, then
+%% checks is_process_alive/1 on the actor pid after both reads.
+unknown_task_id_not_found_both_reads_actor_alive(_Config) ->
+    Opts = #{actor_id => <<"actor-unknown-task">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    UnknownTaskId = <<"task-never-accepted">>,
+    Status = soma_actor:get_task_status(Pid, UnknownTaskId),
+    not_found = maps:get(status, Status),
+    {error, not_found} = soma_actor:get_task_result(Pid, UnknownTaskId),
+    true = is_process_alive(Pid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
