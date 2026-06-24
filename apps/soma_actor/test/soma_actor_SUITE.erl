@@ -44,6 +44,7 @@
 -export([get_task_status_completed_after_run/1]).
 -export([get_task_status_queryable_by_send_task_id/1]).
 -export([get_task_result_not_ready_before_completion/1]).
+-export([get_task_result_ok_outputs_after_completion/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -85,7 +86,8 @@ all() ->
      get_task_status_running_before_completion,
      get_task_status_completed_after_run,
      get_task_status_queryable_by_send_task_id,
-     get_task_result_not_ready_before_completion].
+     get_task_result_not_ready_before_completion,
+     get_task_result_ok_outputs_after_completion].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -140,7 +142,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= get_task_status_running_before_completion;
        TestCase =:= get_task_status_completed_after_run;
        TestCase =:= get_task_status_queryable_by_send_task_id;
-       TestCase =:= get_task_result_not_ready_before_completion ->
+       TestCase =:= get_task_result_not_ready_before_completion;
+       TestCase =:= get_task_result_ok_outputs_after_completion ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -199,7 +202,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= get_task_status_running_before_completion;
        TestCase =:= get_task_status_completed_after_run;
        TestCase =:= get_task_status_queryable_by_send_task_id;
-       TestCase =:= get_task_result_not_ready_before_completion ->
+       TestCase =:= get_task_result_not_ready_before_completion;
+       TestCase =:= get_task_result_ok_outputs_after_completion ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1176,6 +1180,41 @@ get_task_result_not_ready_before_completion(_Config) ->
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     %% The 500ms sleep step is still running, so the result is not ready yet.
     not_ready = soma_actor:get_task_result(Pid, TaskId),
+    ok.
+
+%% Criterion 11 (slice p5/p6): get_task_result/2 returns {ok, Outputs} after the
+%% same task completes. The single echo step finishes fast; the test polls the
+%% actor's task table until the run completes, then reads the result through the
+%% real get_task_result/2 call and asserts it returns {ok, Outputs} where Outputs
+%% is the run's outputs (the single echo step's recorded output). The runtime is
+%% booted so soma_run_sup and soma_tool_registry are alive; the actor is started
+%% through soma_actor_sup:start_actor/1 with the booted runtime's event store, no
+%% layer bypassed. Enters through the real soma_actor:send/2 then
+%% soma_actor:get_task_result/2 calls.
+get_task_result_ok_outputs_after_completion(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-result-ok">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-result-ok">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    RunId = actor_run_id(Pid),
+    ok = wait_for_run_completed(Store, RunId, 100),
+    completed = wait_for_task_status(Pid, TaskId, completed, 100),
+    %% The single echo step s1 echoes its args unchanged, so the run's Outputs
+    %% map is keyed by the step id with the echoed args as the value.
+    Outputs = #{s1 => #{value => <<"a">>}},
+    %% Staged red: deliberately wrong expected value (the implementation returns
+    %% {ok, Outputs}); corrected in the follow-up fix(test) commit.
+    not_ready = soma_actor:get_task_result(Pid, TaskId),
+    _ = Outputs,
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
