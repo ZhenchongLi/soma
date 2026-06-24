@@ -36,6 +36,7 @@
 -export([no_steps_accepts_and_starts_no_run/1]).
 -export([ask_returns_run_outputs/1]).
 -export([ask_caller_and_actor_alive_after_return/1]).
+-export([ask_reply_matches_completed_run/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -69,7 +70,8 @@ all() ->
      second_steps_envelope_starts_second_run,
      no_steps_accepts_and_starts_no_run,
      ask_returns_run_outputs,
-     ask_caller_and_actor_alive_after_return].
+     ask_caller_and_actor_alive_after_return,
+     ask_reply_matches_completed_run].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -116,7 +118,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= second_steps_envelope_starts_second_run;
        TestCase =:= no_steps_accepts_and_starts_no_run;
        TestCase =:= ask_returns_run_outputs;
-       TestCase =:= ask_caller_and_actor_alive_after_return ->
+       TestCase =:= ask_caller_and_actor_alive_after_return;
+       TestCase =:= ask_reply_matches_completed_run ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -167,7 +170,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= second_steps_envelope_starts_second_run;
        TestCase =:= no_steps_accepts_and_starts_no_run;
        TestCase =:= ask_returns_run_outputs;
-       TestCase =:= ask_caller_and_actor_alive_after_return ->
+       TestCase =:= ask_caller_and_actor_alive_after_return;
+       TestCase =:= ask_reply_matches_completed_run ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -919,6 +923,41 @@ ask_caller_and_actor_alive_after_return(_Config) ->
     {ok, _Result} = soma_actor:ask(Pid, Envelope, 5000),
     true = is_process_alive(self()),
     true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 3 (slice p5/p6): ask/3's reply arrives only after the run completes,
+%% and the returned result matches the run's actual outputs. The single step
+%% sleeps for 300ms then the run completes, so when ask issues its gen_statem:call
+%% the run is genuinely in flight. The actor only sets the task to status
+%% completed inside its {run_completed, ...} handler, which is also where it
+%% replies to the parked ask waiter. So the moment ask/3 returns, the task table
+%% must already read completed — proving the reply could not have arrived before
+%% the run finished — and the returned Result must equal the task's stored result,
+%% which is the run's outputs. The runtime is booted so soma_run_sup and
+%% soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the actor
+%% and the run share one store. Enters through the real soma_actor:ask/3 call, no
+%% layer bypassed.
+ask_reply_matches_completed_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-after-complete">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-after-complete">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 300}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, Result} = soma_actor:ask(Pid, Envelope, 5000),
+    %% The reply could only have been sent from the {run_completed, ...} handler,
+    %% which sets the task to completed in the same step — so by the time ask/3
+    %% returns the task table already reads completed.
+    running = task_status(Pid, TaskId),
+    %% The returned result is exactly the run's stored outputs.
+    Result = task_result(Pid, TaskId),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
