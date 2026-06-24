@@ -138,7 +138,22 @@ idle(info, {run_completed, RunId, Outputs}, Data) ->
                  #{task_id => TaskId, correlation_id => CorrelationId}),
             emit(Data1, <<"actor.task.completed">>,
                  #{task_id => TaskId, correlation_id => CorrelationId}),
-            reply_waiter(TaskId, Outputs, Data1)
+            reply_waiter(TaskId, {ok, Outputs}, Data1)
+    end;
+idle(info, {run_failed, RunId, Reason}, Data) ->
+    case maps:get(RunId, Data#data.runs, undefined) of
+        undefined ->
+            {keep_state, Data};
+        TaskId ->
+            Task = maps:get(TaskId, Data#data.tasks),
+            CorrelationId = maps:get(correlation_id, Task),
+            Task1 = Task#{status => failed, reason => Reason},
+            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+            Data1 = Data#data{tasks = Tasks},
+            emit(Data1, <<"actor.task.failed">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId,
+                   reason => Reason}),
+            reply_waiter(TaskId, {error, Reason}, Data1)
     end;
 idle(_EventType, _Event, Data) ->
     {keep_state, Data}.
@@ -182,16 +197,17 @@ maybe_start_run(Envelope, TaskId, CorrelationId, Data) ->
             Data
     end.
 
-%% If an ask/3 caller is parked on this task, reply {ok, Outputs} to it and drop
-%% the waiter. A send-started task has no waiter, so this is a no-op for send.
-reply_waiter(TaskId, Outputs, Data) ->
+%% If an ask/3 caller is parked on this task, reply with the given term to it and
+%% drop the waiter. The success path passes {ok, Outputs}, the failure path
+%% {error, Reason}. A send-started task has no waiter, so this is a no-op for send.
+reply_waiter(TaskId, Reply, Data) ->
     case maps:get(TaskId, Data#data.waiters, undefined) of
         undefined ->
             {keep_state, Data};
         From ->
             Waiters = maps:remove(TaskId, Data#data.waiters),
             {keep_state, Data#data{waiters = Waiters},
-             [{reply, From, {ok, Outputs}}]}
+             [{reply, From, Reply}]}
     end.
 
 mint_run_id() ->
