@@ -824,7 +824,7 @@ second_steps_envelope_starts_second_run(_Config) ->
                   steps => Steps},
     {ok, TaskId2} = soma_actor:send(Pid, Envelope2),
     RunId2 = run_id_for_task(Pid, TaskId2),
-    true = RunId1 =:= RunId2,
+    true = RunId1 =/= RunId2,
     ok = wait_for_run_completed(Store, RunId2, 100),
     ok.
 
