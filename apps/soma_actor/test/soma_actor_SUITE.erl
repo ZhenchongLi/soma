@@ -40,6 +40,7 @@
 -export([ask_short_timeout_returns_timeout/1]).
 -export([ask_timeout_actor_survives_and_completes/1]).
 -export([ask_invalid_envelope_errors_no_run/1]).
+-export([get_task_status_running_before_completion/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -77,7 +78,8 @@ all() ->
      ask_reply_matches_completed_run,
      ask_short_timeout_returns_timeout,
      ask_timeout_actor_survives_and_completes,
-     ask_invalid_envelope_errors_no_run].
+     ask_invalid_envelope_errors_no_run,
+     get_task_status_running_before_completion].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -128,7 +130,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= ask_reply_matches_completed_run;
        TestCase =:= ask_short_timeout_returns_timeout;
        TestCase =:= ask_timeout_actor_survives_and_completes;
-       TestCase =:= ask_invalid_envelope_errors_no_run ->
+       TestCase =:= ask_invalid_envelope_errors_no_run;
+       TestCase =:= get_task_status_running_before_completion ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -183,7 +186,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= ask_reply_matches_completed_run;
        TestCase =:= ask_short_timeout_returns_timeout;
        TestCase =:= ask_timeout_actor_survives_and_completes;
-       TestCase =:= ask_invalid_envelope_errors_no_run ->
+       TestCase =:= ask_invalid_envelope_errors_no_run;
+       TestCase =:= get_task_status_running_before_completion ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1051,6 +1055,35 @@ ask_invalid_envelope_errors_no_run(_Config) ->
     RunPids = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
     0 = length(RunPids),
     true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 7 (slice p5/p6): get_task_status/2 returns a map with
+%% status => running after a steps task is accepted and before it completes. The
+%% single step sleeps for 500ms, so the run is still in flight when the status is
+%% read. The runtime is booted so soma_run_sup and soma_tool_registry are alive;
+%% the actor is started through soma_actor_sup:start_actor/1 with the booted
+%% runtime's event store, no layer bypassed. Enters through the real
+%% soma_actor:send/2 then soma_actor:get_task_status/2 calls. The returned map
+%% must carry task_id and correlation_id alongside status => running.
+get_task_status_running_before_completion(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-status-running">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-status-running">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% The 500ms sleep step is still running, so the task reads running.
+    Status = soma_actor:get_task_status(Pid, TaskId),
+    running = maps:get(status, Status),
+    TaskId = maps:get(task_id, Status),
+    TaskId = maps:get(correlation_id, Status),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
