@@ -55,8 +55,7 @@ test_sup_strategy_simple_one_for_one_test() ->
 test_sup_zero_children_after_boot_test() ->
     try
         {ok, _} = application:ensure_all_started(soma_actor),
-        ?assertEqual([{soma_actor, undefined, worker, [soma_actor]}],
-                     supervisor:which_children(soma_actor_sup))
+        ?assertEqual([], supervisor:which_children(soma_actor_sup))
     after
         application:stop(soma_actor),
         application:unload(soma_actor)
