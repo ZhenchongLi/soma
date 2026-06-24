@@ -708,7 +708,7 @@ task_status_completed_after_run(_Config) ->
     RunId = actor_run_id(Pid),
     ok = wait_for_run_completed(Store, RunId, 100),
     Status = wait_for_task_status(Pid, TaskId, completed, 100),
-    accepted = Status,
+    completed = Status,
     ok.
 
 %% Polls the actor's task table until the task reaches the target status,
