@@ -1625,7 +1625,7 @@ new_run_completes_after_failed_run(_Config) ->
     RunId2 = run_id_for_task(Pid, TaskId2),
     ok = wait_for_run_completed(Store, RunId2, 100),
     Status = wait_for_task_status(Pid, TaskId2, completed, 100),
-    failed = Status,
+    completed = Status,
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
