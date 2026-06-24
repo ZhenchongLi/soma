@@ -42,7 +42,7 @@ test_sup_strategy_simple_one_for_one_test() ->
     try
         {ok, _} = application:ensure_all_started(soma_actor),
         Strategy = element(3, sys:get_state(soma_actor_sup)),
-        ?assertEqual(one_for_one, Strategy)
+        ?assertEqual(simple_one_for_one, Strategy)
     after
         application:stop(soma_actor),
         application:unload(soma_actor)
