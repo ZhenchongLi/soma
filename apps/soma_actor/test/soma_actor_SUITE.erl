@@ -30,6 +30,7 @@
 -export([result_created_event_carries_ids/1]).
 -export([task_completed_event_carries_ids/1]).
 -export([task_status_completed_after_run/1]).
+-export([task_result_holds_outputs_after_run/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -57,7 +58,8 @@ all() ->
      actor_run_worker_pids_all_distinct,
      result_created_event_carries_ids,
      task_completed_event_carries_ids,
-     task_status_completed_after_run].
+     task_status_completed_after_run,
+     task_result_holds_outputs_after_run].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -98,7 +100,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= actor_run_worker_pids_all_distinct;
        TestCase =:= result_created_event_carries_ids;
        TestCase =:= task_completed_event_carries_ids;
-       TestCase =:= task_status_completed_after_run ->
+       TestCase =:= task_status_completed_after_run;
+       TestCase =:= task_result_holds_outputs_after_run ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -143,7 +146,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= actor_run_worker_pids_all_distinct;
        TestCase =:= result_created_event_carries_ids;
        TestCase =:= task_completed_event_carries_ids;
-       TestCase =:= task_status_completed_after_run ->
+       TestCase =:= task_status_completed_after_run;
+       TestCase =:= task_result_holds_outputs_after_run ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -710,6 +714,46 @@ task_status_completed_after_run(_Config) ->
     Status = wait_for_task_status(Pid, TaskId, completed, 100),
     completed = Status,
     ok.
+
+%% Criterion 7 (slice p3/p4): after the run completes the task's stored result
+%% holds the run Outputs, readable through sys:get_state/1. The runtime is booted
+%% so soma_run_sup and soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the actor
+%% and the run share one store. Enters through the real soma_actor:send/2 call, no
+%% layer bypassed. After the run completes the terminal {run_completed, RunId,
+%% Outputs} message lands in the actor's mailbox; the test polls the actor's task
+%% table (element 6 of the data record) until the task's status flips to completed,
+%% then asserts the task's stored result equals the run's Outputs (the single
+%% echo step's recorded output).
+task_result_holds_outputs_after_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-result-outputs">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-result-outputs">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    RunId = actor_run_id(Pid),
+    ok = wait_for_run_completed(Store, RunId, 100),
+    completed = wait_for_task_status(Pid, TaskId, completed, 100),
+    Result = task_result(Pid, TaskId),
+    %% Staged red: deliberately wrong expected value so the result-equality
+    %% assertion fires. Corrected to the real Outputs in the follow-up commit.
+    Outputs = wrong_sentinel,
+    Result = Outputs,
+    ok.
+
+%% Reads the stored result for the task from the actor's task table.
+task_result(Pid, TaskId) ->
+    {idle, Data} = sys:get_state(Pid),
+    Tasks = element(6, Data),
+    maps:get(result, maps:get(TaskId, Tasks)).
 
 %% Polls the actor's task table until the task reaches the target status,
 %% returning the observed status.
