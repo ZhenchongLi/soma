@@ -52,6 +52,20 @@ idle({call, From}, {send, Envelope}, Data) ->
         {error, Reason} ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
     end;
+idle(info, {run_completed, RunId, Outputs}, Data) ->
+    case maps:get(RunId, Data#data.runs, undefined) of
+        undefined ->
+            {keep_state, Data};
+        TaskId ->
+            Task = maps:get(TaskId, Data#data.tasks),
+            CorrelationId = maps:get(correlation_id, Task),
+            Task1 = Task#{status => completed, result => Outputs},
+            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+            Data1 = Data#data{tasks = Tasks},
+            emit(Data1, <<"actor.result.created">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId}),
+            {keep_state, Data1}
+    end;
 idle(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
