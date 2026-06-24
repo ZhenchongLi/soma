@@ -33,7 +33,12 @@ send(ActorRef, Envelope) ->
 %% finishes the task. The work runs inside the actor via `idle/3', so the actor
 %% is never bypassed.
 ask(ActorRef, Envelope, TimeoutMs) ->
-    gen_statem:call(ActorRef, {ask, Envelope}, TimeoutMs).
+    try
+        gen_statem:call(ActorRef, {ask, Envelope}, TimeoutMs)
+    catch
+        exit:{timeout, _} ->
+            timeout
+    end.
 
 callback_mode() ->
     state_functions.
