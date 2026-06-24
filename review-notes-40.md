@@ -5,30 +5,37 @@ changes-requested
 
 ## Real issues
 
-**1. No implementation — design doc only.**
-The branch adds `design-40.md` and nothing else. Zero acceptance criteria are met. The review below is of the design's correctness, not of shipped code.
+**Silent data loss when bare `from_step` is not the first arg entry.**
 
-**2. `parse_args` does not guard against the mixed `(from_step ...) + extra` case.**
-The design says a multi-element `(args ...)` list that starts with `[from_step, _]` "should fall through to the existing catch-all error." It does not, under the current `parse_args` clause shape. `[[from_step, id1], [extra, foo]]` hits the `[[Key, Value] | Rest]` clause with `Key = from_step`, silently emitting `from_step => coerce_value([id1])` as a field key — that is wrong and silent. The bare `from_step` clause must be `[[from_step, Id]]` (exact single-element list match, not just head match), so a two-element list falls past it into the key-value loop and then the catch-all. The design describes the right outcome but does not lock in the pattern that achieves it. Dev must use a strict single-element match, not `[[from_step, Id] | _]`.
+`soma_lfe_parser.erl` line 87: `parse_args([[from_step, Id]], _Acc)` matches when the remaining list is exactly one element. It discards `_Acc`. This is safe when `from_step` is the only arg, but breaks when other keys appear first. For `(args (path "x") (from_step s1))` the recursion trace is:
 
-**3. Existing test in `soma_lfe_parse_tests` asserts `timeout_ms => 5000` from the accumulator default.**
-`test_valid_run_form_produces_internal_repr` (line 8) passes source that includes `(timeout_ms 5000)` explicitly, so it survives the default removal. That is fine. The design says "existing EUnit tests will be updated" but does not identify which assertions change. Dev must audit all callers of `compile/2` in the test files and confirm none rely on the implicit 5000 — `soma_lfe_parse_tests.erl` line 8-16 is the only test using `timeout_ms` and it is safe, but this needs explicit verification in the PR, not a blanket statement.
+1. `parse_args([[path, <<"x">>], [from_step, s1]], #{})` — key-value clause fires, accumulates `#{path => <<"x">>}`
+2. `parse_args([[from_step, s1]], #{path => <<"x">>})` — bare clause fires, discards `Acc`, returns `#{from_step => s1}`
 
-**4. Criterion 4 test proves shape, not runtime compatibility.**
-The design explicitly scopes the test to `is_list(Steps)` + `is_map` per element. That does not prove `soma_run` will accept the step list — `soma_run` also requires the `id` and `tool` keys to be atoms, and `args` to be a map. A step with `#{id => <<"s1">>, tool => <<"echo">>, args => #{}}` passes the structural check but fails at runtime. The test should assert `is_atom(maps:get(id, Step))` and `is_atom(maps:get(tool, Step))` at minimum, or acknowledge the gap explicitly. As written, Criterion 4 gives false confidence.
+`path` silently disappears. No diagnostic. The design doc raised this as a risk but the fix it calls for ("a two-or-more element list that starts with `[from_step, _]` should fall through to the existing catch-all error") only covers the case where `from_step` is first. The trailing case is unaddressed.
+
+Fix: add a guard so the bare clause only fires when `Acc` is still empty:
+
+```erlang
+parse_args([[from_step, Id]], Acc) when map_size(Acc) =:= 0 ->
+    {ok, #{from_step => Id}};
+```
+
+When `Acc` is non-empty, the head `[from_step, Id]` is a two-element list with atom key `from_step` — it falls through to the `[[Key, Value] | Rest]` clause and `coerce_value([from_step, Id])` returns `{from_step, Id}`, which is also wrong semantically (bare `from_step` as a field value). So the right behavior for a non-empty accumulator ending in `[from_step, Id]` is the catch-all error. The `map_size(Acc) =:= 0` guard gets there: the key-value clause fires first for the prior keys, then the bare clause fails the guard, then the malformed-key clause fires with `Key = from_step`. Add a test proving this errors rather than silently dropping prior keys.
 
 ## Questions
 
-- The design says `soma_agent_session:start_run/2` "takes a plain list." Verify this is still true after v0.2 manifest changes — confirm the function signature in `soma_agent_session.erl` hasn't grown a validation layer that would reject steps without `timeout_ms`. (A quick grep confirms `start_run` just stores and forwards, so this is low risk, but worth a line in the PR.)
+**Criterion 4's test scope.** The test never calls `soma_agent_session:start_run/2` — only checks `is_list`, `is_map`, `is_atom`. The design justified this as structural-only since booting the runtime is out of scope. The criterion says "can be passed directly" and the test proves the shape `start_run/2` guards (`when is_list(Steps)`) and `soma_run` requires (`is_atom(id)`, `is_atom(tool)`, `is_map(args)`). Acceptable scope.
 
 ## Nits
 
-- `coerce_value([from_step, Id])` — add a module comment in `soma_lfe_parser.erl` before shipping, as the design itself notes. One sentence is enough: "A two-element list headed by `from_step` is the only list shape `coerce_value` transforms; all other lists are invalid DSL and should not reach this function."
-- The design calls `soma_lfe.erl` the "public boundary that threads both together." The module doc in `soma_lfe.erl` already says this. No action needed, just confirming it stays consistent.
+- `coerce_value([from_step, Id])` is a covert exception in a function that otherwise passes values through. The design noted it should get a module comment. One line would do: "List values headed by `from_step` are the only lists this function transforms."
+- The test for criterion 4 checks `is_map(maps:get(args, Step))` but the bare-`from_step` step's args (`#{from_step => read}`) is also a map — so all three steps pass the same structural assertion even though they have different shapes. That's fine, but it means the test does not distinguish bare-`from_step` from field-level. No action needed.
 
 ## Functional evidence
-- Criterion 1 — fail: no implementation; `soma_lfe_compile_tests.erl` does not exist
-- Criterion 2 — fail: no implementation; `parse_args` and `coerce_value` are unchanged from main
-- Criterion 3 — fail: no implementation; `parse_step_children` still initializes `#{args => #{}, timeout_ms => 5000}` at line 52 of `soma_lfe_parser.erl`
-- Criterion 4 — fail: no implementation; `soma_lfe_compile_tests.erl` does not exist
-- Criterion 5 — fail: no implementation; no `?assertEqual` assertions on full output maps exist in any new test module
+
+- Criterion 1 — pass: `three_step_demo_compiles_test` in `apps/soma_lfe/test/soma_lfe_compile_tests.erl` uses `?assertEqual` on the exact three-element step list; `rebar3 eunit --module=soma_lfe_compile_tests` reports 4 tests, 0 failures.
+- Criterion 2 — pass: `from_step_shapes_compile_test` asserts bare form produces `#{from_step => read}` and field-level produces `#{content => {from_step, process}, path => <<"out.txt">>}`; both match the `resolve_args/2` branch shapes at `soma_run.erl:337-340`.
+- Criterion 3 — pass: `timeout_ms_omitted_when_absent_test` asserts `?assertNot(maps:is_key(timeout_ms, Step))`; accumulator in `parse_step_children` now starts as `#{args => #{}}` at `soma_lfe_parser.erl:52`, confirmed in diff.
+- Criterion 4 — pass: `output_satisfies_start_run_contract_test` asserts `is_list(Steps)` and per-step `is_map`, `is_atom(id)`, `is_atom(tool)`, `is_map(args)` — matching the `start_run/2` guard at `soma_agent_session.erl:24` and the field requirements `soma_run` reads at runtime. Structural check only; runtime execution not exercised (in scope per design).
+- Criterion 5 — pass: both `test_three_step_demo_compiles` and `test_from_step_shapes_compile` use `?assertEqual` on full expected maps with concrete values.
