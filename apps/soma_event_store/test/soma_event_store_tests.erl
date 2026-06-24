@@ -43,7 +43,7 @@ test_by_correlation_empty_for_unknown_id() ->
     {ok, Pid} = soma_event_store:start_link(),
     ok = soma_event_store:append(Pid, #{correlation_id => corr_a, event_type => a1}),
     ok = soma_event_store:append(Pid, #{event_type => no_corr}),
-    ?assertEqual([corr_a], soma_event_store:by_correlation(Pid, corr_unknown)).
+    ?assertEqual([], soma_event_store:by_correlation(Pid, corr_unknown)).
 
 by_correlation_empty_for_unknown_id_test() ->
     test_by_correlation_empty_for_unknown_id().
