@@ -276,72 +276,15 @@ Full syntax reference: [lfe-dsl.md](lfe-dsl.md).
 
 ## Steps
 
-Soma uses a deliberately small step list.
-
-```erlang
-[
-  #{id => read,  tool => file_read,  args => #{path => <<"in.txt">>,  root => "/tmp/demo"},                             timeout_ms => 1000},
-  #{id => echo,  tool => echo,       args => #{from_step => read},                                                      timeout_ms => 1000},
-  #{id => write, tool => file_write, args => #{path => <<"out.txt">>, root => "/tmp/demo", bytes => {from_step, echo}}, timeout_ms => 1000}
-]
-```
-
-Sequential executor:
-
-```text
-validate step → start tool call → wait for result → record event → next step
-```
-
-No branching, no loops, no DAG. `from_step` references feed a prior step's
-output into the next step's args. That is the only inter-step data flow.
+The step-list format and sequential executor are documented in the [README](../README.md).
 
 ## Tool Runtime
 
-A tool is an Erlang behaviour:
-
-```erlang
--callback describe() -> soma_tool:spec().
--callback invoke(soma_tool:input(), soma_tool:ctx()) ->
-    {ok, soma_tool:output()} | {error, soma_tool:error()}.
-```
-
-Tool metadata declares `effect` (`identity | reader | state`), `idempotent`,
-and `timeout_ms`. A tool registers through a **manifest** validated by
-`soma_tool_manifest:normalize/1`; a manifest missing a required field is
-rejected before it reaches the registry.
-
-Two adapters:
-
-```text
-erlang_module   in-BEAM: #{adapter => erlang_module, module => Mod}
-cli             one-shot external: #{adapter => cli, executable, argv}
-```
-
-Built-in tools: `echo`, `sleep`, `fail`, `file_read`, `file_write`. Each
-exposes `manifest/0 = (describe())#{adapter => erlang_module, module => ?MODULE}`.
-
-Full manifest contract: [tool-manifest.md](tool-manifest.md).
+The tool behaviour, manifest contract, and adapter specs are in [tool-manifest.md](tool-manifest.md).
 
 ## External Processes
 
-The cli adapter (in `soma_tool_call`) launches external tools through a port
-(`open_port({spawn_executable, ...})`):
-
-```text
-Executable + argv only — never a shell command string.
-```
-
-The step input is delivered as the **final argv argument** (a port cannot
-half-close the child's stdin). Stdout and stderr are merged and captured as the
-step output, bounded to 65 536 bytes. Exit status 0 is success; any other exit,
-a missing/unrunnable executable, or oversized output becomes a bounded
-`{error, _}`.
-
-The child runs with a minimal environment (only `PATH`) and a fixed working
-directory. On timeout or cancellation the run holds the child's OS pid and
-kills it directly — a hanging program cannot outlive its run.
-
-Any external executable in a release must be packaged per target architecture.
+The cli adapter execution protocol — executable + argv, OS pid teardown, failure modes — is in [tool-manifest.md](tool-manifest.md).
 
 ## Event Log
 
