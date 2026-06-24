@@ -12,9 +12,8 @@ v0.2  tool manifests and CLI/port adapter            [done]
 v0.3  LFE DSL → steps                               [done]
 v0.4  soma_actor — agent entity skeleton
 v0.5  soma_actor + LLM planner
-v0.6  MCP client adapter
-v0.7  DAG execution
-v0.8  persistent resume
+v0.6  DAG execution
+v0.7  persistent resume
 ```
 
 ## v0.4 — soma_actor skeleton
@@ -35,8 +34,7 @@ Minimum capabilities:
 - event lookup by `correlation_id`;
 - cancel task → cancel active run.
 
-Not in v0.4: real LLM planner, MCP, DAG, persistent resume, complex memory
-backend.
+Not in v0.4: real LLM planner, DAG, persistent resume, complex memory backend.
 
 Design specification:
 [zh/soma-actor.zh.md](zh/soma-actor.zh.md).
@@ -48,20 +46,13 @@ proposal schema and a policy gate over LLM output. A decision that rules
 cannot resolve calls `soma_llm_call`; the result is a proposal that
 `soma_actor` validates through the policy gate before executing.
 
-## v0.6 — MCP client adapter
-
-Connect external tools through the Model Context Protocol. MCP becomes a new
-tool adapter type alongside `erlang_module` and `cli`; the runtime executes
-MCP-backed steps through the same process boundary, timeout, and cancel
-semantics as built-in tools.
-
-## v0.7 — DAG execution
+## v0.6 — DAG execution
 
 Extend the step executor to fan out and join parallel branches. The step
 format grows a dependency graph; `soma_run` spawns parallel tool call workers
 and waits for branches to complete before advancing.
 
-## v0.8 — persistent resume
+## v0.7 — persistent resume
 
 Add a persistent event store and a run journal that survives BEAM restarts. A
 resumed run replays the event trail to the last committed step and continues

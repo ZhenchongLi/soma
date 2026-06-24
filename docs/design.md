@@ -92,7 +92,7 @@ the next layer above them.
 
 **Next (v0.4):** `soma_actor` — the agent entity layer.
 
-**Later:** MCP, LLM planner, DAG parallelism, distributed Erlang, persistent
+**Later:** LLM planner, DAG parallelism, distributed Erlang, persistent
 resume. See [roadmap.md](roadmap.md).
 
 ## Done Means
