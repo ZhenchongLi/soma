@@ -104,16 +104,24 @@ idle({call, From}, {ask, Envelope}, Data) ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
     end;
 idle({call, From}, {get_task_status, TaskId}, Data) ->
-    Task = maps:get(TaskId, Data#data.tasks),
-    Status = #{task_id => TaskId,
-               correlation_id => maps:get(correlation_id, Task),
-               status => maps:get(status, Task)},
+    Status = case maps:get(TaskId, Data#data.tasks, undefined) of
+                 undefined ->
+                     #{task_id => TaskId, status => not_found};
+                 Task ->
+                     #{task_id => TaskId,
+                       correlation_id => maps:get(correlation_id, Task),
+                       status => maps:get(status, Task)}
+             end,
     {keep_state, Data, [{reply, From, Status}]};
 idle({call, From}, {get_task_result, TaskId}, Data) ->
-    Task = maps:get(TaskId, Data#data.tasks),
-    Reply = case maps:get(result, Task, undefined) of
-                undefined -> not_ready;
-                Result -> {ok, Result}
+    Reply = case maps:get(TaskId, Data#data.tasks, undefined) of
+                undefined ->
+                    {error, not_found};
+                Task ->
+                    case maps:get(result, Task, undefined) of
+                        undefined -> not_ready;
+                        Result -> {ok, Result}
+                    end
             end,
     {keep_state, Data, [{reply, From, Reply}]};
 idle(info, {run_completed, RunId, Outputs}, Data) ->
