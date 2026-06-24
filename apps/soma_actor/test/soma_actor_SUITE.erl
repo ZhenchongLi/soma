@@ -15,6 +15,7 @@
 -export([sup_exports_start_actor/1]).
 -export([send_returns_envelope_task_id/1]).
 -export([send_mints_task_id_when_absent/1]).
+-export([correlation_id_from_envelope_when_present/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -27,7 +28,8 @@ all() ->
      actor_without_event_store_boots_quietly,
      sup_exports_start_actor,
      send_returns_envelope_task_id,
-     send_mints_task_id_when_absent].
+     send_mints_task_id_when_absent,
+     correlation_id_from_envelope_when_present].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -36,7 +38,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= actor_state_holds_config;
        TestCase =:= actor_without_event_store_boots_quietly;
        TestCase =:= send_returns_envelope_task_id;
-       TestCase =:= send_mints_task_id_when_absent ->
+       TestCase =:= send_mints_task_id_when_absent;
+       TestCase =:= correlation_id_from_envelope_when_present ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -59,7 +62,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= actor_started_event_carries_actor_id;
        TestCase =:= actor_without_event_store_boots_quietly;
        TestCase =:= send_returns_envelope_task_id;
-       TestCase =:= send_mints_task_id_when_absent ->
+       TestCase =:= send_mints_task_id_when_absent;
+       TestCase =:= correlation_id_from_envelope_when_present ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -226,4 +230,29 @@ send_mints_task_id_when_absent(_Config) ->
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     true = is_binary(TaskId),
     true = byte_size(TaskId) > 0,
+    ok.
+
+%% Criterion 3: when the envelope carries a correlation_id, the task recorded in
+%% the per-actor task table holds that exact correlation_id. Enters through the
+%% real soma_actor:send/2 call; the actor is started through
+%% soma_actor_sup:start_actor/1, no layer bypassed. The post-call table read goes
+%% through sys:get_state/1 because no status-read function exists in this slice:
+%% the tasks table is the fifth record field (element position 6), keyed by
+%% task_id, each value at least #{correlation_id, status}.
+correlation_id_from_envelope_when_present(_Config) ->
+    Opts = #{actor_id => <<"actor-corr">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-corr">>,
+    CorrelationId = <<"corr-from-envelope">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    {idle, Data} = sys:get_state(Pid),
+    Tasks = element(6, Data),
+    Task = maps:get(TaskId, Tasks),
+    CorrelationId = maps:get(correlation_id, Task),
     ok.
