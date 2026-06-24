@@ -1273,7 +1273,7 @@ read_returns_while_earlier_run_in_flight(_Config) ->
     %% idle without blocking on the run, so it returns promptly with the in-flight
     %% task at running.
     Status = soma_actor:get_task_status(Pid, TaskId),
-    completed = maps:get(status, Status),
+    running = maps:get(status, Status),
     TaskId = maps:get(task_id, Status),
     ok.
 
