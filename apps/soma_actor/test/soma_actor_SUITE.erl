@@ -42,6 +42,7 @@
 -export([ask_invalid_envelope_errors_no_run/1]).
 -export([get_task_status_running_before_completion/1]).
 -export([get_task_status_completed_after_run/1]).
+-export([get_task_status_queryable_by_send_task_id/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -81,7 +82,8 @@ all() ->
      ask_timeout_actor_survives_and_completes,
      ask_invalid_envelope_errors_no_run,
      get_task_status_running_before_completion,
-     get_task_status_completed_after_run].
+     get_task_status_completed_after_run,
+     get_task_status_queryable_by_send_task_id].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -134,7 +136,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= ask_timeout_actor_survives_and_completes;
        TestCase =:= ask_invalid_envelope_errors_no_run;
        TestCase =:= get_task_status_running_before_completion;
-       TestCase =:= get_task_status_completed_after_run ->
+       TestCase =:= get_task_status_completed_after_run;
+       TestCase =:= get_task_status_queryable_by_send_task_id ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -191,7 +194,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= ask_timeout_actor_survives_and_completes;
        TestCase =:= ask_invalid_envelope_errors_no_run;
        TestCase =:= get_task_status_running_before_completion;
-       TestCase =:= get_task_status_completed_after_run ->
+       TestCase =:= get_task_status_completed_after_run;
+       TestCase =:= get_task_status_queryable_by_send_task_id ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1119,6 +1123,30 @@ get_task_status_completed_after_run(_Config) ->
     completed = wait_for_task_status(Pid, TaskId, completed, 100),
     Status = soma_actor:get_task_status(Pid, TaskId),
     completed = maps:get(status, Status),
+    ok.
+
+%% Criterion 9 (slice p5/p6): a steps task started through send/2 is queryable
+%% through get_task_status/2 by the exact task_id that send/2 returned. send/2
+%% returns {ok, TaskId}; the caller then passes that same TaskId to
+%% get_task_status/2 and the reply map carries task_id equal to it. The runtime is
+%% booted so soma_run_sup and soma_tool_registry are alive; the actor is started
+%% through soma_actor_sup:start_actor/1 with the booted runtime's event store, no
+%% layer bypassed. Enters through the real soma_actor:send/2 then
+%% soma_actor:get_task_status/2 calls.
+get_task_status_queryable_by_send_task_id(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-status-queryable">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    Status = soma_actor:get_task_status(Pid, TaskId),
+    <<"not-the-returned-task-id">> = maps:get(task_id, Status),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
