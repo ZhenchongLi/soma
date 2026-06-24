@@ -11,7 +11,7 @@
 -export([callback_mode/0, init/1]).
 -export([idle/3]).
 
--record(data, {actor_id, model_config, tool_policy, event_store}).
+-record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{}}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -38,7 +38,11 @@ idle({call, From}, {send, Envelope}, Data) ->
     case validate_envelope(Envelope) of
         ok ->
             TaskId = resolve_task_id(Envelope),
-            {keep_state, Data, [{reply, From, {ok, TaskId}}]};
+            CorrelationId = resolve_correlation_id(Envelope, TaskId),
+            Task = #{correlation_id => CorrelationId, status => accepted},
+            Tasks = maps:put(TaskId, Task, Data#data.tasks),
+            Data1 = Data#data{tasks = Tasks},
+            {keep_state, Data1, [{reply, From, {ok, TaskId}}]};
         {error, Reason} ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
     end;
@@ -58,6 +62,9 @@ resolve_task_id(Envelope) ->
         undefined -> mint_task_id();
         TaskId -> TaskId
     end.
+
+resolve_correlation_id(Envelope, TaskId) ->
+    maps:get(correlation_id, Envelope, TaskId).
 
 mint_task_id() ->
     list_to_binary(
