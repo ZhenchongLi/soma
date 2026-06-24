@@ -159,6 +159,11 @@ soma_sup
               +-- soma_tool_call
 ```
 
+As built — `soma_step` is folded into `soma_run`'s state cursor, and a `cli`
+tool's port is owned by `soma_tool_call`:
+
+![Soma supervision tree, as built](diagrams/supervision-tree.svg)
+
 The session process is long lived. It owns conversation/session metadata and
 starts runs.
 
@@ -218,6 +223,8 @@ accepted
   -> executing
   -> timeout
 ```
+
+![soma_run state machine — the executing / waiting_tool step loop and the four explicit terminal states](diagrams/run-states.svg)
 
 The run process owns:
 

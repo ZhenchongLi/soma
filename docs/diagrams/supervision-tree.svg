@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 476" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/>
+    </marker>
+  </defs>
+
+  <rect x="2" y="2" width="696" height="472" rx="12" fill="#ffffff" stroke="#d0d7de"/>
+
+  <text x="24" y="32" font-size="14" font-weight="700" fill="#1f2328">Supervision tree</text>
+  <text x="24" y="50" font-size="11" fill="#57606a" font-family="system-ui, -apple-system, Segoe UI, sans-serif">every session, run, and tool call is its own supervised process</text>
+
+  <g stroke="#8c959f" stroke-width="1.4" fill="none">
+    <path d="M342,110 V126"/>
+    <path d="M93,126 H591"/>
+    <path d="M93,126 V148" marker-end="url(#arrow)"/>
+    <path d="M259,126 V148" marker-end="url(#arrow)"/>
+    <path d="M425,126 V148" marker-end="url(#arrow)"/>
+    <path d="M591,126 V148" marker-end="url(#arrow)"/>
+    <path d="M425,194 V234" marker-end="url(#arrow)"/>
+    <path d="M591,194 V234" marker-end="url(#arrow)"/>
+    <path d="M591,280 V320" marker-end="url(#arrow)"/>
+    <path d="M591,366 V406" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- soma_sup -->
+  <rect x="267" y="66" width="150" height="44" rx="7" fill="#f6f8fa" stroke="#57606a"/>
+  <text x="342" y="86" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">soma_sup</text>
+  <text x="342" y="101" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">supervisor</text>
+
+  <!-- soma_event_store -->
+  <rect x="18" y="150" width="150" height="44" rx="7" fill="#ddf4ff" stroke="#0969da"/>
+  <text x="93" y="170" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1f2328">soma_event_store</text>
+  <text x="93" y="185" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">gen_server · audit log</text>
+
+  <!-- soma_tool_registry -->
+  <rect x="184" y="150" width="150" height="44" rx="7" fill="#ddf4ff" stroke="#0969da"/>
+  <text x="259" y="170" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">soma_tool_registry</text>
+  <text x="259" y="185" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">gen_server · descriptors</text>
+
+  <!-- soma_session_sup -->
+  <rect x="350" y="150" width="150" height="44" rx="7" fill="#f6f8fa" stroke="#57606a"/>
+  <text x="425" y="170" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">soma_session_sup</text>
+  <text x="425" y="185" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">supervisor</text>
+
+  <!-- soma_run_sup -->
+  <rect x="516" y="150" width="150" height="44" rx="7" fill="#f6f8fa" stroke="#57606a"/>
+  <text x="591" y="170" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1f2328">soma_run_sup</text>
+  <text x="591" y="185" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">supervisor</text>
+
+  <!-- soma_agent_session -->
+  <rect x="340" y="236" width="170" height="44" rx="7" fill="#ddf4ff" stroke="#0969da"/>
+  <text x="425" y="256" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1f2328">soma_agent_session</text>
+  <text x="425" y="271" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">gen_server · long-lived</text>
+
+  <!-- soma_run -->
+  <rect x="516" y="236" width="150" height="44" rx="7" fill="#faf0ff" stroke="#8250df"/>
+  <text x="591" y="256" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">soma_run</text>
+  <text x="591" y="271" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">gen_statem · per-run</text>
+
+  <!-- soma_tool_call -->
+  <rect x="516" y="322" width="150" height="44" rx="7" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="591" y="342" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1f2328">soma_tool_call</text>
+  <text x="591" y="357" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">worker · one call, then dies</text>
+
+  <!-- cli external process -->
+  <rect x="508" y="408" width="166" height="44" rx="7" fill="#fff1e5" stroke="#bc4c00" stroke-dasharray="4 3"/>
+  <text x="591" y="428" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1f2328">cli child</text>
+  <text x="591" y="443" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">external OS process (port)</text>
+
+  <!-- side note -->
+  <text x="40" y="250" font-size="11" font-weight="600" fill="#1f2328" font-family="system-ui, sans-serif">A tool crash is data for the run,</text>
+  <text x="40" y="267" font-size="11" font-weight="600" fill="#1f2328" font-family="system-ui, sans-serif">not a crash of the session.</text>
+  <text x="40" y="292" font-size="10.5" fill="#57606a" font-family="system-ui, sans-serif">soma_run monitors each worker; a</text>
+  <text x="40" y="307" font-size="10.5" fill="#57606a" font-family="system-ui, sans-serif">crash arrives as a 'DOWN' message.</text>
+</svg>

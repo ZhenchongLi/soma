@@ -37,14 +37,7 @@ for it. See [docs/design.md](docs/design.md) for the full thesis.
 
 ## Architecture
 
-```text
-soma_sup
-  ├── soma_event_store        in-memory audit log (gen_server)
-  ├── soma_tool_registry      tool name → descriptor (manifest-validated)
-  ├── soma_session_sup → soma_agent_session   long-lived session (gen_server)
-  └── soma_run_sup     → soma_run              per-run state machine (gen_statem)
-                            └── soma_tool_call  one tool invocation, then dies
-```
+![Soma supervision tree — soma_sup supervises the in-memory event store, the tool registry, a session supervisor over the long-lived soma_agent_session (gen_server), and a run supervisor over soma_run (a per-run gen_statem) which spawns a disposable soma_tool_call worker per tool call; a cli tool's external OS process hangs off that worker.](docs/diagrams/supervision-tree.svg)
 
 - **`soma_agent_session`** (`gen_server`) owns a `session_id`, accepts run
   requests, starts runs, tracks them, and **survives any run's failure**. It
@@ -58,6 +51,8 @@ soma_sup
   in-BEAM via `invoke/2`; a `cli` tool launches an external executable through a
   port. Every tool call crosses a process boundary; a tool crash arrives at the
   run as a monitor `'DOWN'` — **data for the run, not a crash of the session**.
+
+![soma_run state machine — executing and waiting_tool form the step loop (a successful tool result advances to the next step); the explicit terminal states are completed, failed, timeout, and cancelled.](docs/diagrams/run-states.svg)
 
 ## Quick start
 
@@ -131,6 +126,8 @@ it finishes.
   run.started ->` per step `step.started -> tool.started -> tool.succeeded ->
   step.succeeded -> ... -> run.completed` (or `run.failed` / `run.timeout` /
   `run.cancelled`).
+
+![A tool call crosses a process boundary — soma_run spawns and monitors a soma_tool_call worker; the worker runs an erlang_module tool in-BEAM or a cli tool through a port, then sends the result back as a message. On timeout or cancel the run kills the worker, and a cli tool's external OS process with it.](docs/diagrams/tool-call.svg)
 
 Every guarantee is proven by a test that asserts **process survival, not just
 return values**. The runtime proofs live in `apps/soma_runtime/test/`; the full
