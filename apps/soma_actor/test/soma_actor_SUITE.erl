@@ -57,6 +57,7 @@
 -export([status_running_promptly_while_run_in_flight/1]).
 -export([new_run_completes_after_failed_run/1]).
 -export([new_run_completes_after_timed_out_run/1]).
+-export([cancel_drives_run_to_cancelled/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -111,7 +112,8 @@ all() ->
      ask_timed_out_run_returns_error_timeout,
      status_running_promptly_while_run_in_flight,
      new_run_completes_after_failed_run,
-     new_run_completes_after_timed_out_run].
+     new_run_completes_after_timed_out_run,
+     cancel_drives_run_to_cancelled].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -179,7 +181,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= ask_timed_out_run_returns_error_timeout;
        TestCase =:= status_running_promptly_while_run_in_flight;
        TestCase =:= new_run_completes_after_failed_run;
-       TestCase =:= new_run_completes_after_timed_out_run ->
+       TestCase =:= new_run_completes_after_timed_out_run;
+       TestCase =:= cancel_drives_run_to_cancelled ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -251,7 +254,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= ask_timed_out_run_returns_error_timeout;
        TestCase =:= status_running_promptly_while_run_in_flight;
        TestCase =:= new_run_completes_after_failed_run;
-       TestCase =:= new_run_completes_after_timed_out_run ->
+       TestCase =:= new_run_completes_after_timed_out_run;
+       TestCase =:= cancel_drives_run_to_cancelled ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1674,6 +1678,43 @@ new_run_completes_after_timed_out_run(_Config) ->
     completed = Status,
     ok.
 
+%% Criterion 1 (slice p10/p11): soma_actor:cancel/2 on a task whose run is parked
+%% in waiting_tool (a 500ms sleep step holds it there) drives that run to the
+%% cancelled terminal state, and a run.cancelled event appears in the event store.
+%% The runtime is booted so soma_run_sup and soma_tool_registry are alive; the
+%% actor is started through soma_actor_sup:start_actor/1 with the booted runtime's
+%% event store so the actor and the run share one store. Enters through the real
+%% soma_actor:cancel/2 call, no layer bypassed. send/2 returns while the sleep step
+%% is still running, so the run sits in waiting_tool; cancel/2 sends cancel to the
+%% run pid, which kills the worker, emits run.cancelled, and moves to the cancelled
+%% terminal state. The test captures the run pid from soma_run_sup's children,
+%% polls the shared store until run.cancelled appears, then asserts the run reached
+%% the cancelled state via sys:get_state/1 (the run stays alive holding its
+%% terminal state).
+cancel_drives_run_to_cancelled(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-cancel-cancelled">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-cancel-cancelled">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% The 500ms sleep step holds the run in waiting_tool while send/2 returns.
+    Children = supervisor:which_children(soma_run_sup),
+    [RunPid] = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
+    RunId = actor_run_id(Pid),
+    ok = soma_actor:cancel(Pid, TaskId),
+    Cancelled = wait_for_run_event(Store, RunId, <<"run.cancelled">>, 100),
+    RunId = maps:get(run_id, Cancelled),
+    cancelled = wait_for_run_state(RunPid, cancelled, 100),
+    ok.
+
 %% Reads the run id the actor tracks for a given task id from its runs map
 %% (element 7 of the data record, keyed by run_id => task_id).
 run_id_for_task(Pid, TaskId) ->
@@ -1737,6 +1778,34 @@ actor_run_id(Pid) ->
     Runs = element(7, Data),
     [RunId] = maps:keys(Runs),
     RunId.
+
+%% Polls the run-scoped trail until an event of the given type appears,
+%% returning it.
+wait_for_run_event(_Store, _RunId, Type, 0) ->
+    error({timeout, Type});
+wait_for_run_event(Store, RunId, Type, N) ->
+    Events = soma_event_store:by_run(Store, RunId),
+    case [E || E <- Events,
+               maps:get(event_type, E, undefined) =:= Type] of
+        [Event | _] ->
+            Event;
+        [] ->
+            timer:sleep(20),
+            wait_for_run_event(Store, RunId, Type, N - 1)
+    end.
+
+%% Polls the run process until it reaches the target gen_statem state, returning
+%% the observed state name.
+wait_for_run_state(_RunPid, Target, 0) ->
+    error({timeout, Target});
+wait_for_run_state(RunPid, Target, N) ->
+    case sys:get_state(RunPid) of
+        {Target, _Data} ->
+            Target;
+        {_Other, _Data} ->
+            timer:sleep(20),
+            wait_for_run_state(RunPid, Target, N - 1)
+    end.
 
 wait_for_run_completed(_Store, _RunId, 0) ->
     {error, timeout};
