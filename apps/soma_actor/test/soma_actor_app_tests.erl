@@ -70,7 +70,7 @@ test_runtime_app_src_excludes_soma_actor_test() ->
     ?assert(filelib:is_regular(RuntimeAppSrc)),
     {ok, [{application, soma_runtime, Keys}]} = file:consult(RuntimeAppSrc),
     Applications = proplists:get_value(applications, Keys),
-    ?assert(lists:member(soma_actor, Applications)).
+    ?assertNot(lists:member(soma_actor, Applications)).
 
 %% Locate `apps/soma_runtime/src/soma_runtime.app.src' relative to this test
 %% module's compiled `.beam'. rebar3 places this app's beams under
