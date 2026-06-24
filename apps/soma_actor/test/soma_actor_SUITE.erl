@@ -26,6 +26,7 @@
 -export([second_send_accepts_too/1]).
 -export([run_started_under_run_sup_distinct_pid/1]).
 -export([run_completes_with_run_event_trail/1]).
+-export([actor_run_worker_pids_all_distinct/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -49,7 +50,8 @@ all() ->
      actor_idle_and_alive_after_send,
      second_send_accepts_too,
      run_started_under_run_sup_distinct_pid,
-     run_completes_with_run_event_trail].
+     run_completes_with_run_event_trail,
+     actor_run_worker_pids_all_distinct].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -86,7 +88,8 @@ init_per_testcase(task_accepted_event_matches_received_ids, Config) ->
     [{sup, Sup}, {store, Store} | Config];
 init_per_testcase(TestCase, Config)
   when TestCase =:= run_started_under_run_sup_distinct_pid;
-       TestCase =:= run_completes_with_run_event_trail ->
+       TestCase =:= run_completes_with_run_event_trail;
+       TestCase =:= actor_run_worker_pids_all_distinct ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -127,7 +130,8 @@ end_per_testcase(TestCase, Config)
     ok;
 end_per_testcase(TestCase, Config)
   when TestCase =:= run_started_under_run_sup_distinct_pid;
-       TestCase =:= run_completes_with_run_event_trail ->
+       TestCase =:= run_completes_with_run_event_trail;
+       TestCase =:= actor_run_worker_pids_all_distinct ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -566,6 +570,47 @@ run_completes_with_run_event_trail(_Config) ->
     true = is_integer(CompletedIdx),
     true = StartedIdx < CompletedIdx,
     ok.
+
+%% Criterion 3 (slice 7): the actor pid, the run pid, and the tool-call worker
+%% pid are three distinct pids, proving the actor does not execute tool logic
+%% in-process and that each invocation crosses a process boundary. The runtime is
+%% booted so soma_run_sup and soma_tool_registry are alive; the actor is started
+%% through soma_actor_sup:start_actor/1 with the booted runtime's event store so
+%% the actor and the run share one store. Enters through the real
+%% soma_actor:send/2 call, no layer bypassed. The run pid is read from
+%% soma_run_sup's children and the worker pid from the tool.started event in the
+%% store; all three are asserted distinct.
+actor_run_worker_pids_all_distinct(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-pids-distinct">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => <<"task-pids-distinct">>,
+                 steps => Steps},
+    {ok, <<"task-pids-distinct">>} = soma_actor:send(ActorPid, Envelope),
+    Children = supervisor:which_children(soma_run_sup),
+    [RunPid] = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
+    RunId = actor_run_id(ActorPid),
+    ok = wait_for_run_completed(Store, RunId, 100),
+    WorkerPid = worker_pid_from_tool_started(Store, RunId),
+    true = is_pid(WorkerPid),
+    %% staged red: deliberately wrong expectation, the worker pid is not the run
+    %% pid; this assertion must fire before the criterion is corrected.
+    true = WorkerPid =:= RunPid,
+    ok.
+
+%% Reads the tool-call worker pid from the run's tool.started event.
+worker_pid_from_tool_started(Store, RunId) ->
+    Events = soma_event_store:by_run(Store, RunId),
+    [Started | _] = [E || E <- Events,
+                          maps:get(event_type, E, undefined)
+                              =:= <<"tool.started">>],
+    maps:get(tool_call_pid, Started).
 
 %% Reads the single run id the actor tracks in its runs map (run_id => task_id).
 actor_run_id(Pid) ->
