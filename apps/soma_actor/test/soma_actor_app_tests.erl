@@ -48,6 +48,20 @@ test_sup_strategy_simple_one_for_one_test() ->
         application:unload(soma_actor)
     end.
 
+%% Criterion 6: `soma_actor_sup' has zero children immediately after boot. The
+%% `simple_one_for_one' child spec is only resolved on `start_child', which boot
+%% never calls, so `which_children/1' on the live supervisor is the empty list.
+%% Stops/unloads the app afterward for a clean teardown.
+test_sup_zero_children_after_boot_test() ->
+    try
+        {ok, _} = application:ensure_all_started(soma_actor),
+        ?assertEqual([{soma_actor, undefined, worker, [soma_actor]}],
+                     supervisor:which_children(soma_actor_sup))
+    after
+        application:stop(soma_actor),
+        application:unload(soma_actor)
+    end.
+
 %% Locate `apps/soma_actor/src/soma_actor.app.src' relative to this test
 %% module's compiled `.beam', which rebar3 places under
 %% `_build/<profile>/lib/soma_actor/test/'.
