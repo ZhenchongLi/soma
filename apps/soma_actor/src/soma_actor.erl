@@ -10,7 +10,7 @@
 -export([callback_mode/0, init/1]).
 -export([idle/3]).
 
--record(data, {}).
+-record(data, {actor_id, model_config, tool_policy}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -18,8 +18,11 @@ start_link(Opts) when is_map(Opts) ->
 callback_mode() ->
     state_functions.
 
-init(_Opts) ->
-    {ok, idle, #data{}}.
+init(Opts) ->
+    Data = #data{actor_id = maps:get(actor_id, Opts, undefined),
+                 model_config = maps:get(model_config, Opts, undefined),
+                 tool_policy = maps:get(tool_policy, Opts, undefined)},
+    {ok, idle, Data}.
 
 idle(_EventType, _Event, Data) ->
     {keep_state, Data}.
