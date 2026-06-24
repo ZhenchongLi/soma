@@ -955,7 +955,7 @@ ask_reply_matches_completed_run(_Config) ->
     %% The reply could only have been sent from the {run_completed, ...} handler,
     %% which sets the task to completed in the same step — so by the time ask/3
     %% returns the task table already reads completed.
-    running = task_status(Pid, TaskId),
+    completed = task_status(Pid, TaskId),
     %% The returned result is exactly the run's stored outputs.
     Result = task_result(Pid, TaskId),
     ok.
