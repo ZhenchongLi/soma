@@ -19,6 +19,7 @@
 -export([test_demo_file_read_echo_file_write/1]).
 -export([test_session_alive_and_reports_completed/1]).
 -export([test_run_stamps_correlation_id_on_every_event/1]).
+-export([test_run_without_correlation_id_emits_normal_trail/1]).
 
 all() ->
     [test_sup_has_four_live_children,
@@ -36,7 +37,8 @@ all() ->
      test_from_step_resolves_to_prior_output,
      test_demo_file_read_echo_file_write,
      test_session_alive_and_reports_completed,
-     test_run_stamps_correlation_id_on_every_event].
+     test_run_stamps_correlation_id_on_every_event,
+     test_run_without_correlation_id_emits_normal_trail].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -385,6 +387,29 @@ test_run_stamps_correlation_id_on_every_event(_Config) ->
     %% and every event carries the correlation id
     true = lists:all(fun(E) -> maps:get(correlation_id, E, undefined) =:= C end,
                      CorrEvents),
+    ok.
+
+%% Issue #66, criterion 4: a soma_run started with no `correlation_id' opt runs
+%% to completion and emits its normal event trail, with no `correlation_id' key
+%% on any event. The run is started directly with the opt omitted. After
+%% completion the run reaches `run.completed', and every event in the run's
+%% trail must be free of the `correlation_id' key.
+test_run_without_correlation_id_emits_normal_trail(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-no-corr-1">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+             #{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    {ok, _RunPid} = soma_run:start_link(#{run_id => RunId,
+                                          session_id => <<"sess-no-corr-1">>,
+                                          event_store => StorePid,
+                                          steps => Steps}),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    RunEvents = soma_event_store:by_run(StorePid, RunId),
+    %% the run drives to completion with its normal trail
+    Types = [maps:get(event_type, E) || E <- RunEvents],
+    true = lists:member(<<"run.completed">>, Types),
+    %% and no event carries a correlation_id key
+    true = lists:any(fun(E) -> maps:is_key(correlation_id, E) end, RunEvents),
     ok.
 
 %% Poll the session's get_status/1 until it reports RunId at the expected status.
