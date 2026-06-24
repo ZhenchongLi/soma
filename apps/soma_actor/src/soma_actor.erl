@@ -44,6 +44,8 @@ idle({call, From}, {send, Envelope}, Data) ->
             Data1 = Data#data{tasks = Tasks},
             emit(Data1, <<"actor.message.received">>,
                  #{task_id => TaskId, correlation_id => CorrelationId}),
+            emit(Data1, <<"actor.task.accepted">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId}),
             {keep_state, Data1, [{reply, From, {ok, TaskId}}]};
         {error, Reason} ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
