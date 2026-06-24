@@ -4,11 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-The **v0.1 and v0.2 runtimes are built and merged** — all green on `main` (EUnit 72, CT 61), Erlang/OTP 29 + rebar3 3.27. `README.md` remains the authoritative spec — read it before extending anything; the sections below summarize what shapes day-to-day work.
+The **v0.1–v0.4 layers are built and merged** — all green on `main` (EUnit 110, CT 134), Erlang/OTP 29 + rebar3 3.27. `README.md` remains the authoritative spec — read it before extending anything; the sections below summarize what shapes day-to-day work.
 
 **v0.1** (the runtime core): the in-memory event store; the tool behaviour + registry + the five v0.1 tools; the session/run/tool-call execution core (sequential steps, `from_step` wiring, the `file_read → echo → file_write` demo); and the full failure semantics (error, crash isolation, timeout, cancellation). All ten proofs of the v0.1 test contract pass.
 
 **v0.2** (tool manifests + CLI/port adapter, issues #14–#23): a normalized tool **manifest** contract (`docs/tool-manifest.md`) validated by `soma_tool_manifest:normalize/1`; the registry upgraded from `name => module` to `name => descriptor` (`resolve_descriptor/1`), with built-ins registering through their own `manifest/0`; and a one-shot **`cli` adapter** in `soma_tool_call` that launches an external executable through a port (executable + argv, no shell) with real timeout/cancel teardown of the external OS process, normalized failures, a minimal environment, and a fixed cwd. The v0.2 process-behaviour proof set is published in `docs/contracts/v0.2-test-contract.md`.
+
+**v0.3** (LFE DSL compile-only layer, issues #38–#42): a `soma_lfe` app — `soma_lfe:compile/2` parses a constrained Lisp-flavored grammar into the exact step-list maps `start_run/2` accepts, returning `{ok, #{run => #{steps => Steps}}}` or `{error, [Diagnostic]}`. Compile-only: no processes, no events, one-way dependency (`soma_runtime` never imports `soma_lfe`). Published in `docs/contracts/v0.3-test-contract.md`.
+
+**v0.4** (the `soma_actor` agent-entity skeleton, issues #53–#70): a new `apps/soma_actor` app — a long-lived `gen_statem` actor under its own `soma_actor_sup` (`simple_one_for_one`). It takes a message envelope via `send/2` / `ask/3`, mints `task_id` / `correlation_id`, emits `actor.*` events, and on a steps envelope starts a `soma_run` it **owns directly** (`session_pid => self()`, no `soma_agent_session` in its path). It records the run's result or survives its failure/timeout/cancel as data, exposes a result model (`ask` reply + `get_task_status` / `get_task_result` polling), `cancel/2`, and `soma_event_store:by_correlation/2` for full-chain lookup. `soma_run` gained one additive opt — an optional `correlation_id`, stamped on every run event. **Fixed-rule decisions, no real LLM** (planner + policy gate are v0.5). Twelve proofs (P1–P11, P15) green; published in `docs/contracts/v0.4-test-contract.md`. One-way dependency: `soma_actor` may use `soma_runtime` / `soma_event_store`; the runtime never imports `soma_actor`. **There is no `soma_llm_call_sup`** — when v0.5 adds `soma_llm_call`, the actor spawns and monitors it directly, mirroring `soma_run → soma_tool_call`.
 
 What remains for the *full* README "Done Means": the Linux x86_64 + arm64 release packaging (build/CI work, not runtime logic) — macOS arm64 is built and verified.
 
@@ -25,13 +29,18 @@ v0.1 is runtime-only: sequential steps, supervised tool calls, real timeout/canc
 Supervision tree:
 
 ```
-soma_sup
+soma_sup                                        (apps/soma_runtime)
   ├── soma_event_store
   ├── soma_tool_registry
   ├── soma_session_sup → soma_agent_session   (gen_server, long-lived)
   └── soma_run_sup     → soma_run             (gen_statem, per-run)
                             └── soma_tool_call  (per-tool-call worker, disposable)
+
+soma_actor_sup                                  (apps/soma_actor; simple_one_for_one; v0.4)
+  └── soma_actor                              (gen_statem, long-lived agent entity)
 ```
+
+`soma_actor` is a separate app above the runtime (one-way dependency). It starts runs **directly** under `soma_run_sup` as their owner — there is no session in its path — and learns each run's outcome from the `{run_completed | run_failed | run_timeout | run_cancelled, RunId, ...}` message `soma_run` already sends to its `session_pid`. See the v0.4 paragraph above and `docs/zh/soma-actor.zh.md`.
 
 - **`soma_agent_session`** (`gen_server`, long-lived): owns `session_id` and session metadata, accepts run requests, starts `soma_run` under `soma_run_sup`, tracks active runs, and must **survive failed/timed-out/cancelled runs**. It never executes tool logic directly.
 - **`soma_run`** (`gen_statem`, short-lived): owns one execution attempt — step cursor, step results, active tool-call pid, run timeout timer, cancellation, and event emission. Terminal states are explicit: `completed | failed | cancelled | timeout`. It starts each tool call as a monitored worker; **a tool crash is data for the run, not a crash of the session**. Steps are iterated inside `soma_run` itself — its `executing` / `waiting_tool` states are the step cursor, so there is no separate per-step process (the design's `soma_step` was folded into the state machine); `soma_tool_call` is the only worker it spawns. The per-step timeout is a `state_timeout`; a crashing tool arrives as the worker monitor's `'DOWN'`.
@@ -78,7 +87,7 @@ v0.2 extends the contract without weakening it. Its process-behaviour proof set 
 
 ## Build commands
 
-The toolchain is installed (Erlang/OTP 29, rebar3 3.27) and the rebar3 umbrella is in place (`apps/soma_runtime`, `apps/soma_tools`, `apps/soma_event_store`). The relay merge gate runs `rebar3 eunit && rebar3 ct`. Commands:
+The toolchain is installed (Erlang/OTP 29, rebar3 3.27) and the rebar3 umbrella is in place (`apps/soma_runtime`, `apps/soma_tools`, `apps/soma_event_store`, `apps/soma_lfe`, `apps/soma_actor`). The relay merge gate runs `rebar3 eunit && rebar3 ct`. Commands:
 
 ```bash
 rebar3 compile              # build

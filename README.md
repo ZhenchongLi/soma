@@ -16,13 +16,16 @@ syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `DSL -> validated step list -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 95, Common Test 70, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 110, Common Test 134, Erlang/OTP 29).
 The runtime executes sequential runs, isolates failures, and runs both in-BEAM
 Erlang tools and external one-shot CLI tools — each proven under test, asserting
 *process survival*, not just return values. An LFE DSL compile-only layer
-(v0.3) is built and proven. A self-contained macOS arm64 release is built and
-verified; the Linux x86_64 / arm64 artifacts are the one remaining packaging
-task.
+(v0.3) is built and proven. The **`soma_actor` agent-entity layer** (v0.4) is
+built on top of the execution core: a long-lived `gen_statem` that takes
+messages, creates tasks, runs them through `soma_run`, and returns results —
+fixed-rule decisions, no real LLM yet. A self-contained macOS arm64 release is
+built and verified; the Linux x86_64 / arm64 artifacts are the one remaining
+packaging task.
 
 ## The idea
 
@@ -57,6 +60,16 @@ for it. See [docs/design.md](docs/design.md) for the full thesis.
   in-BEAM via `invoke/2`; a `cli` tool launches an external executable through a
   port. Every tool call crosses a process boundary; a tool crash arrives at the
   run as a monitor `'DOWN'` — **data for the run, not a crash of the session**.
+- **`soma_actor`** (`gen_statem`, the v0.4 agent-entity layer) is a separate
+  OTP app (`apps/soma_actor`) that sits *above* the execution core — one-way
+  dependency, the runtime never imports it. Its own root supervisor
+  (`soma_actor_sup`, `simple_one_for_one`) starts actor instances. An actor
+  takes work as a **message** (`send/2`, `ask/3`), mints `task_id` /
+  `correlation_id`, and on a steps envelope starts a `soma_run` **directly**
+  (it owns the run as `session_pid => self()`, no session in its path). It
+  observes the run's terminal message, records the result, and survives a
+  failed / timed-out / cancelled run as data — the actor never executes tool
+  logic itself.
 
 ![soma_run state machine — executing and waiting_tool form the step loop (a successful tool result advances to the next step); the explicit terminal states are completed, failed, timeout, and cancelled.](docs/diagrams/run-states.svg)
 
@@ -66,7 +79,7 @@ Prerequisites: Erlang/OTP 29 and rebar3.
 
 ```bash
 rebar3 compile
-rebar3 eunit && rebar3 ct      # 95 EUnit + 70 Common Test, all green
+rebar3 eunit && rebar3 ct      # 110 EUnit + 134 Common Test, all green
 ```
 
 Drive a run in the shell:
@@ -127,12 +140,27 @@ it finishes.
   into named, bounded `{error, _}` data. Through all of it the session keeps
   serving: it runs again after any terminal state.
 - **An LFE DSL compile-only layer** (`soma_lfe`). `soma_lfe:compile(Source, #{})` parses a small Lisp-flavored grammar into the exact step-list maps `start_run/2` accepts — no processes started, no events emitted, no runtime dependency. This is a constrained intent language for agents and humans to author runs; it is not a Lisp evaluator. Compilation returns `{ok, #{run => #{steps => Steps}}}` or `{error, [Diagnostic]}` with structured diagnostic codes. See [docs/lfe-dsl.md](docs/lfe-dsl.md).
+- **An agent-entity layer** (`soma_actor`, v0.4). A long-lived `gen_statem`
+  takes a message envelope through `send/2` (async, returns `{ok, TaskId}`) or
+  `ask/3` (blocks the caller for the result), mints `task_id` / `correlation_id`,
+  and emits `actor.message.received` / `actor.task.accepted`. A fixed rule —
+  envelope carries `steps` → validate → start a `soma_run` the actor owns —
+  drives execution; on the run's terminal message the actor records the result
+  (`actor.result.created` / `actor.task.completed`) or the failure
+  (`actor.task.failed` / `actor.task.cancelled`) and stays alive. Results are
+  available three ways: `ask/3` reply, `get_task_status/2` + `get_task_result/2`
+  polling, and the event stream — `soma_event_store:by_correlation/2` returns the
+  whole task chain (actor *and* run events) under one `correlation_id`.
+  `cancel/2` cancels a task's active run for real (the tool worker is killed).
+  No real LLM, planner, or policy gate yet — those are v0.5.
 - **A mandatory event log** (in-memory) records the whole run, each event
   carrying 8 fields (`event_id, timestamp, session_id, run_id, step_id,
   tool_call_id, event_type, payload`): `session.started -> run.accepted ->
   run.started ->` per step `step.started -> tool.started -> tool.succeeded ->
   step.succeeded -> ... -> run.completed` (or `run.failed` / `run.timeout` /
-  `run.cancelled`).
+  `run.cancelled`). Actor-layer events add `actor.*` types and an
+  `actor_id` / `task_id` / `correlation_id` extension; a `soma_run` started by an
+  actor stamps the `correlation_id` onto every run event too.
 
 ![A tool call crosses a process boundary — soma_run spawns and monitors a soma_tool_call worker; the worker runs an erlang_module tool in-BEAM or a cli tool through a port, then sends the result back as a message. On timeout or cancel the run kills the worker, and a cli tool's external OS process with it.](docs/diagrams/tool-call.svg)
 
@@ -170,11 +198,12 @@ those hosts and are the remaining packaging work. See
 
 In scope: the runtime, sequential steps, supervised in-BEAM and one-shot CLI
 tools, real timeout/cancellation, normalized failures, the event log, a
-compile-only LFE DSL layer (`soma_lfe`), and a self-contained release.
+compile-only LFE DSL layer (`soma_lfe`), the `soma_actor` agent-entity skeleton
+(fixed-rule decisions, no real LLM), and a self-contained release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**):
-MCP, an LLM planner, DAG parallelism, distributed Erlang, and persistent run
-resume.
+a real LLM planner and policy gate (v0.5), MCP, DAG parallelism, distributed
+Erlang, and persistent run resume.
 
 ## Docs
 
@@ -205,15 +234,21 @@ resume.
 - **[docs/contracts/v0.3-test-contract.md](docs/contracts/v0.3-test-contract.md)**
   — process-behaviour proofs for the LFE DSL compiler layer: compile-only
   boundary, validation, parser, and runtime integration.
+- **[docs/contracts/v0.4-test-contract.md](docs/contracts/v0.4-test-contract.md)**
+  — process-behaviour proofs for the `soma_actor` agent-entity layer: actor
+  start, task creation, run integration, result model, correlation lookup,
+  survival under failure / crash, and cancellation. The twelve in-scope proofs
+  (P1–P11, P15) are green; P12–P14 are deferred to v0.5.
 
 **Chinese docs**
 
 - **[docs/zh/what-is-soma.zh.md](docs/zh/what-is-soma.zh.md)** — overview of
-  Soma, the soma_actor vision, and the execution path.
+  Soma, the `soma_actor` agent entity, and the execution path.
 - **[docs/zh/soma-actor.zh.md](docs/zh/soma-actor.zh.md)** — soma_actor complete
   design: actor entity, message-driven trigger, actor loop, decision frame,
   policy gate, LLM call, result model, event contract, memory model, and
-  minimum scope.
+  minimum scope. The v0.4 build implements the minimal slice (fixed-rule
+  decisions); the LLM planner and policy gate are v0.5.
 - **[docs/zh/erlang-otp-primer.zh.md](docs/zh/erlang-otp-primer.zh.md)** —
   Erlang/OTP primer (BEAM, process, mailbox, gen_server, gen_statem, supervisor,
   port, release) for readers unfamiliar with Erlang.

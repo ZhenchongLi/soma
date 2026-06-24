@@ -16,8 +16,10 @@ tool calls.
 ```
 
 The execution core — sessions, runs, tool calls — is built and proven
-(v0.1–v0.3). The next layer is `soma_actor`: a long-lived, LLM-capable agent
-entity that uses that execution core to carry out intentions.
+(v0.1–v0.3). The `soma_actor` agent-entity layer is built on top of it (v0.4):
+a long-lived OTP process that uses that execution core to carry out intentions.
+The v0.4 build is the minimal slice — fixed-rule decisions, no real LLM; the LLM
+planner and policy gate land in v0.5.
 
 ## Thesis
 
@@ -59,23 +61,24 @@ Implement both as OTP process trees.
 Full architecture:
 
 ```text
-soma_actor_sup
+soma_actor_sup                (v0.4; simple_one_for_one)
   └── soma_actor              long-lived gen_statem; agent entity
-
-soma_llm_call_sup
-  └── soma_llm_call           disposable worker; one model call
+        └── soma_llm_call     disposable worker; one model call (v0.5,
+                              owner-spawned like soma_tool_call — no separate sup)
 
 soma_run_sup
   └── soma_run                gen_statem; one execution attempt
         └── soma_tool_call    disposable worker; one tool invocation
 ```
 
-The execution core (v0.1–v0.3) proves the bottom two layers. `soma_actor` is
-the next layer above them.
+The execution core (v0.1–v0.3) proves the bottom two layers; `soma_actor` (v0.4)
+is built above them as its own supervised app. `soma_llm_call` is the one piece
+not yet built — when v0.5 adds it, `soma_actor` spawns and monitors it directly
+(mirroring `soma_run → soma_tool_call`), so there is no `soma_llm_call_sup`.
 
 ## Scope
 
-**Built (v0.1–v0.3):** the execution core.
+**Built (v0.1–v0.4):** the execution core and the agent-entity skeleton.
 
 - session process (`soma_agent_session`);
 - run process (`soma_run`, `gen_statem`);
@@ -87,13 +90,21 @@ the next layer above them.
 - normalized cli failures (bounded, named errors);
 - event emission and in-memory event store;
 - a compile-only LFE DSL layer (`soma_lfe`);
+- the `soma_actor` agent entity (`gen_statem`, its own app): `send`/`ask`, a task
+  table, `task_id` / `correlation_id`, and `actor.*` events;
+- fixed-rule run integration — a steps envelope starts a `soma_run` the actor
+  owns, with run failure / timeout / cancel handled as data, the actor surviving;
+- the result model (`ask` reply, `get_task_status` / `get_task_result` polling)
+  and `soma_event_store:by_correlation/2` for full-chain event lookup;
 - end-to-end tests around process behavior;
 - a self-contained release.
 
-**Next (v0.4):** `soma_actor` — the agent entity layer.
+**Next (v0.5):** the LLM planner and policy gate — `soma_llm_call` (a supervised
+disposable model-call worker), a structured proposal schema, and the policy gate
+that validates LLM/rule output before `soma_actor` executes it.
 
-**Later:** LLM planner, DAG parallelism, distributed Erlang, persistent
-resume. See [roadmap.md](roadmap.md).
+**Later:** DAG parallelism, distributed Erlang, persistent resume. See
+[roadmap.md](roadmap.md).
 
 ## Done Means
 
@@ -222,9 +233,10 @@ gate, not a while loop that executes LLM output directly.
 `correlation_id` must propagate across all child operations (LLM call, run,
 actor-to-actor message) so the full task chain is traceable in the event log.
 
-The minimal `soma_actor` slice — fixed-rule decisions, no real LLM — is enough
-to prove the actor loop and its integration with `soma_run`. The LLM planner
-and full policy gate layer on top once the skeleton is green under test.
+The minimal `soma_actor` slice — fixed-rule decisions, no real LLM — is **built
+and green** (v0.4): it proves the actor loop and its integration with `soma_run`.
+The LLM planner and full policy gate layer on top in v0.5, now that the skeleton
+is green under test.
 
 The full specification — actor loop, decision frame, policy gate, LLM call,
 result model, event contract, memory model, budget and backpressure,
@@ -397,23 +409,25 @@ added. Tests assert **process survival**, not only return values.
 Proof-to-test maps: [contracts/v0.2-test-contract.md](contracts/v0.2-test-contract.md)
 and [contracts/v0.3-test-contract.md](contracts/v0.3-test-contract.md).
 
-**Agent entity (soma_actor):**
+**Agent entity (soma_actor).** Proofs 1–11 and 15 are **built and green** (v0.4);
+proofs 12–14 are deferred to v0.5 (they need the LLM-call / proposal machinery).
+Proof-to-test map: [contracts/v0.4-test-contract.md](contracts/v0.4-test-contract.md).
 
-1. actor starts and emits `actor.started`;
-2. actor receives a message and creates `task_id` / `correlation_id`;
-3. actor runs fixed steps through `soma_run`;
-4. run completion produces an actor result;
-5. `ask` receives a final reply;
-6. long tasks are queryable by `task_id`;
-7. events are queryable by `correlation_id`;
-8. actor survives a run failure;
-9. actor survives a tool crash;
-10. cancel task cancels the active run;
-11. actor accepts another message after failure, cancel, or timeout;
-12. actor-to-actor message preserves `correlation_id`;
-13. budget exhaustion fails the task, not the actor;
-14. policy rejection fails or asks, not the actor;
-15. actor stays responsive while a child LLM call or run is active.
+1. actor starts and emits `actor.started`; *(v0.4)*
+2. actor receives a message and creates `task_id` / `correlation_id`; *(v0.4)*
+3. actor runs fixed steps through `soma_run`; *(v0.4)*
+4. run completion produces an actor result; *(v0.4)*
+5. `ask` receives a final reply; *(v0.4)*
+6. long tasks are queryable by `task_id`; *(v0.4)*
+7. events are queryable by `correlation_id`; *(v0.4)*
+8. actor survives a run failure; *(v0.4)*
+9. actor survives a tool crash; *(v0.4)*
+10. cancel task cancels the active run; *(v0.4)*
+11. actor accepts another message after failure, cancel, or timeout; *(v0.4)*
+12. actor-to-actor message preserves `correlation_id`; *(v0.5)*
+13. budget exhaustion fails the task, not the actor; *(v0.5)*
+14. policy rejection fails or asks, not the actor; *(v0.5)*
+15. actor stays responsive while a child LLM call or run is active. *(v0.4)*
 
 ## Design Principles
 
