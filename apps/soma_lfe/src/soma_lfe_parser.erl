@@ -4,101 +4,207 @@
 
 -export([parse_run/1]).
 
--type diagnostic() :: #{message => binary(), line => non_neg_integer()}.
+-type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
 -spec parse_run([term()]) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
 parse_run([]) ->
-    {error, [#{message => <<"expected exactly one top-level form, got none">>, line => 0}]};
+    {error, [#{code => missing_run_form,
+               message => <<"expected exactly one top-level form, got none">>,
+               line => 0}]};
 parse_run([_Form1, _Form2 | _]) ->
-    {error, [#{message => <<"expected exactly one top-level form, got multiple">>, line => 0}]};
+    {error, [#{code => multiple_run_forms,
+               message => <<"expected exactly one top-level form, got multiple">>,
+               line => 0}]};
 parse_run([[run | ChildForms]]) ->
-    case parse_steps(ChildForms, []) of
+    case parse_steps(ChildForms, [], []) of
         {ok, Steps} ->
-            {ok, #{run => #{steps => Steps}}};
+            case validate_steps(Steps) of
+                [] ->
+                    {ok, #{run => #{steps => Steps}}};
+                Diags ->
+                    {error, Diags}
+            end;
         {error, Diags} ->
             {error, Diags}
     end;
 parse_run([[Head | _]]) when is_atom(Head) ->
-    {error, [#{message => iolist_to_binary(
-                    io_lib:format("top-level form must be 'run', got '~s'", [Head])),
+    {error, [#{code => invalid_top_level_form,
+               message => iolist_to_binary(
+                   io_lib:format("top-level form must be 'run', got '~s'", [Head])),
                line => 0}]};
 parse_run([Form]) when is_list(Form) ->
-    {error, [#{message => <<"top-level form must be a list headed by 'run'">>, line => 0}]};
-parse_run([_Form]) ->
-    {error, [#{message => <<"top-level form must be a list headed by 'run'">>, line => 0}]}.
-
-parse_steps([], Acc) ->
-    {ok, lists:reverse(Acc)};
-parse_steps([[step | Rest] | More], Acc) ->
-    case parse_step(Rest) of
-        {ok, Step} ->
-            parse_steps(More, [Step | Acc]);
-        {error, Diags} ->
-            {error, Diags}
-    end;
-parse_steps([[Head | _] | _], _Acc) when is_atom(Head) ->
-    {error, [#{message => iolist_to_binary(
-                    io_lib:format("run child form must be 'step', got '~s'", [Head])),
+    {error, [#{code => invalid_top_level_form,
+               message => <<"top-level form must be a list headed by 'run'">>,
                line => 0}]};
-parse_steps([Form | _], _Acc) when is_list(Form) ->
-    {error, [#{message => <<"run child form must be a list headed by 'step'">>, line => 0}]};
-parse_steps([Other | _], _Acc) ->
-    {error, [#{message => iolist_to_binary(
-                    io_lib:format("unexpected form inside run: ~p", [Other])),
+parse_run([_Form]) ->
+    {error, [#{code => invalid_top_level_form,
+               message => <<"top-level form must be a list headed by 'run'">>,
                line => 0}]}.
 
+%% Accumulate errors across all steps rather than stopping at the first bad one.
+parse_steps([], Acc, []) ->
+    {ok, lists:reverse(Acc)};
+parse_steps([], _Acc, ErrAcc) ->
+    {error, lists:reverse(ErrAcc)};
+parse_steps([[step | Rest] | More], Acc, ErrAcc) ->
+    case parse_step(Rest) of
+        {ok, Step} ->
+            parse_steps(More, [Step | Acc], ErrAcc);
+        {error, Diags} ->
+            parse_steps(More, Acc, lists:reverse(Diags) ++ ErrAcc)
+    end;
+parse_steps([[Head | _] | More], Acc, ErrAcc) when is_atom(Head) ->
+    Diag = #{code => unknown_form,
+             message => iolist_to_binary(
+                 io_lib:format("run child form must be 'step', got '~s'", [Head])),
+             line => 0},
+    parse_steps(More, Acc, [Diag | ErrAcc]);
+parse_steps([Form | More], Acc, ErrAcc) when is_list(Form) ->
+    Diag = #{code => unknown_form,
+             message => <<"run child form must be a list headed by 'step'">>,
+             line => 0},
+    parse_steps(More, Acc, [Diag | ErrAcc]);
+parse_steps([Other | More], Acc, ErrAcc) ->
+    Diag = #{code => unknown_form,
+             message => iolist_to_binary(
+                 io_lib:format("unexpected form inside run: ~p", [Other])),
+             line => 0},
+    parse_steps(More, Acc, [Diag | ErrAcc]).
+
+%% Validate successfully parsed steps: check for duplicate ids and invalid from_step refs.
+validate_steps(Steps) ->
+    DupDiags = check_duplicate_ids(Steps),
+    FromStepDiags = check_from_step_refs(Steps),
+    DupDiags ++ FromStepDiags.
+
+check_duplicate_ids(Steps) ->
+    Ids = [maps:get(id, S) || S <- Steps],
+    Seen = lists:foldl(fun(Id, {SeenSet, DupSet}) ->
+        case sets:is_element(Id, SeenSet) of
+            true  -> {SeenSet, sets:add_element(Id, DupSet)};
+            false -> {sets:add_element(Id, SeenSet), DupSet}
+        end
+    end, {sets:new(), sets:new()}, Ids),
+    {_, DupIds} = Seen,
+    lists:map(fun(Id) ->
+        #{code => duplicate_step_id,
+          message => iolist_to_binary(io_lib:format("duplicate step id: '~s'", [Id])),
+          line => 0}
+    end, sets:to_list(DupIds)).
+
+check_from_step_refs(Steps) ->
+    %% Walk steps in order, maintaining a set of ids seen so far.
+    %% A from_step reference is invalid if the target id is not in the seen set.
+    {_, Diags} = lists:foldl(fun(Step, {SeenIds, Acc}) ->
+        Id = maps:get(id, Step),
+        Args = maps:get(args, Step, #{}),
+        StepDiags = check_args_from_step(Args, SeenIds),
+        {sets:add_element(Id, SeenIds), Acc ++ StepDiags}
+    end, {sets:new(), []}, Steps),
+    Diags.
+
+check_args_from_step(#{from_step := RefId}, SeenIds) ->
+    case sets:is_element(RefId, SeenIds) of
+        true  -> [];
+        false ->
+            [#{code => invalid_from_step,
+               message => iolist_to_binary(
+                   io_lib:format("from_step references unknown or forward step id: '~s'", [RefId])),
+               line => 0}]
+    end;
+check_args_from_step(Args, SeenIds) ->
+    %% Check field-level {from_step, Id} values in the args map.
+    maps:fold(fun(_Key, {from_step, RefId}, Acc) ->
+        case sets:is_element(RefId, SeenIds) of
+            true  -> Acc;
+            false ->
+                [#{code => invalid_from_step,
+                   message => iolist_to_binary(
+                       io_lib:format("from_step references unknown or forward step id: '~s'", [RefId])),
+                   line => 0} | Acc]
+        end;
+    (_Key, _Val, Acc) -> Acc
+    end, [], Args).
+
 parse_step([Id, Tool | ChildForms]) when is_atom(Id), is_atom(Tool) ->
-    case parse_step_children(ChildForms, #{args => #{}}) of
+    case parse_step_children(ChildForms, #{args => #{}}, []) of
         {ok, Partial} ->
             {ok, Partial#{id => Id, tool => Tool}};
         {error, Diags} ->
             {error, Diags}
     end;
 parse_step(_Other) ->
-    {error, [#{message => <<"step form must be (step <id> <tool> ...): missing id or tool">>,
+    {error, [#{code => invalid_step,
+               message => <<"step form must be (step <id> <tool> ...): missing id or tool">>,
                line => 0}]}.
 
-parse_step_children([], Acc) ->
+%% Accumulate errors across step children as well.
+parse_step_children([], Acc, []) ->
     {ok, Acc};
-parse_step_children([[args | KVPairs] | Rest], Acc) ->
+parse_step_children([], _Acc, ErrAcc) ->
+    {error, lists:reverse(ErrAcc)};
+parse_step_children([[args | KVPairs] | Rest], Acc, ErrAcc) ->
     case parse_args(KVPairs, #{}) of
         {ok, ArgsMap} ->
-            parse_step_children(Rest, Acc#{args => ArgsMap});
+            parse_step_children(Rest, Acc#{args => ArgsMap}, ErrAcc);
         {error, Diags} ->
-            {error, Diags}
+            parse_step_children(Rest, Acc, lists:reverse(Diags) ++ ErrAcc)
     end;
-parse_step_children([[timeout_ms, N] | Rest], Acc) when is_integer(N) ->
-    parse_step_children(Rest, Acc#{timeout_ms => N});
-parse_step_children([[Head | _] | _], _Acc) when is_atom(Head) ->
-    {error, [#{message => iolist_to_binary(
-                    io_lib:format("unknown step child form: '~s' (expected 'args' or 'timeout_ms')", [Head])),
-               line => 0}]};
-parse_step_children([Form | _], _Acc) when is_list(Form) ->
-    {error, [#{message => <<"unknown step child form (expected 'args' or 'timeout_ms')">>,
-               line => 0}]};
-parse_step_children([Other | _], _Acc) ->
-    {error, [#{message => iolist_to_binary(
-                    io_lib:format("unexpected token in step children: ~p", [Other])),
-               line => 0}]}.
+parse_step_children([[timeout_ms, N] | Rest], Acc, ErrAcc) when is_integer(N), N > 0 ->
+    parse_step_children(Rest, Acc#{timeout_ms => N}, ErrAcc);
+parse_step_children([[timeout_ms, N] | Rest], Acc, ErrAcc) when is_integer(N) ->
+    %% N is 0 or negative
+    Diag = #{code => invalid_timeout,
+             message => iolist_to_binary(
+                 io_lib:format("timeout_ms must be a positive integer, got: ~p", [N])),
+             line => 0},
+    parse_step_children(Rest, Acc, [Diag | ErrAcc]);
+parse_step_children([[timeout_ms, V] | Rest], Acc, ErrAcc) ->
+    %% V is not an integer (e.g. a string)
+    Diag = #{code => invalid_timeout,
+             message => iolist_to_binary(
+                 io_lib:format("timeout_ms must be a positive integer, got: ~p", [V])),
+             line => 0},
+    parse_step_children(Rest, Acc, [Diag | ErrAcc]);
+parse_step_children([[Head | _] | Rest], Acc, ErrAcc) when is_atom(Head) ->
+    Diag = #{code => unknown_form,
+             message => iolist_to_binary(
+                 io_lib:format("unknown step child form: '~s' (expected 'args' or 'timeout_ms')", [Head])),
+             line => 0},
+    parse_step_children(Rest, Acc, [Diag | ErrAcc]);
+parse_step_children([Form | Rest], Acc, ErrAcc) when is_list(Form) ->
+    Diag = #{code => unknown_form,
+             message => <<"unknown step child form (expected 'args' or 'timeout_ms')">>,
+             line => 0},
+    parse_step_children(Rest, Acc, [Diag | ErrAcc]);
+parse_step_children([Other | Rest], Acc, ErrAcc) ->
+    Diag = #{code => unknown_form,
+             message => iolist_to_binary(
+                 io_lib:format("unexpected token in step children: ~p", [Other])),
+             line => 0},
+    parse_step_children(Rest, Acc, [Diag | ErrAcc]).
 
 parse_args([], Acc) ->
     {ok, Acc};
 parse_args([[from_step, Id]], Acc) when map_size(Acc) =:= 0 ->
     {ok, #{from_step => Id}};
 parse_args([[from_step, _Id]], _Acc) ->
-    {error, [#{message => <<"bare (from_step Id) must be the only arg entry">>,
+    {error, [#{code => invalid_step,
+               message => <<"bare (from_step Id) must be the only arg entry">>,
                line => 0}]};
 parse_args([[Key, Value] | Rest], Acc) when is_atom(Key) ->
     RealValue = coerce_value(Value),
     parse_args(Rest, Acc#{Key => RealValue});
 parse_args([[Key | _] | _], _Acc) when is_atom(Key) ->
-    {error, [#{message => iolist_to_binary(
-                    io_lib:format("malformed arg pair for key '~s'", [Key])),
+    {error, [#{code => invalid_step,
+               message => iolist_to_binary(
+                   io_lib:format("malformed arg pair for key '~s'", [Key])),
                line => 0}]};
 parse_args([Other | _], _Acc) ->
-    {error, [#{message => iolist_to_binary(
-                    io_lib:format("unexpected token in args: ~p", [Other])),
+    {error, [#{code => invalid_step,
+               message => iolist_to_binary(
+                   io_lib:format("unexpected token in args: ~p", [Other])),
                line => 0}]}.
 
 coerce_value(V) when is_binary(V) -> V;
