@@ -430,5 +430,5 @@ accepted_task_in_table_with_status(_Config) ->
     Tasks = element(6, Data),
     true = maps:is_key(TaskId, Tasks),
     Task = maps:get(TaskId, Tasks),
-    rejected = maps:get(status, Task),
+    accepted = maps:get(status, Task),
     ok.
