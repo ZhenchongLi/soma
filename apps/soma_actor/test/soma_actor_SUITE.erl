@@ -9,13 +9,15 @@
 -export([actor_alive_after_start/1]).
 -export([actor_starts_idle/1]).
 -export([actor_state_holds_config/1]).
+-export([start_emits_one_actor_started_event/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
      start_actor_returns_ok_pid,
      actor_alive_after_start,
      actor_starts_idle,
-     actor_state_holds_config].
+     actor_state_holds_config,
+     start_emits_one_actor_started_event].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -24,6 +26,10 @@ init_per_testcase(TestCase, Config)
        TestCase =:= actor_state_holds_config ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
+init_per_testcase(start_emits_one_actor_started_event, Config) ->
+    {ok, Sup} = soma_actor_sup:start_link(),
+    {ok, Store} = soma_event_store:start_link(),
+    [{sup, Sup}, {store, Store} | Config];
 init_per_testcase(_TestCase, Config) ->
     Config.
 
@@ -31,7 +37,14 @@ end_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
        TestCase =:= actor_alive_after_start;
        TestCase =:= actor_starts_idle;
-       TestCase =:= actor_state_holds_config ->
+       TestCase =:= actor_state_holds_config;
+       TestCase =:= start_emits_one_actor_started_event ->
+    case ?config(store, Config) of
+        undefined -> ok;
+        Store ->
+            unlink(Store),
+            exit(Store, shutdown)
+    end,
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -105,4 +118,20 @@ actor_state_holds_config(_Config) ->
     ActorId = element(2, Data),
     ModelConfig = element(3, Data),
     ToolPolicy = element(4, Data),
+    ok.
+
+%% Criterion 6: starting an actor with a live event_store in Opts emits exactly
+%% one actor.started event into the store. Emission happens inside init/1 before
+%% start_link returns, so reading the store right after start_actor/1 finds it.
+start_emits_one_actor_started_event(Config) ->
+    Store = ?config(store, Config),
+    Opts = #{actor_id => <<"actor-1">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, _Pid} = soma_actor_sup:start_actor(Opts),
+    Events = soma_event_store:all(Store),
+    Started = [E || E <- Events,
+                    maps:get(event_type, E, undefined) =:= <<"actor.started">>],
+    1 = length(Started),
     ok.
