@@ -75,3 +75,14 @@ test_output_satisfies_start_run_contract() ->
 
 output_satisfies_start_run_contract_test() ->
     test_output_satisfies_start_run_contract().
+
+%% Regression — bare from_step trailing after other keys must error, not silently drop prior keys.
+test_bare_from_step_trailing_returns_error() ->
+    %% (args (path "x") (from_step s2)): path appears before bare from_step.
+    %% Before the fix the bare clause discards Acc and returns {ok, #{from_step => s2}},
+    %% silently losing path. After the fix it must return {error, _}.
+    Source = <<"(run (step s1 echo (args (path \"x\") (from_step s2))))">>,
+    ?assertMatch({error, _}, soma_lfe:compile(Source, #{})).
+
+bare_from_step_trailing_returns_error_test() ->
+    test_bare_from_step_trailing_returns_error().
