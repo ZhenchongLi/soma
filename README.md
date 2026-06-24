@@ -61,7 +61,7 @@ Prerequisites: Erlang/OTP 29 and rebar3.
 
 ```bash
 rebar3 compile
-rebar3 eunit && rebar3 ct      # 72 EUnit + 61 Common Test, all green
+rebar3 eunit && rebar3 ct      # 95 EUnit + 70 Common Test, all green
 ```
 
 Drive a run in the shell:
@@ -121,6 +121,7 @@ it finishes.
   executable, a nonzero exit, oversized output — are **failure normalization**
   into named, bounded `{error, _}` data. Through all of it the session keeps
   serving: it runs again after any terminal state.
+- **An LFE DSL compile-only layer** (`soma_lfe`). `soma_lfe:compile(Source, #{})` parses a small Lisp-flavored grammar into the exact step-list maps `start_run/2` accepts — no processes started, no events emitted, no runtime dependency. Compilation returns `{ok, #{run => #{steps => Steps}}}` or `{error, [Diagnostic]}` with structured diagnostic codes. See [docs/lfe-dsl.md](docs/lfe-dsl.md).
 - **A mandatory event log** (in-memory) records the whole run, each event
   carrying 8 fields (`event_id, timestamp, session_id, run_id, step_id,
   tool_call_id, event_type, payload`): `session.started -> run.accepted ->
@@ -163,8 +164,8 @@ those hosts and are the remaining packaging work. See
 ## Scope
 
 In scope: the runtime, sequential steps, supervised in-BEAM and one-shot CLI
-tools, real timeout/cancellation, normalized failures, the event log, and a
-self-contained release.
+tools, real timeout/cancellation, normalized failures, the event log, a
+compile-only LFE DSL layer (`soma_lfe`), and a self-contained release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**):
 MCP, an LLM planner, DAG parallelism, distributed Erlang, and persistent run
