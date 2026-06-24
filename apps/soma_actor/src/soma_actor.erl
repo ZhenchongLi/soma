@@ -64,6 +64,8 @@ idle(info, {run_completed, RunId, Outputs}, Data) ->
             Data1 = Data#data{tasks = Tasks},
             emit(Data1, <<"actor.result.created">>,
                  #{task_id => TaskId, correlation_id => CorrelationId}),
+            emit(Data1, <<"actor.task.completed">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId}),
             {keep_state, Data1}
     end;
 idle(_EventType, _Event, Data) ->
