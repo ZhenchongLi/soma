@@ -68,8 +68,10 @@ test_chain_retrievable_by_correlation_id(_Config) ->
     %% Every event carries the single correlation id C.
     [CorrelationId] = lists:usort(
                         [maps:get(correlation_id, E) || E <- Events]),
-    %% The whole chain comes back under the one id.
-    99 = length(Events),
+    %% The whole chain comes back under the one id: the four actor.* events
+    %% plus the run's six-event completion chain (run.started, step.started,
+    %% tool.started, tool.succeeded, step.succeeded, run.completed).
+    10 = length(Events),
     ok.
 
 %% Polls the store until one event of the given type appears, returning it.
