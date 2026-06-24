@@ -92,8 +92,15 @@ scan_atom([C | Rest], Line, Buf, Acc) when C >= $a, C =< $z;
                                             C =:= $~; C =:= $@; C =:= $# ->
     scan_atom(Rest, Line, [C | Buf], Acc);
 scan_atom(Rest, Line, Buf, Acc) ->
-    Atom = list_to_atom(lists:reverse(Buf)),
-    scan(Rest, Line, [{atom, Line, Atom} | Acc]).
+    Name = lists:reverse(Buf),
+    case length(Name) > 255 of
+        true ->
+            {error, [#{message => <<"atom name exceeds maximum length of 255 characters">>,
+                       line => Line}]};
+        false ->
+            Atom = list_to_atom(Name),
+            scan(Rest, Line, [{atom, Line, Atom} | Acc])
+    end.
 
 %%% --- Form parser ---
 
