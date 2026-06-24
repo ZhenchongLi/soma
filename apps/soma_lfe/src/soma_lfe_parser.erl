@@ -84,8 +84,11 @@ parse_step_children([Other | _], _Acc) ->
 
 parse_args([], Acc) ->
     {ok, Acc};
-parse_args([[from_step, Id]], _Acc) ->
+parse_args([[from_step, Id]], Acc) when map_size(Acc) =:= 0 ->
     {ok, #{from_step => Id}};
+parse_args([[from_step, _Id]], _Acc) ->
+    {error, [#{message => <<"bare (from_step Id) must be the only arg entry">>,
+               line => 0}]};
 parse_args([[Key, Value] | Rest], Acc) when is_atom(Key) ->
     RealValue = coerce_value(Value),
     parse_args(Rest, Acc#{Key => RealValue});
