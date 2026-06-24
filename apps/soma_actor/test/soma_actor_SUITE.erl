@@ -38,6 +38,7 @@
 -export([ask_caller_and_actor_alive_after_return/1]).
 -export([ask_reply_matches_completed_run/1]).
 -export([ask_short_timeout_returns_timeout/1]).
+-export([ask_timeout_actor_survives_and_completes/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -73,7 +74,8 @@ all() ->
      ask_returns_run_outputs,
      ask_caller_and_actor_alive_after_return,
      ask_reply_matches_completed_run,
-     ask_short_timeout_returns_timeout].
+     ask_short_timeout_returns_timeout,
+     ask_timeout_actor_survives_and_completes].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -122,7 +124,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= ask_returns_run_outputs;
        TestCase =:= ask_caller_and_actor_alive_after_return;
        TestCase =:= ask_reply_matches_completed_run;
-       TestCase =:= ask_short_timeout_returns_timeout ->
+       TestCase =:= ask_short_timeout_returns_timeout;
+       TestCase =:= ask_timeout_actor_survives_and_completes ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -175,7 +178,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= ask_returns_run_outputs;
        TestCase =:= ask_caller_and_actor_alive_after_return;
        TestCase =:= ask_reply_matches_completed_run;
-       TestCase =:= ask_short_timeout_returns_timeout ->
+       TestCase =:= ask_short_timeout_returns_timeout;
+       TestCase =:= ask_timeout_actor_survives_and_completes ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -987,6 +991,38 @@ ask_short_timeout_returns_timeout(_Config) ->
                  task_id => TaskId,
                  steps => Steps},
     timeout = soma_actor:ask(Pid, Envelope, 100),
+    ok.
+
+%% Criterion 5 (slice p5/p6): after an ask/3 caller-side timeout the actor pid is
+%% still alive and still drives the task to completed. The single step sleeps for
+%% 500ms while the caller's TimeoutMs is 100ms, so the gen_statem:call times out on
+%% the caller side and ask/3 returns the atom timeout — but the actor still holds
+%% the parked From and keeps running the task. The runtime is booted so
+%% soma_run_sup and soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store. Enters
+%% through the real soma_actor:ask/3 call, no layer bypassed. After the timeout the
+%% test checks is_process_alive/1 on the actor pid, then polls the actor's task
+%% table until the run completes and the task reaches completed, checking the actor
+%% stays alive throughout.
+ask_timeout_actor_survives_and_completes(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-timeout-survives">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-timeout-survives">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    timeout = soma_actor:ask(Pid, Envelope, 100),
+    %% Staged red: deliberately-wrong expectation — the actor IS alive here.
+    false = is_process_alive(Pid),
+    %% The actor still drives the run to completion: the task reaches completed.
+    completed = wait_for_task_status(Pid, TaskId, completed, 100),
+    true = is_process_alive(Pid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
