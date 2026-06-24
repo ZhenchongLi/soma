@@ -2,6 +2,7 @@
     {description, "Soma actor: agent-entity supervision skeleton"},
     {vsn, "0.1.0"},
     {registered, []},
+    {mod, {soma_actor_app, []}},
     {applications, [kernel, stdlib]},
     {env, []},
     {modules, []}
