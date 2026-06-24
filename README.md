@@ -61,7 +61,7 @@ Prerequisites: Erlang/OTP 29 and rebar3.
 
 ```bash
 rebar3 compile
-rebar3 eunit && rebar3 ct      # 72 EUnit + 61 Common Test, all green
+rebar3 eunit && rebar3 ct      # 95 EUnit + 70 Common Test, all green
 ```
 
 Drive a run in the shell:
@@ -121,6 +121,7 @@ it finishes.
   executable, a nonzero exit, oversized output — are **failure normalization**
   into named, bounded `{error, _}` data. Through all of it the session keeps
   serving: it runs again after any terminal state.
+- **An LFE DSL compile-only layer** (`soma_lfe`). `soma_lfe:compile(Source, #{})` parses a small Lisp-flavored grammar into the exact step-list maps `start_run/2` accepts — no processes started, no events emitted, no runtime dependency. Compilation returns `{ok, #{run => #{steps => Steps}}}` or `{error, [Diagnostic]}` with structured diagnostic codes. See [docs/lfe-dsl.md](docs/lfe-dsl.md).
 - **A mandatory event log** (in-memory) records the whole run, each event
   carrying 8 fields (`event_id, timestamp, session_id, run_id, step_id,
   tool_call_id, event_type, payload`): `session.started -> run.accepted ->
@@ -163,8 +164,8 @@ those hosts and are the remaining packaging work. See
 ## Scope
 
 In scope: the runtime, sequential steps, supervised in-BEAM and one-shot CLI
-tools, real timeout/cancellation, normalized failures, the event log, and a
-self-contained release.
+tools, real timeout/cancellation, normalized failures, the event log, a
+compile-only LFE DSL layer (`soma_lfe`), and a self-contained release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**):
 MCP, an LLM planner, DAG parallelism, distributed Erlang, and persistent run
@@ -182,10 +183,23 @@ resume.
 - **[docs/v0.2-test-contract.md](docs/v0.2-test-contract.md)** — the
   process-behaviour test contract for manifests and the CLI adapter: each proof
   mapped to the suite and case that proves it.
+- **[docs/v0.3-test-contract.md](docs/v0.3-test-contract.md)** — the
+  process-behaviour test contract for the LFE DSL compiler layer: compile-only
+  boundary, validation, parser, and runtime integration proofs.
 - **[docs/release.md](docs/release.md)** — building and running the release.
 - **[docs/lfe-dsl.md](docs/lfe-dsl.md)** — the LFE DSL: syntax reference,
   step-list contract, the demo example, `from_step` forms, diagnostic codes,
-  proof-to-test mapping, and explicit non-goals. The `soma_lfe` app is a
-  compile-only layer; it has no runtime dependency on `soma_runtime`.
+  and explicit non-goals. The `soma_lfe` app is a compile-only layer; it has
+  no runtime dependency on `soma_runtime`.
 - **[docs/roadmap.md](docs/roadmap.md)** — the future layers beyond the current
   build.
+- **[docs/what-is-soma.zh.md](docs/what-is-soma.zh.md)** — Chinese overview of
+  Soma, the soma_actor vision, and the execution path.
+- **[docs/soma-actor.zh.md](docs/soma-actor.zh.md)** — Chinese working model of
+  soma_actor: message-driven trigger, LLM roles, result patterns.
+- **[docs/soma-actor-final-design.zh.md](docs/soma-actor-final-design.zh.md)** —
+  Chinese final design for soma_actor: actor loop, decision frame, policy gate,
+  event contract, memory model, and minimum scope.
+- **[docs/erlang-otp-primer.zh.md](docs/erlang-otp-primer.zh.md)** — Chinese
+  primer on Erlang/OTP concepts (BEAM, process, mailbox, gen_server, gen_statem,
+  supervisor, port, release) for readers unfamiliar with Erlang.

@@ -1,14 +1,14 @@
 # Soma — design north star
 
 > Soma's design north star — the thesis, the runtime shape, and the
-> non-negotiable constraints — covering the current runtime: v0.1's execution
-> core and v0.2's tool manifests + CLI/port adapter. It keeps the aspirational
-> voice of the original spec; for **what is actually built and how to run it**,
-> see the [README](../README.md). Where the implementation refined the design
-> (e.g. step iteration lives inside `soma_run` rather than a separate `soma_step`
-> process, tools register as `file_read` / `file_write`, and a `cli` tool's port
-> is owned by `soma_tool_call` rather than a separate `soma_port_tool` process),
-> the README and the code are authoritative.
+> non-negotiable constraints — covering v0.1 (execution core), v0.2 (tool
+> manifests + CLI/port adapter), and v0.3 (LFE DSL compile-only layer). It keeps
+> the aspirational voice of the original spec; for **what is actually built and
+> how to run it**, see the [README](../README.md). Where the implementation
+> refined the design (e.g. step iteration lives inside `soma_run` rather than a
+> separate `soma_step` process, tools register as `file_read` / `file_write`, and
+> a `cli` tool's port is owned by `soma_tool_call` rather than a separate
+> `soma_port_tool` process), the README and the code are authoritative.
 
 Soma is an Erlang/OTP-native agent runtime.
 
@@ -81,7 +81,7 @@ isolation, and restart policy.
 Soma is an Erlang agent runtime — the execution core plus a tool layer, nothing
 above it.
 
-In scope (built across v0.1 and v0.2):
+In scope (built across v0.1, v0.2, and v0.3):
 
 - session process;
 - run process;
@@ -92,12 +92,12 @@ In scope (built across v0.1 and v0.2):
 - in-BEAM tools and a one-shot CLI/port adapter;
 - normalized cli failures (bounded, named errors);
 - event emission and in-memory event store;
+- a compile-only LFE DSL layer (`soma_lfe`) that translates DSL source into the runtime step-list contract — no runtime dependency in the other direction;
 - end-to-end tests around process behavior;
 - a self-contained release (macOS arm64 built; Linux `x86_64` and `arm64` remaining).
 
 Out of scope (later roadmap layers):
 
-- an LFE DSL over the step list;
 - an MCP client adapter;
 - an LLM planner;
 - DAG parallelism;
@@ -238,6 +238,48 @@ The run process owns:
 The run process starts each tool call as a child process or supervised worker.
 It should monitor the worker. A tool crash is data for the run, not a crash of
 the session.
+
+## Planning Layer (v0.3)
+
+The runtime must not depend on where steps came from. Any planning input —
+hand-authored, LLM output, workflow UI — should compile down to the small step
+format `soma_agent_session:start_run/2` already accepts. The runtime executes
+the step list; it does not care about its origin.
+
+v0.3 adds the first planning input: a compile-only LFE DSL layer.
+
+### soma_lfe
+
+`soma_lfe` is a separate OTP application above `soma_runtime`. The dependency
+direction is one-way: `soma_lfe` may depend on data contracts shared with the
+runtime, but `soma_runtime` must not depend on `soma_lfe`. Adding a planner must
+not change execution semantics.
+
+Public API:
+
+```erlang
+soma_lfe:compile(Source :: binary(), Opts :: map()) ->
+    {ok, #{run => #{steps => [map()]}}} | {error, [map()]}.
+
+soma_lfe:compile_file(Path :: file:filename_all(), Opts :: map()) ->
+    {ok, #{run => #{steps => [map()]}}} | {error, [map()]}.
+```
+
+The compile-only contract:
+
+- `compile/2` is a pure function: it starts no processes, emits no runtime
+  events, and never touches the supervisor tree.
+- On failure it returns `{error, Diagnostics}` — a list of structured maps with
+  a stable `code` field. It never partially compiles.
+- The `steps` value in a successful result is the exact list of maps
+  `start_run/2` accepts today, with no new keys or runtime changes required.
+- Tool existence checks are optional. If added, they consult the manifest
+  registry only and must never invoke a tool.
+
+The DSL accepts exactly one top-level `(run ...)` form with one or more
+`(step Id Tool ...)` child forms. The accepted grammar, `from_step` reference
+forms, diagnostic codes, and the canonical `file_read -> echo -> file_write`
+example are in [lfe-dsl.md](lfe-dsl.md).
 
 ## Steps, Not IR Yet
 
@@ -527,6 +569,14 @@ trail; and nonzero / missing / hanging / cancelled `cli` runs fail-or-stop — w
 the external OS process verifiably gone — while the session survives and runs
 again. Each proof is mapped to the suite and case that proves it in
 [v0.2-test-contract.md](v0.2-test-contract.md).
+
+The v0.3 contract extends it again without weakening it: the DSL compiler has no
+runtime dependency; `compile/2` is pure and starts no processes; a DSL-sourced
+step list runs through the real session → run → tool-call layers with the same
+event trail; compiled `fail`, `sleep`, and cancellation steps all hit the same
+failure and cancellation paths as hand-authored steps; and the session recovers
+after any terminal state. The proof-to-test mapping is in
+[lfe-dsl.md](lfe-dsl.md#proof-to-test-mapping).
 
 This test contract is more important than adding tool integrations.
 
