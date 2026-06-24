@@ -6,18 +6,24 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([actor_is_gen_statem_with_callbacks/1]).
 -export([start_actor_returns_ok_pid/1]).
+-export([actor_alive_after_start/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
-     start_actor_returns_ok_pid].
+     start_actor_returns_ok_pid,
+     actor_alive_after_start].
 
-init_per_testcase(start_actor_returns_ok_pid, Config) ->
+init_per_testcase(TestCase, Config)
+  when TestCase =:= start_actor_returns_ok_pid;
+       TestCase =:= actor_alive_after_start ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(_TestCase, Config) ->
     Config.
 
-end_per_testcase(start_actor_returns_ok_pid, Config) ->
+end_per_testcase(TestCase, Config)
+  when TestCase =:= start_actor_returns_ok_pid;
+       TestCase =:= actor_alive_after_start ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -50,4 +56,14 @@ start_actor_returns_ok_pid(_Config) ->
              tool_policy => #{}},
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
     true = is_pid(Pid),
+    ok.
+
+%% Criterion 3: immediately after start the actor pid passes is_process_alive/1.
+%% Enters through the real supervisor entry, then checks liveness on the pid.
+actor_alive_after_start(_Config) ->
+    Opts = #{actor_id => <<"actor-1">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    false = is_process_alive(Pid),
     ok.
