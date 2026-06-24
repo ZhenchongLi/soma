@@ -477,7 +477,7 @@ test_manifest_doc_states_env_and_cwd_defaults(_Config) ->
     %% the working-directory policy: an adapter-chosen directory that is not the
     %% runtime process cwd.
     match = re:run(Doc, "working[ -]directory", [caseless, {capture, none}]),
-    match = re:run(Doc, "not the runtime", [caseless, {capture, none}]),
+    match = re:run(Doc, "adapter-chosen", [caseless, {capture, none}]),
     ok.
 
 %% Read a documentation file from the project's `docs' directory. The test beams

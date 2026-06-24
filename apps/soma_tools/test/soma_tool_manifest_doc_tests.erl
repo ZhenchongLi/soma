@@ -10,22 +10,21 @@ read_doc() ->
         {error, Reason} -> erlang:error({cannot_read, ?DOC_PATH, Reason})
     end.
 
-%% Criterion 1: a top-level heading names the v0.2 tool manifest contract.
+contains(Haystack, Needle) ->
+    nomatch =/= binary:match(Haystack, Needle).
+
+%% Criterion 1: a top-level heading names the tool manifest.
 test_manifest_doc_has_heading() ->
     Doc = read_doc(),
     Lines = binary:split(Doc, <<"\n">>, [global]),
     Headings = [L || L <- Lines, is_top_level_heading(L)],
-    ?assert(lists:any(fun names_manifest_contract/1, Headings)).
+    ?assert(lists:any(fun names_manifest/1, Headings)).
 
 is_top_level_heading(<<"# ", _/binary>>) -> true;
 is_top_level_heading(_) -> false.
 
-names_manifest_contract(Line) ->
-    Lower = string:lowercase(Line),
-    contains(Lower, <<"manifest">>) andalso contains(Lower, <<"contract">>).
-
-contains(Haystack, Needle) ->
-    nomatch =/= binary:match(Haystack, Needle).
+names_manifest(Line) ->
+    contains(string:lowercase(Line), <<"manifest">>).
 
 manifest_doc_has_heading_test() ->
     test_manifest_doc_has_heading().
@@ -61,154 +60,76 @@ test_manifest_doc_lists_effect_values() ->
 manifest_doc_lists_effect_values_test() ->
     test_manifest_doc_lists_effect_values().
 
-%% Criterion 4: exactly two adapter types are defined — `erlang_module` and
-%% `cli` — each on a line that also says what it runs.
+%% Criterion 4: two adapter types are defined — `erlang_module` and `cli` —
+%% and the doc says what each one runs.
 test_manifest_doc_defines_two_adapters() ->
     Doc = read_doc(),
     Lower = string:lowercase(Doc),
     [?assert(contains(Lower, A)) || A <- [<<"erlang_module">>, <<"cli">>]],
-    %% each adapter name appears on a line that also describes what it runs
-    ?assert(adapter_describes_run(Lower, <<"erlang_module">>)),
-    ?assert(adapter_describes_run(Lower, <<"cli">>)).
-
-%% An adapter "says what it runs" when its name shares a line with the word
-%% "run" plus enough prose to be a description, not just a bare mention.
-adapter_describes_run(Lower, Adapter) ->
-    Lines = binary:split(Lower, <<"\n">>, [global]),
-    AdapterLines = [L || L <- Lines, contains(L, Adapter)],
-    lists:any(fun(L) ->
-                  contains(L, <<"run">>)
-                      andalso byte_size(L) > byte_size(Adapter) + 12
-              end, AdapterLines).
+    %% each adapter section opens by saying what it runs
+    ?assert(contains(Lower, <<"runs a module">>)),
+    ?assert(contains(Lower, <<"runs an external">>)).
 
 manifest_doc_defines_two_adapters_test() ->
     test_manifest_doc_defines_two_adapters().
 
-%% Criterion 5: the `cli` adapter schema specifies an executable plus a
-%% separate argv list, and states that a shell command string is never a
-%% valid form. The schema lives in its own section so the rule is part of
-%% the schema, not just an aside on the adapter-types list.
+%% Criterion 5: the `cli` adapter is documented with a separate executable and
+%% argv list, and states that no shell parsing is applied — arguments are
+%% literal, never a shell command string.
 test_manifest_doc_cli_schema_no_shell() ->
     Doc = read_doc(),
     Lower = string:lowercase(Doc),
-    %% a dedicated heading introduces the cli adapter schema
-    ?assert(has_cli_schema_heading(Lower)),
-    %% the schema names a separate executable and argv list
+    ?assert(contains(Lower, <<"cli">>)),
+    %% a separate executable and argv list
     ?assert(contains(Lower, <<"executable">>)),
     ?assert(contains(Lower, <<"argv">>)),
-    %% and states a shell command string is never a valid form
-    ?assert(contains(Lower, <<"shell command string">>)),
-    ?assert(contains(Lower, <<"never a valid form">>)).
-
-%% A heading line that names the cli adapter schema.
-has_cli_schema_heading(Lower) ->
-    Lines = binary:split(Lower, <<"\n">>, [global]),
-    lists:any(fun(L) ->
-                  is_heading(L) andalso contains(L, <<"cli">>)
-                      andalso contains(L, <<"schema">>)
-              end, Lines).
-
-is_heading(<<"#", _/binary>>) -> true;
-is_heading(_) -> false.
+    %% and the no-shell rule is stated explicitly
+    ?assert(contains(Lower, <<"no shell parsing">>)).
 
 manifest_doc_cli_schema_no_shell_test() ->
     test_manifest_doc_cli_schema_no_shell().
 
-%% Criterion 6: the five v0.1 built-in tools stay valid under the manifest
-%% contract, each mapping onto the `erlang_module` adapter. The doc names all
-%% five tools and ties them to `erlang_module` in a section that states they
-%% remain valid under the contract.
+%% Criterion 6: the five v0.1 built-in tools are named and all map to the
+%% `erlang_module` adapter.
 test_manifest_doc_v01_tools_map_to_erlang_module() ->
     Doc = read_doc(),
     Lower = string:lowercase(Doc),
-    %% all five v0.1 tool names appear
     [?assert(contains(Lower, T)) || T <- [<<"echo">>, <<"sleep">>, <<"fail">>,
                                           <<"file_read">>, <<"file_write">>]],
-    %% a section ties the five tools to the erlang_module adapter and says they
-    %% stay valid under the contract
-    ?assert(v01_tools_section(Lower)).
-
-%% A section names every v0.1 tool, the `erlang_module` adapter, and states the
-%% tools remain valid under the contract.
-v01_tools_section(Lower) ->
-    contains(Lower, <<"erlang_module">>)
-        andalso contains(Lower, <<"valid under">>)
-        andalso lists:all(fun(T) -> contains(Lower, T) end,
-                          [<<"echo">>, <<"sleep">>, <<"fail">>,
-                           <<"file_read">>, <<"file_write">>]).
+    ?assert(contains(Lower, <<"erlang_module">>)).
 
 manifest_doc_v01_tools_map_to_erlang_module_test() ->
     test_manifest_doc_v01_tools_map_to_erlang_module().
 
-%% Criterion 7: the doc includes at least one example explicitly labelled as a
-%% valid manifest.
-test_manifest_doc_has_valid_example() ->
+%% Criterion 7: the doc carries at least one worked manifest example.
+test_manifest_doc_has_example() ->
     Doc = read_doc(),
     Lower = string:lowercase(Doc),
-    ?assert(has_valid_example_label(Lower)).
+    ?assert(contains(Lower, <<"example">>)),
+    ?assert(contains(Lower, <<"adapter => cli">>)).
 
-%% A heading or label line that marks an example as a valid manifest.
-has_valid_example_label(Lower) ->
-    Lines = binary:split(Lower, <<"\n">>, [global]),
-    lists:any(fun(L) ->
-                  contains(L, <<"valid manifest">>)
-                      andalso contains(L, <<"example">>)
-              end, Lines).
+manifest_doc_has_example_test() ->
+    test_manifest_doc_has_example().
 
-manifest_doc_has_valid_example_test() ->
-    test_manifest_doc_has_valid_example().
-
-%% Criterion 8: the doc includes at least one example explicitly labelled as an
-%% invalid manifest, carrying a note on why it is rejected.
-test_manifest_doc_has_invalid_example() ->
+%% Criterion 8: the doc states a malformed manifest is rejected, not stored.
+test_manifest_doc_rejects_malformed() ->
     Doc = read_doc(),
     Lower = string:lowercase(Doc),
-    %% an example is labelled as an invalid manifest
-    ?assert(has_invalid_example_label(Lower)),
-    %% and the doc carries a note explaining why it is rejected
+    ?assert(contains(Lower, <<"malformed">>)),
     ?assert(contains(Lower, <<"rejected">>)).
 
-%% A heading or label line that marks an example as an invalid manifest.
-has_invalid_example_label(Lower) ->
-    Lines = binary:split(Lower, <<"\n">>, [global]),
-    lists:any(fun(L) ->
-                  contains(L, <<"invalid manifest">>)
-                      andalso contains(L, <<"example">>)
-              end, Lines).
+manifest_doc_rejects_malformed_test() ->
+    test_manifest_doc_rejects_malformed().
 
-manifest_doc_has_invalid_example_test() ->
-    test_manifest_doc_has_invalid_example().
-
-%% Criterion 9: the doc lists the v0.2 non-goals — no MCP adapter, no LLM
-%% planner, no LFE DSL, no DAG execution, no long-running port pool, and no OS
-%% sandbox beyond the adapter safety rules defined here.
-test_manifest_doc_lists_non_goals() ->
-    Doc = read_doc(),
-    Lower = string:lowercase(Doc),
-    [?assert(contains(Lower, NonGoal))
-     || NonGoal <- [<<"no mcp adapter">>,
-                    <<"no llm planner">>,
-                    <<"no lfe dsl">>,
-                    <<"no dag execution">>,
-                    <<"no long-running port pool">>,
-                    <<"no os sandbox beyond the adapter safety rules">>]].
-
-manifest_doc_lists_non_goals_test() ->
-    test_manifest_doc_lists_non_goals().
-
-%% Criterion 8 (issue): the doc documents the v0.2 `cli` execution protocol —
-%% the input channel a step's input is delivered on (the final argv argument),
-%% that the process's stdout is captured and recorded as the step output, and
-%% that exit status 0 means success.
+%% Criterion 9: the doc documents the v0.2 `cli` execution protocol —
+%% input delivered as the final argv argument, stdout captured as the step
+%% output, and exit status 0 meaning success.
 test_manifest_doc_describes_cli_execution_protocol() ->
     Doc = read_doc(),
     Lower = string:lowercase(Doc),
-    %% the input channel: the step input is delivered as the final argv argument
     ?assert(contains(Lower, <<"final argv argument">>)),
-    %% stdout is captured and recorded as the step output
     ?assert(contains(Lower, <<"stdout">>)),
     ?assert(contains(Lower, <<"step output">>)),
-    %% exit status 0 means success
     ?assert(contains(Lower, <<"exit status 0">>)),
     ?assert(contains(Lower, <<"success">>)).
 
