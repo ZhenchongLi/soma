@@ -10,6 +10,7 @@
 -export([send/2]).
 -export([ask/3]).
 -export([get_task_status/2]).
+-export([get_task_result/2]).
 -export([callback_mode/0, init/1]).
 -export([idle/3]).
 
@@ -46,6 +47,13 @@ ask(ActorRef, Envelope, TimeoutMs) ->
 %% actor via `idle/3', so the actor is never bypassed.
 get_task_status(ActorRef, TaskId) ->
     gen_statem:call(ActorRef, {get_task_status, TaskId}).
+
+%% @doc Reads a task's result from the actor's task table. Returns
+%% `{ok, Result}' once the task has completed, or `not_ready' while it has not
+%% yet completed. The read runs inside the actor via `idle/3', so the actor is
+%% never bypassed.
+get_task_result(ActorRef, TaskId) ->
+    gen_statem:call(ActorRef, {get_task_result, TaskId}).
 
 callback_mode() ->
     state_functions.
@@ -101,6 +109,13 @@ idle({call, From}, {get_task_status, TaskId}, Data) ->
                correlation_id => maps:get(correlation_id, Task),
                status => maps:get(status, Task)},
     {keep_state, Data, [{reply, From, Status}]};
+idle({call, From}, {get_task_result, TaskId}, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    Reply = case maps:get(result, Task, undefined) of
+                undefined -> not_ready;
+                Result -> {ok, Result}
+            end,
+    {keep_state, Data, [{reply, From, Reply}]};
 idle(info, {run_completed, RunId, Outputs}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
