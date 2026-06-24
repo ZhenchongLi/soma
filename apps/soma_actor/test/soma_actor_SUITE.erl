@@ -20,6 +20,7 @@
 -export([non_map_envelope_errors_actor_survives/1]).
 -export([missing_field_envelope_errors_actor_survives/1]).
 -export([message_received_event_carries_ids/1]).
+-export([task_accepted_event_matches_received_ids/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -37,7 +38,8 @@ all() ->
      correlation_id_defaults_to_task_id,
      non_map_envelope_errors_actor_survives,
      missing_field_envelope_errors_actor_survives,
-     message_received_event_carries_ids].
+     message_received_event_carries_ids,
+     task_accepted_event_matches_received_ids].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -65,6 +67,10 @@ init_per_testcase(message_received_event_carries_ids, Config) ->
     {ok, Sup} = soma_actor_sup:start_link(),
     {ok, Store} = soma_event_store:start_link(),
     [{sup, Sup}, {store, Store} | Config];
+init_per_testcase(task_accepted_event_matches_received_ids, Config) ->
+    {ok, Sup} = soma_actor_sup:start_link(),
+    {ok, Store} = soma_event_store:start_link(),
+    [{sup, Sup}, {store, Store} | Config];
 init_per_testcase(_TestCase, Config) ->
     Config.
 
@@ -82,7 +88,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= correlation_id_defaults_to_task_id;
        TestCase =:= non_map_envelope_errors_actor_survives;
        TestCase =:= missing_field_envelope_errors_actor_survives;
-       TestCase =:= message_received_event_carries_ids ->
+       TestCase =:= message_received_event_carries_ids;
+       TestCase =:= task_accepted_event_matches_received_ids ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -359,4 +366,41 @@ message_received_event_carries_ids(Config) ->
     ActorId = maps:get(actor_id, Received),
     TaskId = maps:get(task_id, Received),
     CorrelationId = maps:get(correlation_id, Received),
+    ok.
+
+%% Criterion 8: after a valid send/2, the event store holds an
+%% actor.task.accepted event carrying the same actor_id, task_id, and
+%% correlation_id as the actor.message.received event. Enters through the real
+%% soma_actor:send/2 call; the actor is started through
+%% soma_actor_sup:start_actor/1 with a live event_store, no layer bypassed. Both
+%% events are read from the same store via soma_event_store:all/1 and their ids
+%% compared field by field.
+task_accepted_event_matches_received_ids(Config) ->
+    Store = ?config(store, Config),
+    ActorId = <<"actor-task-accepted">>,
+    Opts = #{actor_id => ActorId,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-accepted">>,
+    CorrelationId = <<"corr-accepted">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    Events = soma_event_store:all(Store),
+    [Received] = [E || E <- Events,
+                       maps:get(event_type, E, undefined)
+                           =:= <<"actor.message.received">>],
+    [Accepted] = [E || E <- Events,
+                       maps:get(event_type, E, undefined)
+                           =:= <<"actor.task.accepted">>],
+    AcceptedActorId = maps:get(actor_id, Received),
+    AcceptedTaskId = maps:get(task_id, Received),
+    AcceptedCorrelationId = maps:get(correlation_id, Received),
+    AcceptedActorId = maps:get(actor_id, Accepted),
+    AcceptedTaskId = maps:get(task_id, Accepted),
+    AcceptedCorrelationId = maps:get(correlation_id, Accepted),
     ok.
