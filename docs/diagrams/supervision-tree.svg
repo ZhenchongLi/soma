@@ -1,14 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 476" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 580" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/>
     </marker>
   </defs>
 
-  <rect x="2" y="2" width="696" height="472" rx="12" fill="#ffffff" stroke="#d0d7de"/>
+  <rect x="2" y="2" width="696" height="576" rx="12" fill="#ffffff" stroke="#d0d7de"/>
 
   <text x="24" y="32" font-size="14" font-weight="700" fill="#1f2328">Supervision tree</text>
-  <text x="24" y="50" font-size="11" fill="#57606a" font-family="system-ui, -apple-system, Segoe UI, sans-serif">every session, run, and tool call is its own supervised process</text>
+  <text x="24" y="50" font-size="11" fill="#57606a" font-family="system-ui, -apple-system, Segoe UI, sans-serif">every session, run, tool call, and agent entity is its own supervised process</text>
 
   <g stroke="#8c959f" stroke-width="1.4" fill="none">
     <path d="M342,110 V126"/>
@@ -26,7 +26,7 @@
   <!-- soma_sup -->
   <rect x="267" y="66" width="150" height="44" rx="7" fill="#f6f8fa" stroke="#57606a"/>
   <text x="342" y="86" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">soma_sup</text>
-  <text x="342" y="101" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">supervisor</text>
+  <text x="342" y="101" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">apps/soma_runtime · supervisor</text>
 
   <!-- soma_event_store -->
   <rect x="18" y="150" width="150" height="44" rx="7" fill="#ddf4ff" stroke="#0969da"/>
@@ -73,4 +73,26 @@
   <text x="40" y="267" font-size="11" font-weight="600" fill="#1f2328" font-family="system-ui, sans-serif">not a crash of the session.</text>
   <text x="40" y="292" font-size="10.5" fill="#57606a" font-family="system-ui, sans-serif">soma_run monitors each worker; a</text>
   <text x="40" y="307" font-size="10.5" fill="#57606a" font-family="system-ui, sans-serif">crash arrives as a 'DOWN' message.</text>
+
+  <!-- divider: separate app -->
+  <path d="M24,478 H676" stroke="#d0d7de" stroke-width="1" fill="none"/>
+  <text x="24" y="500" font-size="12" font-weight="700" fill="#1f2328">apps/soma_actor — separate app, its own supervision tree (v0.4)</text>
+
+  <g stroke="#8c959f" stroke-width="1.4" fill="none">
+    <path d="M194,534 H222" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- soma_actor_sup -->
+  <rect x="24" y="512" width="170" height="44" rx="7" fill="#f6f8fa" stroke="#57606a"/>
+  <text x="109" y="532" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">soma_actor_sup</text>
+  <text x="109" y="547" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">supervisor · simple_one_for_one</text>
+
+  <!-- soma_actor -->
+  <rect x="224" y="512" width="170" height="44" rx="7" fill="#faf0ff" stroke="#8250df"/>
+  <text x="309" y="532" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">soma_actor</text>
+  <text x="309" y="547" text-anchor="middle" font-size="10" fill="#57606a" font-family="system-ui, sans-serif">gen_statem · agent entity</text>
+
+  <!-- cross-app note -->
+  <text x="416" y="528" font-size="10.5" font-weight="600" fill="#1f2328" font-family="system-ui, sans-serif">starts runs directly under soma_run_sup</text>
+  <text x="416" y="543" font-size="10.5" fill="#57606a" font-family="system-ui, sans-serif">(session_pid = self; one-way dep on the runtime)</text>
 </svg>
