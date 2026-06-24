@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %% Public API
--export([start_link/0, append/2, all/1, by_run/2, by_session/2]).
+-export([start_link/0, append/2, all/1, by_run/2, by_session/2, by_correlation/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
@@ -32,6 +32,10 @@ by_run(Pid, RunId) ->
 by_session(Pid, SessionId) ->
     gen_server:call(Pid, {by_session, SessionId}).
 
+-spec by_correlation(pid(), term()) -> [map()].
+by_correlation(Pid, CorrelationId) ->
+    gen_server:call(Pid, {by_correlation, CorrelationId}).
+
 %%% gen_server callbacks
 
 init([]) ->
@@ -47,6 +51,9 @@ handle_call({by_run, RunId}, _From, State = #state{events = Events}) ->
     {reply, Matching, State};
 handle_call({by_session, SessionId}, _From, State = #state{events = Events}) ->
     Matching = [E || E <- lists:reverse(Events), maps:get(session_id, E, undefined) =:= SessionId],
+    {reply, Matching, State};
+handle_call({by_correlation, CorrelationId}, _From, State = #state{events = Events}) ->
+    Matching = [E || E <- lists:reverse(Events), maps:get(correlation_id, E, undefined) =:= CorrelationId],
     {reply, Matching, State}.
 
 handle_cast(_Msg, State) ->
