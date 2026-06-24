@@ -1211,10 +1211,7 @@ get_task_result_ok_outputs_after_completion(_Config) ->
     %% The single echo step s1 echoes its args unchanged, so the run's Outputs
     %% map is keyed by the step id with the echoed args as the value.
     Outputs = #{s1 => #{value => <<"a">>}},
-    %% Staged red: deliberately wrong expected value (the implementation returns
-    %% {ok, Outputs}); corrected in the follow-up fix(test) commit.
-    not_ready = soma_actor:get_task_result(Pid, TaskId),
-    _ = Outputs,
+    {ok, Outputs} = soma_actor:get_task_result(Pid, TaskId),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
