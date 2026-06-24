@@ -1,31 +1,43 @@
 %% @doc Soma LFE compiler boundary.
 %%
-%% Placeholder implementation. compile/2 and compile_file/2 return well-formed
-%% {ok, Steps} or {error, Diagnostics} shapes so callers can write real test
-%% assertions today. TODO: replace with a real LFE grammar when the grammar
-%% is implemented.
+%% compile/2 reads LFE source through soma_lfe_reader, then walks the raw
+%% form list through soma_lfe_parser to produce an internal run representation.
 -module(soma_lfe).
 
 -export([compile/2, compile_file/2]).
 
-%% @doc Compile LFE source (binary or string) to a step list.
+%% @doc Compile LFE source (binary or string) to an internal run map.
 %%
-%% Returns {ok, []} for any input. The step list is empty because no grammar
-%% exists yet; subsequent issues will fill in the real compiler.
+%% Returns {ok, #{run => #{steps => [...]}}} on success, or
+%% {error, [#{message => binary(), line => non_neg_integer()}]} on failure.
 -spec compile(binary() | string(), map()) ->
-    {ok, [map()]} | {error, [map()]}.
-compile(_Source, _Opts) ->
-    {ok, []}.
+    {ok, map()} | {error, [map()]}.
+compile(Source, _Opts) when is_list(Source) ->
+    compile(list_to_binary(Source), _Opts);
+compile(Source, _Opts) when is_binary(Source) ->
+    case soma_lfe_reader:read_forms(Source) of
+        {ok, Forms} ->
+            soma_lfe_parser:parse_run(Forms);
+        {error, Diags} ->
+            {error, Diags}
+    end.
 
-%% @doc Compile an LFE source file to a step list.
+%% @doc Compile an LFE source file to an internal run map.
 %%
 %% Returns {error, Diagnostics} if the file does not exist.
 -spec compile_file(file:filename_all(), map()) ->
-    {ok, [map()]} | {error, [map()]}.
-compile_file(Path, _Opts) ->
+    {ok, map()} | {error, [map()]}.
+compile_file(Path, Opts) ->
     case filelib:is_regular(Path) of
         true ->
-            {ok, []};
+            case file:read_file(Path) of
+                {ok, Source} ->
+                    compile(Source, Opts);
+                {error, Reason} ->
+                    {error, [#{message => iolist_to_binary(
+                                    io_lib:format("file read error: ~p", [Reason])),
+                               line => 0}]}
+            end;
         false ->
             {error, [#{message => <<"file not found">>, line => 0}]}
     end.

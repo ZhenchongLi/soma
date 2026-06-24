@@ -15,9 +15,12 @@ soma_lfe_app_file_exists_test() ->
     test_soma_lfe_app_file_exists().
 
 %% Criterion 2: compile/2 and compile_file/2 exist with correct return shapes.
+%% Note: compile/2 now returns {ok, map()} with the internal run representation,
+%% or {error, [diagnostic()]}. Empty source produces a diagnostic (no top-level form).
 test_compile_returns_ok_steps() ->
-    {ok, Steps} = soma_lfe:compile(<<>>, #{}),
-    ?assert(is_list(Steps)),
+    {error, Diags0} = soma_lfe:compile(<<>>, #{}),
+    ?assert(is_list(Diags0)),
+    ?assert(length(Diags0) > 0),
     {error, Diags} = soma_lfe:compile_file("/nonexistent/path", #{}),
     ?assert(is_list(Diags)),
     ?assert(length(Diags) > 0).
