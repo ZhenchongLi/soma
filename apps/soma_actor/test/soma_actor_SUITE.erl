@@ -12,6 +12,7 @@
 -export([start_emits_one_actor_started_event/1]).
 -export([actor_started_event_carries_actor_id/1]).
 -export([actor_without_event_store_boots_quietly/1]).
+-export([sup_exports_start_actor/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -21,7 +22,8 @@ all() ->
      actor_state_holds_config,
      start_emits_one_actor_started_event,
      actor_started_event_carries_actor_id,
-     actor_without_event_store_boots_quietly].
+     actor_without_event_store_boots_quietly,
+     sup_exports_start_actor].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -176,4 +178,12 @@ actor_without_event_store_boots_quietly(_Config) ->
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
     true = is_process_alive(Pid),
     {idle, _Data} = sys:get_state(Pid),
+    ok.
+
+%% Criterion 9: soma_actor_sup exports start_actor/1, mirroring
+%% soma_run_sup:start_run/1. The start_child path is covered behaviourally by
+%% criteria 2-7; this pins the export name itself via module introspection.
+sup_exports_start_actor(_Config) ->
+    Exports = soma_actor_sup:module_info(exports),
+    false = lists:member({start_actor, 1}, Exports),
     ok.
