@@ -18,6 +18,7 @@
 -record(data, {run_id,
                session_id,
                session_pid,
+               correlation_id,
                event_store,
                steps = [],
                pending = [],
@@ -38,6 +39,7 @@ init(Opts) ->
     Data = #data{run_id = maps:get(run_id, Opts),
                  session_id = maps:get(session_id, Opts, undefined),
                  session_pid = maps:get(session_pid, Opts, undefined),
+                 correlation_id = maps:get(correlation_id, Opts, undefined),
                  event_store = maps:get(event_store, Opts, undefined),
                  steps = maps:get(steps, Opts, []),
                  pending = maps:get(steps, Opts, [])},
@@ -325,9 +327,18 @@ notify_session_cancelled(#data{session_pid = Pid, run_id = RunId}) ->
 emit(#data{event_store = undefined}, _Type, _Extra) ->
     ok;
 emit(Data, Type, Extra) ->
-    Base = #{session_id => Data#data.session_id,
-             run_id => Data#data.run_id,
-             event_type => Type},
+    Base0 = #{session_id => Data#data.session_id,
+              run_id => Data#data.run_id,
+              event_type => Type},
+    %% Stamp the run's `correlation_id' on every event it emits -- but only when
+    %% the run actually holds one. A run started without a correlation id emits
+    %% exactly the trail it emits today; the key is never merged as
+    %% `undefined', so `by_correlation/2' matches only events that carry a real
+    %% id.
+    Base = case Data#data.correlation_id of
+               undefined -> Base0;
+               CorrId -> Base0#{correlation_id => CorrId}
+           end,
     soma_event_store:append(Data#data.event_store, maps:merge(Base, Extra)),
     ok.
 
