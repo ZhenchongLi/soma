@@ -175,5 +175,5 @@ actor_without_event_store_boots_quietly(_Config) ->
              tool_policy => #{}},
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
     true = is_process_alive(Pid),
-    {running, _Data} = sys:get_state(Pid),
+    {idle, _Data} = sys:get_state(Pid),
     ok.
