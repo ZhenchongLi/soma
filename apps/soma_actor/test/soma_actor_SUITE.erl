@@ -3,10 +3,30 @@
 -include_lib("common_test/include/ct.hrl").
 
 -export([all/0]).
+-export([init_per_testcase/2, end_per_testcase/2]).
 -export([actor_is_gen_statem_with_callbacks/1]).
+-export([start_actor_returns_ok_pid/1]).
 
 all() ->
-    [actor_is_gen_statem_with_callbacks].
+    [actor_is_gen_statem_with_callbacks,
+     start_actor_returns_ok_pid].
+
+init_per_testcase(start_actor_returns_ok_pid, Config) ->
+    {ok, Sup} = soma_actor_sup:start_link(),
+    [{sup, Sup} | Config];
+init_per_testcase(_TestCase, Config) ->
+    Config.
+
+end_per_testcase(start_actor_returns_ok_pid, Config) ->
+    case ?config(sup, Config) of
+        undefined -> ok;
+        Sup ->
+            unlink(Sup),
+            exit(Sup, shutdown)
+    end,
+    ok;
+end_per_testcase(_TestCase, _Config) ->
+    ok.
 
 %% Criterion 1: soma_actor implements the gen_statem behaviour and exports
 %% start_link/1, callback_mode/0, and init/1. Proven by module introspection;
@@ -19,4 +39,15 @@ actor_is_gen_statem_with_callbacks(_Config) ->
     true = lists:member({start_link, 1}, Exports),
     true = lists:member({callback_mode, 0}, Exports),
     true = lists:member({init, 1}, Exports),
+    ok.
+
+%% Criterion 2: an actor started through soma_actor_sup:start_actor/1 returns
+%% {ok, Pid} with Pid a live process. Enters through the real supervisor entry,
+%% no layer bypassed.
+start_actor_returns_ok_pid(_Config) ->
+    Opts = #{actor_id => <<"actor-1">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    true = is_pid(Pid),
     ok.
