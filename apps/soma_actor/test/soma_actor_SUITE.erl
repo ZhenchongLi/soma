@@ -33,6 +33,7 @@
 -export([task_result_holds_outputs_after_run/1]).
 -export([send_returns_before_run_completes/1]).
 -export([second_steps_envelope_starts_second_run/1]).
+-export([no_steps_accepts_and_starts_no_run/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -63,7 +64,8 @@ all() ->
      task_status_completed_after_run,
      task_result_holds_outputs_after_run,
      send_returns_before_run_completes,
-     second_steps_envelope_starts_second_run].
+     second_steps_envelope_starts_second_run,
+     no_steps_accepts_and_starts_no_run].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -107,7 +109,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= task_status_completed_after_run;
        TestCase =:= task_result_holds_outputs_after_run;
        TestCase =:= send_returns_before_run_completes;
-       TestCase =:= second_steps_envelope_starts_second_run ->
+       TestCase =:= second_steps_envelope_starts_second_run;
+       TestCase =:= no_steps_accepts_and_starts_no_run ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -155,7 +158,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= task_status_completed_after_run;
        TestCase =:= task_result_holds_outputs_after_run;
        TestCase =:= send_returns_before_run_completes;
-       TestCase =:= second_steps_envelope_starts_second_run ->
+       TestCase =:= second_steps_envelope_starts_second_run;
+       TestCase =:= no_steps_accepts_and_starts_no_run ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -826,6 +830,34 @@ second_steps_envelope_starts_second_run(_Config) ->
     RunId2 = run_id_for_task(Pid, TaskId2),
     true = RunId1 =/= RunId2,
     ok = wait_for_run_completed(Store, RunId2, 100),
+    ok.
+
+%% Criterion 10 (slice p3/p4): an envelope with no steps key keeps the slice-4
+%% behavior exactly — send/2 returns {ok, TaskId}, no soma_run is started under
+%% soma_run_sup, and the task stays at status accepted. The runtime is booted so
+%% soma_run_sup is alive (and would hold a run child if one were wrongly started);
+%% the actor is started through soma_actor_sup:start_actor/1 with the booted
+%% runtime's event store, no layer bypassed. Enters through the real
+%% soma_actor:send/2 call. After the {ok, TaskId} reply the test reads
+%% soma_run_sup's children and asserts there are zero run pids, then reads the
+%% task table (element 6 of the data record) and asserts the task's status is
+%% still accepted.
+no_steps_accepts_and_starts_no_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-no-steps">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-no-steps">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    Children = supervisor:which_children(soma_run_sup),
+    RunPids = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
+    1 = length(RunPids),
+    accepted = task_status(Pid, TaskId),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
