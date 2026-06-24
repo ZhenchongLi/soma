@@ -37,6 +37,7 @@
 -export([ask_returns_run_outputs/1]).
 -export([ask_caller_and_actor_alive_after_return/1]).
 -export([ask_reply_matches_completed_run/1]).
+-export([ask_short_timeout_returns_timeout/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -71,7 +72,8 @@ all() ->
      no_steps_accepts_and_starts_no_run,
      ask_returns_run_outputs,
      ask_caller_and_actor_alive_after_return,
-     ask_reply_matches_completed_run].
+     ask_reply_matches_completed_run,
+     ask_short_timeout_returns_timeout].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -119,7 +121,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= no_steps_accepts_and_starts_no_run;
        TestCase =:= ask_returns_run_outputs;
        TestCase =:= ask_caller_and_actor_alive_after_return;
-       TestCase =:= ask_reply_matches_completed_run ->
+       TestCase =:= ask_reply_matches_completed_run;
+       TestCase =:= ask_short_timeout_returns_timeout ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -171,7 +174,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= no_steps_accepts_and_starts_no_run;
        TestCase =:= ask_returns_run_outputs;
        TestCase =:= ask_caller_and_actor_alive_after_return;
-       TestCase =:= ask_reply_matches_completed_run ->
+       TestCase =:= ask_reply_matches_completed_run;
+       TestCase =:= ask_short_timeout_returns_timeout ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -958,6 +962,31 @@ ask_reply_matches_completed_run(_Config) ->
     completed = task_status(Pid, TaskId),
     %% The returned result is exactly the run's stored outputs.
     Result = task_result(Pid, TaskId),
+    ok.
+
+%% Criterion 4 (slice p5/p6): ask/3 with a TimeoutMs shorter than the run can
+%% finish returns the atom timeout. The single step sleeps for 500ms while the
+%% caller's TimeoutMs is 100ms, so the gen_statem:call timeout fires before the
+%% run completes. A bare gen_statem:call would exit with {timeout, ...}; ask/3 is
+%% expected to catch that and return the atom timeout (its spec is
+%% {ok, Result} | {error, Reason} | timeout). The runtime is booted so
+%% soma_run_sup and soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store. Enters
+%% through the real soma_actor:ask/3 call, no layer bypassed.
+ask_short_timeout_returns_timeout(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-timeout">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-timeout">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    timeout = soma_actor:ask(Pid, Envelope, 100),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
