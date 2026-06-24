@@ -51,6 +51,7 @@
 -export([failed_run_sets_task_status_failed/1]).
 -export([actor_alive_after_owned_run_fails/1]).
 -export([tool_crash_isolated_by_process_boundary/1]).
+-export([ask_failed_run_returns_error/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -99,7 +100,8 @@ all() ->
      failed_run_emits_task_failed_event,
      failed_run_sets_task_status_failed,
      actor_alive_after_owned_run_fails,
-     tool_crash_isolated_by_process_boundary].
+     tool_crash_isolated_by_process_boundary,
+     ask_failed_run_returns_error].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -161,7 +163,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= failed_run_emits_task_failed_event;
        TestCase =:= failed_run_sets_task_status_failed;
        TestCase =:= actor_alive_after_owned_run_fails;
-       TestCase =:= tool_crash_isolated_by_process_boundary ->
+       TestCase =:= tool_crash_isolated_by_process_boundary;
+       TestCase =:= ask_failed_run_returns_error ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -227,7 +230,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= failed_run_emits_task_failed_event;
        TestCase =:= failed_run_sets_task_status_failed;
        TestCase =:= actor_alive_after_owned_run_fails;
-       TestCase =:= tool_crash_isolated_by_process_boundary ->
+       TestCase =:= tool_crash_isolated_by_process_boundary;
+       TestCase =:= ask_failed_run_returns_error ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1435,6 +1439,37 @@ tool_crash_isolated_by_process_boundary(_Config) ->
     true = RunPid =/= WorkerPid,
     %% The crash arrived as a message, not a signal: the actor is still alive.
     true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 5 (slice p8/p9/p15): an ask/3 whose run fails returns {error, Reason}
+%% instead of hanging, and the actor pid stays alive afterward. The runtime is
+%% booted so soma_run_sup and soma_tool_registry are alive; the actor is started
+%% through soma_actor_sup:start_actor/1 with the booted runtime's event store so
+%% the actor and the run share one store. Enters through the real soma_actor:ask/3
+%% call, no layer bypassed. The single fail step returns {error, boom}; ask/3
+%% parks the caller's From, then soma_run fails the run and sends
+%% {run_failed, RunId, boom} to the actor, which replies {error, boom} to the
+%% parked waiter. The TimeoutMs (5000) is long enough that the run failure, not
+%% the caller-side timeout, ends the call. After the reply the test asserts the
+%% actor pid is still alive via is_process_alive/1.
+ask_failed_run_returns_error(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-failed">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-failed">>,
+    Steps = [#{id => s1, tool => fail,
+               args => #{mode => error, reason => boom}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    %% Staged red: the correct reply is {error, boom}; this deliberately-wrong
+    %% expected value {ok, boom} makes the match fail so the red phase fires.
+    {ok, boom} = soma_actor:ask(Pid, Envelope, 5000),
+    true = is_process_alive(Pid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
