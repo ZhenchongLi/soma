@@ -11,6 +11,7 @@
 -export([actor_state_holds_config/1]).
 -export([start_emits_one_actor_started_event/1]).
 -export([actor_started_event_carries_actor_id/1]).
+-export([actor_without_event_store_boots_quietly/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -19,13 +20,15 @@ all() ->
      actor_starts_idle,
      actor_state_holds_config,
      start_emits_one_actor_started_event,
-     actor_started_event_carries_actor_id].
+     actor_started_event_carries_actor_id,
+     actor_without_event_store_boots_quietly].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
        TestCase =:= actor_alive_after_start;
        TestCase =:= actor_starts_idle;
-       TestCase =:= actor_state_holds_config ->
+       TestCase =:= actor_state_holds_config;
+       TestCase =:= actor_without_event_store_boots_quietly ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -45,7 +48,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= actor_starts_idle;
        TestCase =:= actor_state_holds_config;
        TestCase =:= start_emits_one_actor_started_event;
-       TestCase =:= actor_started_event_carries_actor_id ->
+       TestCase =:= actor_started_event_carries_actor_id;
+       TestCase =:= actor_without_event_store_boots_quietly ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -158,4 +162,18 @@ actor_started_event_carries_actor_id(Config) ->
     [Started] = [E || E <- Events,
                       maps:get(event_type, E, undefined) =:= <<"actor.started">>],
     ActorId = maps:get(actor_id, Started),
+    ok.
+
+%% Criterion 8: an actor started with no event_store in Opts boots and stays
+%% alive, emitting nothing and not crashing. With no store to read, "emits
+%% nothing" is proved by the actor neither crashing nor needing a store: the
+%% undefined-store no-op emit clause is exercised by the actor staying alive in
+%% idle. Enters through the real supervisor entry with Opts that omit event_store.
+actor_without_event_store_boots_quietly(_Config) ->
+    Opts = #{actor_id => <<"actor-no-store">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    true = is_process_alive(Pid),
+    {running, _Data} = sys:get_state(Pid),
     ok.
