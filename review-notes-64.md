@@ -7,7 +7,8 @@ approve
 None.
 
 ## Questions
-- `waiters` is keyed by `task_id`. Two `ask/3` calls carrying the same explicit `task_id` would overwrite the first waiter, leaving the first caller parked until its `TimeoutMs`. Same collision shape the `send` path already has, and outside this slice's criteria — slice 8 territory. Flagging it so it isn't forgotten when the failure-reply path lands.
+- The full `rebar3 ct` gate is intermittently red. One run in seven here failed 112/1: `soma_cli_lifecycle_SUITE:test_cli_external_process_dead_after_cancel` at line 176, `{badmatch,true}` on `false = filelib:is_file(Marker)`. The marker file existed when the test expected it gone. That suite is not in this diff — #64 touches only `soma_actor.erl` and the actor suite. The actor suite ran 43/0 in the failing run; the failure sits in pre-existing CLI cancel-marker code, where the marker path looks shared across runs and a leftover trips the assert. Out of scope for #64, but the merge gate runs the whole suite, so a flaky CLI test can block this PR. Flag for whoever owns the CLI suite.
+- `waiters` is keyed by `task_id`. Two `ask/3` calls carrying the same explicit `task_id` would overwrite the first waiter, leaving the first caller parked until its `TimeoutMs`. Same collision shape the `send` path already has, outside this slice's criteria — slice 8 territory.
 - A waiter on a run that fails or times out stays parked until its own `TimeoutMs` fires (design-64.md §Risks). Reads as a `timeout` even when the run died. Known gap, scoped to slice 8.
 
 ## Nits
@@ -27,4 +28,4 @@ None.
 - Criterion 11 — pass: `get_task_result_ok_outputs_after_completion` polls to completion, asserts `{ok, #{s1 => #{value => <<"a">>}}} = get_task_result/2`.
 - Criterion 12 — pass: `unknown_task_id_not_found_both_reads_actor_alive` asserts `not_found = maps:get(status, Status)` and `{error, not_found} = get_task_result/2` for an unaccepted id, then `is_process_alive(Pid)`.
 - Criterion 13 — pass: `read_returns_while_earlier_run_in_flight` issues `get_task_status/2` against a live 500ms run; the call returns inside the default 5s call timeout with `running`, proving the read is served from `idle` without blocking on the run.
-- Criterion 14 — pass: `rebar3 eunit` 108 tests 0 failures; `rebar3 ct` All 113 tests passed.
+- Criterion 14 — pass: `rebar3 eunit` 108 tests, 0 failures. `rebar3 ct` passed 113/113 on 6 of 7 runs here; one run failed 112/1 on `soma_cli_lifecycle_SUITE:test_cli_external_process_dead_after_cancel`, a flaky pre-existing CLI test outside this diff (see Questions). The actor suite itself ran 43/0 every run, including the failing one.
