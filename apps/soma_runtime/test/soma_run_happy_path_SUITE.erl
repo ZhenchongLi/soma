@@ -409,7 +409,7 @@ test_run_without_correlation_id_emits_normal_trail(_Config) ->
     Types = [maps:get(event_type, E) || E <- RunEvents],
     true = lists:member(<<"run.completed">>, Types),
     %% and no event carries a correlation_id key
-    true = lists:any(fun(E) -> maps:is_key(correlation_id, E) end, RunEvents),
+    false = lists:any(fun(E) -> maps:is_key(correlation_id, E) end, RunEvents),
     ok.
 
 %% Poll the session's get_status/1 until it reports RunId at the expected status.
