@@ -1380,7 +1380,7 @@ actor_alive_after_owned_run_fails(_Config) ->
                  steps => Steps},
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     failed = wait_for_task_status(Pid, TaskId, failed, 100),
-    false = is_process_alive(Pid),
+    true = is_process_alive(Pid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
