@@ -6,6 +6,17 @@ small Lisp-flavored syntax into the step-list format that
 `soma_lfe` OTP application; the runtime (`soma_runtime`) has no dependency on
 it — the two applications are deliberately separate.
 
+This DSL is Soma's first **agent intent language**. Its primary design target is
+not "make Lisp pleasant for humans"; it is "make operational intent easy for an
+agent to generate, validate, repair, diff, and audit." Lisp syntax is useful
+because it is a compact tree-shaped surface. The harder and more important work
+is deciding which forms Soma exposes.
+
+The language is intentionally constrained. It is closer to a UDF-style extension
+surface for a larger engine than to a general-purpose programming language: the
+DSL names safe hooks into the Soma runtime; Erlang/OTP supplies the execution
+semantics.
+
 ## The compile-only contract
 
 ```
@@ -17,6 +28,10 @@ DSL source  -->  soma_lfe:compile/2  -->  step list  -->  soma_agent_session:sta
 `{error, [Diagnostic]}`. It starts no processes, emits no runtime events, and
 never touches the supervisor tree. If compilation fails, no run is started and
 no events appear in the event store.
+
+The compiler may be fed by a human, an LLM planner, a UI, or another tool. That
+does not change the contract: source is parsed and validated into canonical
+step maps, and only those maps enter the runtime.
 
 ## v0.3 syntax
 
@@ -144,7 +159,9 @@ multiple diagnostics.
 The LFE DSL is intentionally minimal. These items are out of scope for v0.3
 and must not be added to the compiler:
 
-- **LLM planner** — the DSL is a hand-authored format, not a planner output.
+- **LLM planner integration** — v0.3 includes only the compiler. An LLM or agent
+  may author this syntax, but planner prompting, repair loops, and policy gates
+  live outside this compiler.
 - **MCP adapter** — not part of this layer.
 - **DAG execution** — the runtime is strictly sequential in v0.3; steps run
   in list order.

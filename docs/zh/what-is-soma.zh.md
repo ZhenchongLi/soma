@@ -109,7 +109,9 @@ Soma 的步骤格式刻意保持很小。一个 run 接收一组顺序步骤：
 进入下一步或进入终态
 ```
 
-步骤之间只有简单的 `from_step` 引用。v0.3 新增了 LFE DSL 编译器（`soma_lfe:compile/2`），可以把 LFE 语法编译成这种步骤列表。未来无论步骤来自 `soma_actor` 的 LLM planning、JSON、LLM structured output 还是 UI，它们都应该先编译成这个小步骤列表，通过 schema/registry/policy 校验后，再交给 runtime 执行。
+步骤之间只有简单的 `from_step` 引用。v0.3 新增了 LFE DSL 编译器（`soma_lfe:compile/2`），可以把 Lisp 风格的 S-expression 语法编译成这种步骤列表。未来无论步骤来自 `soma_actor` 的 LLM planning、JSON、LLM structured output 还是 UI，它们都应该先编译成这个小步骤列表，通过 schema/registry/policy 校验后，再交给 runtime 执行。
+
+这里的 DSL 更准确地说是 **agent intent language**。它的真正用户不一定是人，而是 agent：agent 用它描述受约束的操作意图，Soma 负责解析、校验、拒绝或修复，再交给 OTP runtime 执行。Lisp 语法本身不是难点；难点是定义哪些 form 和抽象能让 agent 安全表达“我要做什么”。这个角色有点像复杂求解器里的 UDF 扩展点：扩展语言的价值不在于能任意计算，而在于它暴露了一组受控、可验证、能接入底层引擎的 hook。在 Soma 里，底层引擎就是 Erlang/OTP 的进程、监督、事件和取消语义。
 
 ## 工具系统
 

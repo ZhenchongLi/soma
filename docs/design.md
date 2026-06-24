@@ -237,6 +237,28 @@ The runtime does not depend on where steps came from. Any planning input —
 hand-authored, LFE DSL, LLM output, workflow UI — compiles down to the step
 format `start_run/2` accepts.
 
+The intended primary author of higher-level plans is an agent, not necessarily
+a human. That shifts the language design goal: the DSL should be easy for an
+agent to generate, validate, repair, diff, and audit. Lisp syntax is useful
+because it is a small tree-shaped surface, but the important design work is the
+set of forms and abstractions Soma exposes.
+
+Soma's DSL is therefore an **agent intent language**, not a general-purpose
+Lisp runtime. Its job is to express bounded operational intent:
+
+- what run is being proposed;
+- which steps exist and in what order;
+- which tool each step requests;
+- what arguments and prior outputs flow into each step;
+- what execution constraints apply, such as timeouts;
+- later, what capabilities, effects, budgets, and policies bound the run.
+
+This is similar in spirit to a solver exposing constrained extension points:
+the extension language is valuable because it names safe hooks into a much
+larger execution engine, not because it can do arbitrary computation. In Soma,
+the execution engine is OTP. The DSL proposes; compiler and policy validate;
+`soma_run` executes through supervised processes.
+
 The LFE DSL (`soma_lfe`) is the first planning input: a compile-only layer in
 its own OTP application. The dependency is one-way: `soma_lfe` depends on
 shared data contracts, but `soma_runtime` has no dependency on `soma_lfe`.

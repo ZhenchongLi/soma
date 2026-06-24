@@ -11,6 +11,11 @@ Erlang/OTP provides the execution semantics — timeouts, cancellation, monitori
 crash isolation — while the step list only says *what* to run. The full rationale
 and design live in **[docs/design.md](docs/design.md)**, the project's north star.
 
+The Lisp-flavored DSL is Soma's first **agent intent language**: a constrained
+syntax for an agent to describe bounded operational intent. Lisp is not the
+runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
+`DSL -> validated step list -> OTP execution`.
+
 **Status — built and green on `main`** (EUnit 95, Common Test 70, Erlang/OTP 29).
 The runtime executes sequential runs, isolates failures, and runs both in-BEAM
 Erlang tools and external one-shot CLI tools — each proven under test, asserting
@@ -121,7 +126,7 @@ it finishes.
   executable, a nonzero exit, oversized output — are **failure normalization**
   into named, bounded `{error, _}` data. Through all of it the session keeps
   serving: it runs again after any terminal state.
-- **An LFE DSL compile-only layer** (`soma_lfe`). `soma_lfe:compile(Source, #{})` parses a small Lisp-flavored grammar into the exact step-list maps `start_run/2` accepts — no processes started, no events emitted, no runtime dependency. Compilation returns `{ok, #{run => #{steps => Steps}}}` or `{error, [Diagnostic]}` with structured diagnostic codes. See [docs/lfe-dsl.md](docs/lfe-dsl.md).
+- **An LFE DSL compile-only layer** (`soma_lfe`). `soma_lfe:compile(Source, #{})` parses a small Lisp-flavored grammar into the exact step-list maps `start_run/2` accepts — no processes started, no events emitted, no runtime dependency. This is a constrained intent language for agents and humans to author runs; it is not a Lisp evaluator. Compilation returns `{ok, #{run => #{steps => Steps}}}` or `{error, [Diagnostic]}` with structured diagnostic codes. See [docs/lfe-dsl.md](docs/lfe-dsl.md).
 - **A mandatory event log** (in-memory) records the whole run, each event
   carrying 8 fields (`event_id, timestamp, session_id, run_id, step_id,
   tool_call_id, event_type, payload`): `session.started -> run.accepted ->

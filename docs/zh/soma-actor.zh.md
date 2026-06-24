@@ -279,6 +279,11 @@ reply / call_llm / start_run / send_actor_message
 / wait / request_user_input / complete_task / fail_task
 ```
 
+当 proposal 包含 run steps 时，优先把它看作 agent intent language 的输出：
+Lisp 风格 DSL、JSON 或其他前端都只是 authoring surface，必须先编译/规范化成
+canonical step list，再经过 policy gate。`soma_actor` 不执行“语言文本”本身，
+只执行通过校验的 proposal。
+
 示例：
 
 ```erlang
