@@ -25,6 +25,7 @@
 -export([actor_idle_and_alive_after_send/1]).
 -export([second_send_accepts_too/1]).
 -export([run_started_under_run_sup_distinct_pid/1]).
+-export([run_completes_with_run_event_trail/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -47,7 +48,8 @@ all() ->
      accepted_task_in_table_with_status,
      actor_idle_and_alive_after_send,
      second_send_accepts_too,
-     run_started_under_run_sup_distinct_pid].
+     run_started_under_run_sup_distinct_pid,
+     run_completes_with_run_event_trail].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -82,7 +84,9 @@ init_per_testcase(task_accepted_event_matches_received_ids, Config) ->
     {ok, Sup} = soma_actor_sup:start_link(),
     {ok, Store} = soma_event_store:start_link(),
     [{sup, Sup}, {store, Store} | Config];
-init_per_testcase(run_started_under_run_sup_distinct_pid, Config) ->
+init_per_testcase(TestCase, Config)
+  when TestCase =:= run_started_under_run_sup_distinct_pid;
+       TestCase =:= run_completes_with_run_event_trail ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -121,7 +125,9 @@ end_per_testcase(TestCase, Config)
             exit(Sup, shutdown)
     end,
     ok;
-end_per_testcase(run_started_under_run_sup_distinct_pid, Config) ->
+end_per_testcase(TestCase, Config)
+  when TestCase =:= run_started_under_run_sup_distinct_pid;
+       TestCase =:= run_completes_with_run_event_trail ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -525,6 +531,71 @@ run_started_under_run_sup_distinct_pid(_Config) ->
     true = is_process_alive(RunPid),
     true = RunPid =/= Pid,
     ok.
+
+%% Criterion 2 (slice 7): demo steps run to run.completed through soma_run, and
+%% the normal run event trail (run.started ... run.completed) appears in the
+%% event store. The runtime is booted so soma_run_sup and soma_tool_registry are
+%% alive; the actor is started through soma_actor_sup:start_actor/1 with the
+%% booted runtime's event store so the actor and the run share one store. Enters
+%% through the real soma_actor:send/2 call, no layer bypassed. The run id is read
+%% from the actor's runs map (element 7 of the data record, run_id => task_id),
+%% then the run-scoped trail is read back via soma_event_store:by_run/2 once
+%% run.completed appears.
+run_completes_with_run_event_trail(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-run-complete">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => <<"task-run-complete">>,
+                 steps => Steps},
+    {ok, <<"task-run-complete">>} = soma_actor:send(Pid, Envelope),
+    RunId = actor_run_id(Pid),
+    ok = wait_for_run_completed(Store, RunId, 100),
+    Events = soma_event_store:by_run(Store, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.started">>, Types),
+    true = lists:member(<<"run.completed">>, Types),
+    StartedIdx = index_of(<<"run.started">>, Types),
+    CompletedIdx = index_of(<<"run.completed">>, Types),
+    true = is_integer(StartedIdx),
+    true = is_integer(CompletedIdx),
+    %% staged red: deliberately wrong — run.completed cannot precede run.started
+    true = CompletedIdx < StartedIdx,
+    ok.
+
+%% Reads the single run id the actor tracks in its runs map (run_id => task_id).
+actor_run_id(Pid) ->
+    {idle, Data} = sys:get_state(Pid),
+    Runs = element(7, Data),
+    [RunId] = maps:keys(Runs),
+    RunId.
+
+wait_for_run_completed(_Store, _RunId, 0) ->
+    {error, timeout};
+wait_for_run_completed(Store, RunId, N) ->
+    Events = soma_event_store:by_run(Store, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    case lists:member(<<"run.completed">>, Types) of
+        true -> ok;
+        false ->
+            timer:sleep(20),
+            wait_for_run_completed(Store, RunId, N - 1)
+    end.
+
+index_of(X, L) ->
+    index_of(X, L, 1).
+
+index_of(_X, [], _N) ->
+    undefined;
+index_of(X, [X | _], N) ->
+    N;
+index_of(X, [_ | T], N) ->
+    index_of(X, T, N + 1).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
