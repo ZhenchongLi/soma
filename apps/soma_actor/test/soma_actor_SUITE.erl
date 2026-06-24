@@ -52,6 +52,7 @@
 -export([actor_alive_after_owned_run_fails/1]).
 -export([tool_crash_isolated_by_process_boundary/1]).
 -export([ask_failed_run_returns_error/1]).
+-export([timed_out_run_emits_task_failed_timeout/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -101,7 +102,8 @@ all() ->
      failed_run_sets_task_status_failed,
      actor_alive_after_owned_run_fails,
      tool_crash_isolated_by_process_boundary,
-     ask_failed_run_returns_error].
+     ask_failed_run_returns_error,
+     timed_out_run_emits_task_failed_timeout].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -164,7 +166,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= failed_run_sets_task_status_failed;
        TestCase =:= actor_alive_after_owned_run_fails;
        TestCase =:= tool_crash_isolated_by_process_boundary;
-       TestCase =:= ask_failed_run_returns_error ->
+       TestCase =:= ask_failed_run_returns_error;
+       TestCase =:= timed_out_run_emits_task_failed_timeout ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -231,7 +234,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= failed_run_sets_task_status_failed;
        TestCase =:= actor_alive_after_owned_run_fails;
        TestCase =:= tool_crash_isolated_by_process_boundary;
-       TestCase =:= ask_failed_run_returns_error ->
+       TestCase =:= ask_failed_run_returns_error;
+       TestCase =:= timed_out_run_emits_task_failed_timeout ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1468,6 +1472,42 @@ ask_failed_run_returns_error(_Config) ->
                  steps => Steps},
     {error, boom} = soma_actor:ask(Pid, Envelope, 5000),
     true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 6 (slice p8/p9/p15): a steps envelope whose run times out (a sleep
+%% step past a short per-step timeout_ms) makes the actor emit an
+%% actor.task.failed event with reason => timeout. The runtime is booted so
+%% soma_run_sup and soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the
+%% actor and the run share one store. Enters through the real soma_actor:send/2
+%% call, no layer bypassed. The single sleep step runs 500ms with a 50ms
+%% per-step timeout_ms, so soma_run's state_timeout fires first; soma_run times
+%% the run out and sends {run_timeout, RunId} to the actor, which records the
+%% failure and emits actor.task.failed with reason => timeout. The test polls
+%% the shared store until the event appears, then asserts its reason is timeout.
+timed_out_run_emits_task_failed_timeout(_Config) ->
+    Store = event_store_pid(),
+    ActorId = <<"actor-task-timeout">>,
+    Opts = #{actor_id => ActorId,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-task-timeout">>,
+    CorrelationId = <<"corr-task-timeout">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500},
+               timeout_ms => 50}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    Failed = wait_for_actor_event(Store, <<"actor.task.failed">>, 100),
+    ActorId = maps:get(actor_id, Failed),
+    TaskId = maps:get(task_id, Failed),
+    CorrelationId = maps:get(correlation_id, Failed),
+    timeout = maps:get(reason, Failed),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
