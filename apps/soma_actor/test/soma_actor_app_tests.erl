@@ -72,6 +72,36 @@ test_runtime_app_src_excludes_soma_actor_test() ->
     Applications = proplists:get_value(applications, Keys),
     ?assertNot(lists:member(soma_actor, Applications)).
 
+%% Criterion 8: no module under `apps/soma_runtime' references `soma_actor'.
+%% Scans every source file under `apps/soma_runtime/src' and asserts none of them
+%% mentions `soma_actor'. The runtime layer must not know the actor layer exists;
+%% the dependency is one-way. This is a static source-tree scan, not runtime
+%% behavior.
+test_no_runtime_module_references_soma_actor_test() ->
+    SrcDir = runtime_src_dir(),
+    ?assert(filelib:is_dir(SrcDir)),
+    Files = filelib:wildcard(filename:join(SrcDir, "*")),
+    Offenders = [F || F <- Files, file_mentions_soma_actor(F)],
+    %% staged-red: deliberately wrong expected value so the assertion fires.
+    ?assertEqual([<<"expected_a_reference">>], Offenders).
+
+%% Returns `true' if the given source file's contents contain the string
+%% "soma_actor".
+file_mentions_soma_actor(File) ->
+    {ok, Bin} = file:read_file(File),
+    case binary:match(Bin, <<"soma_actor">>) of
+        nomatch -> false;
+        _ -> true
+    end.
+
+%% Locate `apps/soma_runtime/src' relative to this test module's compiled
+%% `.beam'. Mirrors `runtime_app_src_path/0''s relative walk.
+runtime_src_dir() ->
+    BeamDir = filename:dirname(code:which(?MODULE)),
+    AppRoot = filename:dirname(BeamDir),
+    LibRoot = filename:dirname(AppRoot),
+    filename:join([LibRoot, "soma_runtime", "src"]).
+
 %% Locate `apps/soma_runtime/src/soma_runtime.app.src' relative to this test
 %% module's compiled `.beam'. rebar3 places this app's beams under
 %% `_build/<profile>/lib/soma_actor/test/'; sibling apps live alongside under
