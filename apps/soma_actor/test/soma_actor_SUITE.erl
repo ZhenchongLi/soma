@@ -780,7 +780,7 @@ send_returns_before_run_completes(_Config) ->
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     %% send/2 has returned while the 500ms sleep step is still running: the task
     %% is not yet completed, and the actor is alive and idle.
-    completed = task_status(Pid, TaskId),
+    accepted = task_status(Pid, TaskId),
     true = is_process_alive(Pid),
     %% The result is recorded asynchronously once {run_completed, ...} arrives.
     completed = wait_for_task_status(Pid, TaskId, completed, 100),
