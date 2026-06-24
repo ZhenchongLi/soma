@@ -11,7 +11,8 @@
 -export([callback_mode/0, init/1]).
 -export([idle/3]).
 
--record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{}}).
+-record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
+               runs = #{}}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -46,7 +47,8 @@ idle({call, From}, {send, Envelope}, Data) ->
                  #{task_id => TaskId, correlation_id => CorrelationId}),
             emit(Data1, <<"actor.task.accepted">>,
                  #{task_id => TaskId, correlation_id => CorrelationId}),
-            {keep_state, Data1, [{reply, From, {ok, TaskId}}]};
+            Data2 = maybe_start_run(Envelope, TaskId, CorrelationId, Data1),
+            {keep_state, Data2, [{reply, From, {ok, TaskId}}]};
         {error, Reason} ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
     end;
@@ -69,6 +71,30 @@ resolve_task_id(Envelope) ->
 
 resolve_correlation_id(Envelope, TaskId) ->
     maps:get(correlation_id, Envelope, TaskId).
+
+%% When the envelope carries a steps list, start a soma_run that the actor owns
+%% (session_pid => self()) and track run_id => task_id so the terminal message
+%% maps back to the task. With no steps the slice-4 behavior is unchanged.
+maybe_start_run(Envelope, TaskId, CorrelationId, Data) ->
+    case maps:get(steps, Envelope, undefined) of
+        Steps when is_list(Steps) ->
+            RunId = mint_run_id(),
+            RunOpts = #{run_id => RunId,
+                        session_id => Data#data.actor_id,
+                        session_pid => self(),
+                        event_store => Data#data.event_store,
+                        steps => Steps,
+                        correlation_id => CorrelationId},
+            {ok, _RunPid} = soma_run_sup:start_run(RunOpts),
+            Runs = maps:put(RunId, TaskId, Data#data.runs),
+            Data#data{runs = Runs};
+        _ ->
+            Data
+    end.
+
+mint_run_id() ->
+    list_to_binary(
+      "run-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
 
 mint_task_id() ->
     list_to_binary(
