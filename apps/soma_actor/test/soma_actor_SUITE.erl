@@ -564,8 +564,7 @@ run_completes_with_run_event_trail(_Config) ->
     CompletedIdx = index_of(<<"run.completed">>, Types),
     true = is_integer(StartedIdx),
     true = is_integer(CompletedIdx),
-    %% staged red: deliberately wrong — run.completed cannot precede run.started
-    true = CompletedIdx < StartedIdx,
+    true = StartedIdx < CompletedIdx,
     ok.
 
 %% Reads the single run id the actor tracks in its runs map (run_id => task_id).
