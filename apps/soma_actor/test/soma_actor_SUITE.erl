@@ -23,6 +23,7 @@
 -export([task_accepted_event_matches_received_ids/1]).
 -export([accepted_task_in_table_with_status/1]).
 -export([actor_idle_and_alive_after_send/1]).
+-export([second_send_accepts_too/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -43,7 +44,8 @@ all() ->
      message_received_event_carries_ids,
      task_accepted_event_matches_received_ids,
      accepted_task_in_table_with_status,
-     actor_idle_and_alive_after_send].
+     actor_idle_and_alive_after_send,
+     second_send_accepts_too].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -58,7 +60,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= non_map_envelope_errors_actor_survives;
        TestCase =:= missing_field_envelope_errors_actor_survives;
        TestCase =:= accepted_task_in_table_with_status;
-       TestCase =:= actor_idle_and_alive_after_send ->
+       TestCase =:= actor_idle_and_alive_after_send;
+       TestCase =:= second_send_accepts_too ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -97,7 +100,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= message_received_event_carries_ids;
        TestCase =:= task_accepted_event_matches_received_ids;
        TestCase =:= accepted_task_in_table_with_status;
-       TestCase =:= actor_idle_and_alive_after_send ->
+       TestCase =:= actor_idle_and_alive_after_send;
+       TestCase =:= second_send_accepts_too ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -455,4 +459,26 @@ actor_idle_and_alive_after_send(_Config) ->
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     true = is_process_alive(Pid),
     {idle, _Data} = sys:get_state(Pid),
+    ok.
+
+%% Criterion 11: a second send/2 with a different task_id also returns
+%% {ok, TaskId}, proving the actor is not single-shot. Enters through the real
+%% soma_actor:send/2 call twice on the same actor pid; the actor is started
+%% through soma_actor_sup:start_actor/1, no layer bypassed. Each returned id is
+%% asserted to equal its envelope's task_id.
+second_send_accepts_too(_Config) ->
+    Opts = #{actor_id => <<"actor-second-send">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId1 = <<"task-one">>,
+    Envelope1 = #{type => <<"chat">>,
+                  payload => #{text => <<"first">>},
+                  task_id => TaskId1},
+    {ok, TaskId1} = soma_actor:send(Pid, Envelope1),
+    TaskId2 = <<"task-two">>,
+    Envelope2 = #{type => <<"chat">>,
+                  payload => #{text => <<"second">>},
+                  task_id => TaskId2},
+    {ok, <<"wrong-expected-id">>} = soma_actor:send(Pid, Envelope2),
     ok.
