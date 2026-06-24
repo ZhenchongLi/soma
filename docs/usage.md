@@ -164,6 +164,9 @@ Events = soma_event_store:by_run(StorePid, RunId).
 %% All events for one session, in emission order
 Events = soma_event_store:by_session(StorePid, SessionId).
 
+%% All events for one correlation_id — the whole actor+run task chain
+Events = soma_event_store:by_correlation(StorePid, CorrelationId).
+
 %% All events in the store
 Events = soma_event_store:all(StorePid).
 ```
@@ -185,6 +188,12 @@ payload       map()    | undef
 
 Missing fields are set to `undefined` rather than omitted, so
 `maps:get(step_id, Event)` is always safe.
+
+Actor-layer events additionally carry `actor_id`, `task_id`, and
+`correlation_id`, and a `soma_run` started by an actor stamps `correlation_id`
+onto its run events too. These are not part of the mandatory 8 — they are
+present only when set — which is what lets `by_correlation/2` return an actor's
+events and its run's events together. See "Agent actor API" below.
 
 ### Event types and their fields
 
@@ -245,6 +254,138 @@ handlers. Sending it during the very brief `executing` window between steps
 is unsafe; in practice this window is sub-millisecond but the safe pattern
 is to wait for `tool.started` before sending cancel, which guarantees the run
 is in `waiting_tool`.
+
+## Agent actor API (soma_actor)
+
+`soma_actor` is the agent-entity layer (v0.4) above the session/run core: a
+long-lived `gen_statem` that takes a message, creates a task, runs it through
+`soma_run`, and returns a result. It starts the run **directly** — owning it as
+`session_pid => self()`, with no `soma_agent_session` in its path — and learns
+the outcome from the run's terminal message. v0.4 is fixed-rule only: no real
+LLM, planner, or policy gate (those are v0.5).
+
+### Starting an actor
+
+```erlang
+{ok, _} = application:ensure_all_started(soma_actor).
+{ok, Actor} = soma_actor_sup:start_actor(#{
+    actor_id     => <<"actor-1">>,
+    model_config => #{},
+    tool_policy  => #{},
+    event_store  => StorePid       %% optional; runs the actor starts share it
+}).
+```
+
+`event_store` is the pid the actor — and every run it starts — emits into; pass
+a store you can query. With no `event_store` the actor still runs but emits
+nothing. (`soma_run_sup` must be alive, so start `soma_runtime` too.)
+
+### The message envelope
+
+Work enters only through the mailbox, as an envelope map:
+
+```erlang
+#{
+    type           => <<"chat">>,      %% required
+    payload        => #{...},          %% required
+    steps          => [StepMap, ...],  %% optional; present => the actor runs them
+    task_id        => <<"task-1">>,    %% optional; minted if absent
+    correlation_id => <<"corr-1">>     %% optional; defaults to task_id
+}
+```
+
+`type` and `payload` are required — an envelope missing either, or one that is
+not a map, is rejected with `{error, Reason}`. A `steps` list is the v0.4 fixed
+rule: present → the actor validates it and starts a `soma_run`; absent → the
+task is accepted (`status` stays `accepted`) but no run starts. `StepMap` is
+exactly the step format documented above.
+
+### send/2 — fire and get a task id
+
+```erlang
+{ok, TaskId} = soma_actor:send(Actor, Envelope).   %% or {error, Reason}
+```
+
+Returns as soon as the task is accepted and its run is started; the result is
+recorded asynchronously when the run finishes. The actor never blocks on the
+run.
+
+### ask/3 — block for the result
+
+```erlang
+soma_actor:ask(Actor, Envelope, TimeoutMs).
+%% => {ok, Result} | {error, Reason} | timeout
+```
+
+Blocks the *caller* (not the actor) until the task reaches a terminal state.
+`Result` is the run's outputs map, keyed by step id (e.g.
+`#{s1 => #{value => <<"hi">>}}`). A failed run returns `{error, Reason}`; if
+`TimeoutMs` elapses first the call returns `timeout` and the actor still drives
+the task to completion.
+
+### Polling: status and result
+
+```erlang
+soma_actor:get_task_status(Actor, TaskId).
+%% known   => #{task_id => T, correlation_id => C, status => S}
+%% unknown => #{task_id => T, status => not_found}
+
+soma_actor:get_task_result(Actor, TaskId).
+%% => {ok, Result} | not_ready | {error, not_found}
+```
+
+`status` is `accepted` (a no-steps task), `running`, `completed`, `failed`, or
+`cancelled`.
+
+### cancel/2
+
+```erlang
+soma_actor:cancel(Actor, TaskId).
+%% => ok | {error, not_found} | {error, not_running}
+```
+
+`ok` means *cancel requested*: the actor sends `cancel` to the run it owns,
+which kills the active tool worker for real (and a cli tool's external OS
+process) and reports back; the task then reaches `cancelled`. Only a task whose
+run is in flight (`running`) is cancellable — anything else is `{error,
+not_running}`. Cancellation targets an in-flight tool step (the run's
+`waiting_tool` state), the same window as run-level cancel above.
+
+### Actor events
+
+Actor-layer events extend the 8-field event with `actor_id`, `task_id`, and
+`correlation_id`. A successful task emits, in order:
+
+| event_type | |
+|---|---|
+| `<<"actor.started">>` | on actor start (`actor_id`) |
+| `<<"actor.message.received">>` | `actor_id`, `task_id`, `correlation_id` |
+| `<<"actor.task.accepted">>` | same ids |
+| `<<"actor.result.created">>` | same ids (after the run completes) |
+| `<<"actor.task.completed">>` | same ids |
+
+A failed or timed-out task emits `<<"actor.task.failed">>` (payload carries
+`reason`); a cancelled one emits `<<"actor.task.cancelled">>`. The run's own
+`run.*` / `step.*` / `tool.*` events appear between accept and result, each
+stamped with the same `correlation_id`.
+
+### The whole task chain by correlation_id
+
+Because the run inherits the task's `correlation_id`, one query returns the
+actor.* and run.* events together — the event stream is the source of truth,
+and `ask`/polling are convenience reads over it:
+
+```erlang
+soma_event_store:by_correlation(StorePid, CorrelationId).
+%% actor.message.received -> actor.task.accepted -> run.started -> step.started
+%% -> tool.started -> tool.succeeded -> step.succeeded -> run.completed
+%% -> actor.result.created -> actor.task.completed
+```
+
+A runnable walkthrough of all of the above — `ask`, `send` + polling, the
+correlation chain, real cancel, and surviving a failure — is in
+`examples/soma_actor_demo.erl` (`c("examples/soma_actor_demo").` in `rebar3
+shell`).
 
 ## Failure reasons
 

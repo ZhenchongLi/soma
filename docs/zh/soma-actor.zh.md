@@ -1,5 +1,13 @@
 # `soma_actor` 设计
 
+> **构建状态（v0.4）：** 本文末尾"最小切片"那一段已经**实现并验证**——`soma_actor`
+> 作为 `gen_statem` 起来、收信封（`send`/`ask`）、建任务、按固定规则跑 `soma_run`、
+> 出结果或在失败/超时/取消时存活，`by_correlation/2` 串起整条链。测试契约里 P1–P11
+> 和 P15 已绿（见 [`../contracts/v0.4-test-contract.md`](../contracts/v0.4-test-contract.md)）。
+> 本文其余部分——LLM call、decision frame、policy gate、budget、actor 间通信、
+> P12–P14——是 v0.5 及以后的设计蓝图，**尚未实现**。可运行示例见
+> `examples/soma_actor_demo.erl`，API 见 [`../usage.md`](../usage.md)。
+
 本文是 `soma_actor` 的完整设计说明。它不替代已经实现的执行内核（session、run、tool call、manifest、CLI adapter、LFE DSL），而是说明这个执行内核在最终 agent runtime 里的位置，以及 `soma_actor` 这一层如何在它之上构建。
 
 核心结论：
