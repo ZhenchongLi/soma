@@ -48,6 +48,7 @@
 -export([unknown_task_id_not_found_both_reads_actor_alive/1]).
 -export([read_returns_while_earlier_run_in_flight/1]).
 -export([failed_run_emits_task_failed_event/1]).
+-export([failed_run_sets_task_status_failed/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -93,7 +94,8 @@ all() ->
      get_task_result_ok_outputs_after_completion,
      unknown_task_id_not_found_both_reads_actor_alive,
      read_returns_while_earlier_run_in_flight,
-     failed_run_emits_task_failed_event].
+     failed_run_emits_task_failed_event,
+     failed_run_sets_task_status_failed].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -152,7 +154,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= get_task_result_not_ready_before_completion;
        TestCase =:= get_task_result_ok_outputs_after_completion;
        TestCase =:= read_returns_while_earlier_run_in_flight;
-       TestCase =:= failed_run_emits_task_failed_event ->
+       TestCase =:= failed_run_emits_task_failed_event;
+       TestCase =:= failed_run_sets_task_status_failed ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -215,7 +218,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= get_task_result_not_ready_before_completion;
        TestCase =:= get_task_result_ok_outputs_after_completion;
        TestCase =:= read_returns_while_earlier_run_in_flight;
-       TestCase =:= failed_run_emits_task_failed_event ->
+       TestCase =:= failed_run_emits_task_failed_event;
+       TestCase =:= failed_run_sets_task_status_failed ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1315,6 +1319,35 @@ failed_run_emits_task_failed_event(_Config) ->
     TaskId = maps:get(task_id, Failed),
     CorrelationId = maps:get(correlation_id, Failed),
     boom = maps:get(reason, Failed),
+    ok.
+
+%% Criterion 2 (slice p8/p9/p15): after a run the actor owns fails, that task's
+%% status in the actor's task table reads failed. The runtime is booted so
+%% soma_run_sup and soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the
+%% actor and the run share one store. Enters through the real soma_actor:send/2
+%% call, no layer bypassed. The single fail step returns {error, boom}; soma_run
+%% fails the run and sends {run_failed, RunId, boom} to the actor, which sets the
+%% task status to failed. The test polls the actor's task table (element 6 of the
+%% data record) until the status flips, then asserts it is failed — read through
+%% sys:get_state/1 because there is no failed-status read function.
+failed_run_sets_task_status_failed(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-status-failed">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-status-failed">>,
+    Steps = [#{id => s1, tool => fail,
+               args => #{mode => error, reason => boom}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    Status = wait_for_task_status(Pid, TaskId, failed, 100),
+    completed = Status,
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
