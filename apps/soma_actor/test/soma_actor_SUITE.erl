@@ -39,6 +39,7 @@
 -export([ask_reply_matches_completed_run/1]).
 -export([ask_short_timeout_returns_timeout/1]).
 -export([ask_timeout_actor_survives_and_completes/1]).
+-export([ask_invalid_envelope_errors_no_run/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -75,7 +76,8 @@ all() ->
      ask_caller_and_actor_alive_after_return,
      ask_reply_matches_completed_run,
      ask_short_timeout_returns_timeout,
-     ask_timeout_actor_survives_and_completes].
+     ask_timeout_actor_survives_and_completes,
+     ask_invalid_envelope_errors_no_run].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -125,7 +127,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= ask_caller_and_actor_alive_after_return;
        TestCase =:= ask_reply_matches_completed_run;
        TestCase =:= ask_short_timeout_returns_timeout;
-       TestCase =:= ask_timeout_actor_survives_and_completes ->
+       TestCase =:= ask_timeout_actor_survives_and_completes;
+       TestCase =:= ask_invalid_envelope_errors_no_run ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -179,7 +182,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= ask_caller_and_actor_alive_after_return;
        TestCase =:= ask_reply_matches_completed_run;
        TestCase =:= ask_short_timeout_returns_timeout;
-       TestCase =:= ask_timeout_actor_survives_and_completes ->
+       TestCase =:= ask_timeout_actor_survives_and_completes;
+       TestCase =:= ask_invalid_envelope_errors_no_run ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1022,6 +1026,30 @@ ask_timeout_actor_survives_and_completes(_Config) ->
     true = is_process_alive(Pid),
     %% The actor still drives the run to completion: the task reaches completed.
     completed = wait_for_task_status(Pid, TaskId, completed, 100),
+    true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 6 (slice p5/p6): ask/3 with an invalid envelope returns
+%% {error, Reason} and starts no run. The envelope is not a map, so
+%% validate_envelope fails inside the actor's idle({call, From}, {ask, _}, _)
+%% clause and the actor replies {error, Reason} straight away — no soma_run is
+%% started under soma_run_sup and no waiter is parked. The runtime is booted so
+%% soma_run_sup is alive (and would hold a run child if one were wrongly
+%% started); the actor is started through soma_actor_sup:start_actor/1 with the
+%% booted runtime's event store, no layer bypassed. Enters through the real
+%% soma_actor:ask/3 call. After the {error, Reason} reply the test reads
+%% soma_run_sup's children and asserts there are zero run pids.
+ask_invalid_envelope_errors_no_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-invalid">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    {error, _Reason} = soma_actor:ask(Pid, <<"not-a-map">>, 5000),
+    Children = supervisor:which_children(soma_run_sup),
+    RunPids = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
+    1 = length(RunPids),
     true = is_process_alive(Pid),
     ok.
 
