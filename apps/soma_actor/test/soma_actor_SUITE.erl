@@ -157,5 +157,5 @@ actor_started_event_carries_actor_id(Config) ->
     Events = soma_event_store:all(Store),
     [Started] = [E || E <- Events,
                       maps:get(event_type, E, undefined) =:= <<"actor.started">>],
-    <<"wrong-actor-id">> = maps:get(actor_id, Started),
+    ActorId = maps:get(actor_id, Started),
     ok.
