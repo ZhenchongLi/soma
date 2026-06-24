@@ -1908,7 +1908,7 @@ cancel_unknown_task_returns_error(_Config) ->
              tool_policy => #{}},
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
     UnknownTaskId = <<"task-never-accepted">>,
-    {ok, _} = soma_actor:cancel(Pid, UnknownTaskId),
+    {error, _Reason} = soma_actor:cancel(Pid, UnknownTaskId),
     true = is_process_alive(Pid),
     ok.
 
