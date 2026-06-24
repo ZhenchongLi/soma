@@ -599,9 +599,11 @@ actor_run_worker_pids_all_distinct(_Config) ->
     ok = wait_for_run_completed(Store, RunId, 100),
     WorkerPid = worker_pid_from_tool_started(Store, RunId),
     true = is_pid(WorkerPid),
-    %% staged red: deliberately wrong expectation, the worker pid is not the run
-    %% pid; this assertion must fire before the criterion is corrected.
-    true = WorkerPid =:= RunPid,
+    %% The three pids are distinct: the actor did not run the run in-process, and
+    %% the tool call crossed a process boundary out of the run.
+    true = ActorPid =/= RunPid,
+    true = ActorPid =/= WorkerPid,
+    true = RunPid =/= WorkerPid,
     ok.
 
 %% Reads the tool-call worker pid from the run's tool.started event.
