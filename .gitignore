@@ -7,5 +7,9 @@ rebar3.crashdump
 .rebar3/
 _checkouts/
 
+# OS/editor noise
+.DS_Store
+._*
+
 # relay per-run state (written into the worktree by the relay pipeline)
 .dispatcher-state.json
