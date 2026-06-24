@@ -1,0 +1,8 @@
+{application, soma_lfe, [
+    {description, "Soma LFE compiler boundary: compile/2 and compile_file/2"},
+    {vsn, "0.3.0"},
+    {registered, []},
+    {applications, [kernel, stdlib]},
+    {env, []},
+    {modules, []}
+]}.
