@@ -60,6 +60,23 @@ test_unknown_step_child_form_fails() ->
 unknown_step_child_form_fails_test() ->
     test_unknown_step_child_form_fails().
 
+%% Regression — atom name longer than 255 chars returns diagnostic, not crash.
+test_oversized_atom_returns_diagnostic() ->
+    LongName = binary:copy(<<"a">>, 256),
+    Source = <<"(run (step ", LongName/binary, " echo))">>,
+    Result = soma_lfe:compile(Source, #{}),
+    ?assertMatch({error, _}, Result),
+    {error, Diags} = Result,
+    ?assert(is_list(Diags)),
+    ?assert(length(Diags) > 0),
+    [Diag | _] = Diags,
+    ?assert(is_map(Diag)),
+    ?assert(maps:is_key(message, Diag)),
+    ?assert(maps:is_key(line, Diag)).
+
+oversized_atom_returns_diagnostic_test() ->
+    test_oversized_atom_returns_diagnostic().
+
 %% Criterion 5 — parse does not start a Soma run and does not emit runtime events.
 test_parse_does_not_start_runtime() ->
     ?assertEqual(undefined, whereis(soma_sup)),
