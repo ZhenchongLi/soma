@@ -7,15 +7,18 @@
 -export([actor_is_gen_statem_with_callbacks/1]).
 -export([start_actor_returns_ok_pid/1]).
 -export([actor_alive_after_start/1]).
+-export([actor_starts_idle/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
      start_actor_returns_ok_pid,
-     actor_alive_after_start].
+     actor_alive_after_start,
+     actor_starts_idle].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
-       TestCase =:= actor_alive_after_start ->
+       TestCase =:= actor_alive_after_start;
+       TestCase =:= actor_starts_idle ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(_TestCase, Config) ->
@@ -23,7 +26,8 @@ init_per_testcase(_TestCase, Config) ->
 
 end_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
-       TestCase =:= actor_alive_after_start ->
+       TestCase =:= actor_alive_after_start;
+       TestCase =:= actor_starts_idle ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -66,4 +70,15 @@ actor_alive_after_start(_Config) ->
              tool_policy => #{}},
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
     true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 4: immediately after start the actor is in state idle.
+%% Enters through the real supervisor entry, then reads the state name via
+%% sys:get_state/1, which on a state_functions gen_statem returns {StateName, Data}.
+actor_starts_idle(_Config) ->
+    Opts = #{actor_id => <<"actor-1">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    {busy, _Data} = sys:get_state(Pid),
     ok.
