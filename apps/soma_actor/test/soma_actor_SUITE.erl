@@ -58,6 +58,7 @@
 -export([new_run_completes_after_failed_run/1]).
 -export([new_run_completes_after_timed_out_run/1]).
 -export([cancel_drives_run_to_cancelled/1]).
+-export([cancel_kills_tool_call_worker/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -113,7 +114,8 @@ all() ->
      status_running_promptly_while_run_in_flight,
      new_run_completes_after_failed_run,
      new_run_completes_after_timed_out_run,
-     cancel_drives_run_to_cancelled].
+     cancel_drives_run_to_cancelled,
+     cancel_kills_tool_call_worker].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -182,7 +184,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= status_running_promptly_while_run_in_flight;
        TestCase =:= new_run_completes_after_failed_run;
        TestCase =:= new_run_completes_after_timed_out_run;
-       TestCase =:= cancel_drives_run_to_cancelled ->
+       TestCase =:= cancel_drives_run_to_cancelled;
+       TestCase =:= cancel_kills_tool_call_worker ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -255,7 +258,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= status_running_promptly_while_run_in_flight;
        TestCase =:= new_run_completes_after_failed_run;
        TestCase =:= new_run_completes_after_timed_out_run;
-       TestCase =:= cancel_drives_run_to_cancelled ->
+       TestCase =:= cancel_drives_run_to_cancelled;
+       TestCase =:= cancel_kills_tool_call_worker ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1713,6 +1717,41 @@ cancel_drives_run_to_cancelled(_Config) ->
     Cancelled = wait_for_run_event(Store, RunId, <<"run.cancelled">>, 100),
     RunId = maps:get(run_id, Cancelled),
     cancelled = wait_for_run_state(RunPid, cancelled, 100),
+    ok.
+
+%% Criterion 2 (slice p10/p11): after soma_actor:cancel/2 drives a parked run to
+%% cancelled, the tool-call worker recorded in that run's tool.started event is
+%% actually dead — is_process_alive/1 on the worker pid returns false, proving the
+%% cancel reached across the process boundary and killed the worker, not merely
+%% flipped a flag. The runtime is booted so soma_run_sup and soma_tool_registry
+%% are alive; the actor is started through soma_actor_sup:start_actor/1 with the
+%% booted runtime's event store so the actor and the run share one store. Enters
+%% through the real soma_actor:cancel/2 call, no layer bypassed. send/2 returns
+%% while the 500ms sleep step is still running, so the run sits in waiting_tool;
+%% cancel/2 sends cancel to the run pid, which brutally kills the worker, emits
+%% run.cancelled, and moves to the cancelled terminal state. The test waits for
+%% run.cancelled, then reads the worker pid from the tool.started event and
+%% asserts is_process_alive/1 is false.
+cancel_kills_tool_call_worker(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-cancel-kills-worker">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-cancel-kills-worker">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% The 500ms sleep step holds the run in waiting_tool while send/2 returns.
+    RunId = actor_run_id(Pid),
+    ok = soma_actor:cancel(Pid, TaskId),
+    _Cancelled = wait_for_run_event(Store, RunId, <<"run.cancelled">>, 100),
+    WorkerPid = worker_pid_from_tool_started(Store, RunId),
+    true = is_process_alive(WorkerPid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
