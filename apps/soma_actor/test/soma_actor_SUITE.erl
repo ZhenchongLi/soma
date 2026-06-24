@@ -34,6 +34,7 @@
 -export([send_returns_before_run_completes/1]).
 -export([second_steps_envelope_starts_second_run/1]).
 -export([no_steps_accepts_and_starts_no_run/1]).
+-export([ask_returns_run_outputs/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -65,7 +66,8 @@ all() ->
      task_result_holds_outputs_after_run,
      send_returns_before_run_completes,
      second_steps_envelope_starts_second_run,
-     no_steps_accepts_and_starts_no_run].
+     no_steps_accepts_and_starts_no_run,
+     ask_returns_run_outputs].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -110,7 +112,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= task_result_holds_outputs_after_run;
        TestCase =:= send_returns_before_run_completes;
        TestCase =:= second_steps_envelope_starts_second_run;
-       TestCase =:= no_steps_accepts_and_starts_no_run ->
+       TestCase =:= no_steps_accepts_and_starts_no_run;
+       TestCase =:= ask_returns_run_outputs ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -159,7 +162,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= task_result_holds_outputs_after_run;
        TestCase =:= send_returns_before_run_completes;
        TestCase =:= second_steps_envelope_starts_second_run;
-       TestCase =:= no_steps_accepts_and_starts_no_run ->
+       TestCase =:= no_steps_accepts_and_starts_no_run;
+       TestCase =:= ask_returns_run_outputs ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -858,6 +862,32 @@ no_steps_accepts_and_starts_no_run(_Config) ->
     RunPids = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
     0 = length(RunPids),
     accepted = task_status(Pid, TaskId),
+    ok.
+
+%% Criterion 1 (slice p5/p6): ask/3 with a valid steps envelope blocks the caller
+%% inside the gen_statem:call until the run completes, then returns {ok, Result}
+%% where Result is the run's outputs. The runtime is booted so soma_run_sup and
+%% soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the actor
+%% and the run share one store. Enters through the real soma_actor:ask/3 call, no
+%% layer bypassed. The single echo step s1 echoes its args unchanged, so the run's
+%% Outputs map is keyed by the step id with the echoed args as the value.
+ask_returns_run_outputs(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-outputs">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-outputs">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, Result} = soma_actor:ask(Pid, Envelope, 5000),
+    Outputs = #{s1 => #{value => <<"a">>}},
+    Result = Outputs,
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
