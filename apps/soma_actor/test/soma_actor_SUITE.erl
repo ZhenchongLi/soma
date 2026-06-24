@@ -1874,9 +1874,10 @@ ask_cancelled_returns_error_cancelled(_Config) ->
               Self ! {ask_reply, Reply}
           end),
     %% The 500ms sleep step holds the run in waiting_tool while ask/3 parks its
-    %% caller. Poll the task table to running so the run is genuinely in flight
-    %% before issuing the cancel.
-    running = wait_for_task_status(Pid, TaskId, running, 100),
+    %% caller. The ask/3 runs off-process, so the task may not exist in the table
+    %% yet; poll tolerantly until it reaches running so the run is genuinely in
+    %% flight before issuing the cancel.
+    running = wait_for_task_status_lenient(Pid, TaskId, running, 250),
     ok = soma_actor:cancel(Pid, TaskId),
     %% The cancel reaches the run, which reports {run_cancelled, RunId} back; the
     %% actor replies {error, cancelled} to the parked waiter, ending the ask/3 call.
@@ -1885,9 +1886,25 @@ ask_cancelled_returns_error_cancelled(_Config) ->
                after 5000 ->
                    error(ask_reply_timeout)
                end,
-    {error, wrong_atom} = AskReply,
+    {error, cancelled} = AskReply,
     true = is_process_alive(Pid),
     ok.
+
+%% Like wait_for_task_status/4 but tolerates the task not yet existing in the
+%% table — the off-process ask/3 may not have reached the actor when polling
+%% starts, so a missing key is treated the same as a not-yet-matching status.
+wait_for_task_status_lenient(_Pid, _TaskId, Target, 0) ->
+    error({timeout, Target});
+wait_for_task_status_lenient(Pid, TaskId, Target, N) ->
+    {idle, Data} = sys:get_state(Pid),
+    Tasks = element(6, Data),
+    case maps:get(TaskId, Tasks, undefined) of
+        #{status := Target} ->
+            Target;
+        _Other ->
+            timer:sleep(20),
+            wait_for_task_status_lenient(Pid, TaskId, Target, N - 1)
+    end.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
 %% (element 7 of the data record, keyed by run_id => task_id).
