@@ -64,6 +64,7 @@
 -export([ask_cancelled_returns_error_cancelled/1]).
 -export([cancel_unknown_task_returns_error/1]).
 -export([cancel_completed_task_returns_error/1]).
+-export([new_run_completes_after_cancelled_run/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -125,7 +126,8 @@ all() ->
      cancel_status_cancelled_and_actor_alive,
      ask_cancelled_returns_error_cancelled,
      cancel_unknown_task_returns_error,
-     cancel_completed_task_returns_error].
+     cancel_completed_task_returns_error,
+     new_run_completes_after_cancelled_run].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -200,7 +202,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= cancel_emits_actor_task_cancelled_event;
        TestCase =:= cancel_status_cancelled_and_actor_alive;
        TestCase =:= ask_cancelled_returns_error_cancelled;
-       TestCase =:= cancel_completed_task_returns_error ->
+       TestCase =:= cancel_completed_task_returns_error;
+       TestCase =:= new_run_completes_after_cancelled_run ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -279,7 +282,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= cancel_emits_actor_task_cancelled_event;
        TestCase =:= cancel_status_cancelled_and_actor_alive;
        TestCase =:= ask_cancelled_returns_error_cancelled;
-       TestCase =:= cancel_completed_task_returns_error ->
+       TestCase =:= cancel_completed_task_returns_error;
+       TestCase =:= new_run_completes_after_cancelled_run ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1944,6 +1948,49 @@ cancel_completed_task_returns_error(_Config) ->
     completed = wait_for_task_status(Pid, TaskId, completed, 100),
     {error, _Reason} = soma_actor:cancel(Pid, TaskId),
     true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 8 (slice p10/p11): after a task the actor owns is cancelled, a second
+%% steps envelope is accepted on the same actor pid and runs to completed — proving
+%% a cancelled run leaves the actor responsive, not wedged. The runtime is booted
+%% so soma_run_sup and soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the actor
+%% and both runs share one store. Enters through the real soma_actor:send/2 then
+%% soma_actor:cancel/2 then soma_actor:send/2 calls, no layer bypassed. The first
+%% envelope's single 500ms sleep step parks the run in waiting_tool; cancel/2 sends
+%% cancel to the run pid, which kills the worker, emits run.cancelled, and reports
+%% {run_cancelled, RunId} back to the actor, flipping that task to cancelled. The
+%% test then sends a second envelope with a single echo step; its run id is read
+%% from the actor's runs map by task id (run_id_for_task/2) and its trail polled to
+%% run.completed, then the second task is asserted completed.
+new_run_completes_after_cancelled_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-new-run-after-cancel">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId1 = <<"task-cancel-first">>,
+    SleepSteps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope1 = #{type => <<"chat">>,
+                  payload => #{text => <<"first">>},
+                  task_id => TaskId1,
+                  steps => SleepSteps},
+    {ok, TaskId1} = soma_actor:send(Pid, Envelope1),
+    %% The 500ms sleep step holds the run in waiting_tool while send/2 returns.
+    ok = soma_actor:cancel(Pid, TaskId1),
+    cancelled = wait_for_task_status(Pid, TaskId1, cancelled, 100),
+    TaskId2 = <<"task-complete-second">>,
+    EchoSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope2 = #{type => <<"chat">>,
+                  payload => #{text => <<"second">>},
+                  task_id => TaskId2,
+                  steps => EchoSteps},
+    {ok, TaskId2} = soma_actor:send(Pid, Envelope2),
+    RunId2 = run_id_for_task(Pid, TaskId2),
+    ok = wait_for_run_completed(Store, RunId2, 100),
+    Status = wait_for_task_status(Pid, TaskId2, failed, 100),
+    completed = Status,
     ok.
 
 %% Like wait_for_task_status/4 but tolerates the task not yet existing in the
