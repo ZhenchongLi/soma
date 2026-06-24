@@ -27,6 +27,7 @@
 -export([run_started_under_run_sup_distinct_pid/1]).
 -export([run_completes_with_run_event_trail/1]).
 -export([actor_run_worker_pids_all_distinct/1]).
+-export([result_created_event_carries_ids/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -51,7 +52,8 @@ all() ->
      second_send_accepts_too,
      run_started_under_run_sup_distinct_pid,
      run_completes_with_run_event_trail,
-     actor_run_worker_pids_all_distinct].
+     actor_run_worker_pids_all_distinct,
+     result_created_event_carries_ids].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -89,7 +91,8 @@ init_per_testcase(task_accepted_event_matches_received_ids, Config) ->
 init_per_testcase(TestCase, Config)
   when TestCase =:= run_started_under_run_sup_distinct_pid;
        TestCase =:= run_completes_with_run_event_trail;
-       TestCase =:= actor_run_worker_pids_all_distinct ->
+       TestCase =:= actor_run_worker_pids_all_distinct;
+       TestCase =:= result_created_event_carries_ids ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -131,7 +134,8 @@ end_per_testcase(TestCase, Config)
 end_per_testcase(TestCase, Config)
   when TestCase =:= run_started_under_run_sup_distinct_pid;
        TestCase =:= run_completes_with_run_event_trail;
-       TestCase =:= actor_run_worker_pids_all_distinct ->
+       TestCase =:= actor_run_worker_pids_all_distinct;
+       TestCase =:= result_created_event_carries_ids ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -605,6 +609,52 @@ actor_run_worker_pids_all_distinct(_Config) ->
     true = ActorPid =/= WorkerPid,
     true = RunPid =/= WorkerPid,
     ok.
+
+%% Criterion 4 (slice 8): on run completion the actor emits an
+%% actor.result.created event carrying the task's actor_id, task_id, and
+%% correlation_id. The runtime is booted so soma_run_sup and soma_tool_registry
+%% are alive; the actor is started through soma_actor_sup:start_actor/1 with the
+%% booted runtime's event store so the actor and the run share one store. Enters
+%% through the real soma_actor:send/2 call, no layer bypassed. After the run
+%% completes the terminal {run_completed, ...} message lands in the actor's
+%% mailbox; the test polls the store until the actor.result.created event
+%% appears, then asserts it carries the three ids from the recorded task.
+result_created_event_carries_ids(_Config) ->
+    Store = event_store_pid(),
+    ActorId = <<"actor-result-created">>,
+    Opts = #{actor_id => ActorId,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-result-created">>,
+    CorrelationId = <<"corr-result-created">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    Created = wait_for_actor_event(Store, <<"actor.result.created">>, 100),
+    ActorId = maps:get(actor_id, Created),
+    TaskId = maps:get(task_id, Created),
+    CorrelationId = maps:get(correlation_id, Created),
+    ok.
+
+%% Polls the store until one event of the given type appears, returning it.
+wait_for_actor_event(_Store, Type, 0) ->
+    error({timeout, Type});
+wait_for_actor_event(Store, Type, N) ->
+    Events = soma_event_store:all(Store),
+    case [E || E <- Events,
+               maps:get(event_type, E, undefined) =:= Type] of
+        [Event | _] ->
+            Event;
+        [] ->
+            timer:sleep(20),
+            wait_for_actor_event(Store, Type, N - 1)
+    end.
 
 %% Reads the tool-call worker pid from the run's tool.started event.
 worker_pid_from_tool_started(Store, RunId) ->
