@@ -1579,7 +1579,7 @@ status_running_promptly_while_run_in_flight(_Config) ->
     %% without blocking on the child run, so the call returns promptly (the proof
     %% of P15) and reports the in-flight task as running.
     Status = soma_actor:get_task_status(Pid, TaskId),
-    completed = maps:get(status, Status),
+    running = maps:get(status, Status),
     TaskId = maps:get(task_id, Status),
     ok.
 
