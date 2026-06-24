@@ -24,6 +24,7 @@
 -export([accepted_task_in_table_with_status/1]).
 -export([actor_idle_and_alive_after_send/1]).
 -export([second_send_accepts_too/1]).
+-export([run_started_under_run_sup_distinct_pid/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -45,7 +46,8 @@ all() ->
      task_accepted_event_matches_received_ids,
      accepted_task_in_table_with_status,
      actor_idle_and_alive_after_send,
-     second_send_accepts_too].
+     second_send_accepts_too,
+     run_started_under_run_sup_distinct_pid].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -80,6 +82,10 @@ init_per_testcase(task_accepted_event_matches_received_ids, Config) ->
     {ok, Sup} = soma_actor_sup:start_link(),
     {ok, Store} = soma_event_store:start_link(),
     [{sup, Sup}, {store, Store} | Config];
+init_per_testcase(run_started_under_run_sup_distinct_pid, Config) ->
+    {ok, Started} = application:ensure_all_started(soma_runtime),
+    {ok, Sup} = soma_actor_sup:start_link(),
+    [{sup, Sup}, {started_apps, Started} | Config];
 init_per_testcase(_TestCase, Config) ->
     Config.
 
@@ -114,6 +120,15 @@ end_per_testcase(TestCase, Config)
             unlink(Sup),
             exit(Sup, shutdown)
     end,
+    ok;
+end_per_testcase(run_started_under_run_sup_distinct_pid, Config) ->
+    case ?config(sup, Config) of
+        undefined -> ok;
+        Sup ->
+            unlink(Sup),
+            exit(Sup, shutdown)
+    end,
+    application:stop(soma_runtime),
     ok;
 end_per_testcase(_TestCase, _Config) ->
     ok.
@@ -482,3 +497,37 @@ second_send_accepts_too(_Config) ->
                   task_id => TaskId2},
     {ok, TaskId2} = soma_actor:send(Pid, Envelope2),
     ok.
+
+%% Criterion 1 (slice 7): send/2 with an envelope carrying a valid steps list
+%% returns {ok, TaskId} and starts a soma_run under soma_run_sup whose pid
+%% differs from the actor pid. The runtime is booted so soma_run_sup and
+%% soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the
+%% actor and the run share one store. Enters through the real soma_actor:send/2
+%% call, no layer bypassed; the run child is read back from soma_run_sup.
+run_started_under_run_sup_distinct_pid(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-run-start">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => <<"task-run-start">>,
+                 steps => Steps},
+    {ok, <<"task-run-start">>} = soma_actor:send(Pid, Envelope),
+    Children = supervisor:which_children(soma_run_sup),
+    RunPids = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
+    1 = length(RunPids),
+    [RunPid] = RunPids,
+    true = is_process_alive(RunPid),
+    true = RunPid =/= Pid,
+    ok.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
