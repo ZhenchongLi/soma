@@ -9,6 +9,7 @@
 -export([start_link/1]).
 -export([send/2]).
 -export([ask/3]).
+-export([get_task_status/2]).
 -export([callback_mode/0, init/1]).
 -export([idle/3]).
 
@@ -39,6 +40,12 @@ ask(ActorRef, Envelope, TimeoutMs) ->
         exit:{timeout, _} ->
             timeout
     end.
+
+%% @doc Reads a task's current status from the actor's task table. Returns a map
+%% carrying `task_id', `correlation_id', and `status'. The read runs inside the
+%% actor via `idle/3', so the actor is never bypassed.
+get_task_status(ActorRef, TaskId) ->
+    gen_statem:call(ActorRef, {get_task_status, TaskId}).
 
 callback_mode() ->
     state_functions.
@@ -88,6 +95,12 @@ idle({call, From}, {ask, Envelope}, Data) ->
         {error, Reason} ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
     end;
+idle({call, From}, {get_task_status, TaskId}, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    Status = #{task_id => TaskId,
+               correlation_id => maps:get(correlation_id, Task),
+               status => maps:get(status, Task)},
+    {keep_state, Data, [{reply, From, Status}]};
 idle(info, {run_completed, RunId, Outputs}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
@@ -139,7 +152,9 @@ maybe_start_run(Envelope, TaskId, CorrelationId, Data) ->
                         correlation_id => CorrelationId},
             {ok, _RunPid} = soma_run_sup:start_run(RunOpts),
             Runs = maps:put(RunId, TaskId, Data#data.runs),
-            Data#data{runs = Runs};
+            Task = maps:get(TaskId, Data#data.tasks),
+            Tasks = maps:put(TaskId, Task#{status => running}, Data#data.tasks),
+            Data#data{runs = Runs, tasks = Tasks};
         _ ->
             Data
     end.
