@@ -1049,7 +1049,7 @@ ask_invalid_envelope_errors_no_run(_Config) ->
     {error, _Reason} = soma_actor:ask(Pid, <<"not-a-map">>, 5000),
     Children = supervisor:which_children(soma_run_sup),
     RunPids = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
-    1 = length(RunPids),
+    0 = length(RunPids),
     true = is_process_alive(Pid),
     ok.
 
