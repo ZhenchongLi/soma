@@ -10,6 +10,7 @@
 -export([actor_starts_idle/1]).
 -export([actor_state_holds_config/1]).
 -export([start_emits_one_actor_started_event/1]).
+-export([actor_started_event_carries_actor_id/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -17,7 +18,8 @@ all() ->
      actor_alive_after_start,
      actor_starts_idle,
      actor_state_holds_config,
-     start_emits_one_actor_started_event].
+     start_emits_one_actor_started_event,
+     actor_started_event_carries_actor_id].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -26,6 +28,10 @@ init_per_testcase(TestCase, Config)
        TestCase =:= actor_state_holds_config ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
+init_per_testcase(actor_started_event_carries_actor_id, Config) ->
+    {ok, Sup} = soma_actor_sup:start_link(),
+    {ok, Store} = soma_event_store:start_link(),
+    [{sup, Sup}, {store, Store} | Config];
 init_per_testcase(start_emits_one_actor_started_event, Config) ->
     {ok, Sup} = soma_actor_sup:start_link(),
     {ok, Store} = soma_event_store:start_link(),
@@ -38,7 +44,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= actor_alive_after_start;
        TestCase =:= actor_starts_idle;
        TestCase =:= actor_state_holds_config;
-       TestCase =:= start_emits_one_actor_started_event ->
+       TestCase =:= start_emits_one_actor_started_event;
+       TestCase =:= actor_started_event_carries_actor_id ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -134,4 +141,21 @@ start_emits_one_actor_started_event(Config) ->
     Started = [E || E <- Events,
                     maps:get(event_type, E, undefined) =:= <<"actor.started">>],
     1 = length(Started),
+    ok.
+
+%% Criterion 7: the actor.started event carries the actor's actor_id. Starting an
+%% actor with a live event_store emits one actor.started event; the test reads it
+%% from the store and asserts its actor_id equals the actor_id passed in Opts.
+actor_started_event_carries_actor_id(Config) ->
+    Store = ?config(store, Config),
+    ActorId = <<"actor-evt">>,
+    Opts = #{actor_id => ActorId,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, _Pid} = soma_actor_sup:start_actor(Opts),
+    Events = soma_event_store:all(Store),
+    [Started] = [E || E <- Events,
+                      maps:get(event_type, E, undefined) =:= <<"actor.started">>],
+    <<"wrong-actor-id">> = maps:get(actor_id, Started),
     ok.
