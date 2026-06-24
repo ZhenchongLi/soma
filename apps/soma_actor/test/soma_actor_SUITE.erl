@@ -22,6 +22,7 @@
 -export([message_received_event_carries_ids/1]).
 -export([task_accepted_event_matches_received_ids/1]).
 -export([accepted_task_in_table_with_status/1]).
+-export([actor_idle_and_alive_after_send/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -41,7 +42,8 @@ all() ->
      missing_field_envelope_errors_actor_survives,
      message_received_event_carries_ids,
      task_accepted_event_matches_received_ids,
-     accepted_task_in_table_with_status].
+     accepted_task_in_table_with_status,
+     actor_idle_and_alive_after_send].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -55,7 +57,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= correlation_id_defaults_to_task_id;
        TestCase =:= non_map_envelope_errors_actor_survives;
        TestCase =:= missing_field_envelope_errors_actor_survives;
-       TestCase =:= accepted_task_in_table_with_status ->
+       TestCase =:= accepted_task_in_table_with_status;
+       TestCase =:= actor_idle_and_alive_after_send ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -93,7 +96,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= missing_field_envelope_errors_actor_survives;
        TestCase =:= message_received_event_carries_ids;
        TestCase =:= task_accepted_event_matches_received_ids;
-       TestCase =:= accepted_task_in_table_with_status ->
+       TestCase =:= accepted_task_in_table_with_status;
+       TestCase =:= actor_idle_and_alive_after_send ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -431,4 +435,24 @@ accepted_task_in_table_with_status(_Config) ->
     true = maps:is_key(TaskId, Tasks),
     Task = maps:get(TaskId, Tasks),
     accepted = maps:get(status, Task),
+    ok.
+
+%% Criterion 10: after a valid send/2, the actor is still alive and reports
+%% state idle. Enters through the real soma_actor:send/2 call; the actor is
+%% started through soma_actor_sup:start_actor/1, no layer bypassed. After the
+%% {ok, TaskId} reply the test checks is_process_alive/1 on the actor pid and
+%% reads the state name via sys:get_state/1, which on a state_functions
+%% gen_statem returns {StateName, Data}.
+actor_idle_and_alive_after_send(_Config) ->
+    Opts = #{actor_id => <<"actor-idle-after-send">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-idle-after-send">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    true = is_process_alive(Pid),
+    {busy, _Data} = sys:get_state(Pid),
     ok.
