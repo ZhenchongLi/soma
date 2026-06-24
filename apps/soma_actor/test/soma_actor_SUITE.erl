@@ -454,5 +454,5 @@ actor_idle_and_alive_after_send(_Config) ->
                  task_id => TaskId},
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     true = is_process_alive(Pid),
-    {busy, _Data} = sys:get_state(Pid),
+    {idle, _Data} = sys:get_state(Pid),
     ok.
