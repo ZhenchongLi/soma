@@ -195,6 +195,20 @@ idle(info, {run_timeout, RunId}, Data) ->
                    reason => timeout}),
             reply_waiter(TaskId, {error, timeout}, Data1)
     end;
+idle(info, {run_cancelled, RunId}, Data) ->
+    case maps:get(RunId, Data#data.runs, undefined) of
+        undefined ->
+            {keep_state, Data};
+        TaskId ->
+            Task = maps:get(TaskId, Data#data.tasks),
+            CorrelationId = maps:get(correlation_id, Task),
+            Task1 = Task#{status => cancelled},
+            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+            Data1 = Data#data{tasks = Tasks},
+            emit(Data1, <<"actor.task.cancelled">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId}),
+            reply_waiter(TaskId, {error, cancelled}, Data1)
+    end;
 idle(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
