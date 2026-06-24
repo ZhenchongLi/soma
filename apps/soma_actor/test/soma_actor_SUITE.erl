@@ -18,6 +18,7 @@
 -export([correlation_id_from_envelope_when_present/1]).
 -export([correlation_id_defaults_to_task_id/1]).
 -export([non_map_envelope_errors_actor_survives/1]).
+-export([missing_field_envelope_errors_actor_survives/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -33,7 +34,8 @@ all() ->
      send_mints_task_id_when_absent,
      correlation_id_from_envelope_when_present,
      correlation_id_defaults_to_task_id,
-     non_map_envelope_errors_actor_survives].
+     non_map_envelope_errors_actor_survives,
+     missing_field_envelope_errors_actor_survives].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -45,7 +47,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= send_mints_task_id_when_absent;
        TestCase =:= correlation_id_from_envelope_when_present;
        TestCase =:= correlation_id_defaults_to_task_id;
-       TestCase =:= non_map_envelope_errors_actor_survives ->
+       TestCase =:= non_map_envelope_errors_actor_survives;
+       TestCase =:= missing_field_envelope_errors_actor_survives ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -71,7 +74,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= send_mints_task_id_when_absent;
        TestCase =:= correlation_id_from_envelope_when_present;
        TestCase =:= correlation_id_defaults_to_task_id;
-       TestCase =:= non_map_envelope_errors_actor_survives ->
+       TestCase =:= non_map_envelope_errors_actor_survives;
+       TestCase =:= missing_field_envelope_errors_actor_survives ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -299,5 +303,23 @@ non_map_envelope_errors_actor_survives(_Config) ->
              tool_policy => #{}},
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
     {error, _Reason} = soma_actor:send(Pid, <<"not-a-map">>),
+    true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 6: an envelope missing a required field makes send/2 return
+%% {error, Reason}, and the actor pid is still alive afterward. Enters through
+%% the real soma_actor:send/2 call; the actor is started through
+%% soma_actor_sup:start_actor/1, no layer bypassed. The envelope omits payload
+%% (a required field) to trigger the rejection; the actor must reject it without
+%% crashing — proved by the {error, _} reply plus is_process_alive/1 on the same
+%% pid.
+missing_field_envelope_errors_actor_survives(_Config) ->
+    Opts = #{actor_id => <<"actor-missing-field">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    Envelope = #{type => <<"chat">>,
+                 task_id => <<"task-missing-field">>},
+    {ok, _} = soma_actor:send(Pid, Envelope),
     true = is_process_alive(Pid),
     ok.
