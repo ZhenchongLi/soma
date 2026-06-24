@@ -224,7 +224,6 @@ send_mints_task_id_when_absent(_Config) ->
     Envelope = #{type => <<"chat">>,
                  payload => #{text => <<"hello">>}},
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
-    %% staged red: a minted id is a non-empty binary, never the empty binary.
     true = is_binary(TaskId),
-    true = byte_size(TaskId) =:= 0,
+    true = byte_size(TaskId) > 0,
     ok.
