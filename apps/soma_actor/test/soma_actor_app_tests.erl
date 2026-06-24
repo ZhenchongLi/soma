@@ -61,6 +61,27 @@ test_sup_zero_children_after_boot_test() ->
         application:unload(soma_actor)
     end.
 
+%% Criterion 7: `soma_runtime.app.src' does not list `soma_actor' in its
+%% `applications'. Reads and parses the runtime app resource and asserts
+%% `soma_actor' is not a member of the declared `applications' list. This is a
+%% static source-file check, not runtime behavior.
+test_runtime_app_src_excludes_soma_actor_test() ->
+    RuntimeAppSrc = runtime_app_src_path(),
+    ?assert(filelib:is_regular(RuntimeAppSrc)),
+    {ok, [{application, soma_runtime, Keys}]} = file:consult(RuntimeAppSrc),
+    Applications = proplists:get_value(applications, Keys),
+    ?assert(lists:member(soma_actor, Applications)).
+
+%% Locate `apps/soma_runtime/src/soma_runtime.app.src' relative to this test
+%% module's compiled `.beam'. rebar3 places this app's beams under
+%% `_build/<profile>/lib/soma_actor/test/'; sibling apps live alongside under
+%% `_build/<profile>/lib/'.
+runtime_app_src_path() ->
+    BeamDir = filename:dirname(code:which(?MODULE)),
+    AppRoot = filename:dirname(BeamDir),
+    LibRoot = filename:dirname(AppRoot),
+    filename:join([LibRoot, "soma_runtime", "src", "soma_runtime.app.src"]).
+
 %% Locate `apps/soma_actor/src/soma_actor.app.src' relative to this test
 %% module's compiled `.beam', which rebar3 places under
 %% `_build/<profile>/lib/soma_actor/test/'.
