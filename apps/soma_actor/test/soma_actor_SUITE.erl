@@ -281,6 +281,5 @@ correlation_id_defaults_to_task_id(_Config) ->
     {idle, Data} = sys:get_state(Pid),
     Tasks = element(6, Data),
     Task = maps:get(TaskId, Tasks),
-    %% staged-red: deliberately wrong expected value to make the assertion fire.
-    <<"definitely-not-the-task-id">> = maps:get(correlation_id, Task),
+    TaskId = maps:get(correlation_id, Task),
     ok.
