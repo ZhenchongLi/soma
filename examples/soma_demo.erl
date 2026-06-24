@@ -1,8 +1,8 @@
-%% Interactive demo for soma v0.2.
+%% Interactive demo for soma.
 %%
 %% Usage from `rebar3 shell':
 %%
-%%   c("demo/soma_demo").
+%%   c("examples/soma_demo").
 %%   soma_demo:demo1().   % /bin/echo registered as a cli tool, show events
 %%   soma_demo:demo2().   % three-step pipeline: fixed string -> upper -> echo
 %%   soma_demo:demo3().   % cancel a live run mid-flight

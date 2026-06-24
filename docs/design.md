@@ -1,26 +1,23 @@
 # Soma — design north star
 
-> Soma's design north star — the thesis, the runtime shape, and the
-> non-negotiable constraints — covering v0.1 (execution core), v0.2 (tool
-> manifests + CLI/port adapter), and v0.3 (LFE DSL compile-only layer). It keeps
-> the aspirational voice of the original spec; for **what is actually built and
-> how to run it**, see the [README](../README.md). Where the implementation
-> refined the design (e.g. step iteration lives inside `soma_run` rather than a
-> separate `soma_step` process, tools register as `file_read` / `file_write`, and
-> a `cli` tool's port is owned by `soma_tool_call` rather than a separate
-> `soma_port_tool` process), the README and the code are authoritative.
+> The thesis, the runtime shape, and the design invariants. For **what is
+> actually built and how to run it**, see the [README](../README.md). Where
+> the implementation refined the design (e.g. step iteration lives inside
+> `soma_run` rather than a separate `soma_step` process, and a `cli` tool's
+> port is owned by `soma_tool_call`), the README and the code are authoritative.
 
 Soma is an Erlang/OTP-native agent runtime.
 
-The first version is a small runtime that proves one idea:
+The core idea:
 
 ```text
-An agent system should be built as supervised Erlang processes, not as one
-large loop that happens to call tools.
+An agent run is a supervised OTP process tree, not a function that loops over
+tool calls.
 ```
 
-The foundation is Erlang agent execution: sessions, runs, tool calls, events,
-timeouts, cancellation, and failure isolation.
+The execution core — sessions, runs, tool calls — is built and proven
+(v0.1–v0.3). The next layer is `soma_actor`: a long-lived, LLM-capable agent
+entity that uses that execution core to carry out intentions.
 
 ## Thesis
 
@@ -50,69 +47,60 @@ Erlang that are hard to reproduce cleanly elsewhere:
 
 ## Core Principle
 
-Soma is built on the **actor model**: every session, run, and tool call is an
-actor — an isolated process with a private mailbox, communicating only by
-message-passing. Erlang/OTP is the canonical actor runtime; its supervision trees
-and monitors add the fault-tolerance layer the thesis depends on.
+Soma is built on the **actor model** at every layer. A session, a run, a tool
+call, and an agent entity are all *actors* — isolated processes with private
+mailboxes that communicate only by message-passing. OTP supervision trees and
+monitors add the fault-tolerance layer the thesis depends on.
 
 Do not implement an agent run as a normal function.
+Do not implement an agent entity as a function loop that calls an LLM.
+Implement both as OTP process trees.
 
-Implement it as an OTP process tree:
+Full architecture:
 
 ```text
-soma_agent_session             long-lived gen_server
-  |
-  v
-soma_run                       per-run gen_statem
-  |
-  +-- soma_step                per-step worker process
-  |
-  +-- soma_tool_call           per-tool-call worker process
-  |
-  +-- soma_port_tool           optional external OS process / port
+soma_actor_sup
+  └── soma_actor              long-lived gen_statem; agent entity
+
+soma_llm_call_sup
+  └── soma_llm_call           disposable worker; one model call
+
+soma_run_sup
+  └── soma_run                gen_statem; one execution attempt
+        └── soma_tool_call    disposable worker; one tool invocation
 ```
 
-The plan or step list tells the runtime what to start. Erlang/OTP provides the
-execution semantics: message flow, timeout, cancellation, monitoring, failure
-isolation, and restart policy.
+The execution core (v0.1–v0.3) proves the bottom two layers. `soma_actor` is
+the next layer above them.
 
 ## Scope
 
-Soma is an Erlang agent runtime — the execution core plus a tool layer, nothing
-above it.
+**Built (v0.1–v0.3):** the execution core.
 
-In scope (built across v0.1, v0.2, and v0.3):
-
-- session process;
-- run process;
+- session process (`soma_agent_session`);
+- run process (`soma_run`, `gen_statem`);
 - sequential steps;
 - supervised tool calls, each behind a process boundary;
 - timeout and cancellation, including teardown of a cli tool's external OS process;
-- a tool registry over normalized manifests (descriptors);
+- a tool registry over normalized manifests;
 - in-BEAM tools and a one-shot CLI/port adapter;
 - normalized cli failures (bounded, named errors);
 - event emission and in-memory event store;
-- a compile-only LFE DSL layer (`soma_lfe`) that translates DSL source into the runtime step-list contract — no runtime dependency in the other direction;
+- a compile-only LFE DSL layer (`soma_lfe`);
 - end-to-end tests around process behavior;
-- a self-contained release (macOS arm64 built; Linux `x86_64` and `arm64` remaining).
+- a self-contained release.
 
-Out of scope (later roadmap layers):
+**Next (v0.4):** `soma_actor` — the agent entity layer.
 
-- an MCP client adapter;
-- an LLM planner;
-- DAG parallelism;
-- distributed Erlang;
-- persistent run resume.
-
-The release should be useful because it is reliable, not because it has many
-integrations.
+**Later:** MCP, LLM planner, DAG parallelism, distributed Erlang, persistent
+resume. See [roadmap.md](roadmap.md).
 
 ## Done Means
 
 A layer is done when the runtime can execute a sequential run and prove its
 failure semantics under test — process survival, not just return values.
 
-Required demo:
+Required demo for the execution core:
 
 ```text
 file_read -> echo -> file_write
@@ -123,7 +111,8 @@ Required guarantees (proven for both in-BEAM and cli tools):
 - a tool crash does not kill the session;
 - a hanging tool is stopped by timeout — for a cli tool the external OS process is killed too;
 - cancelling a run stops the active tool, and its external process;
-- a cli tool's operational failures (missing/unrunnable executable, nonzero exit, oversized output) become bounded `{error, _}` data, not a session crash;
+- a cli tool's operational failures (missing/unrunnable executable, nonzero exit,
+  oversized output) become bounded `{error, _}` data, not a session crash;
 - the event log explains the run from start to terminal state;
 - a session can start another run after failure, timeout, or cancellation.
 
@@ -137,195 +126,156 @@ Linux arm64   (remaining)
 
 ## Runtime Shape
 
-Suggested supervision tree:
-
-```text
-soma_sup
-  |
-  +-- soma_event_store
-  |
-  +-- soma_tool_registry
-  |
-  +-- soma_session_sup
-  |     |
-  |     +-- soma_agent_session
-  |
-  +-- soma_run_sup
-        |
-        +-- soma_run
-              |
-              +-- soma_step
-              |
-              +-- soma_tool_call
-```
-
-As built — `soma_step` is folded into `soma_run`'s state cursor, and a `cli`
-tool's port is owned by `soma_tool_call`:
+Supervision tree, as built:
 
 ![Soma supervision tree, as built](diagrams/supervision-tree.svg)
 
-The session process is long lived. It owns conversation/session metadata and
-starts runs.
+The session process is long-lived. It owns session metadata and starts runs.
 
-The run process is short lived. It owns one execution attempt and should be a
-`gen_statem`.
+The run process is short-lived. It owns one execution attempt as a `gen_statem`.
+Its states are `executing` / `waiting_tool` (the step cursor) and the four
+explicit terminal states: `completed | failed | timeout | cancelled`.
 
-The tool call process is disposable. It executes one tool invocation and dies
-after returning a result or error.
+The tool call process is disposable. It executes one tool invocation and exits
+after returning a result or error. For a `cli` tool it also holds the external
+OS process pid and tears it down on exit.
+
+`soma_actor` sits above this tree as its own supervised entity. The execution
+core stays unchanged; `soma_actor` uses `soma_run` as its execution path.
 
 ## Agent Session
 
-`soma_agent_session` should be a `gen_server`.
+`soma_agent_session` is a `gen_server`. It owns `session_id`, accepts run
+requests, starts `soma_run` under `soma_run_sup`, tracks active runs, and
+survives any run's failure. It does not execute tool logic.
 
-Responsibilities:
-
-- own `session_id`;
-- accept a run request;
-- start `soma_run` under `soma_run_sup`;
-- track active runs;
-- receive run completion messages;
-- expose session status;
-- survive failed runs.
-
-The session process must not execute tool logic directly.
-
-Example messages:
-
-```erlang
-{start_run, RunRequest}
-{cancel_run, RunId}
-{run_completed, RunId, Result}
-{run_failed, RunId, Reason}
-get_status
-```
+`soma_actor` adds the agent entity concept above this: `soma_actor` owns its
+own identity, mailbox, and state, and starts runs directly.
 
 ## Agent Run
 
-`soma_run` should be a `gen_statem`.
+`soma_run` is a `gen_statem`. It owns one execution attempt.
 
-Minimum run states:
+States:
 
 ```text
 accepted
-  -> executing
-  -> waiting_tool
-  -> completed
-
-accepted
-  -> executing
-  -> failed
-
-accepted
-  -> executing
-  -> cancelled
-
-accepted
-  -> executing
-  -> timeout
+  -> executing / waiting_tool   (step cursor loop)
+  -> completed | failed | cancelled | timeout
 ```
 
-![soma_run state machine — the executing / waiting_tool step loop and the four explicit terminal states](diagrams/run-states.svg)
+![soma_run state machine](diagrams/run-states.svg)
 
-The run process owns:
+Owned by the run:
 
 - step cursor;
 - step results;
 - active tool call pid;
+- active cli OS pid (for teardown on timeout/cancel);
 - run timeout timer;
 - cancellation handling;
 - event emission.
 
-The run process starts each tool call as a child process or supervised worker.
-It should monitor the worker. A tool crash is data for the run, not a crash of
-the session.
+The run monitors each tool call worker. A tool crash arrives as a monitor
+`'DOWN'` — it fails the step, not the session.
 
-## Planning Layer (v0.3)
+## Agent Entity: soma_actor
 
-The runtime must not depend on where steps came from. Any planning input —
-hand-authored, LLM output, workflow UI — should compile down to the small step
-format `soma_agent_session:start_run/2` already accepts. The runtime executes
-the step list; it does not care about its origin.
+`soma_actor` is the agent entity layer. It is a long-lived OTP process with LLM
+capability that uses `soma_run` to execute intentions.
 
-v0.3 adds the first planning input: a compile-only LFE DSL layer.
+Non-negotiable invariants:
 
-### soma_lfe
+- Work enters `soma_actor` as a **message** — an envelope carrying `task_id`
+  and `correlation_id`. External APIs are envelope wrappers; they do not bypass
+  the actor mailbox.
+- **`soma_actor` owns execution.** LLM calls and rules produce *proposals*;
+  the actor validates them through a policy gate before acting. LLM output is
+  never executed directly.
+- Every significant child operation (LLM call, run, actor message) is a
+  **supervised worker**. Results come back as messages; `soma_actor` never
+  blocks on a child.
+- `soma_actor` must survive any child failure: a crashed LLM call, a failed
+  run, a cancelled task — none of these crash the actor.
+- Results are available three ways: `ask/reply` for short tasks; `task_id` +
+  event stream for long tasks; polling for simple integrations.
+- The **event stream is the source of truth**. Reply and polling are
+  convenience interfaces over it.
 
-`soma_lfe` is a separate OTP application above `soma_runtime`. The dependency
-direction is one-way: `soma_lfe` may depend on data contracts shared with the
-runtime, but `soma_runtime` must not depend on `soma_lfe`. Adding a planner must
-not change execution semantics.
+Actor loop:
 
-Public API:
+```text
+incoming message / event
+  -> update actor / task state
+  -> load memory / context
+  -> build decision frame
+  -> decide next action (rules or LLM)
+  -> validate proposal through policy gate
+  -> execute action
+  -> receive result as message
+  -> next loop or terminal result
+```
+
+`soma_actor` is a state machine that treats LLM output as input to a policy
+gate, not a while loop that executes LLM output directly.
+
+`correlation_id` must propagate across all child operations (LLM call, run,
+actor-to-actor message) so the full task chain is traceable in the event log.
+
+The minimal `soma_actor` slice — fixed-rule decisions, no real LLM — is enough
+to prove the actor loop and its integration with `soma_run`. The LLM planner
+and full policy gate layer on top once the skeleton is green under test.
+
+The full specification — actor loop, decision frame, policy gate, LLM call,
+result model, event contract, memory model, budget and backpressure,
+actor-to-actor messaging, test contract — is in
+[zh/soma-actor-final-design.zh.md](zh/soma-actor-final-design.zh.md).
+
+## Planning Layer
+
+The runtime does not depend on where steps came from. Any planning input —
+hand-authored, LFE DSL, LLM output, workflow UI — compiles down to the step
+format `start_run/2` accepts.
+
+The LFE DSL (`soma_lfe`) is the first planning input: a compile-only layer in
+its own OTP application. The dependency is one-way: `soma_lfe` depends on
+shared data contracts, but `soma_runtime` has no dependency on `soma_lfe`.
 
 ```erlang
 soma_lfe:compile(Source :: binary(), Opts :: map()) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [map()]}.
-
-soma_lfe:compile_file(Path :: file:filename_all(), Opts :: map()) ->
-    {ok, #{run => #{steps => [map()]}}} | {error, [map()]}.
 ```
 
-The compile-only contract:
+`compile/2` is pure: no processes started, no events emitted, no supervisor
+tree touched. Failure returns `{error, Diagnostics}` with stable diagnostic
+codes and never partially compiles.
 
-- `compile/2` is a pure function: it starts no processes, emits no runtime
-  events, and never touches the supervisor tree.
-- On failure it returns `{error, Diagnostics}` — a list of structured maps with
-  a stable `code` field. It never partially compiles.
-- The `steps` value in a successful result is the exact list of maps
-  `start_run/2` accepts today, with no new keys or runtime changes required.
-- Tool existence checks are optional. If added, they consult the manifest
-  registry only and must never invoke a tool.
+Full syntax reference: [lfe-dsl.md](lfe-dsl.md).
 
-The DSL accepts exactly one top-level `(run ...)` form with one or more
-`(step Id Tool ...)` child forms. The accepted grammar, `from_step` reference
-forms, diagnostic codes, and the canonical `file_read -> echo -> file_write`
-example are in [lfe-dsl.md](lfe-dsl.md).
+## Steps
 
-## Steps, Not IR Yet
-
-Soma uses a deliberately small step list — not a full IR yet.
-
-Example:
+Soma uses a deliberately small step list.
 
 ```erlang
 [
-  #{
-    id => read,
-    tool => file_read,
-    args => #{path => <<"input.txt">>},
-    timeout_ms => 1000
-  },
-  #{
-    id => echo,
-    tool => echo,
-    args => #{from_step => read},
-    timeout_ms => 1000
-  },
-  #{
-    id => write,
-    tool => file_write,
-    args => #{path => <<"output.txt">>, from_step => echo},
-    timeout_ms => 1000
-  }
+  #{id => read,  tool => file_read,  args => #{path => <<"in.txt">>,  root => "/tmp/demo"},                             timeout_ms => 1000},
+  #{id => echo,  tool => echo,       args => #{from_step => read},                                                      timeout_ms => 1000},
+  #{id => write, tool => file_write, args => #{path => <<"out.txt">>, root => "/tmp/demo", bytes => {from_step, echo}}, timeout_ms => 1000}
 ]
 ```
 
-The executor is sequential:
+Sequential executor:
 
 ```text
-validate step
-start tool call
-wait for result
-record event
-move to next step
+validate step → start tool call → wait for result → record event → next step
 ```
 
-No branching, no loops, no DAG, no variables beyond simple prior-step output
-references.
+No branching, no loops, no DAG. `from_step` references feed a prior step's
+output into the next step's args. That is the only inter-step data flow.
 
 ## Tool Runtime
 
-A tool is a small Erlang behavior:
+A tool is an Erlang behaviour:
 
 ```erlang
 -callback describe() -> soma_tool:spec().
@@ -333,102 +283,49 @@ A tool is a small Erlang behavior:
     {ok, soma_tool:output()} | {error, soma_tool:error()}.
 ```
 
-Tool metadata:
+Tool metadata declares `effect` (`identity | reader | state`), `idempotent`,
+and `timeout_ms`. A tool registers through a **manifest** validated by
+`soma_tool_manifest:normalize/1`; a manifest missing a required field is
+rejected before it reaches the registry.
 
-```erlang
-#{
-  name => echo,
-  effect => identity,
-  idempotent => true,
-  timeout_ms => 1000
-}
-```
-
-Minimum effects:
+Two adapters:
 
 ```text
-identity   pure computation or local lookup
-reader     reads external state
-state      mutates external state
+erlang_module   in-BEAM: #{adapter => erlang_module, module => Mod}
+cli             one-shot external: #{adapter => cli, executable, argv}
 ```
 
-v0.1 tools:
+Built-in tools: `echo`, `sleep`, `fail`, `file_read`, `file_write`. Each
+exposes `manifest/0 = (describe())#{adapter => erlang_module, module => ?MODULE}`.
 
-```text
-echo        returns its input
-sleep       waits for N milliseconds
-fail        returns an error or crashes, used for tests
-file.read   reads a file under a sandbox root
-file.write  writes a file under a sandbox root
-```
-
-Mock LLM can be added as a local tool:
-
-```text
-llm.mock    deterministic response, no network
-```
-
-Real LLM providers should wait until the runtime behavior is proven.
-
-### Manifests and adapters
-
-A tool registers through a **manifest** — its `describe/0` metadata plus an
-`adapter` and adapter-specific fields — validated and normalized by
-`soma_tool_manifest:normalize/1` into the descriptor the registry stores
-(`name => descriptor`, resolved with `resolve_descriptor/1`). A manifest missing
-a required field, or carrying a bad `effect` / `idempotent` / `timeout_ms`, is
-rejected before it ever reaches the registry, so malformed tools fail fast rather
-than mid-run.
-
-Two adapters exist:
-
-```text
-erlang_module   an in-BEAM tool:   #{adapter => erlang_module, module => Mod}
-cli             a one-shot external executable: #{adapter => cli, executable, argv}
-```
-
-Each built-in exposes `manifest/0` = `(describe())#{adapter => erlang_module,
-module => ?MODULE}`, so the in-BEAM tools register through the same machinery
-external tools use. A `cli` manifest names a bare `executable` plus a separate
-`argv` list — never a shell command string.
+Full manifest contract: [tool-manifest.md](tool-manifest.md).
 
 ## External Processes
 
-External tools are isolated behind tool workers. The one-shot CLI adapter lives
-in `soma_tool_call`: when a step resolves to a `cli` descriptor, the worker
-launches the executable through a port (`open_port({spawn_executable, ...})`).
-Long-running ports stay out of scope until the runtime semantics need them.
-
-Important rule:
+The cli adapter (in `soma_tool_call`) launches external tools through a port
+(`open_port({spawn_executable, ...})`):
 
 ```text
-Use executable + args, not shell command strings.
+Executable + argv only — never a shell command string.
 ```
 
-The adapter uses executable + argv separation; there is no shell anywhere on the
-path — not for launching a tool, and not for the teardown that kills a child's OS
-process (that goes through `os:find_executable("kill")` + a port, never
-`os:cmd`). Shell interpolation is not part of the core.
+The step input is delivered as the **final argv argument** (a port cannot
+half-close the child's stdin). Stdout and stderr are merged and captured as the
+step output, bounded to 65 536 bytes. Exit status 0 is success; any other exit,
+a missing/unrunnable executable, or oversized output becomes a bounded
+`{error, _}`.
 
-The cli protocol: the step input is delivered as the **final argv argument** (an
-Erlang port cannot half-close the child's stdin), the process's stdout is
-captured as the step output, and exit status 0 is success; any other exit, a
-missing/unrunnable executable, or output past a byte limit becomes a bounded
-`{error, _}`. The child runs with a minimal environment (only `PATH`) and a fixed
-working directory. On timeout or cancellation the worker is killed and the
-external OS process with it. The full contract is in
-[tool-manifest.md](tool-manifest.md).
+The child runs with a minimal environment (only `PATH`) and a fixed working
+directory. On timeout or cancellation the run holds the child's OS pid and
+kills it directly — a hanging program cannot outlive its run.
 
-Any external executable used by the release must be packaged per target
-architecture — a macOS arm64, a Linux `x86_64`, and a Linux `arm64` release are
-separate artifacts, each carrying only its own helper.
+Any external executable in a release must be packaged per target architecture.
 
 ## Event Log
 
-Events are mandatory. Without events, the runtime cannot be audited or
-debugged.
+Events are mandatory. The event stream is the audit trail for the full run.
 
-Minimum events:
+Execution-core events:
 
 ```text
 session.started
@@ -436,120 +333,90 @@ run.accepted
 run.started
 step.started
 tool.started
-tool.succeeded
-tool.failed
-step.succeeded
-step.failed
-run.completed
-run.failed
-run.cancelled
-run.timeout
+tool.succeeded / tool.failed
+step.succeeded / step.failed
+run.completed / run.failed / run.cancelled / run.timeout
 ```
 
-Every event should carry:
+Actor-layer events (soma_actor):
 
 ```text
-event_id
-timestamp
-session_id
-run_id
-step_id
-tool_call_id
-event_type
-payload
+actor.started
+actor.message.received
+actor.task.accepted
+actor.proposal.created
+actor.policy.allowed / actor.policy.rejected
+actor.result.created
+actor.task.completed / actor.task.failed / actor.task.cancelled
+llm.started
+llm.succeeded / llm.failed
 ```
 
-The first implementation should use an in-memory event store for tests. A
-persistent store can be added after the process semantics are covered. The
-runtime should emit events from day one, even if the first store is memory-only.
+Every event carries `event_id`, `timestamp`, `session_id`, `run_id`,
+`step_id`, `tool_call_id`, `event_type`, `payload`. Actor-layer events extend
+this schema with `actor_id`, `task_id`, `correlation_id`, and `llm_call_id`.
 
-## Cancellation And Timeout
+## Cancellation and Timeout
 
 Cancellation is a runtime feature, not a flag checked at the end.
 
-Expected behavior:
+**Run level:** cancelling a run sends a message to `soma_run`; `soma_run` kills
+the active tool call worker; for a `cli` tool the external OS process is killed
+too; the run records `run.cancelled`; the session stays alive.
 
-- cancelling a run sends a message to `soma_run`;
-- `soma_run` cancels or kills the active tool call;
-- the tool call process exits;
-- the run records `run.cancelled`;
-- the session remains alive.
+**Actor level:** cancelling a task sends a message to `soma_actor`; `soma_actor`
+cancels the active run and any active LLM call; the actor records
+`actor.task.cancelled`; the actor stays alive and accepts the next message.
 
-Timeout behavior:
-
-- run timeout is owned by `soma_run`;
-- tool timeout is owned by the tool call process or run process;
-- timeout must end the active tool call;
-- timeout must produce an event.
+Timeout mirrors cancellation at each layer.
 
 ## Failure Semantics
 
-The first version should make failure boring.
+Failure must be boring. Each layer has its own failure type; they must not
+collapse into each other.
 
-Required cases:
+```text
+llm_call failed    inference failure; soma_actor receives a message
+tool_call failed   tool error or crash; soma_run receives a monitor 'DOWN'
+run failed         terminal state; soma_agent_session / soma_actor receives a message
+task failed        actor-layer failure; soma_actor records it, stays alive
+actor crashed      supervisor handles restart policy
+```
 
-- a tool returns `{error, Reason}`;
-- a tool process crashes;
-- a tool process hangs;
-- a run is cancelled while a tool is running;
-- a session starts two runs;
-- a run fails without killing the session;
-- the event store records enough information to explain the failure.
-
-This is where Erlang matters. These cases should be modeled as process and
-message behavior, not as a pile of defensive `try/catch` calls.
+A tool crash is not a task failure. A run failure is not an actor crash. These
+are modeled as process and message behavior, not as defensive `try/catch`.
 
 ## Implementation Constraints
 
-- `soma_run` owns run state; tools do not mutate run state directly.
+Non-negotiable for the execution core:
+
+- Every tool invocation crosses a **process boundary**. Tool results come back
+  to `soma_run` as messages.
+- `soma_run` owns run state; tools never mutate run state directly.
 - `soma_agent_session` never executes tools.
-- every tool invocation has a process boundary.
-- tool results are messages back to `soma_run`.
-- terminal run states are explicit: `completed`, `failed`, `cancelled`,
-  `timeout`.
-- tests should assert process survival, not only returned values.
+- Cancellation is real: cancel → message → kill worker → record event →
+  session / actor stays alive.
+- Failure isolation uses **processes, links, monitors, supervision** — not
+  defensive `try/catch`.
+- External tools use **executable + argv, never shell command strings**.
+- Events are mandatory.
 
-## Repository Direction
+For `soma_actor`:
 
-Potential layout:
-
-```text
-soma/
-  apps/
-    soma_runtime/
-      src/
-        soma_app.erl
-        soma_sup.erl
-        soma_agent_session.erl
-        soma_run.erl
-    soma_tools/
-      src/
-        soma_tool.erl
-        soma_tool_registry.erl
-        soma_tool_call.erl
-        soma_tool_echo.erl
-        soma_tool_sleep.erl
-        soma_tool_fail.erl
-        soma_tool_file_read.erl
-        soma_tool_file_write.erl
-    soma_event_store/
-      src/
-        soma_event_store.erl
-        soma_event_store_memory.erl
-  test/
-  examples/
-    sequential_file_run/
-  docs/
-    runtime.md
-    tool-behaviour.md
-    event-model.md
-    roadmap.md
-```
+- Work enters through the **mailbox** — no bypassing the actor.
+- **LLM/rules produce proposals**; `soma_actor` owns the policy gate and
+  execution.
+- `soma_actor` never blocks on a child operation; every child result is a
+  message.
+- `soma_actor` survives every child failure.
+- `correlation_id` propagates across all child operations.
 
 ## Test Contract
 
 Every layer proves its process behavior under test before the next layer is
-added. The v0.1 contract, proven end-to-end:
+added. Tests assert **process survival**, not only return values.
+
+**Execution core (v0.1–v0.3):**
 
 1. a session starts;
 2. a run is accepted;
@@ -562,42 +429,34 @@ added. The v0.1 contract, proven end-to-end:
 9. cancelling a run stops the active tool;
 10. the session can start another run afterward.
 
-The v0.2 contract extends it without weakening it: manifests validate before
-registration; built-ins run through manifests; a `cli` tool succeeds through the
-real session/run/tool-call layers with its own worker pid and the same event
-trail; and nonzero / missing / hanging / cancelled `cli` runs fail-or-stop — with
-the external OS process verifiably gone — while the session survives and runs
-again. Each proof is mapped to the suite and case that proves it in
-[v0.2-test-contract.md](v0.2-test-contract.md).
+Proof-to-test maps: [contracts/v0.2-test-contract.md](contracts/v0.2-test-contract.md)
+and [contracts/v0.3-test-contract.md](contracts/v0.3-test-contract.md).
 
-The v0.3 contract extends it again without weakening it: the DSL compiler has no
-runtime dependency; `compile/2` is pure and starts no processes; a DSL-sourced
-step list runs through the real session → run → tool-call layers with the same
-event trail; compiled `fail`, `sleep`, and cancellation steps all hit the same
-failure and cancellation paths as hand-authored steps; and the session recovers
-after any terminal state. The proof-to-test mapping is in
-[lfe-dsl.md](lfe-dsl.md#proof-to-test-mapping).
+**Agent entity (soma_actor):**
 
-This test contract is more important than adding tool integrations.
+1. actor starts and emits `actor.started`;
+2. actor receives a message and creates `task_id` / `correlation_id`;
+3. actor runs fixed steps through `soma_run`;
+4. run completion produces an actor result;
+5. `ask` receives a final reply;
+6. long tasks are queryable by `task_id`;
+7. events are queryable by `correlation_id`;
+8. actor survives a run failure;
+9. actor survives a tool crash;
+10. cancel task cancels the active run;
+11. actor accepts another message after failure, cancel, or timeout;
+12. actor-to-actor message preserves `correlation_id`;
+13. budget exhaustion fails the task, not the actor;
+14. policy rejection fails or asks, not the actor;
+15. actor stays responsive while a child LLM call or run is active.
 
 ## Design Principles
 
 - Agents are actors.
 - Runs are state machines.
 - Tool calls are isolated processes.
+- LLM/rules produce proposals; actors own execution.
 - Events explain everything.
 - Cancellation must be real.
-- The first version should be small.
+- Each layer earns the next by proving its failure semantics under test.
 - Erlang's supervision model is the product advantage.
-
-## First Commit Checklist
-
-- Create a rebar3 umbrella.
-- Add `soma_runtime` OTP application.
-- Add `soma_agent_session` as a `gen_server`.
-- Add `soma_run` as a `gen_statem`.
-- Add `soma_tool` behavior.
-- Add echo, sleep, fail, file.read, and file.write tools.
-- Add in-memory event store.
-- Add a sequential run example.
-- Add the v0.1 test contract.

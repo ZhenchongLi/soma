@@ -1,59 +1,73 @@
 # Roadmap
 
-This document tracks ideas that should wait until the Erlang runtime is solid.
-
-**Status:** v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), and
-v0.3 (LFE DSL compile-only layer) are built and merged. v0.4 and beyond below
-are still future layers.
+v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), and v0.3 (LFE
+DSL compile-only layer) are built and merged. The sequence below is what comes
+next.
 
 ## Sequence
 
 ```text
 v0.1  Erlang/OTP agent runtime                       [done]
-v0.2  tool manifests and CLI/port adapter hardening  [done]
-v0.3  LFE DSL -> steps                               [done]
-v0.4  MCP client adapter
-v0.5  LLM planner adapter
-v0.6  DAG execution
-v0.7  persistent resume
+v0.2  tool manifests and CLI/port adapter            [done]
+v0.3  LFE DSL → steps                               [done]
+v0.4  soma_actor — agent entity skeleton
+v0.5  soma_actor + LLM planner
+v0.6  MCP client adapter
+v0.7  DAG execution
+v0.8  persistent resume
 ```
 
-## Planning Layer
+## v0.4 — soma_actor skeleton
 
-The runtime should not depend on where steps came from.
+`soma_actor` is the agent entity: a long-lived OTP process that receives
+messages, creates tasks, starts runs, and returns results. The minimum slice
+uses fixed-rule decisions and no real LLM — enough to prove the actor loop and
+its integration with `soma_run`.
 
-Future planning inputs can include:
+Minimum capabilities:
 
-```text
-LFE DSL
-JSON request
-LLM structured output
-workflow UI
-```
+- start `soma_actor` with `actor_id`, `model_config`, `tool_policy`;
+- receive an envelope through `send/ask`, create `task_id` / `correlation_id`;
+- emit `actor.message.received` / `actor.task.accepted`;
+- fixed-rule decision: envelope has steps → validate and start `soma_run`;
+- observe run terminal result; emit `actor.result.created` / `actor.task.completed`;
+- `ask/reply` for short tasks; `get_task_status` / `get_task_result` for polling;
+- event lookup by `correlation_id`;
+- cancel task → cancel active run.
 
-All of them should compile down to the small step format the runtime already
-knows how to execute.
+Not in v0.4: real LLM planner, MCP, DAG, persistent resume, complex memory
+backend.
 
-## Ecosystem Layer
+Design specification:
+[zh/soma-actor-final-design.zh.md](zh/soma-actor-final-design.zh.md).
 
-Soma should connect external ecosystems through adapters instead of copying them
-into BEAM.
+## v0.5 — soma_actor + LLM planner
 
-Candidate adapters:
+Add `soma_llm_call` as a supervised disposable worker. Add a structured
+proposal schema and a policy gate over LLM output. A decision that rules
+cannot resolve calls `soma_llm_call`; the result is a proposal that
+`soma_actor` validates through the policy gate before executing.
 
-```text
-MCP
-HTTP
-gRPC
-CLI
-long-running ports
-```
+## v0.6 — MCP client adapter
 
-These should stay above the runtime boundary. The runtime should keep enforcing
-the same process, timeout, cancellation, and event semantics regardless of the
-adapter.
+Connect external tools through the Model Context Protocol. MCP becomes a new
+tool adapter type alongside `erlang_module` and `cli`; the runtime executes
+MCP-backed steps through the same process boundary, timeout, and cancel
+semantics as built-in tools.
+
+## v0.7 — DAG execution
+
+Extend the step executor to fan out and join parallel branches. The step
+format grows a dependency graph; `soma_run` spawns parallel tool call workers
+and waits for branches to complete before advancing.
+
+## v0.8 — persistent resume
+
+Add a persistent event store and a run journal that survives BEAM restarts. A
+resumed run replays the event trail to the last committed step and continues
+from there.
 
 ## Rule
 
-Do not add a future layer until the layer below it has test coverage for failure
-behavior.
+Do not add a layer until the layer below it has test coverage for its failure
+semantics.
