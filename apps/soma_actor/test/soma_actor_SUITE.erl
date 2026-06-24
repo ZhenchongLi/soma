@@ -35,6 +35,7 @@
 -export([second_steps_envelope_starts_second_run/1]).
 -export([no_steps_accepts_and_starts_no_run/1]).
 -export([ask_returns_run_outputs/1]).
+-export([ask_caller_and_actor_alive_after_return/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -67,7 +68,8 @@ all() ->
      send_returns_before_run_completes,
      second_steps_envelope_starts_second_run,
      no_steps_accepts_and_starts_no_run,
-     ask_returns_run_outputs].
+     ask_returns_run_outputs,
+     ask_caller_and_actor_alive_after_return].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -113,7 +115,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= send_returns_before_run_completes;
        TestCase =:= second_steps_envelope_starts_second_run;
        TestCase =:= no_steps_accepts_and_starts_no_run;
-       TestCase =:= ask_returns_run_outputs ->
+       TestCase =:= ask_returns_run_outputs;
+       TestCase =:= ask_caller_and_actor_alive_after_return ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -163,7 +166,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= send_returns_before_run_completes;
        TestCase =:= second_steps_envelope_starts_second_run;
        TestCase =:= no_steps_accepts_and_starts_no_run;
-       TestCase =:= ask_returns_run_outputs ->
+       TestCase =:= ask_returns_run_outputs;
+       TestCase =:= ask_caller_and_actor_alive_after_return ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -888,6 +892,33 @@ ask_returns_run_outputs(_Config) ->
     {ok, Result} = soma_actor:ask(Pid, Envelope, 5000),
     Outputs = #{s1 => #{value => <<"a">>}},
     Result = Outputs,
+    ok.
+
+%% Criterion 2 (slice p5/p6): after ask/3 returns, both the calling process and
+%% the actor pid are still alive. ask blocks the caller inside its gen_statem:call
+%% and the actor defers the reply until the run completes; neither process is torn
+%% down by the round trip. The runtime is booted so soma_run_sup and
+%% soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the actor
+%% and the run share one store. Enters through the real soma_actor:ask/3 call, no
+%% layer bypassed. After the {ok, Result} reply the test checks is_process_alive/1
+%% on the caller (self) and on the actor pid.
+ask_caller_and_actor_alive_after_return(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-alive">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-alive">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, _Result} = soma_actor:ask(Pid, Envelope, 5000),
+    false = is_process_alive(self()),
+    false = is_process_alive(Pid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
