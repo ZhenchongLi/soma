@@ -8,17 +8,20 @@
 -export([start_actor_returns_ok_pid/1]).
 -export([actor_alive_after_start/1]).
 -export([actor_starts_idle/1]).
+-export([actor_state_holds_config/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
      start_actor_returns_ok_pid,
      actor_alive_after_start,
-     actor_starts_idle].
+     actor_starts_idle,
+     actor_state_holds_config].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
        TestCase =:= actor_alive_after_start;
-       TestCase =:= actor_starts_idle ->
+       TestCase =:= actor_starts_idle;
+       TestCase =:= actor_state_holds_config ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(_TestCase, Config) ->
@@ -27,7 +30,8 @@ init_per_testcase(_TestCase, Config) ->
 end_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
        TestCase =:= actor_alive_after_start;
-       TestCase =:= actor_starts_idle ->
+       TestCase =:= actor_starts_idle;
+       TestCase =:= actor_state_holds_config ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -81,4 +85,24 @@ actor_starts_idle(_Config) ->
              tool_policy => #{}},
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
     {idle, _Data} = sys:get_state(Pid),
+    ok.
+
+%% Criterion 5: the actor's state data holds the actor_id, model_config, and
+%% tool_policy passed in Opts, readable through sys:get_state/1. The data record
+%% lays actor_id, model_config, tool_policy out as the first three fields (record
+%% positions 2, 3, 4 after the record tag), so the test pulls those fields by
+%% position rather than binding the whole tuple — a later slice that appends
+%% fields will not break this.
+actor_state_holds_config(_Config) ->
+    ActorId = <<"actor-cfg">>,
+    ModelConfig = #{model => <<"test-model">>},
+    ToolPolicy = #{allow => [echo]},
+    Opts = #{actor_id => ActorId,
+             model_config => ModelConfig,
+             tool_policy => ToolPolicy},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    {idle, Data} = sys:get_state(Pid),
+    ActorId = element(2, Data),
+    ModelConfig = element(3, Data),
+    ToolPolicy = element(4, Data),
     ok.
