@@ -50,6 +50,7 @@
 -export([failed_run_emits_task_failed_event/1]).
 -export([failed_run_sets_task_status_failed/1]).
 -export([actor_alive_after_owned_run_fails/1]).
+-export([tool_crash_isolated_by_process_boundary/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -97,7 +98,8 @@ all() ->
      read_returns_while_earlier_run_in_flight,
      failed_run_emits_task_failed_event,
      failed_run_sets_task_status_failed,
-     actor_alive_after_owned_run_fails].
+     actor_alive_after_owned_run_fails,
+     tool_crash_isolated_by_process_boundary].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -158,7 +160,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= read_returns_while_earlier_run_in_flight;
        TestCase =:= failed_run_emits_task_failed_event;
        TestCase =:= failed_run_sets_task_status_failed;
-       TestCase =:= actor_alive_after_owned_run_fails ->
+       TestCase =:= actor_alive_after_owned_run_fails;
+       TestCase =:= tool_crash_isolated_by_process_boundary ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -223,7 +226,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= read_returns_while_earlier_run_in_flight;
        TestCase =:= failed_run_emits_task_failed_event;
        TestCase =:= failed_run_sets_task_status_failed;
-       TestCase =:= actor_alive_after_owned_run_fails ->
+       TestCase =:= actor_alive_after_owned_run_fails;
+       TestCase =:= tool_crash_isolated_by_process_boundary ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1381,6 +1385,56 @@ actor_alive_after_owned_run_fails(_Config) ->
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     failed = wait_for_task_status(Pid, TaskId, failed, 100),
     true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 4 (slice p8/p9/p15): a steps envelope whose tool crashes (the fail
+%% tool in crash mode) reaches the actor as a {run_failed, ...} message and
+%% leaves the actor pid alive, with the actor pid, the now-dead run pid, and the
+%% tool-call worker pid all distinct — proving isolation by process boundary, not
+%% crash propagation. The runtime is booted so soma_run_sup and
+%% soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the
+%% actor and the run share one store. Enters through the real soma_actor:send/2
+%% call, no layer bypassed. The run pid is captured from soma_run_sup's children
+%% right after send/2 returns (while the run still exists) and the worker pid
+%% from the run's tool.started event in the store (reusing
+%% worker_pid_from_tool_started/2). The single fail step raises error(boom);
+%% soma_run's worker-monitor DOWN fails the run and sends {run_failed, RunId, _}
+%% to the actor. The test polls the actor's task table until the task reaches
+%% failed (proving the crash arrived as a message), then asserts the three pids
+%% are distinct and the actor pid is still alive.
+tool_crash_isolated_by_process_boundary(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-crash-isolated">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-crash-isolated">>,
+    Steps = [#{id => s1, tool => fail,
+               args => #{mode => crash, reason => boom}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    %% Capture the run pid while the run still exists, before the crash tears it
+    %% down. send/2 returns before the run executes, so the run child is alive.
+    Children = supervisor:which_children(soma_run_sup),
+    [RunPid] = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
+    RunId = actor_run_id(ActorPid),
+    %% The crash reaches the actor as a {run_failed, ...} message: the task flips
+    %% to failed without the actor dying.
+    failed = wait_for_task_status(ActorPid, TaskId, failed, 100),
+    WorkerPid = worker_pid_from_tool_started(Store, RunId),
+    true = is_pid(WorkerPid),
+    %% The now-dead run pid, the worker pid, and the actor pid are three distinct
+    %% pids: isolation is the process boundary, not crash propagation.
+    true = ActorPid =/= RunPid,
+    true = ActorPid =/= WorkerPid,
+    true = RunPid =/= WorkerPid,
+    %% The crash arrived as a message, not a signal: the actor is still alive.
+    false = is_process_alive(ActorPid),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
