@@ -82,8 +82,7 @@ test_no_runtime_module_references_soma_actor_test() ->
     ?assert(filelib:is_dir(SrcDir)),
     Files = filelib:wildcard(filename:join(SrcDir, "*")),
     Offenders = [F || F <- Files, file_mentions_soma_actor(F)],
-    %% staged-red: deliberately wrong expected value so the assertion fires.
-    ?assertEqual([<<"expected_a_reference">>], Offenders).
+    ?assertEqual([], Offenders).
 
 %% Returns `true' if the given source file's contents contain the string
 %% "soma_actor".
