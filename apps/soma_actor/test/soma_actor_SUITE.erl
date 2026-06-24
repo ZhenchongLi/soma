@@ -80,5 +80,5 @@ actor_starts_idle(_Config) ->
              model_config => #{},
              tool_policy => #{}},
     {ok, Pid} = soma_actor_sup:start_actor(Opts),
-    {busy, _Data} = sys:get_state(Pid),
+    {idle, _Data} = sys:get_state(Pid),
     ok.
