@@ -31,6 +31,7 @@
 -export([task_completed_event_carries_ids/1]).
 -export([task_status_completed_after_run/1]).
 -export([task_result_holds_outputs_after_run/1]).
+-export([send_returns_before_run_completes/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -59,7 +60,8 @@ all() ->
      result_created_event_carries_ids,
      task_completed_event_carries_ids,
      task_status_completed_after_run,
-     task_result_holds_outputs_after_run].
+     task_result_holds_outputs_after_run,
+     send_returns_before_run_completes].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -101,7 +103,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= result_created_event_carries_ids;
        TestCase =:= task_completed_event_carries_ids;
        TestCase =:= task_status_completed_after_run;
-       TestCase =:= task_result_holds_outputs_after_run ->
+       TestCase =:= task_result_holds_outputs_after_run;
+       TestCase =:= send_returns_before_run_completes ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -147,7 +150,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= result_created_event_carries_ids;
        TestCase =:= task_completed_event_carries_ids;
        TestCase =:= task_status_completed_after_run;
-       TestCase =:= task_result_holds_outputs_after_run ->
+       TestCase =:= task_result_holds_outputs_after_run;
+       TestCase =:= send_returns_before_run_completes ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -748,6 +752,46 @@ task_result_holds_outputs_after_run(_Config) ->
     Outputs = #{s1 => #{value => <<"a">>}},
     Result = Outputs,
     ok.
+
+%% Criterion 8 (slice p3/p4): send/2 returns before the run completes — the
+%% result is recorded asynchronously when {run_completed, ...} arrives — and the
+%% actor pid stays alive throughout. The runtime is booted so soma_run_sup and
+%% soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the
+%% actor and the run share one store. Enters through the real soma_actor:send/2
+%% call, no layer bypassed. The single step sleeps for 500ms, so the run is still
+%% executing when send/2 returns: right after the {ok, TaskId} reply the task is
+%% still accepted (not yet completed) and the actor pid is alive. The test then
+%% polls the task table until the status flips to completed, proving the result
+%% is recorded asynchronously on the terminal message.
+send_returns_before_run_completes(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-async-complete">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-async-complete">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% send/2 has returned while the 500ms sleep step is still running: the task
+    %% is not yet completed, and the actor is alive and idle.
+    completed = task_status(Pid, TaskId),
+    true = is_process_alive(Pid),
+    %% The result is recorded asynchronously once {run_completed, ...} arrives.
+    completed = wait_for_task_status(Pid, TaskId, completed, 100),
+    true = is_process_alive(Pid),
+    ok.
+
+%% Reads the current status for the task from the actor's task table.
+task_status(Pid, TaskId) ->
+    {idle, Data} = sys:get_state(Pid),
+    Tasks = element(6, Data),
+    maps:get(status, maps:get(TaskId, Tasks)).
 
 %% Reads the stored result for the task from the actor's task table.
 task_result(Pid, TaskId) ->
