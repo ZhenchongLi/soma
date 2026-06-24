@@ -229,7 +229,7 @@ and full policy gate layer on top once the skeleton is green under test.
 The full specification — actor loop, decision frame, policy gate, LLM call,
 result model, event contract, memory model, budget and backpressure,
 actor-to-actor messaging, test contract — is in
-[zh/soma-actor-final-design.zh.md](zh/soma-actor-final-design.zh.md).
+[zh/soma-actor.zh.md](zh/soma-actor.zh.md).
 
 ## Planning Layer
 

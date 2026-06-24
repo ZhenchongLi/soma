@@ -205,11 +205,10 @@ resume.
 
 - **[docs/zh/what-is-soma.zh.md](docs/zh/what-is-soma.zh.md)** — overview of
   Soma, the soma_actor vision, and the execution path.
-- **[docs/zh/soma-actor.zh.md](docs/zh/soma-actor.zh.md)** — soma_actor working
-  model: message-driven trigger, LLM roles, result patterns.
-- **[docs/zh/soma-actor-final-design.zh.md](docs/zh/soma-actor-final-design.zh.md)**
-  — soma_actor final design: actor loop, decision frame, policy gate, event
-  contract, memory model, and minimum scope.
+- **[docs/zh/soma-actor.zh.md](docs/zh/soma-actor.zh.md)** — soma_actor complete
+  design: actor entity, message-driven trigger, actor loop, decision frame,
+  policy gate, LLM call, result model, event contract, memory model, and
+  minimum scope.
 - **[docs/zh/erlang-otp-primer.zh.md](docs/zh/erlang-otp-primer.zh.md)** —
   Erlang/OTP primer (BEAM, process, mailbox, gen_server, gen_statem, supervisor,
   port, release) for readers unfamiliar with Erlang.

@@ -39,7 +39,7 @@ Not in v0.4: real LLM planner, MCP, DAG, persistent resume, complex memory
 backend.
 
 Design specification:
-[zh/soma-actor-final-design.zh.md](zh/soma-actor-final-design.zh.md).
+[zh/soma-actor.zh.md](zh/soma-actor.zh.md).
 
 ## v0.5 — soma_actor + LLM planner
 
