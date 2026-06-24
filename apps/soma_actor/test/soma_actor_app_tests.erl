@@ -11,6 +11,16 @@ test_app_src_declares_mod_test() ->
     {ok, [{application, soma_actor, Keys}]} = file:consult(AppSrc),
     ?assertEqual({soma_actor_app, []}, proplists:get_value(mod, Keys)).
 
+%% Criterion 3: `application:ensure_all_started(soma_actor)' boots the app and
+%% returns `{ok, _}'. Stops/unloads the app afterward for a clean teardown.
+test_ensure_all_started_ok_test() ->
+    try
+        ?assertMatch({ok, _}, application:ensure_all_started(soma_actor))
+    after
+        application:stop(soma_actor),
+        application:unload(soma_actor)
+    end.
+
 %% Locate `apps/soma_actor/src/soma_actor.app.src' relative to this test
 %% module's compiled `.beam', which rebar3 places under
 %% `_build/<profile>/lib/soma_actor/test/'.
