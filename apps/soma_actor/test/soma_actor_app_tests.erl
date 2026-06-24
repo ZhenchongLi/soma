@@ -84,6 +84,41 @@ test_no_runtime_module_references_soma_actor_test() ->
     Offenders = [F || F <- Files, file_mentions_soma_actor(F)],
     ?assertEqual([], Offenders).
 
+%% Criterion 9: no `soma_llm_call_sup' module or registration exists anywhere in
+%% the tree. Scans every source file under every app's `src' directory and
+%% asserts none names a `soma_llm_call_sup' module file nor mentions the string
+%% "soma_llm_call_sup" (which would catch a registered name or any reference).
+%% The v0.5 `soma_llm_call' is owner-spawned by `soma_actor', so there is
+%% deliberately no separate supervisor for it; this slice must not introduce one.
+%% This is a static source-tree scan, not runtime behavior.
+test_no_soma_llm_call_sup_in_tree_test() ->
+    AppsRoot = apps_root_dir(),
+    ?assert(filelib:is_dir(AppsRoot)),
+    Files = filelib:wildcard(filename:join([AppsRoot, "*", "src", "*"])),
+    ModuleFiles = filelib:wildcard(
+        filename:join([AppsRoot, "*", "src", "*soma_llm_call_sup*"])),
+    Offenders = [F || F <- Files, file_mentions_soma_llm_call_sup(F)],
+    %% STAGED RED: deliberately wrong expectation so the assertion fires.
+    ?assertEqual([dummy_offender], ModuleFiles ++ Offenders).
+
+%% Returns `true' if the given source file's contents contain the string
+%% "soma_llm_call_sup".
+file_mentions_soma_llm_call_sup(File) ->
+    {ok, Bin} = file:read_file(File),
+    case binary:match(Bin, <<"soma_llm_call_sup">>) of
+        nomatch -> false;
+        _ -> true
+    end.
+
+%% Locate the umbrella `apps' root (the directory holding every app's lib copy)
+%% relative to this test module's compiled `.beam'. rebar3 places this app's
+%% beams under `_build/<profile>/lib/soma_actor/test/'; sibling apps live
+%% alongside under `_build/<profile>/lib/'.
+apps_root_dir() ->
+    BeamDir = filename:dirname(code:which(?MODULE)),
+    AppRoot = filename:dirname(BeamDir),
+    filename:dirname(AppRoot).
+
 %% Returns `true' if the given source file's contents contain the string
 %% "soma_actor".
 file_mentions_soma_actor(File) ->
