@@ -1832,7 +1832,7 @@ cancel_status_cancelled_and_actor_alive(_Config) ->
     %% {run_cancelled, RunId} comes back; poll the task table to cancelled first.
     cancelled = wait_for_task_status(Pid, TaskId, cancelled, 100),
     Status = soma_actor:get_task_status(Pid, TaskId),
-    running = maps:get(status, Status),
+    cancelled = maps:get(status, Status),
     true = is_process_alive(Pid),
     ok.
 
