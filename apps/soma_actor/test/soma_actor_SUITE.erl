@@ -856,7 +856,7 @@ no_steps_accepts_and_starts_no_run(_Config) ->
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     Children = supervisor:which_children(soma_run_sup),
     RunPids = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
-    1 = length(RunPids),
+    0 = length(RunPids),
     accepted = task_status(Pid, TaskId),
     ok.
 
