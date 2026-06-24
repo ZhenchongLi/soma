@@ -14,6 +14,7 @@
 -export([actor_without_event_store_boots_quietly/1]).
 -export([sup_exports_start_actor/1]).
 -export([send_returns_envelope_task_id/1]).
+-export([send_mints_task_id_when_absent/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -25,7 +26,8 @@ all() ->
      actor_started_event_carries_actor_id,
      actor_without_event_store_boots_quietly,
      sup_exports_start_actor,
-     send_returns_envelope_task_id].
+     send_returns_envelope_task_id,
+     send_mints_task_id_when_absent].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -33,7 +35,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= actor_starts_idle;
        TestCase =:= actor_state_holds_config;
        TestCase =:= actor_without_event_store_boots_quietly;
-       TestCase =:= send_returns_envelope_task_id ->
+       TestCase =:= send_returns_envelope_task_id;
+       TestCase =:= send_mints_task_id_when_absent ->
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup} | Config];
 init_per_testcase(actor_started_event_carries_actor_id, Config) ->
@@ -55,7 +58,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= start_emits_one_actor_started_event;
        TestCase =:= actor_started_event_carries_actor_id;
        TestCase =:= actor_without_event_store_boots_quietly;
-       TestCase =:= send_returns_envelope_task_id ->
+       TestCase =:= send_returns_envelope_task_id;
+       TestCase =:= send_mints_task_id_when_absent ->
     case ?config(store, Config) of
         undefined -> ok;
         Store ->
@@ -206,4 +210,21 @@ send_returns_envelope_task_id(_Config) ->
                  payload => #{text => <<"hello">>},
                  task_id => TaskId},
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    ok.
+
+%% Criterion 2: when the envelope carries no task_id, soma_actor:send/2 mints a
+%% fresh one and returns {ok, TaskId} with TaskId a non-empty binary. Enters
+%% through the real soma_actor:send/2 call; the actor is started through
+%% soma_actor_sup:start_actor/1, no layer bypassed.
+send_mints_task_id_when_absent(_Config) ->
+    Opts = #{actor_id => <<"actor-mint">>,
+             model_config => #{},
+             tool_policy => #{}},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>}},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% staged red: a minted id is a non-empty binary, never the empty binary.
+    true = is_binary(TaskId),
+    true = byte_size(TaskId) =:= 0,
     ok.
