@@ -183,10 +183,23 @@ resume.
 - **[docs/v0.2-test-contract.md](docs/v0.2-test-contract.md)** — the
   process-behaviour test contract for manifests and the CLI adapter: each proof
   mapped to the suite and case that proves it.
+- **[docs/v0.3-test-contract.md](docs/v0.3-test-contract.md)** — the
+  process-behaviour test contract for the LFE DSL compiler layer: compile-only
+  boundary, validation, parser, and runtime integration proofs.
 - **[docs/release.md](docs/release.md)** — building and running the release.
 - **[docs/lfe-dsl.md](docs/lfe-dsl.md)** — the LFE DSL: syntax reference,
   step-list contract, the demo example, `from_step` forms, diagnostic codes,
-  proof-to-test mapping, and explicit non-goals. The `soma_lfe` app is a
-  compile-only layer; it has no runtime dependency on `soma_runtime`.
+  and explicit non-goals. The `soma_lfe` app is a compile-only layer; it has
+  no runtime dependency on `soma_runtime`.
 - **[docs/roadmap.md](docs/roadmap.md)** — the future layers beyond the current
   build.
+- **[docs/what-is-soma.zh.md](docs/what-is-soma.zh.md)** — Chinese overview of
+  Soma, the soma_actor vision, and the execution path.
+- **[docs/soma-actor.zh.md](docs/soma-actor.zh.md)** — Chinese working model of
+  soma_actor: message-driven trigger, LLM roles, result patterns.
+- **[docs/soma-actor-final-design.zh.md](docs/soma-actor-final-design.zh.md)** —
+  Chinese final design for soma_actor: actor loop, decision frame, policy gate,
+  event contract, memory model, and minimum scope.
+- **[docs/erlang-otp-primer.zh.md](docs/erlang-otp-primer.zh.md)** — Chinese
+  primer on Erlang/OTP concepts (BEAM, process, mailbox, gen_server, gen_statem,
+  supervisor, port, release) for readers unfamiliar with Erlang.
