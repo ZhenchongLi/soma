@@ -21,6 +21,19 @@ test_ensure_all_started_ok_test() ->
         application:unload(soma_actor)
     end.
 
+%% Criterion 4: after boot, `soma_actor_sup' is registered under that name and
+%% its pid is alive. Stops/unloads the app afterward for a clean teardown.
+test_sup_registered_and_alive_test() ->
+    try
+        {ok, _} = application:ensure_all_started(soma_actor),
+        Pid = whereis(soma_actor_sup),
+        ?assert(is_pid(Pid)),
+        ?assertEqual(false, is_process_alive(Pid))
+    after
+        application:stop(soma_actor),
+        application:unload(soma_actor)
+    end.
+
 %% Locate `apps/soma_actor/src/soma_actor.app.src' relative to this test
 %% module's compiled `.beam', which rebar3 places under
 %% `_build/<profile>/lib/soma_actor/test/'.
