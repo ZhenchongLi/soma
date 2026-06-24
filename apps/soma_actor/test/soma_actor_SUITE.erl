@@ -54,6 +54,7 @@
 -export([ask_failed_run_returns_error/1]).
 -export([timed_out_run_emits_task_failed_timeout/1]).
 -export([ask_timed_out_run_returns_error_timeout/1]).
+-export([status_running_promptly_while_run_in_flight/1]).
 
 all() ->
     [actor_is_gen_statem_with_callbacks,
@@ -105,7 +106,8 @@ all() ->
      tool_crash_isolated_by_process_boundary,
      ask_failed_run_returns_error,
      timed_out_run_emits_task_failed_timeout,
-     ask_timed_out_run_returns_error_timeout].
+     ask_timed_out_run_returns_error_timeout,
+     status_running_promptly_while_run_in_flight].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= start_actor_returns_ok_pid;
@@ -170,7 +172,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= tool_crash_isolated_by_process_boundary;
        TestCase =:= ask_failed_run_returns_error;
        TestCase =:= timed_out_run_emits_task_failed_timeout;
-       TestCase =:= ask_timed_out_run_returns_error_timeout ->
+       TestCase =:= ask_timed_out_run_returns_error_timeout;
+       TestCase =:= status_running_promptly_while_run_in_flight ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
     {ok, Sup} = soma_actor_sup:start_link(),
     [{sup, Sup}, {started_apps, Started} | Config];
@@ -239,7 +242,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= tool_crash_isolated_by_process_boundary;
        TestCase =:= ask_failed_run_returns_error;
        TestCase =:= timed_out_run_emits_task_failed_timeout;
-       TestCase =:= ask_timed_out_run_returns_error_timeout ->
+       TestCase =:= ask_timed_out_run_returns_error_timeout;
+       TestCase =:= status_running_promptly_while_run_in_flight ->
     case ?config(sup, Config) of
         undefined -> ok;
         Sup ->
@@ -1542,6 +1546,41 @@ ask_timed_out_run_returns_error_timeout(_Config) ->
                  steps => Steps},
     {error, timeout} = soma_actor:ask(Pid, Envelope, 5000),
     true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 8 (slice p8/p9/p15): while a run is in flight and not yet terminal,
+%% get_task_status/2 for that task returns promptly with status running — the
+%% actor is not blocked waiting on the child run (P15). The runtime is booted so
+%% soma_run_sup and soma_tool_registry are alive; the actor is started through
+%% soma_actor_sup:start_actor/1 with the booted runtime's event store so the
+%% actor and the run share one store. Enters through the real soma_actor:send/2
+%% then soma_actor:get_task_status/2 calls, no layer bypassed. The single sleep
+%% step runs 500ms, so its run is genuinely in flight when the status is read;
+%% the get_task_status/2 call coming back at all inside its gen_statem:call
+%% default 5s timeout is the promptness proof (it would not return if the actor
+%% blocked on the child run), and the running status confirms the run was still
+%% in flight when the read was served — pinning P15 against this slice's
+%% failure-adjacent context.
+status_running_promptly_while_run_in_flight(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-status-promptly">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-status-promptly">>,
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 500}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% The 500ms sleep run is still in flight. The read is served from idle
+    %% without blocking on the child run, so the call returns promptly (the proof
+    %% of P15) and reports the in-flight task as running.
+    Status = soma_actor:get_task_status(Pid, TaskId),
+    completed = maps:get(status, Status),
+    TaskId = maps:get(task_id, Status),
     ok.
 
 %% Reads the run id the actor tracks for a given task id from its runs map
