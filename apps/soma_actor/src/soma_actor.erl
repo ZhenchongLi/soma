@@ -321,22 +321,26 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                                     %% the task -- and reply any parked waiter from
                                     %% the run's completion, not from this gate.
                                     Steps = maps:get(steps, Proposal),
-                                    %% Emit `proposal.executed' at the point the
-                                    %% actor hands an approved `run_steps' proposal
-                                    %% off to a run -- the actor saying "I approved
-                                    %% this and am starting a run for it", distinct
-                                    %% from the run's own `run.started'. Carries the
-                                    %% task's correlation_id and llm_call_id like the
-                                    %% other proposal events, so by_correlation/2
-                                    %% returns the full chain under one id.
-                                    emit(Data1, <<"proposal.executed">>,
-                                         #{task_id => TaskId,
-                                           correlation_id => CorrelationId,
-                                           llm_call_id => LlmCallId,
-                                           kind => maps:get(kind, Proposal, undefined)}),
-                                    Data2 = start_owned_run(Steps, TaskId,
-                                                            CorrelationId, Data1),
-                                    {keep_state, Data2};
+                                    case steps_budget_available(Steps, Data1) of
+                                        false ->
+                                            %% Spend point two: the proposal carries
+                                            %% more steps than the budget's
+                                            %% `max_steps' cap allows. Start no run:
+                                            %% fail the task as data through the
+                                            %% shared failure path, so no
+                                            %% `proposal.executed' / `run.started'
+                                            %% fires. The actor stays alive.
+                                            Data2 = fail_task(TaskId,
+                                                              {budget_exceeded,
+                                                               max_steps},
+                                                              Data1),
+                                            {keep_state, Data2};
+                                        true ->
+                                            execute_run_steps(Steps, TaskId,
+                                                              CorrelationId,
+                                                              LlmCallId, Proposal,
+                                                              Data1)
+                                    end;
                                 _ ->
                                     %% A toolless approved proposal (`reply' /
                                     %% `reject' / `ask') has nothing to run, so it
@@ -525,6 +529,35 @@ maybe_start_run(Envelope, TaskId, CorrelationId, Data) ->
         _ ->
             Data
     end.
+
+%% True when an approved `run_steps' proposal's step count is within the budget's
+%% `max_steps' cap. An absent `max_steps' (or absent budget) means no cap on that
+%% dimension, so any step count is available. The cap is a ceiling: a count over
+%% it is refused; a count equal to it is allowed.
+steps_budget_available(Steps, Data) ->
+    case maps:get(max_steps, Data#data.budget, undefined) of
+        undefined ->
+            true;
+        Max ->
+            length(Steps) =< Max
+    end.
+
+%% Execute an approved, within-budget `run_steps' proposal: emit
+%% `proposal.executed' at the point the actor hands the proposal off to a run --
+%% the actor saying "I approved this and am starting a run for it", distinct from
+%% the run's own `run.started'. It carries the task's correlation_id and
+%% llm_call_id like the other proposal events, so by_correlation/2 returns the
+%% full chain under one id. Then start the run via the shared owned-and-monitored
+%% path; the existing run-terminal clauses store the step outputs and complete the
+%% task, replying any parked waiter from the run's completion, not here.
+execute_run_steps(Steps, TaskId, CorrelationId, LlmCallId, Proposal, Data) ->
+    emit(Data, <<"proposal.executed">>,
+         #{task_id => TaskId,
+           correlation_id => CorrelationId,
+           llm_call_id => LlmCallId,
+           kind => maps:get(kind, Proposal, undefined)}),
+    Data1 = start_owned_run(Steps, TaskId, CorrelationId, Data),
+    {keep_state, Data1}.
 
 %% Start a soma_run the actor owns (session_pid => self()) for the given steps,
 %% monitor it, track run_id => task_id, and set the task `running'. Shared by the
