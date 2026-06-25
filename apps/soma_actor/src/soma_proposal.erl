@@ -21,6 +21,11 @@ normalize(#{kind := reject, reason := Reason}) when is_binary(Reason) ->
     {ok, #{kind => reject, reason => Reason}};
 normalize(#{kind := ask, question := Question}) when is_binary(Question) ->
     {ok, #{kind => ask, question => Question}};
+normalize(#{kind := reply}) ->
+    {error, [#{code => missing_required_field,
+               message => <<"reply proposal requires a text field">>,
+               kind => reply,
+               field => text}]};
 normalize(#{kind := Kind}) ->
     {error, [#{code => unknown_kind,
                message => <<"unknown proposal kind">>,
