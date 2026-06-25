@@ -73,7 +73,71 @@ test_persistent_store_creates_file_after_first_append() ->
 persistent_store_creates_file_after_first_append_test() ->
     test_persistent_store_creates_file_after_first_append().
 
+%% Criterion 3: an event passed to append/2 on a persistent store is readable
+%% back from the disk_log at Path and equals the store's normalized form of that
+%% event. The read-back deliberately goes around the store: the test opens its
+%% own short-lived disk_log against the same Path and reads the term with
+%% disk_log:chunk, then compares it to the store's normalized view of the same
+%% event (obtained through a by_run/2 query, which fills event_id/timestamp/
+%% missing mandatory keys exactly as the on-disk term should have them).
+test_appended_event_reads_back_from_log_as_normalized() ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    try
+        RawEvent = #{run_id => run_a,
+                     session_id => sess_a,
+                     correlation_id => corr_a,
+                     event_type => a1},
+        {ok, Pid} = soma_event_store:start_link(#{log => Path}),
+        ok = soma_event_store:append(Pid, RawEvent),
+
+        %% The store's normalized form of the appended event.
+        [_Normalized] = soma_event_store:by_run(Pid, run_a),
+
+        %% Stop the store so its disk_log handle is closed and flushed, then
+        %% read the term straight out of the disk_log at Path with our own open.
+        ok = stop_store(Pid),
+        FromDisk = read_one_log_term(Path),
+
+        %% Staged red: the raw input event is NOT what sits in the log —
+        %% normalize fills event_id/timestamp/missing mandatory keys — so this
+        %% assertion fires. Corrected to the normalized form in the next commit.
+        ?assertEqual(RawEvent, FromDisk)
+    after
+        ok = del_tmp_dir(TmpDir)
+    end.
+
+appended_event_reads_back_from_log_as_normalized_test() ->
+    test_appended_event_reads_back_from_log_as_normalized().
+
 %%% Helpers
+
+%% Open a fresh disk_log against an existing halt log file and read its single
+%% logged term back. Used to inspect what physically sits in the log, around the
+%% store.
+%% Stop a store gen_server and wait for it to be gone, so its disk_log handle
+%% is closed and the log is flushed to Path before we open our own.
+stop_store(Pid) ->
+    Ref = monitor(process, Pid),
+    gen_server:stop(Pid),
+    receive
+        {'DOWN', Ref, process, Pid, _} -> ok
+    after 5000 ->
+        error(stop_store_timeout)
+    end.
+
+read_one_log_term(Path) ->
+    Name = {?MODULE, make_ref()},
+    %% A halt log that was not closed cleanly comes back as {repaired, ...} on
+    %% reopen; with {badbytes, 0} the recovered terms are intact, so either
+    %% return is fine for reading.
+    case disk_log:open([{name, Name}, {file, Path}, {type, halt}]) of
+        {ok, Name} -> ok;
+        {repaired, Name, _Recovered, {badbytes, 0}} -> ok
+    end,
+    {_Cont, [Term]} = disk_log:chunk(Name, start),
+    ok = disk_log:close(Name),
+    Term.
 
 make_tmp_dir() ->
     Unique = erlang:integer_to_list(erlang:unique_integer([positive])),
