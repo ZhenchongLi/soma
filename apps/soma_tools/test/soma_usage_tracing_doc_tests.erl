@@ -20,8 +20,7 @@ contains(Haystack, Needle) ->
 %% soma_trace:render/2 call with a correlation_id.
 test_doc_has_tracing_section_with_render_call() ->
     Doc = read_doc(),
-    %% Staged-red: a deliberately wrong expected heading so the assertion fires.
-    ?assert(contains(Doc, <<"## DELIBERATELY_WRONG_Tracing">>)),
+    ?assert(contains(Doc, <<"Tracing">>)),
     ?assert(contains(Doc, <<"soma_trace:render(">>)).
 
 doc_has_tracing_section_with_render_call_test() ->

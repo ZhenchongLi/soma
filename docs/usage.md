@@ -399,6 +399,33 @@ correlation chain, real cancel, and surviving a failure — is in
 `examples/soma_actor_demo.erl` (`c("examples/soma_actor_demo").` in `rebar3
 shell`).
 
+### Tracing: render a correlation chain as a readable timeline
+
+`by_correlation/2` hands back raw event maps in append order. To read a chain
+without eyeballing maps, `soma_trace:render/2` queries the store for one
+`correlation_id` and formats the result as a timeline — one line per event,
+ordered by ascending `timestamp`:
+
+```erlang
+soma_trace:render(StorePid, CorrelationId).
+%% => iodata(), one line per event, e.g.
+%% actor.message.received task_id=... correlation_id=...
+%% actor.task.accepted    task_id=... correlation_id=...
+%% run.started            ...
+%% ...
+%% actor.task.completed   task_id=... correlation_id=...
+```
+
+Each line names the event's `event_type` and appends whichever salient ids the
+event carries (`task_id`, `step_id`, and so on); a field the event does not
+carry is left off rather than printed empty. A failure line includes its
+`reason`, found either as a top-level key (actor events) or inside `payload`
+(run events). An unknown `correlation_id` renders empty iodata rather than
+crashing.
+
+`soma_trace:timeline/1` is the underlying pure function — pass it a plain list
+of event maps to format them without touching the store.
+
 ## Agent decision layer (soma_actor, v0.5)
 
 v0.5 adds the agent's decision step in front of execution: instead of an envelope
