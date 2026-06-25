@@ -359,6 +359,17 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                                                               LlmCallId, Proposal,
                                                               Data1)
                                     end;
+                                actor_message ->
+                                    %% An approved `actor_message' delivers an
+                                    %% envelope to the actor its `to' names. The
+                                    %% sender's correlation_id rides into the
+                                    %% delivered envelope, so the receiver's task
+                                    %% lands under the same id and
+                                    %% by_correlation/2 returns both chains. The
+                                    %% sender's work is done on delivery.
+                                    execute_actor_message(TaskId, CorrelationId,
+                                                          LlmCallId, Proposal,
+                                                          Data1);
                                 _ ->
                                     %% A toolless approved proposal (`reply' /
                                     %% `reject' / `ask') has nothing to run, so it
@@ -576,6 +587,44 @@ execute_run_steps(Steps, TaskId, CorrelationId, LlmCallId, Proposal, Data) ->
            kind => maps:get(kind, Proposal, undefined)}),
     Data1 = start_owned_run(Steps, TaskId, CorrelationId, Data),
     {keep_state, Data1}.
+
+%% Execute an approved `actor_message' proposal: deliver the proposal's payload
+%% to the actor its `to' pid names. Emit `proposal.executed' (the sender saying
+%% "I approved this and am delivering it", carrying the task's correlation_id and
+%% llm_call_id like the run_steps path). Build a delivery envelope stamped with
+%% the sender's correlation_id so the receiver's task lands under the same id, and
+%% hand it to the receiver through the normal soma_actor:send/2 entry point -- no
+%% layer bypassed, fire-and-forget (the sender does not wait on the receiver's
+%% result). A delivery to a dead receiver exits the gen_statem:call inside send/2;
+%% that exit is task data, not a sender crash, so it is caught and the sender task
+%% is marked `failed'. On a successful delivery the sender task reaches `completed'
+%% with the proposal as its result, releasing any parked ask waiter.
+execute_actor_message(TaskId, CorrelationId, LlmCallId, Proposal, Data) ->
+    emit(Data, <<"proposal.executed">>,
+         #{task_id => TaskId,
+           correlation_id => CorrelationId,
+           llm_call_id => LlmCallId,
+           kind => maps:get(kind, Proposal, undefined)}),
+    To = maps:get(to, Proposal),
+    Payload = maps:get(payload, Proposal),
+    Delivery = #{type => <<"actor.message">>,
+                 payload => Payload,
+                 correlation_id => CorrelationId},
+    try soma_actor:send(To, Delivery) of
+        _ ->
+            Task = (maps:get(TaskId, Data#data.tasks))#{
+                     status => completed, result => Proposal},
+            Tasks = maps:put(TaskId, Task, Data#data.tasks),
+            reply_waiter(TaskId, {ok, Proposal}, Data#data{tasks = Tasks})
+    catch
+        exit:Reason ->
+            %% The receiver was dead (or otherwise unreachable) when send/2 ran.
+            %% Treat the failed delivery as task data: mark the sender task
+            %% `failed', emit `actor.task.failed', release any parked waiter, and
+            %% stay alive -- the sender must survive a dead receiver.
+            Data1 = fail_task(TaskId, {delivery_failed, Reason}, Data),
+            {keep_state, Data1}
+    end.
 
 %% Start a soma_run the actor owns (session_pid => self()) for the given steps,
 %% monitor it, track run_id => task_id, and set the task `running'. Shared by the
