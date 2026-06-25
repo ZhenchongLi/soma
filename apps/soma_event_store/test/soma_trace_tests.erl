@@ -44,3 +44,15 @@ test_timeline_line_names_event_type() ->
 
 timeline_line_names_event_type_test() ->
     test_timeline_line_names_event_type().
+
+test_timeline_line_includes_task_id() ->
+    Events = [#{event_type => 'actor.started', timestamp => 1, task_id => <<"task-abc-123">>}],
+    Output = soma_trace:timeline(Events),
+    Lines = string:split(iolist_to_binary(Output), <<"\n">>, all),
+    NonEmptyLines = [binary_to_list(L) || L <- Lines, L =/= <<>>],
+    Line = hd(NonEmptyLines),
+    %% The line must contain the task_id value
+    ?assertEqual(true, string:str(Line, "task-abc-123") > 0).
+
+timeline_line_includes_task_id_test() ->
+    test_timeline_line_includes_task_id().
