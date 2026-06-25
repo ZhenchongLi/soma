@@ -15,6 +15,7 @@
 -export([cancel_in_flight_call_worker_dead_actor_alive/1]).
 -export([crash_reaches_actor_as_failed_via_down/1]).
 -export([status_promptly_while_llm_call_in_flight/1]).
+-export([completed_call_appends_llm_event_with_correlation_id/1]).
 
 all() ->
     [llm_worker_runs_in_distinct_pid,
@@ -22,7 +23,8 @@ all() ->
      slow_call_times_out_worker_dead_actor_alive,
      cancel_in_flight_call_worker_dead_actor_alive,
      crash_reaches_actor_as_failed_via_down,
-     status_promptly_while_llm_call_in_flight].
+     status_promptly_while_llm_call_in_flight,
+     completed_call_appends_llm_event_with_correlation_id].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -217,6 +219,43 @@ status_promptly_while_llm_call_in_flight(_Config) ->
     true = is_process_alive(ActorPid),
     exit(WorkerPid, kill),
     ok.
+
+%% Criterion 8: a completed LLM call appends at least one `llm.*' event to the
+%% event store carrying the task's `correlation_id'. Enters through the real
+%% soma_actor:send/2 with a `success' llm envelope and an explicit
+%% `correlation_id' in the envelope, waits for the task to reach `completed',
+%% then queries soma_event_store:by_correlation/2 for that correlation_id and
+%% asserts at least one event whose type starts with `llm.' is present (each such
+%% event carries the correlation_id by virtue of by_correlation/2's filter).
+completed_call_appends_llm_event_with_correlation_id(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-corr">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => success, output => <<"hi from the mock">>},
+    TaskId = <<"task-llm-corr">>,
+    CorrelationId = <<"corr-llm-corr">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    %% Staged red: query a correlation_id that no event carries, so the llm.*
+    %% filter yields an empty list and `length >= 1' fires. Corrected to
+    %% CorrelationId in the green commit.
+    Events = soma_event_store:by_correlation(Store, <<"corr-does-not-exist">>),
+    LlmEvents = [E || E <- Events,
+                      is_llm_event_type(maps:get(event_type, E, undefined))],
+    true = length(LlmEvents) >= 1,
+    ok.
+
+%% True when the event-type binary starts with the `llm.' prefix.
+is_llm_event_type(<<"llm.", _/binary>>) -> true;
+is_llm_event_type(_) -> false.
 
 %% Polls get_task_status until the task reaches the given status.
 wait_for_status(_ActorPid, TaskId, Status, 0) ->
