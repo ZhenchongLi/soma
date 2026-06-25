@@ -13,11 +13,13 @@
 -export([reply_proposal_stored_as_task_result/1]).
 -export([reply_proposal_emits_proposal_created_with_correlation_id/1]).
 -export([run_steps_proposal_starts_no_run/1]).
+-export([malformed_proposal_marks_task_failed/1]).
 
 all() ->
     [reply_proposal_stored_as_task_result,
      reply_proposal_emits_proposal_created_with_correlation_id,
-     run_steps_proposal_starts_no_run].
+     run_steps_proposal_starts_no_run,
+     malformed_proposal_marks_task_failed].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -124,6 +126,31 @@ run_steps_proposal_starts_no_run(_Config) ->
     RunStarted = [E || E <- Events,
                        maps:get(event_type, E, undefined) =:= <<"run.started">>],
     [] = RunStarted,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 12: after a mock LLM call returns a proposal candidate (a map with a
+%% `kind' tag) that fails soma_proposal:normalize/1, the task status reads `failed'.
+%% Enters through the real soma_actor:send/2 with a `proposal' llm directive
+%% carrying a malformed proposal -- a `reply' proposal with no `text' -- waits for
+%% the task to reach `failed', and asserts the actor stays alive.
+malformed_proposal_marks_task_failed(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-proposal-malformed">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => reply},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-proposal-malformed">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    {error, _} = soma_proposal:normalize(RawProposal),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
     true = is_process_alive(ActorPid),
     ok.
 
