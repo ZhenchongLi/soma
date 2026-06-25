@@ -13,9 +13,11 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([budget_zero_llm_calls_fails_task_with_reason/1]).
+-export([budget_zero_llm_calls_emits_no_llm_started/1]).
 
 all() ->
-    [budget_zero_llm_calls_fails_task_with_reason].
+    [budget_zero_llm_calls_fails_task_with_reason,
+     budget_zero_llm_calls_emits_no_llm_started].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -59,6 +61,37 @@ budget_zero_llm_calls_fails_task_with_reason(_Config) ->
     ok = wait_for_status(ActorPid, TaskId, failed, 100),
     Status = soma_actor:get_task_status(ActorPid, TaskId),
     {budget_exceeded, max_llm_calls} = maps:get(reason, Status),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 2: in that same `max_llm_calls => 0' case the actor makes no LLM
+%% call, so the task's event trail carries no `llm.started' event. The budget
+%% check in maybe_start_llm_call/4 returns through the shared failure path before
+%% the `emit "llm.started"' call. Drives the envelope through the real
+%% soma_actor:send/2, waits for the terminal `failed' status, then reads the trail
+%% through soma_event_store:by_correlation/2 and asserts no `llm.started' event.
+budget_zero_llm_calls_emits_no_llm_started(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-budget-zero-no-llm">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             budget => #{max_llm_calls => 0},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => proposal,
+            output => #{kind => reply, text => <<"hi">>}},
+    TaskId = <<"task-budget-zero-no-llm">>,
+    CorrelationId = <<"corr-budget-zero-no-llm">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
+    true = lists:member(<<"llm.started">>, Types),
     true = is_process_alive(ActorPid),
     ok.
 
