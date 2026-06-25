@@ -13,9 +13,11 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([approved_run_steps_completes_with_step_outputs/1]).
+-export([approved_run_steps_emits_proposal_executed_with_correlation_id/1]).
 
 all() ->
-    [approved_run_steps_completes_with_step_outputs].
+    [approved_run_steps_completes_with_step_outputs,
+     approved_run_steps_emits_proposal_executed_with_correlation_id].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -62,6 +64,41 @@ approved_run_steps_completes_with_step_outputs(_Config) ->
     %% The single echo step s1 echoes its args unchanged, so the run's Outputs
     %% map is keyed by the step id with the echoed args as the value.
     #{<<"s1">> := #{value := <<"a">>}} = Outputs,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 2: an approved `run_steps' proposal emits a `proposal.executed' event
+%% carrying the task's correlation_id (and llm_call_id, matching the other proposal
+%% events) at the point the run is started. Drives the same approved-proposal chain
+%% through the real soma_actor:send/2, waits for the task to reach `completed' (so
+%% the run was started and the event was emitted), then reads the event back through
+%% soma_event_store:by_correlation/2 and asserts a `proposal.executed' event exists
+%% carrying the task's correlation_id.
+approved_run_steps_emits_proposal_executed_with_correlation_id(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-exec-executed">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => echo,
+                               args => #{value => <<"a">>}}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-exec-executed">>,
+    CorrelationId = <<"corr-exec-executed">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Executed = [E || E <- Events,
+                     maps:get(event_type, E, undefined) =:= <<"proposal.executed">>],
+    [Event | _] = Executed,
+    CorrelationId = maps:get(correlation_id, Event),
     true = is_process_alive(ActorPid),
     ok.
 
