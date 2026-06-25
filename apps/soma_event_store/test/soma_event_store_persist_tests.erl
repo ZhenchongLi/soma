@@ -189,7 +189,7 @@ test_by_run_after_restart_filters_to_one_run() ->
         ok = stop_store(Pid2),
 
         RunATypes = [maps:get(event_type, E) || E <- RecoveredRunA],
-        ?assertEqual([a1, b1, a2], RunATypes),
+        ?assertEqual([a1, a2], RunATypes),
         ?assertEqual(ExpectedRunA, RecoveredRunA)
     after
         ok = del_tmp_dir(TmpDir)
