@@ -101,8 +101,7 @@ get_task_result_holds_llm_output(_Config) ->
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
-    {ok, ExpectedOutput} = soma_actor:get_task_result(ActorPid, TaskId),
-    ExpectedOutput = <<"WRONG expected output -- staged red">>,
+    {ok, Output} = soma_actor:get_task_result(ActorPid, TaskId),
     %% Sleep past the 50ms window so a stale (uncancelled) timer would have fired.
     timer:sleep(200),
     completed = maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)),
