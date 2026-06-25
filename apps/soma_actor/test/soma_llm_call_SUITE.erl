@@ -421,7 +421,7 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
     true = doc_contains(Doc, <<"v0.5.4">>),
     true = doc_contains(Doc, <<"soma_proposal_exec_SUITE">>),
     %% The v0.5.5 budget & loop-limits section and its proving suite.
-    true = doc_contains(Doc, <<"v0.5.99">>),
+    true = doc_contains(Doc, <<"v0.5.5">>),
     true = doc_contains(Doc, <<"soma_actor_budget_SUITE">>),
     %% Every case that proves a process proof in this slice.
     Cases =
