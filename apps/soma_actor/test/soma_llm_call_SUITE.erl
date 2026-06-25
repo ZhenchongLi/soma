@@ -213,7 +213,7 @@ status_promptly_while_llm_call_in_flight(_Config) ->
     Status = soma_actor:get_task_status(ActorPid, TaskId),
     Elapsed = erlang:monotonic_time(millisecond) - Start,
     true = Elapsed < 200,
-    completed = maps:get(status, Status),
+    running = maps:get(status, Status),
     true = is_process_alive(ActorPid),
     exit(WorkerPid, kill),
     ok.
