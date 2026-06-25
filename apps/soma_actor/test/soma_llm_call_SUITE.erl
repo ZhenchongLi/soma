@@ -14,6 +14,7 @@
 -export([slow_call_times_out_worker_dead_actor_alive/1]).
 -export([cancel_in_flight_call_worker_dead_actor_alive/1]).
 -export([crash_reaches_actor_as_failed_via_down/1]).
+-export([crash_with_timeout_ms_stays_failed_no_spurious_timeout/1]).
 -export([status_promptly_while_llm_call_in_flight/1]).
 -export([completed_call_appends_llm_event_with_correlation_id/1]).
 -export([by_correlation_returns_llm_and_actor_events/1]).
@@ -26,6 +27,7 @@ all() ->
      slow_call_times_out_worker_dead_actor_alive,
      cancel_in_flight_call_worker_dead_actor_alive,
      crash_reaches_actor_as_failed_via_down,
+     crash_with_timeout_ms_stays_failed_no_spurious_timeout,
      status_promptly_while_llm_call_in_flight,
      completed_call_appends_llm_event_with_correlation_id,
      by_correlation_returns_llm_and_actor_events,
@@ -186,6 +188,42 @@ crash_reaches_actor_as_failed_via_down(_Config) ->
     false = is_process_alive(WorkerPid),
     true = is_process_alive(ActorPid),
     true = ActorPid =/= WorkerPid,
+    ok.
+
+%% Regression (review #77): a crashing LLM call whose envelope ALSO carried a
+%% `timeout_ms' must reach `failed' and STAY `failed'. The crash arrives through
+%% the monitor `'DOWN'' and records `failed', but unless that path also clears the
+%% armed call-timeout timer and drops the `llm_calls' entry, the still-live timer
+%% later fires `{timeout, _, {llm_timeout, LlmCallId}}', finds the task still in
+%% `llm_calls', and flips the status `failed' -> `timeout' while emitting a
+%% spurious `llm.timeout' event against the already-dead worker. Enters through
+%% the real soma_actor:send/2 with a `crash' directive AND a short `timeout_ms'.
+%% Asserts the task reaches `failed', then -- after sleeping well past the timeout
+%% window so any stale timer would have fired -- the status is STILL `failed' and
+%% no `llm.timeout' event exists in the store. The actor stays alive.
+crash_with_timeout_ms_stays_failed_no_spurious_timeout(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-crash-tmo">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => crash, timeout_ms => 50},
+    TaskId = <<"task-llm-crash-tmo">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
+    %% Sleep well past the 50ms call-timeout window so any stale armed timer
+    %% would have fired by now.
+    timer:sleep(200),
+    failed = maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)),
+    Events = soma_event_store:all(Store),
+    [] = [E || E <- Events,
+               maps:get(event_type, E, undefined) =:= <<"llm.timeout">>],
+    true = is_process_alive(ActorPid),
     ok.
 
 %% Criterion 7: while an LLM call is in flight, get_task_status returns promptly
