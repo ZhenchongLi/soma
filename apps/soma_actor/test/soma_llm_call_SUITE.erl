@@ -420,6 +420,9 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
     %% The v0.5.4 approved-proposal-execution section and its proving suite.
     true = doc_contains(Doc, <<"v0.5.4">>),
     true = doc_contains(Doc, <<"soma_proposal_exec_SUITE">>),
+    %% The v0.5.5 budget & loop-limits section and its proving suite.
+    true = doc_contains(Doc, <<"v0.5.99">>),
+    true = doc_contains(Doc, <<"soma_actor_budget_SUITE">>),
     %% Every case that proves a process proof in this slice.
     Cases =
         [<<"test_mock_success_returns_configured_output">>,
@@ -473,7 +476,18 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
          <<"actor_survives_failed_run_takes_next_llm_envelope">>,
          <<"direct_steps_completes_no_proposal_event">>,
          %% v0.5.4 re-pinned bare no-steps no-llm proof (soma_actor_SUITE).
-         <<"no_steps_accepts_and_starts_no_run">>],
+         <<"no_steps_accepts_and_starts_no_run">>,
+         %% v0.5.5 budget & loop-limits proofs (soma_actor_budget_SUITE).
+         <<"budget_zero_llm_calls_fails_task_with_reason">>,
+         <<"budget_zero_llm_calls_emits_no_llm_started">>,
+         <<"budget_max_steps_fails_oversized_proposal_with_reason">>,
+         <<"budget_max_steps_oversized_proposal_emits_no_run_started">>,
+         <<"budget_within_max_steps_proposal_completes">>,
+         <<"budget_failed_task_status_reads_failed">>,
+         <<"actor_survives_budget_failure_takes_next_envelope">>,
+         <<"parked_ask_on_budget_failed_task_gets_error">>,
+         <<"by_correlation_surfaces_budget_failed_event_with_reason">>,
+         <<"no_budget_field_executes_approved_run_steps_to_completed">>],
     [true = doc_contains(Doc, Case) || Case <- Cases],
     ok.
 
