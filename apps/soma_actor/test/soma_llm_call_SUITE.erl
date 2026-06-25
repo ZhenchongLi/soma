@@ -413,6 +413,10 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
     true = doc_contains(Doc, <<"v0.5.2">>),
     true = doc_contains(Doc, <<"soma_proposal_tests">>),
     true = doc_contains(Doc, <<"soma_proposal_SUITE">>),
+    %% The v0.5.3 policy-gate section and its proving suites.
+    true = doc_contains(Doc, <<"v0.5.3">>),
+    true = doc_contains(Doc, <<"soma_policy_tests">>),
+    true = doc_contains(Doc, <<"soma_policy_SUITE">>),
     %% Every case that proves a process proof in this slice.
     Cases =
         [<<"test_mock_success_returns_configured_output">>,
@@ -440,7 +444,21 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
          <<"run_steps_proposal_starts_no_run">>,
          <<"malformed_proposal_marks_task_failed">>,
          <<"actor_survives_malformed_proposal_takes_next_send">>,
-         <<"by_correlation_returns_proposal_actor_and_llm_events">>],
+         <<"by_correlation_returns_proposal_actor_and_llm_events">>,
+         %% v0.5.3 pure policy-decision proofs (soma_policy_tests).
+         <<"run_steps_all_tools_allowed_returns_allow_test">>,
+         <<"run_steps_unknown_tool_returns_reject_test">>,
+         <<"run_steps_all_or_absent_allowlist_returns_allow_test">>,
+         <<"toolless_kinds_return_allow_test">>,
+         %% v0.5.3 actor-side policy-gate proofs (soma_policy_SUITE).
+         <<"allowed_run_steps_emits_proposal_approved_with_correlation_id">>,
+         <<"allowed_proposal_starts_no_run">>,
+         <<"allowed_proposal_status_reads_approved">>,
+         <<"rejected_proposal_emits_proposal_rejected_with_reason_and_correlation_id">>,
+         <<"rejected_proposal_starts_no_run">>,
+         <<"rejected_proposal_status_reads_rejected">>,
+         <<"actor_survives_rejected_proposal_takes_next_send">>,
+         <<"by_correlation_returns_verdict_created_actor_and_llm_events">>],
     [true = doc_contains(Doc, Case) || Case <- Cases],
     ok.
 
