@@ -171,6 +171,38 @@ Events = soma_event_store:by_correlation(StorePid, CorrelationId).
 Events = soma_event_store:all(StorePid).
 ```
 
+### Persistent store and restart durability
+
+By default the event store is in-memory: `start_link/0` keeps every event in a
+single in-process list, writes nothing to disk, and the trail is gone when the
+BEAM stops. The full supervision tree starts the store this way.
+
+For a trail that outlives a restart, start the store with the opt-in
+`start_link/1`, passing a log path:
+
+```erlang
+{ok, StorePid} = soma_event_store:start_link(#{log => "/var/lib/soma/events.log"}).
+```
+
+A store started this way opens a `halt`-type `disk_log` at that path. Each
+`append/2` writes the same normalized event map it puts in the in-memory index
+to the `disk_log` as well, so what you read back from the file equals what a
+query returns. The query API is unchanged — `all/1`, `by_run/2`,
+`by_session/2`, and `by_correlation/2` always read the in-memory index, in both
+modes.
+
+The durability payoff is on **restart**: when a store is started again with
+`start_link/1` at the same path, `init/1` replays the `disk_log` and rebuilds
+the index in append order, so every event written before the stop is served
+again through the same queries. The log is the source of truth; the index is a
+rebuildable cache. An unclean shutdown that leaves a half-written term at the
+end of the log does not break the restart — replay treats the corrupt tail as
+end-of-log, keeps every intact event read so far, and finishes `init/1`
+cleanly, costing you only the last partial event.
+
+The persistent path is opt-in and used by tests; the default release runs the
+in-memory store via `start_link/0`.
+
 ### Event structure
 
 Every event is a map. The store normalizes it to always include:
