@@ -325,7 +325,7 @@ actor_survives_failed_run_takes_next_llm_envelope(_Config) ->
                    correlation_id => <<"corr-exec-next-2">>,
                    llm => #{directive => proposal, output => OkProposal}},
     {ok, <<"task-exec-next-2">>} = soma_actor:send(ActorPid, OkEnvelope),
-    ok = wait_for_status(ActorPid, <<"task-exec-next-2">>, failed, 100),
+    ok = wait_for_status(ActorPid, <<"task-exec-next-2">>, completed, 100),
     {ok, Outputs} = soma_actor:get_task_result(ActorPid, <<"task-exec-next-2">>),
     #{<<"s1">> := #{value := <<"b">>}} = Outputs,
     true = is_process_alive(ActorPid),
