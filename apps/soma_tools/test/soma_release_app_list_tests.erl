@@ -70,3 +70,12 @@ test_doc_states_actor_not_bundled() ->
 
 doc_states_actor_not_bundled_test() ->
     test_doc_states_actor_not_bundled().
+
+%% Issue #75 criterion 3: docs/release.md no longer contains the phrase
+%% "not yet bundled" anywhere in the file.
+test_doc_drops_not_yet_bundled() ->
+    Doc = read_doc(),
+    ?assertNot(contains(Doc, <<"not yet bundled">>)).
+
+doc_drops_not_yet_bundled_test() ->
+    test_doc_drops_not_yet_bundled().
