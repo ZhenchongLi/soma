@@ -61,9 +61,7 @@ test_drift_between_lists_is_flagged() ->
     %% doc): comparison must NOT report equality.
     DroppedOne = [bullet_line(App) || App <- RebarApps, App =/= soma_actor],
     DocMissingActor = iolist_to_binary(DroppedOne),
-    %% staged red: deliberately-wrong expectation — drift is flagged, so the two
-    %% sets are NOT equal; assertEqual here must fire.
-    ?assertEqual(RebarApps, doc_named_apps(DocMissingActor)),
+    ?assertNotEqual(RebarApps, doc_named_apps(DocMissingActor)),
     %% Doc that names the rebar set as-is plus drift in the form of a different
     %% spelling for one app (the doc and rebar set point at different apps):
     %% comparison must NOT report equality.
