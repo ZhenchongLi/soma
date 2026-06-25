@@ -29,8 +29,7 @@ test_in_memory_store_writes_no_file_and_queries_unchanged() ->
                                             event_type => a2}),
 
         AllTypes = [maps:get(event_type, E) || E <- soma_event_store:all(Pid)],
-        %% staged red: deliberately wrong order — corrected in the green commit
-        ?assertEqual([a2, b1, a1], AllTypes),
+        ?assertEqual([a1, b1, a2], AllTypes),
 
         ByRunTypes = [maps:get(event_type, E)
                       || E <- soma_event_store:by_run(Pid, run_a)],
