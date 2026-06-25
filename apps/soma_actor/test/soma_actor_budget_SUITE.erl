@@ -19,6 +19,7 @@
 -export([budget_within_max_steps_proposal_completes/1]).
 -export([budget_failed_task_status_reads_failed/1]).
 -export([actor_survives_budget_failure_takes_next_envelope/1]).
+-export([parked_ask_on_budget_failed_task_gets_error/1]).
 
 all() ->
     [budget_zero_llm_calls_fails_task_with_reason,
@@ -27,7 +28,8 @@ all() ->
      budget_max_steps_oversized_proposal_emits_no_run_started,
      budget_within_max_steps_proposal_completes,
      budget_failed_task_status_reads_failed,
-     actor_survives_budget_failure_takes_next_envelope].
+     actor_survives_budget_failure_takes_next_envelope,
+     parked_ask_on_budget_failed_task_gets_error].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -292,6 +294,35 @@ actor_survives_budget_failure_takes_next_envelope(_Config) ->
     ok = wait_for_status(ActorPid, SecondTaskId, completed, 100),
     Status = soma_actor:get_task_status(ActorPid, SecondTaskId),
     completed = maps:get(status, Status),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 8: a parked `ask' on a budget-failed task receives an `{error, _}'
+%% reply. An actor with `budget => #{max_llm_calls => 0}' is driven through the
+%% real soma_actor:ask/3 with an `llm' envelope. The budget check inside
+%% maybe_start_llm_call/4 fails before any call starts, and the shared failure
+%% helper must release the parked ask waiter `From' with
+%% `{error, {budget_exceeded, max_llm_calls}}' rather than leaving the caller
+%% blocked until the timeout. The actor stays alive.
+parked_ask_on_budget_failed_task_gets_error(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-budget-ask">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             budget => #{max_llm_calls => 0},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => proposal,
+            output => #{kind => reply, text => <<"hi">>}},
+    TaskId = <<"task-budget-ask">>,
+    CorrelationId = <<"corr-budget-ask">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    Reply = soma_actor:ask(ActorPid, Envelope, 1000),
+    {error, {budget_exceeded, max_llm_calls}} = Reply,
     true = is_process_alive(ActorPid),
     ok.
 
