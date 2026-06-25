@@ -14,9 +14,11 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([delivered_message_accepted_by_a2_emits_task_accepted/1]).
+-export([delivered_task_inherits_a1_correlation_id/1]).
 
 all() ->
-    [delivered_message_accepted_by_a2_emits_task_accepted].
+    [delivered_message_accepted_by_a2_emits_task_accepted,
+     delivered_task_inherits_a1_correlation_id].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -71,6 +73,49 @@ delivered_message_accepted_by_a2_emits_task_accepted(_Config) ->
     true = is_process_alive(A2),
     true = is_process_alive(A1),
     ok.
+
+%% Criterion 6: A2's delivered task inherits A1's correlation_id. A1's sender
+%% task ran under CorrelationId; the delivery envelope A1 builds carries that
+%% same id, and A2's resolve_correlation_id/2 honors it, so the
+%% `actor.task.accepted' event A2 emits carries A1's correlation_id. Drives A1
+%% through the real soma_actor:send/2, waits for A2's accepted event, then reads
+%% its `correlation_id' field and asserts it equals the id A1 ran under.
+delivered_task_inherits_a1_correlation_id(_Config) ->
+    Store = event_store_pid(),
+    A2Opts = #{actor_id => <<"actor-a2">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2} = soma_actor_sup:start_actor(A2Opts),
+    A1Opts = #{actor_id => <<"actor-a1">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1} = soma_actor_sup:start_actor(A1Opts),
+    RawProposal = #{kind => actor_message,
+                    to => A2,
+                    payload => #{text => <<"hello a2">>}},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-a1-send">>,
+    CorrelationId = <<"corr-a1-send">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"tell a2">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(A1, Envelope),
+    ok = wait_for_a2_accepted(Store, CorrelationId, <<"actor-a2">>, 100),
+    [A2Accepted | _] = a2_accepted_events(Store, CorrelationId, <<"actor-a2">>),
+    <<"wrong-corr">> = maps:get(correlation_id, A2Accepted),
+    true = is_process_alive(A2),
+    true = is_process_alive(A1),
+    ok.
+
+a2_accepted_events(Store, CorrelationId, A2Id) ->
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    [E || E <- Events,
+          maps:get(event_type, E, undefined) =:= <<"actor.task.accepted">>,
+          maps:get(actor_id, E, undefined) =:= A2Id].
 
 %% Polls the shared event store until an `actor.task.accepted' event emitted by
 %% the named A2 actor_id appears under CorrelationId.
