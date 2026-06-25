@@ -208,11 +208,11 @@ rejected_proposal_starts_no_run_status_rejected(_Config) ->
                  correlation_id => CorrelationId,
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
-    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    ok = wait_for_status(ActorPid, TaskId, rejected, 100),
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
     true = lists:member(<<"proposal.rejected">>, Types),
-    true = lists:member(<<"run.started">>, Types),
+    false = lists:member(<<"run.started">>, Types),
     true = is_process_alive(ActorPid),
     ok.
 
