@@ -64,6 +64,23 @@ printf '%s\n' \
 
 Expect the run to show `completed` and `alive=true`.
 
+### Actor boot smoke test
+
+The release also bundles `soma_actor` (the v0.4 agent-entity layer). To confirm
+the actor layer boots and runs a task end to end, start an actor with
+`soma_actor_sup:start_actor/1` against the booted runtime's event store, send a
+one-step `echo` task, and poll `soma_actor:get_task_status/2` until it reads
+`completed` — modeled on the session smoke test above, no Erlang toolchain
+required:
+
+```bash
+printf '%s\n' \
+  '{soma_event_store,Store,_,_}=lists:keyfind(soma_event_store,1,supervisor:which_children(soma_sup)), {ok,A}=soma_actor_sup:start_actor(#{actor_id=><<"smoke">>,model_config=>#{},tool_policy=>#{},event_store=>Store}), T=(<<"smoke-task">>), {ok,T}=soma_actor:send(A,#{type=><<"chat">>,payload=>#{text=><<"hi">>},task_id=>T,steps=>[#{id=>s1,tool=>echo,args=>#{value=><<"smoke">>}}]), timer:sleep(300), io:format("~nACTOR-SMOKE ~p alive=~p~n",[soma_actor:get_task_status(A,T), is_process_alive(A)]).' \
+  'init:stop().' | _build/prod/rel/soma/bin/soma console
+```
+
+Expect the task status to show `completed` and `alive=true`.
+
 ### macOS note
 
 On macOS the `daemon` / `ping` / `stop` control commands are unreliable — they
