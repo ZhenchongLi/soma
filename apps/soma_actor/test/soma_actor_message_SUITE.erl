@@ -193,10 +193,9 @@ a1_emits_proposal_executed_for_actor_message(_Config) ->
                          =:= <<"proposal.executed">>,
                      maps:get(actor_id, E, undefined) =:= <<"actor-a1">>,
                      maps:get(task_id, E, undefined) =:= TaskId],
-    %% Staged red: A1 already emits `proposal.executed' for the actor_message
-    %% task, so the truthful expectation is [_ | _]. Start with the wrong
-    %% expectation ([]) so the assertion fires red.
-    [] = Executed,
+    %% A1's actor_message arm emits exactly one `proposal.executed' for the
+    %% sender task before delivering the envelope to A2.
+    [_ | _] = Executed,
     true = is_process_alive(A2),
     true = is_process_alive(A1),
     ok.
