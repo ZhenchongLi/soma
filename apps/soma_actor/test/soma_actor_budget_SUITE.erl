@@ -395,7 +395,7 @@ no_budget_field_executes_approved_run_steps_to_completed(_Config) ->
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
     Status = soma_actor:get_task_status(ActorPid, TaskId),
-    failed = maps:get(status, Status),
+    completed = maps:get(status, Status),
     true = is_process_alive(ActorPid),
     ok.
 
