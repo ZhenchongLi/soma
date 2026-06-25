@@ -237,7 +237,7 @@ budget_failed_task_status_reads_failed(_Config) ->
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, failed, 100),
     Status = soma_actor:get_task_status(ActorPid, TaskId),
-    completed = maps:get(status, Status),
+    failed = maps:get(status, Status),
     true = is_process_alive(ActorPid),
     ok.
 
