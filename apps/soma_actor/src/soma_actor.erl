@@ -16,7 +16,7 @@
 -export([idle/3]).
 
 -record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
-               runs = #{}, waiters = #{}}).
+               runs = #{}, waiters = #{}, monitors = #{}}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -165,11 +165,12 @@ idle(info, {run_completed, RunId, Outputs}, Data) ->
         undefined ->
             {keep_state, Data};
         TaskId ->
-            Task = maps:get(TaskId, Data#data.tasks),
+            Data0 = clear_monitor(TaskId, Data),
+            Task = maps:get(TaskId, Data0#data.tasks),
             CorrelationId = maps:get(correlation_id, Task),
             Task1 = Task#{status => completed, result => Outputs},
-            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
-            Data1 = Data#data{tasks = Tasks},
+            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+            Data1 = Data0#data{tasks = Tasks},
             emit(Data1, <<"actor.result.created">>,
                  #{task_id => TaskId, correlation_id => CorrelationId}),
             emit(Data1, <<"actor.task.completed">>,
@@ -181,11 +182,12 @@ idle(info, {run_failed, RunId, Reason}, Data) ->
         undefined ->
             {keep_state, Data};
         TaskId ->
-            Task = maps:get(TaskId, Data#data.tasks),
+            Data0 = clear_monitor(TaskId, Data),
+            Task = maps:get(TaskId, Data0#data.tasks),
             CorrelationId = maps:get(correlation_id, Task),
             Task1 = Task#{status => failed, reason => Reason},
-            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
-            Data1 = Data#data{tasks = Tasks},
+            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+            Data1 = Data0#data{tasks = Tasks},
             emit(Data1, <<"actor.task.failed">>,
                  #{task_id => TaskId, correlation_id => CorrelationId,
                    reason => Reason}),
@@ -196,11 +198,12 @@ idle(info, {run_timeout, RunId}, Data) ->
         undefined ->
             {keep_state, Data};
         TaskId ->
-            Task = maps:get(TaskId, Data#data.tasks),
+            Data0 = clear_monitor(TaskId, Data),
+            Task = maps:get(TaskId, Data0#data.tasks),
             CorrelationId = maps:get(correlation_id, Task),
             Task1 = Task#{status => failed, reason => timeout},
-            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
-            Data1 = Data#data{tasks = Tasks},
+            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+            Data1 = Data0#data{tasks = Tasks},
             emit(Data1, <<"actor.task.failed">>,
                  #{task_id => TaskId, correlation_id => CorrelationId,
                    reason => timeout}),
@@ -211,14 +214,39 @@ idle(info, {run_cancelled, RunId}, Data) ->
         undefined ->
             {keep_state, Data};
         TaskId ->
-            Task = maps:get(TaskId, Data#data.tasks),
+            Data0 = clear_monitor(TaskId, Data),
+            Task = maps:get(TaskId, Data0#data.tasks),
             CorrelationId = maps:get(correlation_id, Task),
             Task1 = Task#{status => cancelled},
-            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
-            Data1 = Data#data{tasks = Tasks},
+            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+            Data1 = Data0#data{tasks = Tasks},
             emit(Data1, <<"actor.task.cancelled">>,
                  #{task_id => TaskId, correlation_id => CorrelationId}),
             reply_waiter(TaskId, {error, cancelled}, Data1)
+    end;
+%% The run pid died without sending one of the four terminal messages -- a crash
+%% inside soma_run itself, not a tool crash the run catches and reports. The
+%% monitor delivers `'DOWN'' with a non-`normal' reason. Record the task as a
+%% terminal `failed' (data, not a stuck `running') and release any parked ask
+%% waiter. A `normal' exit means a terminal message already arrived and
+%% demonitor-flushed this ref, so a `normal' `'DOWN'' is never seen here.
+idle(info, {'DOWN', MRef, process, _RunPid, Reason}, Data)
+  when Reason =/= normal ->
+    case maps:get(MRef, Data#data.monitors, undefined) of
+        undefined ->
+            {keep_state, Data};
+        TaskId ->
+            Monitors = maps:remove(MRef, Data#data.monitors),
+            Data0 = Data#data{monitors = Monitors},
+            Task = maps:get(TaskId, Data0#data.tasks),
+            CorrelationId = maps:get(correlation_id, Task),
+            Task1 = Task#{status => failed, reason => Reason},
+            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+            Data1 = Data0#data{tasks = Tasks},
+            emit(Data1, <<"actor.task.failed">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId,
+                   reason => Reason}),
+            reply_waiter(TaskId, {error, Reason}, Data1)
     end;
 idle(_EventType, _Event, Data) ->
     {keep_state, Data}.
@@ -273,14 +301,39 @@ maybe_start_run(Envelope, TaskId, CorrelationId, Data) ->
                         steps => Steps,
                         correlation_id => CorrelationId},
             {ok, RunPid} = soma_run_sup:start_run(RunOpts),
+            %% Monitor the run pid, mirroring soma_run -> soma_tool_call. A run
+            %% that dies without sending one of the four terminal messages
+            %% (a crash inside soma_run itself, not a tool crash it catches)
+            %% arrives here as a `'DOWN'' and is recorded as a terminal `failed'
+            %% task -- data, not a stuck `running'. The normal terminal messages
+            %% demonitor-and-flush so a still-alive completed run leaves no
+            %% dangling monitor.
+            MRef = erlang:monitor(process, RunPid),
             Runs = maps:put(RunId, TaskId, Data#data.runs),
+            Monitors = maps:put(MRef, TaskId, Data#data.monitors),
             Task = maps:get(TaskId, Data#data.tasks),
             Task1 = Task#{status => running, run_id => RunId,
-                          run_pid => RunPid},
+                          run_pid => RunPid, run_mref => MRef},
             Tasks = maps:put(TaskId, Task1, Data#data.tasks),
-            Data#data{runs = Runs, tasks = Tasks};
+            Data#data{runs = Runs, tasks = Tasks, monitors = Monitors};
         _ ->
             Data
+    end.
+
+%% On a normal terminal message (run_completed | run_failed | run_timeout |
+%% run_cancelled) the run pid is reporting its own outcome and may still be
+%% alive momentarily. Demonitor-and-flush its ref so a later clean (or even
+%% non-normal) `'DOWN'' for this run never reaches the backstop clause, and drop
+%% the ref from the monitors map so no dangling entry survives.
+clear_monitor(TaskId, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    case maps:get(run_mref, Task, undefined) of
+        undefined ->
+            Data;
+        MRef ->
+            erlang:demonitor(MRef, [flush]),
+            Monitors = maps:remove(MRef, Data#data.monitors),
+            Data#data{monitors = Monitors}
     end.
 
 %% If an ask/3 caller is parked on this task, reply with the given term to it and
