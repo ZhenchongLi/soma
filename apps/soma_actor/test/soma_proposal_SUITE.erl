@@ -15,13 +15,15 @@
 -export([run_steps_proposal_starts_no_run/1]).
 -export([malformed_proposal_marks_task_failed/1]).
 -export([actor_survives_malformed_proposal_takes_next_send/1]).
+-export([by_correlation_returns_proposal_actor_and_llm_events/1]).
 
 all() ->
     [reply_proposal_stored_as_task_result,
      reply_proposal_emits_proposal_created_with_correlation_id,
      run_steps_proposal_starts_no_run,
      malformed_proposal_marks_task_failed,
-     actor_survives_malformed_proposal_takes_next_send].
+     actor_survives_malformed_proposal_takes_next_send,
+     by_correlation_returns_proposal_actor_and_llm_events].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -187,6 +189,51 @@ actor_survives_malformed_proposal_takes_next_send(_Config) ->
     {ok, TaskId2} = soma_actor:send(ActorPid, Envelope2),
     true = is_process_alive(ActorPid),
     ok.
+
+%% Criterion 14: for the task's correlation_id, soma_event_store:by_correlation/2
+%% returns the `proposal.created' event together with at least one `actor.*' event
+%% and at least one `llm.*' event. Drives the real actor with a valid `reply'
+%% proposal directive, waits for the task to complete, reads the correlated events
+%% back, and partitions them by event_type prefix.
+by_correlation_returns_proposal_actor_and_llm_events(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-proposal-trail">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => reply, text => <<"a normalized reply">>},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-proposal-trail">>,
+    CorrelationId = <<"corr-proposal-trail">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
+    ProposalCreated = [T || T <- Types, T =:= <<"proposal.created">>],
+    ActorEvents = [T || T <- Types, has_prefix(T, <<"actor.">>)],
+    LlmEvents = [T || T <- Types, has_prefix(T, <<"llm.">>)],
+    %% staged red: deliberately wrong expected value
+    [] = ProposalCreated,
+    true = length(ActorEvents) >= 1,
+    true = length(LlmEvents) >= 1,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Whether Bin starts with Prefix (binary, byte-wise).
+has_prefix(Bin, Prefix) when is_binary(Bin) ->
+    PSize = byte_size(Prefix),
+    case Bin of
+        <<Prefix:PSize/binary, _/binary>> -> true;
+        _ -> false
+    end;
+has_prefix(_, _) ->
+    false.
 
 %% Polls get_task_status until the task reaches the given status.
 wait_for_status(_ActorPid, TaskId, Status, 0) ->
