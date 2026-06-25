@@ -276,7 +276,7 @@ actor_survives_rejected_proposal_takes_next_send(_Config) ->
                       llm => AllowLlm},
     {ok, AllowTaskId} = soma_actor:send(ActorPid, AllowEnvelope),
     ok = wait_for_status(ActorPid, AllowTaskId, approved, 100),
-    rejected = maps:get(status, soma_actor:get_task_status(ActorPid, AllowTaskId)),
+    approved = maps:get(status, soma_actor:get_task_status(ActorPid, AllowTaskId)),
     true = is_process_alive(ActorPid),
     ok.
 
