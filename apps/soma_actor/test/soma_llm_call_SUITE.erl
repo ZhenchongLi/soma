@@ -425,7 +425,7 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
     true = doc_contains(Doc, <<"soma_actor_budget_SUITE">>),
     %% The v0.5.6 actor-to-actor-message section and its new proving suite.
     true = doc_contains(Doc, <<"v0.5.6">>),
-    true = doc_contains(Doc, <<"soma_actor_to_actor_message_SUITE">>),
+    true = doc_contains(Doc, <<"soma_actor_message_SUITE">>),
     %% Every case that proves a process proof in this slice.
     Cases =
         [<<"test_mock_success_returns_configured_output">>,
