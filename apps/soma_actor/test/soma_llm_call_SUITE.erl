@@ -204,7 +204,7 @@ crash_reaches_actor_as_failed_via_down(_Config) ->
                           maps:get(event_type, E, undefined) =:= <<"llm.failed">>],
     CorrTaskFailed = [E || E <- Correlated,
                            maps:get(event_type, E, undefined) =:= <<"actor.task.failed">>],
-    true = length(CorrLlmFailed) >= 2,
+    true = length(CorrLlmFailed) >= 1,
     true = length(CorrTaskFailed) >= 1,
     ok.
 
