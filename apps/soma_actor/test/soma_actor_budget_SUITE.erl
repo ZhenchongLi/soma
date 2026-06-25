@@ -16,12 +16,14 @@
 -export([budget_zero_llm_calls_emits_no_llm_started/1]).
 -export([budget_max_steps_fails_oversized_proposal_with_reason/1]).
 -export([budget_max_steps_oversized_proposal_emits_no_run_started/1]).
+-export([budget_within_max_steps_proposal_completes/1]).
 
 all() ->
     [budget_zero_llm_calls_fails_task_with_reason,
      budget_zero_llm_calls_emits_no_llm_started,
      budget_max_steps_fails_oversized_proposal_with_reason,
-     budget_max_steps_oversized_proposal_emits_no_run_started].
+     budget_max_steps_oversized_proposal_emits_no_run_started,
+     budget_within_max_steps_proposal_completes].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -170,6 +172,44 @@ budget_max_steps_oversized_proposal_emits_no_run_started(_Config) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
     false = lists:member(<<"run.started">>, Types),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 5: an actor started with `budget => #{max_steps => N}' executes an
+%% approved `run_steps' proposal carrying fewer than N steps all the way to
+%% `completed'. The proposal arrives through the real mock worker, passes policy,
+%% and the step-count gate in the `run_steps' branch sees a count within the cap,
+%% so a run starts via start_owned_run/4 and reaches `completed'. Drives the
+%% envelope through the real soma_actor:send/2 and reads the terminal `completed'
+%% status back through get_task_status/2.
+budget_within_max_steps_proposal_completes(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-budget-within">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             budget => #{max_steps => 3},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    %% Two steps against a max_steps of 3: within the cap, so the proposal runs.
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => echo,
+                               args => #{value => <<"a">>}},
+                              #{id => <<"s2">>, tool => echo,
+                               args => #{value => <<"b">>}}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-budget-within">>,
+    CorrelationId = <<"corr-budget-within">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    %% Staged red: deliberately wrong expected value to observe the assertion
+    %% fire before correcting it.
+    failed = maps:get(status, Status),
     true = is_process_alive(ActorPid),
     ok.
 
