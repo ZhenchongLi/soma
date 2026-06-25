@@ -137,7 +137,7 @@ by_correlation_returns_full_approved_run_chain(_Config) ->
     true = lists:any(fun(T) -> has_prefix(T, <<"llm.">>) end, Types),
     true = lists:member(<<"proposal.created">>, Types),
     true = lists:member(<<"proposal.approved">>, Types),
-    true = lists:member(<<"proposal.executed.WRONG">>, Types),
+    true = lists:member(<<"proposal.executed">>, Types),
     true = lists:member(<<"run.started">>, Types),
     true = lists:member(<<"run.completed">>, Types),
     true = is_process_alive(ActorPid),
