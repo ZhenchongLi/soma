@@ -115,9 +115,7 @@ valid_steps_complete_after_malformed(_Config) ->
                      task_id => GoodTaskId,
                      steps => GoodSteps},
     {ok, GoodTaskId} = soma_actor:send(Pid, GoodEnvelope),
-    %% Staged red: deliberately wrong expected target. The good run reaches
-    %% `completed', never `failed', so this fires before the correction.
-    failed = wait_for_task_status(Pid, GoodTaskId, failed, 100),
+    completed = wait_for_task_status(Pid, GoodTaskId, completed, 100),
     ok.
 
 event_store_pid() ->
