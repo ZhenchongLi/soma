@@ -6,10 +6,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([malformed_steps_rejected_or_failed_not_running/1]).
 -export([actor_alive_after_malformed_steps/1]).
+-export([valid_steps_complete_after_malformed/1]).
 
 all() ->
     [malformed_steps_rejected_or_failed_not_running,
-     actor_alive_after_malformed_steps].
+     actor_alive_after_malformed_steps,
+     valid_steps_complete_after_malformed].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -81,6 +83,41 @@ actor_alive_after_malformed_steps(_Config) ->
                  steps => Steps},
     _ = soma_actor:send(Pid, Envelope),
     true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 4: a malformed-steps envelope must not poison the actor for later
+%% work. The runtime is booted so soma_run_sup and soma_tool_registry are alive;
+%% the actor is started through soma_actor_sup:start_actor/1 with the booted
+%% runtime's event store, no layer bypassed. The test first submits a malformed
+%% envelope (a step missing `id') via the real soma_actor:send/2, then submits a
+%% valid echo-step envelope to the SAME actor pid. The second task must reach a
+%% terminal `completed' status, proving the rejected first envelope left the
+%% actor able to run.
+valid_steps_complete_after_malformed(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-valid-after-malformed">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    %% A malformed envelope: a step map missing the required `id' key.
+    BadSteps = [#{tool => echo, args => #{value => <<"a">>}}],
+    BadEnvelope = #{type => <<"chat">>,
+                    payload => #{text => <<"bad">>},
+                    task_id => <<"task-bad">>,
+                    steps => BadSteps},
+    _ = soma_actor:send(Pid, BadEnvelope),
+    %% A valid echo-step envelope to the same actor.
+    GoodTaskId = <<"task-good">>,
+    GoodSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}}],
+    GoodEnvelope = #{type => <<"chat">>,
+                     payload => #{text => <<"good">>},
+                     task_id => GoodTaskId,
+                     steps => GoodSteps},
+    {ok, GoodTaskId} = soma_actor:send(Pid, GoodEnvelope),
+    %% Staged red: deliberately wrong expected target. The good run reaches
+    %% `completed', never `failed', so this fires before the correction.
+    failed = wait_for_task_status(Pid, GoodTaskId, failed, 100),
     ok.
 
 event_store_pid() ->
