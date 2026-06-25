@@ -14,13 +14,15 @@
 -export([slow_call_times_out_worker_dead_actor_alive/1]).
 -export([cancel_in_flight_call_worker_dead_actor_alive/1]).
 -export([crash_reaches_actor_as_failed_via_down/1]).
+-export([status_promptly_while_llm_call_in_flight/1]).
 
 all() ->
     [llm_worker_runs_in_distinct_pid,
      get_task_result_holds_llm_output,
      slow_call_times_out_worker_dead_actor_alive,
      cancel_in_flight_call_worker_dead_actor_alive,
-     crash_reaches_actor_as_failed_via_down].
+     crash_reaches_actor_as_failed_via_down,
+     status_promptly_while_llm_call_in_flight].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -176,6 +178,44 @@ crash_reaches_actor_as_failed_via_down(_Config) ->
     false = is_process_alive(WorkerPid),
     true = is_process_alive(ActorPid),
     true = ActorPid =/= WorkerPid,
+    ok.
+
+%% Criterion 7: while an LLM call is in flight, get_task_status returns promptly
+%% with a non-terminal status, proving the actor is not blocked on the worker.
+%% Enters through the real soma_actor:send/2 with a `hang' directive (the worker
+%% blocks until killed, so the call never completes on its own). The status read
+%% is timed: it must return well within a bound far below any worker completion,
+%% and must read the non-terminal `running' -- if the actor were blocked on the
+%% worker, the gen_statem:call would not return at all. The worker is then killed
+%% so the suite leaves no live hang behind.
+status_promptly_while_llm_call_in_flight(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-prompt">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => hang},
+    TaskId = <<"task-llm-prompt">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    Started = wait_for_actor_event(Store, <<"llm.started">>, 100),
+    WorkerPid = maps:get(llm_call_pid, Started),
+    true = is_pid(WorkerPid),
+    true = is_process_alive(WorkerPid),
+    %% Time the status read. The actor must answer promptly -- well within 200ms,
+    %% far below any worker completion (the hang never completes) -- proving its
+    %% mailbox is not blocked on the in-flight worker.
+    Start = erlang:monotonic_time(millisecond),
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    Elapsed = erlang:monotonic_time(millisecond) - Start,
+    true = Elapsed < 200,
+    completed = maps:get(status, Status),
+    true = is_process_alive(ActorPid),
+    exit(WorkerPid, kill),
     ok.
 
 %% Polls get_task_status until the task reaches the given status.
