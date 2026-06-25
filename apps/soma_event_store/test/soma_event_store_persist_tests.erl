@@ -295,7 +295,61 @@ test_truncated_tail_boots_and_serves_intact_events() ->
 truncated_tail_boots_and_serves_intact_events_test() ->
     test_truncated_tail_boots_and_serves_intact_events().
 
+%% Criterion 8: docs/usage.md documents start_link/1 and the restart-durability
+%% behavior under the events section. A direct file read over docs/usage.md
+%% asserts the prose is present: the persistent opt-in start function
+%% (start_link/1 with a log path) and the durability claim (the store survives a
+%% restart by replaying the on-disk log). The "events section" half is checked by
+%% locating the events heading and asserting the persistence prose sits after it.
+test_usage_doc_documents_start_link_1_and_durability() ->
+    Doc = read_usage_doc(),
+
+    %% The new persistent start function is named.
+    ?assert(contains(Doc, <<"start_link/1">>)),
+
+    %% The opt-in log-path option is shown.
+    ?assert(contains(Doc, <<"log =>">>)),
+
+    %% The durability behavior — survives a restart by replaying the disk log —
+    %% is stated in prose.
+    ?assert(contains(Doc, <<"restart">>)),
+    ?assert(contains(Doc, <<"disk_log">>)),
+
+    %% The prose lives under the events section, not somewhere unrelated: the
+    %% "## Reading events" heading appears before the start_link/1 mention.
+    EventsHeadingPos = find_pos(Doc, <<"## Reading events">>),
+    StartLink1Pos = find_pos(Doc, <<"start_link/1">>),
+    ?assert(EventsHeadingPos =/= nomatch),
+    ?assert(StartLink1Pos =/= nomatch),
+    ?assert(EventsHeadingPos < StartLink1Pos).
+
+usage_doc_documents_start_link_1_and_durability_test() ->
+    test_usage_doc_documents_start_link_1_and_durability().
+
 %%% Helpers
+
+%% Read docs/usage.md from the repo root. The test runs from the project root
+%% (rebar3's cwd), and the umbrella keeps docs/ there.
+read_usage_doc() ->
+    Path = filename:join([usage_doc_dir(), "docs", "usage.md"]),
+    {ok, Bin} = file:read_file(Path),
+    Bin.
+
+%% Resolve the repo root from this test module's beam location, walking up from
+%% the app's _build directory to the umbrella root that holds docs/.
+usage_doc_dir() ->
+    %% cwd is the umbrella root under rebar3 eunit.
+    {ok, Cwd} = file:get_cwd(),
+    Cwd.
+
+contains(Haystack, Needle) ->
+    find_pos(Haystack, Needle) =/= nomatch.
+
+find_pos(Haystack, Needle) ->
+    case binary:match(Haystack, Needle) of
+        {Pos, _Len} -> Pos;
+        nomatch -> nomatch
+    end.
 
 %% Open a fresh disk_log against an existing halt log file and read its single
 %% logged term back. Used to inspect what physically sits in the log, around the
