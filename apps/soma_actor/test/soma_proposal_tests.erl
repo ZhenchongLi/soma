@@ -30,3 +30,12 @@ test_reject_normalizes_ok() ->
 
 reject_normalizes_ok_test() ->
     test_reject_normalizes_ok().
+
+%% A valid ask proposal normalizes to {ok, Proposal} carrying kind => ask.
+test_ask_normalizes_ok() ->
+    Raw = #{kind => ask, question => <<"what now?">>},
+    {ok, Proposal} = soma_proposal:normalize(Raw),
+    ?assertEqual(ask, maps:get(kind, Proposal)).
+
+ask_normalizes_ok_test() ->
+    test_ask_normalizes_ok().
