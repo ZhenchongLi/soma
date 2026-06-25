@@ -188,6 +188,14 @@ crash_reaches_actor_as_failed_via_down(_Config) ->
     false = is_process_alive(WorkerPid),
     true = is_process_alive(ActorPid),
     true = ActorPid =/= WorkerPid,
+    %% Criterion 1: the crash backstop appends an `llm.failed' event carrying the
+    %% task's correlation_id (defaulting to the task_id here, no explicit one in
+    %% the envelope) and a non-`undefined' llm_call_id.
+    Failed = wait_for_actor_event(Store, <<"llm.failed">>, 100),
+    TaskId = maps:get(task_id, Failed),
+    TaskId = maps:get(correlation_id, Failed),
+    LlmCallId = maps:get(llm_call_id, Failed),
+    true = LlmCallId =/= undefined,
     ok.
 
 %% Regression (review #77): a crashing LLM call whose envelope ALSO carried a
