@@ -87,3 +87,12 @@ test_timeline_failure_reason_from_top_and_payload() ->
 
 timeline_failure_reason_from_top_and_payload_test() ->
     test_timeline_failure_reason_from_top_and_payload().
+
+test_render_unknown_correlation_is_empty() ->
+    {ok, Store} = soma_event_store:start_link(),
+    Result = soma_trace:render(Store, <<"no-such-id">>),
+    %% Deliberately wrong: the real result is <<>> (empty), not <<"WRONG">>
+    ?assertEqual(<<"WRONG">>, iolist_to_binary(Result)).
+
+render_unknown_correlation_is_empty_test() ->
+    test_render_unknown_correlation_is_empty().
