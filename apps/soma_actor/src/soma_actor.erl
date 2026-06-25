@@ -225,6 +225,27 @@ idle(info, {run_cancelled, RunId}, Data) ->
                  #{task_id => TaskId, correlation_id => CorrelationId}),
             reply_waiter(TaskId, {error, cancelled}, Data1)
     end;
+%% The LLM worker reported a successful mock call. Map the llm_call_id back to its
+%% task, demonitor-and-flush the worker ref so its later normal `'DOWN'' never
+%% reaches the backstop clause, record the task `completed' with the call output
+%% as its result (so get_task_result returns {ok, Output}), emit `llm.succeeded',
+%% and release any parked ask waiter.
+idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
+    case maps:get(LlmCallId, Data#data.llm_calls, undefined) of
+        undefined ->
+            {keep_state, Data};
+        TaskId ->
+            Data0 = clear_llm_monitor(TaskId, Data),
+            Task = maps:get(TaskId, Data0#data.tasks),
+            CorrelationId = maps:get(correlation_id, Task),
+            Task1 = Task#{status => completed, result => Output},
+            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+            Data1 = Data0#data{tasks = Tasks},
+            emit(Data1, <<"llm.succeeded">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId,
+                   llm_call_id => LlmCallId}),
+            reply_waiter(TaskId, {ok, Output}, Data1)
+    end;
 %% The run pid died without sending one of the four terminal messages -- a crash
 %% inside soma_run itself, not a tool crash the run catches and reports. The
 %% monitor delivers `'DOWN'' with a non-`normal' reason. Record the task as a
@@ -359,6 +380,20 @@ maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
 clear_monitor(TaskId, Data) ->
     Task = maps:get(TaskId, Data#data.tasks),
     case maps:get(run_mref, Task, undefined) of
+        undefined ->
+            Data;
+        MRef ->
+            erlang:demonitor(MRef, [flush]),
+            Monitors = maps:remove(MRef, Data#data.monitors),
+            Data#data{monitors = Monitors}
+    end.
+
+%% The LLM-worker counterpart of clear_monitor: on the worker's terminal result
+%% demonitor-and-flush its ref so its later normal `'DOWN'' never reaches the
+%% backstop clause, and drop the ref from the monitors map.
+clear_llm_monitor(TaskId, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    case maps:get(llm_call_mref, Task, undefined) of
         undefined ->
             Data;
         MRef ->
