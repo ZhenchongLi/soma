@@ -56,9 +56,9 @@ unknown_kind_errors_test() ->
 %% diagnostic list.
 test_actor_message_kind_errors() ->
     Raw = #{kind => actor_message, to => <<"other">>, text => <<"hi">>},
-    %% Staged red: deliberately wrong expectation — actor_message is NOT a
-    %% supported kind, so normalize/1 returns {error, _}, not {ok, _}.
-    {ok, _Proposal} = soma_proposal:normalize(Raw).
+    {error, Diagnostics} = soma_proposal:normalize(Raw),
+    ?assert(is_list(Diagnostics)),
+    ?assert(length(Diagnostics) >= 1).
 
 actor_message_kind_errors_test() ->
     test_actor_message_kind_errors().
