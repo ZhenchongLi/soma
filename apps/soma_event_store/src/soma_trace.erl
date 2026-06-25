@@ -24,4 +24,12 @@ render(Store, CorrelationId) ->
 %% Internal: format a single event as a line (string).
 format_event(Event) ->
     EventType = maps:get(event_type, Event, unknown),
-    atom_to_list(EventType).
+    Base = atom_to_list(EventType),
+    case maps:find(task_id, Event) of
+        {ok, TaskId} when is_binary(TaskId) ->
+            Base ++ " task_id=" ++ binary_to_list(TaskId);
+        {ok, TaskId} ->
+            Base ++ " task_id=" ++ TaskId;
+        error ->
+            Base
+    end.
