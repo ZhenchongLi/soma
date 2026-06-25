@@ -235,7 +235,7 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
         undefined ->
             {keep_state, Data};
         TaskId ->
-            Data0 = clear_llm_monitor(TaskId, Data),
+            Data0 = clear_llm_timer(TaskId, clear_llm_monitor(TaskId, Data)),
             Task = maps:get(TaskId, Data0#data.tasks),
             CorrelationId = maps:get(correlation_id, Task),
             Task1 = Task#{status => completed, result => Output},
@@ -245,6 +245,35 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                  #{task_id => TaskId, correlation_id => CorrelationId,
                    llm_call_id => LlmCallId}),
             reply_waiter(TaskId, {ok, Output}, Data1)
+    end;
+%% The call-timeout timer the actor armed fired before the worker reported a
+%% result -- a `slow' mock that ignored the timer. The actor enforces the bound:
+%% it kills the worker (exit(WorkerPid, kill), since the bare worker has no state
+%% machine to drive its own teardown), demonitor-and-flushes the worker ref so the
+%% kill's `'DOWN'' never reaches the backstop, records the task `timeout', emits
+%% `llm.timeout', and releases any parked ask waiter. The actor stays alive.
+idle(info, {timeout, _TimerRef, {llm_timeout, LlmCallId}}, Data) ->
+    case maps:get(LlmCallId, Data#data.llm_calls, undefined) of
+        undefined ->
+            {keep_state, Data};
+        TaskId ->
+            Task = maps:get(TaskId, Data#data.tasks),
+            case maps:get(llm_call_pid, Task, undefined) of
+                WorkerPid when is_pid(WorkerPid) ->
+                    exit(WorkerPid, kill);
+                _ ->
+                    ok
+            end,
+            Data0 = clear_llm_monitor(TaskId, Data),
+            Task0 = maps:get(TaskId, Data0#data.tasks),
+            CorrelationId = maps:get(correlation_id, Task0),
+            Task1 = Task0#{status => timeout},
+            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+            Data1 = Data0#data{tasks = Tasks},
+            emit(Data1, <<"llm.timeout">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId,
+                   llm_call_id => LlmCallId}),
+            reply_waiter(TaskId, {error, timeout}, Data1)
     end;
 %% The run pid died without sending one of the four terminal messages -- a crash
 %% inside soma_run itself, not a tool crash the run catches and reports. The
@@ -356,11 +385,20 @@ maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
                                                     llm_call_id => LlmCallId,
                                                     llm => Llm}),
             MRef = erlang:monitor(process, WorkerPid),
+            %% Arm a call-timeout timer the actor owns: when it fires before the
+            %% worker reports a result, the actor kills the worker and records
+            %% `timeout'. The owner enforces the bound, mirroring soma_run's
+            %% per-step state_timeout -- a `slow' mock that ignores the timer is
+            %% exactly the case this proves. The timer carries the llm_call_id so
+            %% the firing maps back to its task. With no timeout_ms, no timer.
+            TimerRef = arm_llm_timeout(maps:get(timeout_ms, Llm, undefined),
+                                       LlmCallId),
             LlmCalls = maps:put(LlmCallId, TaskId, Data#data.llm_calls),
             Monitors = maps:put(MRef, TaskId, Data#data.monitors),
             Task = maps:get(TaskId, Data#data.tasks),
             Task1 = Task#{status => running, llm_call_id => LlmCallId,
-                          llm_call_pid => WorkerPid, llm_call_mref => MRef},
+                          llm_call_pid => WorkerPid, llm_call_mref => MRef,
+                          llm_timer_ref => TimerRef},
             Tasks = maps:put(TaskId, Task1, Data#data.tasks),
             Data1 = Data#data{llm_calls = LlmCalls, tasks = Tasks,
                               monitors = Monitors},
@@ -400,6 +438,27 @@ clear_llm_monitor(TaskId, Data) ->
             erlang:demonitor(MRef, [flush]),
             Monitors = maps:remove(MRef, Data#data.monitors),
             Data#data{monitors = Monitors}
+    end.
+
+%% Arm the actor-owned call-timeout timer, keyed by the llm_call_id so its firing
+%% message maps back to the task. With no timeout_ms there is no bound to enforce,
+%% so no timer is armed and the ref is `undefined'.
+arm_llm_timeout(undefined, _LlmCallId) ->
+    undefined;
+arm_llm_timeout(TimeoutMs, LlmCallId) when is_integer(TimeoutMs) ->
+    erlang:start_timer(TimeoutMs, self(), {llm_timeout, LlmCallId}).
+
+%% On the worker's terminal result, cancel the call-timeout timer (the bound was
+%% met in time) so a stale timer never fires against a finished task. A flushed
+%% cancel drops any already-queued firing message. No timer to cancel is a no-op.
+clear_llm_timer(TaskId, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    case maps:get(llm_timer_ref, Task, undefined) of
+        undefined ->
+            Data;
+        TimerRef ->
+            erlang:cancel_timer(TimerRef, [{async, false}, {info, false}]),
+            Data
     end.
 
 %% If an ask/3 caller is parked on this task, reply with the given term to it and

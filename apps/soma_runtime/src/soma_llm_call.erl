@@ -30,4 +30,11 @@ start(#{owner := Owner, llm_call_id := LlmCallId, llm := Llm}) ->
 %% `success' directive returns the configured `output' verbatim; no network is
 %% touched.
 perform_call(#{directive := success, output := Output}) ->
-    {ok, Output}.
+    {ok, Output};
+%% The `slow' directive runs past the call timeout: it blocks indefinitely,
+%% ignoring the actor's call-timeout timer entirely. This proves the owner, not
+%% the worker, enforces the bound -- the actor's timer fires and kills the worker.
+perform_call(#{directive := slow}) ->
+    receive
+        _ -> never
+    end.
