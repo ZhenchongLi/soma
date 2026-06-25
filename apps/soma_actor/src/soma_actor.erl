@@ -313,7 +313,13 @@ idle(info, {'DOWN', MRef, process, _RunPid, Reason}, Data)
             {keep_state, Data};
         TaskId ->
             Monitors = maps:remove(MRef, Data#data.monitors),
-            Data0 = Data#data{monitors = Monitors},
+            %% If this was an llm worker, cancel its armed call-timeout timer and
+            %% drop its `llm_calls' entry. Otherwise a still-live timer fires
+            %% later, finds the task in `llm_calls', and flips `failed' ->
+            %% `timeout' with a spurious `llm.timeout' against the dead worker.
+            %% A run crash carries no llm timer/entry, so this is a no-op there.
+            Data0 = clear_llm_call(TaskId,
+                                   Data#data{monitors = Monitors}),
             Task = maps:get(TaskId, Data0#data.tasks),
             CorrelationId = maps:get(correlation_id, Task),
             Task1 = Task#{status => failed, reason => Reason},
@@ -498,6 +504,22 @@ clear_llm_timer(TaskId, Data) ->
         TimerRef ->
             erlang:cancel_timer(TimerRef, [{async, false}, {info, false}]),
             Data
+    end.
+
+%% When an llm worker's crash reaches the actor through the monitor `'DOWN'',
+%% tear down its call bookkeeping the same way the result and timeout paths do:
+%% cancel the armed call-timeout timer and drop the `llm_calls' entry keyed by
+%% the task's `llm_call_id'. A task with no `llm_call_id' (a soma_run crash) has
+%% nothing to clear, so this is a no-op there.
+clear_llm_call(TaskId, Data) ->
+    Data0 = clear_llm_timer(TaskId, Data),
+    Task = maps:get(TaskId, Data0#data.tasks),
+    case maps:get(llm_call_id, Task, undefined) of
+        undefined ->
+            Data0;
+        LlmCallId ->
+            LlmCalls = maps:remove(LlmCallId, Data0#data.llm_calls),
+            Data0#data{llm_calls = LlmCalls}
     end.
 
 %% If an ask/3 caller is parked on this task, reply with the given term to it and
