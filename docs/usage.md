@@ -296,9 +296,12 @@ Work enters only through the mailbox, as an envelope map:
 
 `type` and `payload` are required — an envelope missing either, or one that is
 not a map, is rejected with `{error, Reason}`. A `steps` list is the v0.4 fixed
-rule: present → the actor validates it and starts a `soma_run`; absent → the
-task is accepted (`status` stays `accepted`) but no run starts. `StepMap` is
-exactly the step format documented above.
+rule: present → the actor validates it up front
+(each step is a map with `id` and `tool`; a step that fails this is rejected
+with `{error, Reason}` before any run starts) and then starts a `soma_run`;
+absent → the task is accepted
+(`status` stays `accepted`) but no run starts. `StepMap` is exactly the step
+format documented above.
 
 ### send/2 — fire and get a task id
 
