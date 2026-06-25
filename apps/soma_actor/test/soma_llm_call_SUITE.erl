@@ -423,8 +423,9 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
     %% The v0.5.5 budget & loop-limits section and its proving suite.
     true = doc_contains(Doc, <<"v0.5.5">>),
     true = doc_contains(Doc, <<"soma_actor_budget_SUITE">>),
-    %% The v0.5.6 actor-to-actor-message section.
+    %% The v0.5.6 actor-to-actor-message section and its new proving suite.
     true = doc_contains(Doc, <<"v0.5.6">>),
+    true = doc_contains(Doc, <<"soma_actor_to_actor_message_SUITE">>),
     %% Every case that proves a process proof in this slice.
     Cases =
         [<<"test_mock_success_returns_configured_output">>,
@@ -443,7 +444,6 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
          <<"test_reject_normalizes_ok">>,
          <<"test_ask_normalizes_ok">>,
          <<"test_unknown_kind_errors">>,
-         <<"test_actor_message_kind_errors">>,
          <<"test_reply_missing_text_errors">>,
          <<"test_run_steps_bad_step_errors">>,
          %% v0.5.2 actor-side proofs (soma_proposal_SUITE).
@@ -489,7 +489,19 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
          <<"actor_survives_budget_failure_takes_next_envelope">>,
          <<"parked_ask_on_budget_failed_task_gets_error">>,
          <<"by_correlation_surfaces_budget_failed_event_with_reason">>,
-         <<"no_budget_field_executes_approved_run_steps_to_completed">>],
+         <<"no_budget_field_executes_approved_run_steps_to_completed">>,
+         %% v0.5.6 pure normalize / policy proofs.
+         <<"test_actor_message_normalizes_ok">>,
+         <<"test_actor_message_missing_to_errors">>,
+         <<"test_actor_message_missing_payload_errors">>,
+         <<"actor_message_returns_allow_test">>,
+         %% v0.5.6 actor-to-actor delivery proofs (soma_actor_message_SUITE).
+         <<"delivered_message_accepted_by_a2_emits_task_accepted">>,
+         <<"delivered_task_inherits_a1_correlation_id">>,
+         <<"by_correlation_returns_both_actors_events">>,
+         <<"a1_emits_proposal_executed_for_actor_message">>,
+         <<"a1_actor_message_task_completed_actor_alive">>,
+         <<"malformed_actor_message_delivers_nothing_actor_alive">>],
     [true = doc_contains(Doc, Case) || Case <- Cases],
     ok.
 
