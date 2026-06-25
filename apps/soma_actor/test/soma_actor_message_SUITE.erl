@@ -148,7 +148,7 @@ by_correlation_returns_both_actors_events(_Config) ->
     ActorIds = lists:usort([maps:get(actor_id, E)
                             || E <- Events, maps:is_key(actor_id, E)]),
     true = lists:member(<<"actor-a1">>, ActorIds),
-    false = lists:member(<<"actor-a2">>, ActorIds),
+    true = lists:member(<<"actor-a2">>, ActorIds),
     true = is_process_alive(A2),
     true = is_process_alive(A1),
     ok.
