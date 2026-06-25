@@ -277,12 +277,18 @@ malformed_actor_message_delivers_nothing_actor_alive(_Config) ->
     {ok, TaskId} = soma_actor:send(A1, Envelope),
     ok = wait_for_task_failed(A1, TaskId, 100),
     Status = soma_actor:get_task_status(A1, TaskId),
-    %% Staged red: the malformed proposal takes the `{invalid_proposal, _}' arm,
-    %% so the sender task is `failed' -- assert the wrong value first to see red.
-    completed = maps:get(status, Status),
+    %% The malformed proposal takes the `{invalid_proposal, _}' arm, so the
+    %% sender task is marked terminal `failed'.
+    failed = maps:get(status, Status),
+    %% No envelope reached A2: A2 emits only its boot `actor.started' event and
+    %% never any per-message event (`actor.message.received',
+    %% `actor.task.accepted', ...). So the only A2 event carrying A2's actor_id
+    %% is its startup, and no delivery-driven event appears.
     AllEvents = soma_event_store:all(Store),
-    [] = [E || E <- AllEvents,
-               maps:get(actor_id, E, undefined) =:= <<"actor-a2">>],
+    A2Events = [E || E <- AllEvents,
+                     maps:get(actor_id, E, undefined) =:= <<"actor-a2">>],
+    [] = [E || E <- A2Events,
+               maps:get(event_type, E, undefined) =/= <<"actor.started">>],
     true = is_process_alive(A1),
     true = is_process_alive(A2),
     ok.
