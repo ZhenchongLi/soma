@@ -13,12 +13,14 @@
 -export([test_set_env_store_persists_append_to_log/1]).
 -export([test_unset_env_boot_order/1]).
 -export([test_set_env_boot_order/1]).
+-export([test_release_doc_documents_event_store_log/1]).
 
 all() ->
     [test_unset_env_store_is_in_memory_writes_no_file,
      test_set_env_store_persists_append_to_log,
      test_unset_env_boot_order,
-     test_set_env_boot_order].
+     test_set_env_boot_order,
+     test_release_doc_documents_event_store_log].
 
 init_per_testcase(Case, Config)
   when Case =:= test_set_env_store_persists_append_to_log;
@@ -120,7 +122,66 @@ test_set_env_boot_order(_Config) ->
                   soma_session_sup, soma_run_sup],
                  StartOrder).
 
+%% Criterion 5: docs/release.md documents enabling persistence through the
+%% `event_store_log' app env. A direct file read over docs/release.md asserts the
+%% prose is present: the app env is named, the durability claim is stated, and the
+%% concrete `sys.config' snippet is shown verbatim — the read-the-file doc proof
+%% shape #96 used over docs/usage.md.
+test_release_doc_documents_event_store_log(_Config) ->
+    Doc = read_release_doc(),
+
+    %% The app env that turns on persistence is named.
+    ?assert(contains(Doc, <<"event_store_log">>)),
+
+    %% The prose explains the env makes the store durable / persistent.
+    ?assert(contains(Doc, <<"durable">>)),
+
+    %% The sys.config example is shown verbatim so an operator can copy it.
+    ?assert(contains(Doc,
+        <<"{soma_runtime, [{event_store_log, \"/var/lib/soma/events.log\"}]}">>)),
+
+    %% The sys.config snippet sits with the persistence prose: the
+    %% `event_store_log' mention appears before the sys.config snippet, both in
+    %% the same section rather than scattered.
+    EnvPos = find_pos(Doc, <<"event_store_log">>),
+    SnippetPos = find_pos(Doc,
+        <<"{soma_runtime, [{event_store_log, \"/var/lib/soma/events.log\"}]}">>),
+    ?assert(EnvPos =/= nomatch),
+    ?assert(SnippetPos =/= nomatch),
+    ?assert(EnvPos =< SnippetPos).
+
 %%% Helpers
+
+%% Read docs/release.md from the repo root. The test beams run out of `_build',
+%% so locate the project root by walking up from this test module's own beam
+%% until an `apps' directory is found, then read `docs/release.md' under it.
+read_release_doc() ->
+    Path = filename:join([project_root(), "docs", "release.md"]),
+    {ok, Bin} = file:read_file(Path),
+    Bin.
+
+project_root() ->
+    walk_up_to_apps(filename:dirname(code:which(?MODULE))).
+
+walk_up_to_apps(Dir) ->
+    case filelib:is_dir(filename:join(Dir, "apps")) of
+        true -> Dir;
+        false ->
+            Parent = filename:dirname(Dir),
+            case Parent of
+                Dir -> erlang:error(project_root_not_found);
+                _ -> walk_up_to_apps(Parent)
+            end
+    end.
+
+contains(Haystack, Needle) ->
+    binary:match(Haystack, Needle) =/= nomatch.
+
+find_pos(Haystack, Needle) ->
+    case binary:match(Haystack, Needle) of
+        {Pos, _Len} -> Pos;
+        nomatch -> nomatch
+    end.
 
 %% Open a fresh disk_log against the halt log file at Path and read its single
 %% logged term back, around the store. A halt log not closed cleanly comes back
