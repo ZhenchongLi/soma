@@ -235,7 +235,7 @@ a1_actor_message_task_completed_actor_alive(_Config) ->
     {ok, TaskId} = soma_actor:send(A1, Envelope),
     ok = wait_for_a2_accepted(Store, CorrelationId, <<"actor-a2">>, 100),
     Status = soma_actor:get_task_status(A1, TaskId),
-    failed = maps:get(status, Status),
+    completed = maps:get(status, Status),
     true = is_process_alive(A1),
     ok.
 
