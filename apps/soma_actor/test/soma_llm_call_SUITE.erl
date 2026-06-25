@@ -10,9 +10,11 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([llm_worker_runs_in_distinct_pid/1]).
+-export([get_task_result_holds_llm_output/1]).
 
 all() ->
-    [llm_worker_runs_in_distinct_pid].
+    [llm_worker_runs_in_distinct_pid,
+     get_task_result_holds_llm_output].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -54,6 +56,42 @@ llm_worker_runs_in_distinct_pid(_Config) ->
     true = is_pid(WorkerPid),
     true = WorkerPid =/= ActorPid,
     ok.
+
+%% Criterion 3: after a successful mock LLM call, get_task_result returns the
+%% call's output for that task. Enters through the real soma_actor:send/2 with a
+%% `success' llm envelope carrying a known output, waits for the {llm_result, ...}
+%% success message to land (the task reaching `completed'), then asserts
+%% get_task_result/2 returns {ok, Output} carrying that configured output.
+get_task_result_holds_llm_output(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-result">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Output = <<"the mock reply">>,
+    Llm = #{directive => success, output => Output},
+    TaskId = <<"task-llm-result">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    {ok, Output} = soma_actor:get_task_result(ActorPid, TaskId),
+    ok.
+
+%% Polls get_task_status until the task reaches the given status.
+wait_for_status(_ActorPid, TaskId, Status, 0) ->
+    error({timeout, TaskId, Status});
+wait_for_status(ActorPid, TaskId, Status, N) ->
+    case maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)) of
+        Status ->
+            ok;
+        _ ->
+            timer:sleep(20),
+            wait_for_status(ActorPid, TaskId, Status, N - 1)
+    end.
 
 %% Polls the store until one event of the given type appears, returning it.
 wait_for_actor_event(_Store, Type, 0) ->
