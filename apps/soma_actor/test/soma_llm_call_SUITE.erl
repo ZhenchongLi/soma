@@ -17,6 +17,7 @@
 -export([status_promptly_while_llm_call_in_flight/1]).
 -export([completed_call_appends_llm_event_with_correlation_id/1]).
 -export([by_correlation_returns_llm_and_actor_events/1]).
+-export([both_steps_and_llm_rejected_no_child_started/1]).
 -export([pins_v0_5_test_contract_maps_each_proof/1]).
 
 all() ->
@@ -28,6 +29,7 @@ all() ->
      status_promptly_while_llm_call_in_flight,
      completed_call_appends_llm_event_with_correlation_id,
      by_correlation_returns_llm_and_actor_events,
+     both_steps_and_llm_rejected_no_child_started,
      pins_v0_5_test_contract_maps_each_proof].
 
 init_per_testcase(_TestCase, Config) ->
@@ -288,6 +290,45 @@ by_correlation_returns_llm_and_actor_events(_Config) ->
     true = length(ActorEvents) >= 1,
     true = length(LlmEvents) >= 1,
     ok.
+
+%% Bonus coverage (decision 1, mutual exclusion): an envelope carrying BOTH a
+%% valid `steps' list AND an `llm' map is malformed and rejected up front by
+%% validate_envelope/1 with `{error, _}', before any child starts. Enters through
+%% the real soma_actor:send/2. Asserts: the call returns `{error, _}'; no run and
+%% no llm call were started (no `actor.task.accepted', no `run.*', no `llm.*'
+%% event ever appears, and the task is `not_found'); and the actor pid stays
+%% alive. This proves the dispatch never reaches maybe_start_run /
+%% maybe_start_llm_call for a both-present envelope.
+both_steps_and_llm_rejected_no_child_started(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-mutex">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Steps = [#{id => <<"s1">>, tool => echo,
+               args => #{}, timeout_ms => 1000}],
+    Llm = #{directive => success, output => <<"hi from the mock">>},
+    TaskId = <<"task-llm-mutex">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps,
+                 llm => Llm},
+    {error, _} = soma_actor:send(ActorPid, Envelope),
+    %% No child started: the malformed envelope never reached dispatch, so the
+    %% task was never accepted and neither a run nor an llm call event exists.
+    #{status := not_found} = soma_actor:get_task_status(ActorPid, TaskId),
+    Events = soma_event_store:all(Store),
+    [] = [E || E <- Events,
+               started_child_event(maps:get(event_type, E, undefined))],
+    true = is_process_alive(ActorPid),
+    ok.
+
+started_child_event(<<"actor.task.accepted">>) -> true;
+started_child_event(<<"run.", _/binary>>) -> true;
+started_child_event(<<"llm.", _/binary>>) -> true;
+started_child_event(_) -> false.
 
 %% Criterion 10: `docs/contracts/v0.5-test-contract.md' exists and maps each
 %% process proof in this slice to the suite and case that proves it. Mirrors how
