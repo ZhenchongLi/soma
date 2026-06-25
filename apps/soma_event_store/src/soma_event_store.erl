@@ -3,18 +3,22 @@
 -behaviour(gen_server).
 
 %% Public API
--export([start_link/0, append/2, all/1, by_run/2, by_session/2, by_correlation/2]).
+-export([start_link/0, start_link/1, append/2, all/1, by_run/2, by_session/2, by_correlation/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
 
--record(state, {events = [] :: [map()]}).
+-record(state, {events = [] :: [map()], log = undefined :: term()}).
 
 %%% Public API
 
 -spec start_link() -> {ok, pid()}.
 start_link() ->
     gen_server:start_link(?MODULE, [], []).
+
+-spec start_link(map()) -> {ok, pid()}.
+start_link(#{log := Path}) ->
+    gen_server:start_link(?MODULE, #{log => Path}, []).
 
 -spec append(pid(), map()) -> ok.
 append(Pid, Event) when is_map(Event) ->
@@ -39,10 +43,16 @@ by_correlation(Pid, CorrelationId) ->
 %%% gen_server callbacks
 
 init([]) ->
-    {ok, #state{}}.
+    {ok, #state{}};
+init(#{log := Path}) ->
+    {ok, Log} = disk_log:open([{name, {?MODULE, Path}},
+                               {file, Path},
+                               {type, halt}]),
+    {ok, #state{log = Log}}.
 
-handle_call({append, Event}, _From, State = #state{events = Events}) ->
+handle_call({append, Event}, _From, State = #state{events = Events, log = Log}) ->
     Normalized = normalize(Event),
+    ok = log_event(Log, Normalized),
     {reply, ok, State#state{events = [Normalized | Events]}};
 handle_call(all, _From, State = #state{events = Events}) ->
     {reply, lists:reverse(Events), State};
@@ -85,3 +95,8 @@ normalize(Event) ->
 
 make_event_id() ->
     list_to_binary(erlang:ref_to_list(make_ref())).
+
+log_event(undefined, _Event) ->
+    ok;
+log_event(Log, Event) ->
+    disk_log:log(Log, Event).
