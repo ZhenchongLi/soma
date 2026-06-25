@@ -64,9 +64,23 @@ replay_log(Log) ->
     replay_log(Log, start, []).
 
 replay_log(Log, Cont, Acc) ->
-    case disk_log:chunk(Log, Cont) of
+    %% Read a single term per chunk. A corrupt tail (a half-written term left by
+    %% an unclean shutdown) makes disk_log:chunk/3 return
+    %% {error, {corrupt_log_file, _}} for the chunk that spans the bad bytes;
+    %% reading one term at a time keeps every intact term that precedes the
+    %% corrupt tail, where a larger chunk would discard the whole block. Replay
+    %% is linear in the log and runs once at boot, so the per-term granularity is
+    %% acceptable here.
+    case disk_log:chunk(Log, Cont, 1) of
         eof ->
             Acc;
+        %% Corrupt tail: treat it as end-of-log. Keep every intact term read so
+        %% far and finish init/1 cleanly — a damaged tail costs the last partial
+        %% event, not the boot.
+        {error, {corrupt_log_file, _}} ->
+            Acc;
+        {NextCont, Terms, _BadBytes} ->
+            replay_log(Log, NextCont, prepend_all(Terms, Acc));
         {NextCont, Terms} ->
             replay_log(Log, NextCont, prepend_all(Terms, Acc))
     end.
