@@ -20,7 +20,11 @@ normalize(#{kind := run_steps, steps := Steps}) when is_list(Steps) ->
 normalize(#{kind := reject, reason := Reason}) when is_binary(Reason) ->
     {ok, #{kind => reject, reason => Reason}};
 normalize(#{kind := ask, question := Question}) when is_binary(Question) ->
-    {ok, #{kind => ask, question => Question}}.
+    {ok, #{kind => ask, question => Question}};
+normalize(#{kind := Kind}) ->
+    {error, [#{code => unknown_kind,
+               message => <<"unknown proposal kind">>,
+               kind => Kind}]}.
 
 valid_step(Step) when is_map(Step) ->
     maps:is_key(id, Step) andalso maps:is_key(tool, Step);
