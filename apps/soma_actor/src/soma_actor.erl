@@ -332,7 +332,21 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                                                             CorrelationId, Data1),
                                     {keep_state, Data2};
                                 _ ->
-                                    reply_waiter(TaskId, {ok, Proposal}, Data1)
+                                    %% A toolless approved proposal (`reply' /
+                                    %% `reject' / `ask') has nothing to run, so it
+                                    %% reaches `completed' here with the normalized
+                                    %% proposal as the task result (already stored
+                                    %% above) -- not resting at `approved'. The
+                                    %% `approved' status is a transient step toward
+                                    %% `running' only for `run_steps'. No run is
+                                    %% started; release any parked waiter with the
+                                    %% proposal.
+                                    Task2 = (maps:get(TaskId, Data1#data.tasks))#{
+                                              status => completed},
+                                    Tasks2 = maps:put(TaskId, Task2,
+                                                      Data1#data.tasks),
+                                    Data2 = Data1#data{tasks = Tasks2},
+                                    reply_waiter(TaskId, {ok, Proposal}, Data2)
                             end;
                         {reject, Reason} ->
                             %% The proposal failed policy. Emit

@@ -106,7 +106,9 @@ allowed_proposal_starts_no_run(_Config) ->
                  correlation_id => CorrelationId,
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
-    ok = wait_for_status(ActorPid, TaskId, approved, 100),
+    %% v0.5.4: an approved toolless `ask' proposal has nothing to run, so it
+    %% reaches `completed' and starts no run.
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     RunStarted = [E || E <- Events,
                        maps:get(event_type, E, undefined) =:= <<"run.started">>],
@@ -139,8 +141,11 @@ allowed_proposal_status_reads_approved(_Config) ->
                  correlation_id => CorrelationId,
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
-    ok = wait_for_status(ActorPid, TaskId, approved, 100),
-    approved = maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)),
+    %% v0.5.4: an approved toolless `ask' proposal reaches the terminal
+    %% `completed' (the `approved' status is now only a transient step toward
+    %% `running' for a `run_steps' proposal).
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    completed = maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)),
     true = is_process_alive(ActorPid),
     ok.
 
@@ -283,8 +288,9 @@ actor_survives_rejected_proposal_takes_next_send(_Config) ->
                       correlation_id => <<"corr-policy-survives-allow">>,
                       llm => AllowLlm},
     {ok, AllowTaskId} = soma_actor:send(ActorPid, AllowEnvelope),
-    ok = wait_for_status(ActorPid, AllowTaskId, approved, 100),
-    approved = maps:get(status, soma_actor:get_task_status(ActorPid, AllowTaskId)),
+    %% v0.5.4: the approved toolless `ask' second send reaches `completed'.
+    ok = wait_for_status(ActorPid, AllowTaskId, completed, 100),
+    completed = maps:get(status, soma_actor:get_task_status(ActorPid, AllowTaskId)),
     true = is_process_alive(ActorPid),
     ok.
 
