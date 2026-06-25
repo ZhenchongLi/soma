@@ -214,11 +214,30 @@ idle(_EventType, _Event, Data) ->
 
 validate_envelope(Envelope) when is_map(Envelope) ->
     case maps:is_key(type, Envelope) andalso maps:is_key(payload, Envelope) of
-        true -> ok;
+        true -> validate_steps(maps:get(steps, Envelope, undefined));
         false -> {error, missing_required_field}
     end;
 validate_envelope(_Envelope) ->
     {error, not_a_map}.
+
+%% A no-steps envelope is valid by design. When the envelope carries a steps
+%% list, each step must be a map with an `id' and a `tool' so a known-bad step
+%% list never reaches soma_run (where a missing `id' would crash the run and
+%% leave the task stuck at `running').
+validate_steps(undefined) ->
+    ok;
+validate_steps(Steps) when is_list(Steps) ->
+    case lists:all(fun valid_step/1, Steps) of
+        true -> ok;
+        false -> {error, malformed_steps}
+    end;
+validate_steps(_Steps) ->
+    {error, malformed_steps}.
+
+valid_step(Step) when is_map(Step) ->
+    maps:is_key(id, Step) andalso maps:is_key(tool, Step);
+valid_step(_Step) ->
+    false.
 
 resolve_task_id(Envelope) ->
     case maps:get(task_id, Envelope, undefined) of
