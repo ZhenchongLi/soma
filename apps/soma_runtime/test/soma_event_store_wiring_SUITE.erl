@@ -45,8 +45,6 @@ test_unset_env_store_is_in_memory_writes_no_file(Config) ->
     [a1] = [maps:get(event_type, E) || E <- soma_event_store:by_run(StorePid, run_a)],
 
     After = list_dir(TmpDir),
-    %% RED (staged): deliberately wrong expected value to see the assertion fire.
-    ?assertEqual([<<"events.log">>], After),
     ?assertEqual(Before, After).
 
 %%% Helpers

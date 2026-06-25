@@ -16,7 +16,7 @@ init([]) ->
                  period => 5},
     Children =
         [#{id => soma_event_store,
-           start => {soma_event_store, start_link, []},
+           start => event_store_start(),
            type => worker},
          #{id => soma_tool_registry,
            start => {soma_tool_registry, start_link, []},
@@ -28,3 +28,13 @@ init([]) ->
            start => {soma_run_sup, start_link, []},
            type => supervisor}],
     {ok, {SupFlags, Children}}.
+
+%% Build the `soma_event_store' child's start tuple from the `event_store_log'
+%% app env. A path opts the store into durable disk_log persistence
+%% (`start_link/1'); the default (env unset) stays the in-memory `start_link/0',
+%% byte for byte. The store mode is fixed at boot — a release config knob.
+event_store_start() ->
+    case application:get_env(soma_runtime, event_store_log, undefined) of
+        undefined -> {soma_event_store, start_link, []};
+        Path -> {soma_event_store, start_link, [#{log => Path}]}
+    end.
