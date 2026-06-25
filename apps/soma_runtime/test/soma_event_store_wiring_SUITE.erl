@@ -12,13 +12,17 @@
 -export([test_unset_env_store_is_in_memory_writes_no_file/1]).
 -export([test_set_env_store_persists_append_to_log/1]).
 -export([test_unset_env_boot_order/1]).
+-export([test_set_env_boot_order/1]).
 
 all() ->
     [test_unset_env_store_is_in_memory_writes_no_file,
      test_set_env_store_persists_append_to_log,
-     test_unset_env_boot_order].
+     test_unset_env_boot_order,
+     test_set_env_boot_order].
 
-init_per_testcase(test_set_env_store_persists_append_to_log, Config) ->
+init_per_testcase(Case, Config)
+  when Case =:= test_set_env_store_persists_append_to_log;
+       Case =:= test_set_env_boot_order ->
     TmpDir = make_tmp_dir(),
     Path = filename:join(TmpDir, "events.log"),
     application:set_env(soma_runtime, event_store_log, Path),
@@ -99,6 +103,21 @@ test_unset_env_boot_order(_Config) ->
     StartOrder = [Id || {Id, _Pid, _Type, _Mods} <- lists:reverse(Children)],
     ?assertEqual([soma_event_store, soma_tool_registry,
                   soma_session_sup, soma_run_sup],
+                 StartOrder).
+
+%% Criterion 4: with `event_store_log' set to a path, `soma_sup' still boots the
+%% same four children in the same start order `[soma_event_store,
+%% soma_tool_registry, soma_session_sup, soma_run_sup]' with `soma_event_store'
+%% first. The persistent branch changes only the store child's `start' tuple, not
+%% the child set or its order.
+%%
+%% Like Criterion 3, this reverses `which_children/1' to recover start order
+%% before asserting (the supervisor reports children in reverse start order).
+test_set_env_boot_order(_Config) ->
+    Children = supervisor:which_children(soma_sup),
+    StartOrder = [Id || {Id, _Pid, _Type, _Mods} <- lists:reverse(Children)],
+    ?assertEqual([soma_run_sup, soma_session_sup,
+                  soma_tool_registry, soma_event_store],
                  StartOrder).
 
 %%% Helpers
