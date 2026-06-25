@@ -18,6 +18,7 @@ test_ensure_all_started_ok_test() ->
         ?assertMatch({ok, _}, application:ensure_all_started(soma_actor))
     after
         application:stop(soma_actor),
+        application:stop(soma_runtime),
         application:unload(soma_actor)
     end.
 
@@ -31,6 +32,7 @@ test_sup_registered_and_alive_test() ->
         ?assertEqual(true, is_process_alive(Pid))
     after
         application:stop(soma_actor),
+        application:stop(soma_runtime),
         application:unload(soma_actor)
     end.
 
@@ -45,6 +47,7 @@ test_sup_strategy_simple_one_for_one_test() ->
         ?assertEqual(simple_one_for_one, Strategy)
     after
         application:stop(soma_actor),
+        application:stop(soma_runtime),
         application:unload(soma_actor)
     end.
 
@@ -58,6 +61,7 @@ test_sup_zero_children_after_boot_test() ->
         ?assertEqual([], supervisor:which_children(soma_actor_sup))
     after
         application:stop(soma_actor),
+        application:stop(soma_runtime),
         application:unload(soma_actor)
     end.
 
