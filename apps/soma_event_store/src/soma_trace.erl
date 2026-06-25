@@ -24,27 +24,27 @@ render(Store, CorrelationId) ->
 %% Internal: format a single event as a line (string).
 format_event(Event) ->
     EventType = maps:get(event_type, Event, unknown),
-    Base = atom_to_list(EventType),
+    Base = to_str(EventType),
     Base1 = case maps:find(task_id, Event) of
-        {ok, TaskId} when is_binary(TaskId) ->
-            Base ++ " task_id=" ++ binary_to_list(TaskId);
         {ok, TaskId} ->
-            Base ++ " task_id=" ++ TaskId;
+            Base ++ " task_id=" ++ to_str(TaskId);
         error ->
             Base
     end,
     Base2 = case maps:find(step_id, Event) of
-        {ok, StepId} when is_binary(StepId) ->
-            Base1 ++ " step_id=" ++ binary_to_list(StepId);
         {ok, StepId} ->
-            Base1 ++ " step_id=" ++ StepId;
+            Base1 ++ " step_id=" ++ to_str(StepId);
         error ->
             Base1
     end,
     %% Reason: check top-level key first, then fall back to payload map
     Reason = case maps:get(reason, Event, undefined) of
         undefined ->
-            Payload = maps:get(payload, Event, #{}),
+            RawPayload = maps:get(payload, Event, #{}),
+            Payload = case is_map(RawPayload) of
+                true  -> RawPayload;
+                false -> #{}
+            end,
             maps:get(reason, Payload, undefined);
         R ->
             R
@@ -52,8 +52,12 @@ format_event(Event) ->
     case Reason of
         undefined ->
             Base2;
-        Reason when is_binary(Reason) ->
-            Base2 ++ " reason=" ++ binary_to_list(Reason);
-        Reason ->
-            Base2 ++ " reason=" ++ io_lib:format("~p", [Reason])
+        _ ->
+            Base2 ++ " reason=" ++ to_str(Reason)
     end.
+
+%% Convert atoms, binaries, lists, or any term to a flat string.
+to_str(V) when is_atom(V)   -> atom_to_list(V);
+to_str(V) when is_binary(V) -> binary_to_list(V);
+to_str(V) when is_list(V)   -> V;
+to_str(V)                   -> lists:flatten(io_lib:format("~p", [V])).
