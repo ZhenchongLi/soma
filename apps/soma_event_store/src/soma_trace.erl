@@ -33,11 +33,27 @@ format_event(Event) ->
         error ->
             Base
     end,
-    case maps:find(step_id, Event) of
+    Base2 = case maps:find(step_id, Event) of
         {ok, StepId} when is_binary(StepId) ->
             Base1 ++ " step_id=" ++ binary_to_list(StepId);
         {ok, StepId} ->
             Base1 ++ " step_id=" ++ StepId;
         error ->
             Base1
+    end,
+    %% Reason: check top-level key first, then fall back to payload map
+    Reason = case maps:get(reason, Event, undefined) of
+        undefined ->
+            Payload = maps:get(payload, Event, #{}),
+            maps:get(reason, Payload, undefined);
+        R ->
+            R
+    end,
+    case Reason of
+        undefined ->
+            Base2;
+        Reason when is_binary(Reason) ->
+            Base2 ++ " reason=" ++ binary_to_list(Reason);
+        Reason ->
+            Base2 ++ " reason=" ++ io_lib:format("~p", [Reason])
     end.
