@@ -87,6 +87,20 @@ test_reply_missing_text_errors() ->
 reply_missing_text_errors_test() ->
     test_reply_missing_text_errors().
 
+%% An actor_message proposal carrying a map payload but missing its required
+%% `to` field normalizes to {error, [Diagnostic]} with a non-empty diagnostic
+%% list reporting the missing required field (not an unknown_kind error).
+test_actor_message_missing_to_errors() ->
+    Raw = #{kind => actor_message, payload => #{greeting => <<"hi">>}},
+    {error, Diagnostics} = soma_proposal:normalize(Raw),
+    ?assert(is_list(Diagnostics)),
+    ?assert(length(Diagnostics) >= 1),
+    [Diagnostic | _] = Diagnostics,
+    ?assertEqual(missing_required_field, maps:get(code, Diagnostic)).
+
+actor_message_missing_to_errors_test() ->
+    test_actor_message_missing_to_errors().
+
 %% A run_steps proposal whose steps list contains a step that fails the id+tool
 %% step-shape check normalizes to {error, [Diagnostic]} with a non-empty
 %% diagnostic list.
