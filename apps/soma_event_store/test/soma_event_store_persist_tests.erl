@@ -153,6 +153,51 @@ test_restart_recovers_events_into_all() ->
 restart_recovers_events_into_all_test() ->
     test_restart_recovers_events_into_all().
 
+%% Criterion 5: after a restart that replays the log, by_run/2 against the
+%% rebuilt index returns exactly the events whose run_id matches a given run,
+%% in append order, and excludes the events of every other run. Runs across two
+%% store lifetimes through the public API only: append events spanning more than
+%% one run_id into the first store, stop it, start a second store at the same
+%% Path, and query by_run/2.
+test_by_run_after_restart_filters_to_one_run() ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    try
+        {ok, Pid1} = soma_event_store:start_link(#{log => Path}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_a,
+                                             session_id => sess_a,
+                                             correlation_id => corr_a,
+                                             event_type => a1}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_b,
+                                             session_id => sess_b,
+                                             correlation_id => corr_b,
+                                             event_type => b1}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_a,
+                                             session_id => sess_a,
+                                             correlation_id => corr_a,
+                                             event_type => a2}),
+
+        %% Normalized view of run_a's events captured before the restart, so the
+        %% recovered run_a events can be compared exactly (event_id and timestamp
+        %% are filled at append time, not regenerated on replay).
+        ExpectedRunA = soma_event_store:by_run(Pid1, run_a),
+
+        ok = stop_store(Pid1),
+
+        {ok, Pid2} = soma_event_store:start_link(#{log => Path}),
+        RecoveredRunA = soma_event_store:by_run(Pid2, run_a),
+        ok = stop_store(Pid2),
+
+        RunATypes = [maps:get(event_type, E) || E <- RecoveredRunA],
+        ?assertEqual([a1, b1, a2], RunATypes),
+        ?assertEqual(ExpectedRunA, RecoveredRunA)
+    after
+        ok = del_tmp_dir(TmpDir)
+    end.
+
+by_run_after_restart_filters_to_one_run_test() ->
+    test_by_run_after_restart_filters_to_one_run().
+
 %%% Helpers
 
 %% Open a fresh disk_log against an existing halt log file and read its single
