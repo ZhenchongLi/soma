@@ -5,6 +5,7 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([malformed_steps_rejected_or_failed_not_running/1]).
+-export([run_death_after_validation_records_failed/1]).
 -export([actor_alive_after_malformed_steps/1]).
 -export([valid_steps_complete_after_malformed/1]).
 -export([ask_no_steps_returns_ok_accepted/1]).
@@ -13,6 +14,7 @@
 
 all() ->
     [malformed_steps_rejected_or_failed_not_running,
+     run_death_after_validation_records_failed,
      actor_alive_after_malformed_steps,
      valid_steps_complete_after_malformed,
      ask_no_steps_returns_ok_accepted,
@@ -66,6 +68,47 @@ malformed_steps_rejected_or_failed_not_running(_Config) ->
             true = task_status(Pid, TaskId) =/= running,
             ok
     end.
+
+%% Criterion 2 (monitor backstop): up-front validation only catches a missing
+%% `id'/`tool'. The locked decision is "monitor the run pid AND validate up
+%% front" -- the monitor is the backstop for any other run death. Here a VALID
+%% steps envelope passes validation and starts a run, then the run pid is killed
+%% abnormally (exit kill) WHILE it is still executing, so it dies without sending
+%% any of the four terminal messages (run_completed | run_failed | run_timeout |
+%% run_cancelled). Without the monitor the task sits at `running' forever; with
+%% the monitor the actor's `'DOWN'' handler records the task terminal `failed'.
+%% A slow sleep step keeps the run mid-execution so the kill lands before any
+%% terminal message could fire. The test also asserts the actor stays alive and
+%% any parked ask waiter is released.
+run_death_after_validation_records_failed(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-run-death">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-run-death">>,
+    %% A VALID step that passes up-front validation (has `id' and `tool') and
+    %% keeps the run busy long enough to be killed mid-flight.
+    Steps = [#{id => s1, tool => sleep, args => #{ms => 5000},
+               timeout_ms => 10000}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    %% Wait until the run is actually running, then grab its pid.
+    running = wait_for_task_status(Pid, TaskId, running, 100),
+    RunPid = task_run_pid(Pid, TaskId),
+    true = is_pid(RunPid),
+    true = is_process_alive(RunPid),
+    %% Kill the run abnormally: it dies without sending any terminal message.
+    exit(RunPid, kill),
+    %% The monitor backstop must record the task terminal `failed' -- never leave
+    %% it stuck at `running'.
+    failed = wait_for_task_status(Pid, TaskId, failed, 100),
+    true = is_process_alive(Pid),
+    ok.
 
 %% Criterion 3: submitting a malformed-steps envelope must not take the actor
 %% down with it. The actor is a long-lived gen_statem entity; a known-bad step
@@ -213,6 +256,11 @@ task_status(Pid, TaskId) ->
     {idle, Data} = sys:get_state(Pid),
     Tasks = element(6, Data),
     maps:get(status, maps:get(TaskId, Tasks)).
+
+task_run_pid(Pid, TaskId) ->
+    {idle, Data} = sys:get_state(Pid),
+    Tasks = element(6, Data),
+    maps:get(run_pid, maps:get(TaskId, Tasks), undefined).
 
 wait_for_task_status(_Pid, _TaskId, Target, 0) ->
     error({timeout, Target});
