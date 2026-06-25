@@ -108,6 +108,19 @@ run_death_after_validation_records_failed(_Config) ->
     %% it stuck at `running'.
     failed = wait_for_task_status(Pid, TaskId, failed, 100),
     true = is_process_alive(Pid),
+    %% Criterion 3 (#79): the shared `'DOWN'' backstop must keep the run-crash
+    %% path emitting ONLY the task-level `actor.task.failed' event -- never an
+    %% `llm.failed', which belongs to the LLM-worker crash path. A run carries no
+    %% `llm_call_id', so the backstop's llm-branch is skipped. The envelope sets
+    %% no explicit correlation_id, so it defaults to the task_id.
+    Correlated = soma_event_store:by_correlation(Store, TaskId),
+    TaskFailed = [E || E <- Correlated,
+                       maps:get(event_type, E, undefined) =:=
+                           <<"actor.task.failed">>],
+    LlmFailed = [E || E <- Correlated,
+                      maps:get(event_type, E, undefined) =:= <<"llm.failed">>],
+    true = length(TaskFailed) >= 1,
+    1 = length(LlmFailed),
     ok.
 
 %% Criterion 3: submitting a malformed-steps envelope must not take the actor
