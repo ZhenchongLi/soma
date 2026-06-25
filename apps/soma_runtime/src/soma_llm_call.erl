@@ -9,7 +9,22 @@
 %% actor-facing start/reply mechanics are later cycles.
 -module(soma_llm_call).
 
+-export([start/1]).
 -export([perform_call/1]).
+
+%% Start a disposable worker process that runs one mock call and reports its
+%% result back to the owner, mirroring how soma_run owns a soma_tool_call worker.
+%% Opts carries the owner pid, the minted `llm_call_id', and the `llm' directive
+%% map. The worker runs `perform_call/1' (the single call seam) and sends the
+%% owner `{llm_result, LlmCallId, self(), Result}', then exits normally. Returns
+%% `{ok, WorkerPid}' so the owner can monitor the worker -- the pid is distinct
+%% from the owner because the call crosses a process boundary.
+start(#{owner := Owner, llm_call_id := LlmCallId, llm := Llm}) ->
+    WorkerPid = spawn(fun() ->
+                              Result = perform_call(Llm),
+                              Owner ! {llm_result, LlmCallId, self(), Result}
+                      end),
+    {ok, WorkerPid}.
 
 %% Run one mock call from its `llm' directive map and return the result. The
 %% `success' directive returns the configured `output' verbatim; no network is
