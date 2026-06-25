@@ -12,10 +12,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([reply_proposal_stored_as_task_result/1]).
 -export([reply_proposal_emits_proposal_created_with_correlation_id/1]).
+-export([run_steps_proposal_starts_no_run/1]).
 
 all() ->
     [reply_proposal_stored_as_task_result,
-     reply_proposal_emits_proposal_created_with_correlation_id].
+     reply_proposal_emits_proposal_created_with_correlation_id,
+     run_steps_proposal_starts_no_run].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -89,6 +91,40 @@ reply_proposal_emits_proposal_created_with_correlation_id(_Config) ->
                     maps:get(event_type, E, undefined) =:= <<"proposal.created">>],
     [Event] = Created,
     CorrelationId = maps:get(correlation_id, Event),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 11: after a mock LLM call returns a valid `run_steps' proposal (each
+%% step a map with `id' and `tool'), the task's event trail contains no
+%% `run.started' event -- the proposed steps are recorded as the task result, not
+%% run. Enters through the real soma_actor:send/2 with a `proposal' llm directive
+%% carrying a raw run_steps proposal, waits for the task to complete, then scans
+%% the correlated events and asserts none has type `run.started'.
+run_steps_proposal_starts_no_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-proposal-run-steps">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => <<"echo">>},
+                              #{id => <<"s2">>, tool => <<"echo">>}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-proposal-run-steps">>,
+    CorrelationId = <<"corr-proposal-run-steps">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    RunStarted = [E || E <- Events,
+                       maps:get(event_type, E, undefined) =:= <<"run.started">>],
+    %% staged red: deliberately wrong expected value to observe the assertion fire
+    [_] = RunStarted,
     true = is_process_alive(ActorPid),
     ok.
 
