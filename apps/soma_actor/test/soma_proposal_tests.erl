@@ -62,3 +62,17 @@ test_actor_message_kind_errors() ->
 
 actor_message_kind_errors_test() ->
     test_actor_message_kind_errors().
+
+%% A reply proposal missing its required text field normalizes to
+%% {error, [Diagnostic]} with a non-empty diagnostic list reporting the missing
+%% required field (not an unknown_kind error).
+test_reply_missing_text_errors() ->
+    Raw = #{kind => reply},
+    {error, Diagnostics} = soma_proposal:normalize(Raw),
+    ?assert(is_list(Diagnostics)),
+    ?assert(length(Diagnostics) >= 1),
+    [Diagnostic | _] = Diagnostics,
+    ?assertEqual(missing_required_field, maps:get(code, Diagnostic)).
+
+reply_missing_text_errors_test() ->
+    test_reply_missing_text_errors().
