@@ -17,13 +17,15 @@
 -export([budget_max_steps_fails_oversized_proposal_with_reason/1]).
 -export([budget_max_steps_oversized_proposal_emits_no_run_started/1]).
 -export([budget_within_max_steps_proposal_completes/1]).
+-export([budget_failed_task_status_reads_failed/1]).
 
 all() ->
     [budget_zero_llm_calls_fails_task_with_reason,
      budget_zero_llm_calls_emits_no_llm_started,
      budget_max_steps_fails_oversized_proposal_with_reason,
      budget_max_steps_oversized_proposal_emits_no_run_started,
-     budget_within_max_steps_proposal_completes].
+     budget_within_max_steps_proposal_completes,
+     budget_failed_task_status_reads_failed].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -206,6 +208,34 @@ budget_within_max_steps_proposal_completes(_Config) ->
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    completed = maps:get(status, Status),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 6: a budget-failed task reads `failed' through get_task_status/2.
+%% Drives a budget failure (the `max_llm_calls => 0' case) through the real
+%% soma_actor:send/2, waits for the terminal status, then reads the status map
+%% back through get_task_status/2 and asserts the `status' field is `failed'.
+budget_failed_task_status_reads_failed(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-budget-status">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             budget => #{max_llm_calls => 0},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => proposal,
+            output => #{kind => reply, text => <<"hi">>}},
+    TaskId = <<"task-budget-status">>,
+    CorrelationId = <<"corr-budget-status">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
     Status = soma_actor:get_task_status(ActorPid, TaskId),
     completed = maps:get(status, Status),
     true = is_process_alive(ActorPid),
