@@ -34,3 +34,17 @@ test_run_steps_all_or_absent_allowlist_returns_allow() ->
 
 run_steps_all_or_absent_allowlist_returns_allow_test() ->
     test_run_steps_all_or_absent_allowlist_returns_allow().
+
+%% reply, reject, and ask proposals name no tool, so they pass the policy check
+%% unconditionally — even under a restrictive allowlist.
+test_toolless_kinds_return_allow() ->
+    Policy = #{allowed_tools => [echo]},
+    {ok, Reply} = soma_proposal:normalize(#{kind => reply, text => <<"hi">>}),
+    {ok, Reject} = soma_proposal:normalize(#{kind => reject, reason => <<"no">>}),
+    {ok, Ask} = soma_proposal:normalize(#{kind => ask, question => <<"why?">>}),
+    ?assertEqual(allow, soma_policy:check(Reply, Policy)),
+    ?assertEqual(allow, soma_policy:check(Reject, Policy)),
+    ?assertEqual(allow, soma_policy:check(Ask, Policy)).
+
+toolless_kinds_return_allow_test() ->
+    test_toolless_kinds_return_allow().
