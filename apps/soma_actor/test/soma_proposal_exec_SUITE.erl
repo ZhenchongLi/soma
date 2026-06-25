@@ -281,9 +281,7 @@ approved_run_steps_failing_tool_marks_task_failed_actor_alive(_Config) ->
                  correlation_id => CorrelationId,
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
-    %% Staged red: a failing run never reaches `completed', so this wait times
-    %% out and the assertion fires. Corrected to `failed' in the green commit.
-    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
     true = is_process_alive(ActorPid),
     ok.
 
