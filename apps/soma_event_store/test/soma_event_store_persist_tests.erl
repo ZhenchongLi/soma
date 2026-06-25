@@ -226,6 +226,11 @@ test_by_correlation_after_restart_returns_full_chain() ->
                                              correlation_id => corr_a,
                                              event_type => a2}),
 
+        %% Normalized view of corr_a's chain captured before the restart, so the
+        %% recovered chain can be compared exactly (event_id and timestamp are
+        %% filled at append time, not regenerated on replay).
+        ExpectedCorrA = soma_event_store:by_correlation(Pid1, corr_a),
+
         ok = stop_store(Pid1),
 
         {ok, Pid2} = soma_event_store:start_link(#{log => Path}),
@@ -233,10 +238,10 @@ test_by_correlation_after_restart_returns_full_chain() ->
         ok = stop_store(Pid2),
 
         CorrATypes = [maps:get(event_type, E) || E <- RecoveredCorrA],
-        %% Deliberately wrong expected value for the staged-red phase: corr_a's
-        %% chain is [a1, a2] (b1 belongs to corr_b), so asserting the full
-        %% three-event set fires the assertion for the right reason.
-        ?assertEqual([a1, b1, a2], CorrATypes)
+        %% corr_a's full cross-layer chain is [a1, a2] in append order, spanning
+        %% run_a/sess_a and run_c/sess_c; b1 belongs to corr_b and is excluded.
+        ?assertEqual([a1, a2], CorrATypes),
+        ?assertEqual(ExpectedCorrA, RecoveredCorrA)
     after
         ok = del_tmp_dir(TmpDir)
     end.
