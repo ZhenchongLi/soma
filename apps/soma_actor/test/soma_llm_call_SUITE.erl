@@ -409,6 +409,10 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
     %% Both proving suites.
     true = doc_contains(Doc, <<"soma_llm_call_tests">>),
     true = doc_contains(Doc, <<"soma_llm_call_SUITE">>),
+    %% The v0.5.2 proposal-normalize section and its proving suites.
+    true = doc_contains(Doc, <<"v0.5.2">>),
+    true = doc_contains(Doc, <<"soma_proposal_tests">>),
+    true = doc_contains(Doc, <<"soma_proposal_SUITE">>),
     %% Every case that proves a process proof in this slice.
     Cases =
         [<<"test_mock_success_returns_configured_output">>,
@@ -420,7 +424,23 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
          <<"status_promptly_while_llm_call_in_flight">>,
          <<"completed_call_appends_llm_event_with_correlation_id">>,
          <<"by_correlation_returns_llm_and_actor_events">>,
-         <<"both_steps_and_llm_rejected_no_child_started">>],
+         <<"both_steps_and_llm_rejected_no_child_started">>,
+         %% v0.5.2 pure-normalize proofs (soma_proposal_tests).
+         <<"test_reply_normalizes_ok">>,
+         <<"test_run_steps_normalizes_ok">>,
+         <<"test_reject_normalizes_ok">>,
+         <<"test_ask_normalizes_ok">>,
+         <<"test_unknown_kind_errors">>,
+         <<"test_actor_message_kind_errors">>,
+         <<"test_reply_missing_text_errors">>,
+         <<"test_run_steps_bad_step_errors">>,
+         %% v0.5.2 actor-side proofs (soma_proposal_SUITE).
+         <<"reply_proposal_stored_as_task_result">>,
+         <<"reply_proposal_emits_proposal_created_with_correlation_id">>,
+         <<"run_steps_proposal_starts_no_run">>,
+         <<"malformed_proposal_marks_task_failed">>,
+         <<"actor_survives_malformed_proposal_takes_next_send">>,
+         <<"by_correlation_returns_proposal_actor_and_llm_events">>],
     [true = doc_contains(Doc, Case) || Case <- Cases],
     ok.
 
