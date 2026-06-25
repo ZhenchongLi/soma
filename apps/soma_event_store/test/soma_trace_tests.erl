@@ -39,8 +39,8 @@ test_timeline_line_names_event_type() ->
     Lines = string:split(iolist_to_binary(Output), <<"\n">>, all),
     NonEmptyLines = [binary_to_list(L) || L <- Lines, L =/= <<>>],
     Line = hd(NonEmptyLines),
-    %% Deliberately wrong: assert it does NOT contain the event type (staged red)
-    ?assertEqual(false, string:str(Line, "tool.invoked") > 0).
+    %% Each line must contain the event_type atom as a string
+    ?assertEqual(true, string:str(Line, "tool.invoked") > 0).
 
 timeline_line_names_event_type_test() ->
     test_timeline_line_names_event_type().
