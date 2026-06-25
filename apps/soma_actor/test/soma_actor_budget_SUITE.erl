@@ -18,6 +18,7 @@
 -export([budget_max_steps_oversized_proposal_emits_no_run_started/1]).
 -export([budget_within_max_steps_proposal_completes/1]).
 -export([budget_failed_task_status_reads_failed/1]).
+-export([actor_survives_budget_failure_takes_next_envelope/1]).
 
 all() ->
     [budget_zero_llm_calls_fails_task_with_reason,
@@ -25,7 +26,8 @@ all() ->
      budget_max_steps_fails_oversized_proposal_with_reason,
      budget_max_steps_oversized_proposal_emits_no_run_started,
      budget_within_max_steps_proposal_completes,
-     budget_failed_task_status_reads_failed].
+     budget_failed_task_status_reads_failed,
+     actor_survives_budget_failure_takes_next_envelope].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -237,6 +239,58 @@ budget_failed_task_status_reads_failed(_Config) ->
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, failed, 100),
     Status = soma_actor:get_task_status(ActorPid, TaskId),
+    failed = maps:get(status, Status),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 7: after a budget failure the same actor accepts a later
+%% within-budget envelope and drives it to `completed'. One actor with
+%% `max_steps => 1': the first envelope's approved proposal carries two steps
+%% (over the cap, so the task fails as data and the actor stays in `idle'), then
+%% a second envelope's approved proposal carries one step (within the cap, so it
+%% runs through the full decision loop to `completed'). Both envelopes go through
+%% the real soma_actor:send/2 on the same actor pid; the test asserts the actor
+%% is alive after the failure and that the second task reaches `completed'.
+actor_survives_budget_failure_takes_next_envelope(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-budget-survive">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             budget => #{max_steps => 1},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    %% First envelope: a two-step proposal against max_steps of 1 -> over the
+    %% cap, so the first task is budget-failed.
+    OverProposal = #{kind => run_steps,
+                     steps => [#{id => <<"s1">>, tool => echo,
+                                args => #{value => <<"a">>}},
+                               #{id => <<"s2">>, tool => echo,
+                                args => #{value => <<"b">>}}]},
+    FirstLlm = #{directive => proposal, output => OverProposal},
+    FirstTaskId = <<"task-budget-survive-1">>,
+    FirstEnvelope = #{type => <<"chat">>,
+                      payload => #{text => <<"do it">>},
+                      task_id => FirstTaskId,
+                      correlation_id => <<"corr-budget-survive-1">>,
+                      llm => FirstLlm},
+    {ok, FirstTaskId} = soma_actor:send(ActorPid, FirstEnvelope),
+    ok = wait_for_status(ActorPid, FirstTaskId, failed, 100),
+    true = is_process_alive(ActorPid),
+    %% Second envelope: a one-step proposal against max_steps of 1 -> within
+    %% the cap, so the second task runs to completion on the same live actor.
+    WithinProposal = #{kind => run_steps,
+                       steps => [#{id => <<"s1">>, tool => echo,
+                                  args => #{value => <<"c">>}}]},
+    SecondLlm = #{directive => proposal, output => WithinProposal},
+    SecondTaskId = <<"task-budget-survive-2">>,
+    SecondEnvelope = #{type => <<"chat">>,
+                       payload => #{text => <<"do it again">>},
+                       task_id => SecondTaskId,
+                       correlation_id => <<"corr-budget-survive-2">>,
+                       llm => SecondLlm},
+    {ok, SecondTaskId} = soma_actor:send(ActorPid, SecondEnvelope),
+    ok = wait_for_status(ActorPid, SecondTaskId, completed, 100),
+    Status = soma_actor:get_task_status(ActorPid, SecondTaskId),
     failed = maps:get(status, Status),
     true = is_process_alive(ActorPid),
     ok.
