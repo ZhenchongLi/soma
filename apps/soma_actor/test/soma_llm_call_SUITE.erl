@@ -244,10 +244,7 @@ completed_call_appends_llm_event_with_correlation_id(_Config) ->
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
-    %% Staged red: query a correlation_id that no event carries, so the llm.*
-    %% filter yields an empty list and `length >= 1' fires. Corrected to
-    %% CorrelationId in the green commit.
-    Events = soma_event_store:by_correlation(Store, <<"corr-does-not-exist">>),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
     LlmEvents = [E || E <- Events,
                       is_llm_event_type(maps:get(event_type, E, undefined))],
     true = length(LlmEvents) >= 1,
