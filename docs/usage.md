@@ -314,7 +314,7 @@ run.
 
 ```erlang
 soma_actor:ask(Actor, Envelope, TimeoutMs).
-%% => {ok, Result} | {error, Reason} | timeout
+%% => {ok, Result} | {ok, accepted, TaskId} | {error, Reason} | timeout
 ```
 
 Blocks the *caller* (not the actor) until the task reaches a terminal state.
@@ -322,6 +322,13 @@ Blocks the *caller* (not the actor) until the task reaches a terminal state.
 `#{s1 => #{value => <<"hi">>}}`). A failed run returns `{error, Reason}`; if
 `TimeoutMs` elapses first the call returns `timeout` and the actor still drives
 the task to completion.
+
+A **no-steps envelope** is valid but starts no run, so no terminal event will
+ever fire. Rather than block the caller until `TimeoutMs`, `ask/3` returns
+immediately with the distinct 3-tuple `{ok, accepted, TaskId}` — accepted, no
+run started, here is the id to poll. The shape is deliberately distinct from the
+completed-run `{ok, Result}`: `{ok, Result}` keeps its one meaning and a bare
+`{ok, TaskId}` never overloads it.
 
 ### Polling: status and result
 
