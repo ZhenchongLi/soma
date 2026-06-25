@@ -116,8 +116,8 @@ test_unset_env_boot_order(_Config) ->
 test_set_env_boot_order(_Config) ->
     Children = supervisor:which_children(soma_sup),
     StartOrder = [Id || {Id, _Pid, _Type, _Mods} <- lists:reverse(Children)],
-    ?assertEqual([soma_run_sup, soma_session_sup,
-                  soma_tool_registry, soma_event_store],
+    ?assertEqual([soma_event_store, soma_tool_registry,
+                  soma_session_sup, soma_run_sup],
                  StartOrder).
 
 %%% Helpers
