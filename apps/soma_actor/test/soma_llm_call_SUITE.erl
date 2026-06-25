@@ -17,6 +17,7 @@
 -export([status_promptly_while_llm_call_in_flight/1]).
 -export([completed_call_appends_llm_event_with_correlation_id/1]).
 -export([by_correlation_returns_llm_and_actor_events/1]).
+-export([pins_v0_5_test_contract_maps_each_proof/1]).
 
 all() ->
     [llm_worker_runs_in_distinct_pid,
@@ -26,7 +27,8 @@ all() ->
      crash_reaches_actor_as_failed_via_down,
      status_promptly_while_llm_call_in_flight,
      completed_call_appends_llm_event_with_correlation_id,
-     by_correlation_returns_llm_and_actor_events].
+     by_correlation_returns_llm_and_actor_events,
+     pins_v0_5_test_contract_maps_each_proof].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -286,6 +288,64 @@ by_correlation_returns_llm_and_actor_events(_Config) ->
     true = length(ActorEvents) >= 1,
     true = length(LlmEvents) >= 1,
     ok.
+
+%% Criterion 10: `docs/contracts/v0.5-test-contract.md' exists and maps each
+%% process proof in this slice to the suite and case that proves it. Mirrors how
+%% earlier slices pinned their contract docs (see v0.4-test-contract.md and its
+%% pin test). This reads the file off the call chain -- a documentation
+%% deliverable, not runtime behaviour -- and asserts it exists and references the
+%% two proving suites plus every case named in design-77's criteria 1-9 and the
+%% mutual-exclusion bonus case.
+pins_v0_5_test_contract_maps_each_proof(_Config) ->
+    Doc = read_contract_doc(),
+    %% Both proving suites.
+    true = doc_contains(Doc, <<"soma_llm_call_tests">>),
+    true = doc_contains(Doc, <<"soma_llm_call_SUITE">>),
+    %% Every case that proves a process proof in this slice.
+    Cases =
+        [<<"test_mock_success_returns_configured_output">>,
+         <<"llm_worker_runs_in_distinct_pid">>,
+         <<"get_task_result_holds_llm_output">>,
+         <<"slow_call_times_out_worker_dead_actor_alive">>,
+         <<"cancel_in_flight_call_worker_dead_actor_alive">>,
+         <<"crash_reaches_actor_as_failed_via_down">>,
+         <<"status_promptly_while_llm_call_in_flight">>,
+         <<"completed_call_appends_llm_event_with_correlation_id">>,
+         <<"by_correlation_returns_llm_and_actor_events">>,
+         <<"both_steps_and_llm_rejected_no_child_started">>],
+    [true = doc_contains(Doc, Case) || Case <- Cases],
+    ok.
+
+%% Reads docs/contracts/v0.5-test-contract.md. rebar3 keeps cwd at the project
+%% root for ct, so the relative path resolves; if some runner does not, walk up
+%% from cwd looking for the file before giving up.
+read_contract_doc() ->
+    Rel = "docs/contracts/v0.5-test-contract.md",
+    case file:read_file(Rel) of
+        {ok, Bin} -> Bin;
+        {error, _} ->
+            Path = find_upwards(Rel, filename:absname(".")),
+            case file:read_file(Path) of
+                {ok, Bin} -> Bin;
+                {error, Reason} ->
+                    error({cannot_read_contract_doc, Rel, Reason})
+            end
+    end.
+
+find_upwards(Rel, Dir) ->
+    Candidate = filename:join(Dir, Rel),
+    case filelib:is_regular(Candidate) of
+        true -> Candidate;
+        false ->
+            Parent = filename:dirname(Dir),
+            case Parent of
+                Dir -> Rel;
+                _ -> find_upwards(Rel, Parent)
+            end
+    end.
+
+doc_contains(Haystack, Needle) ->
+    nomatch =/= binary:match(Haystack, Needle).
 
 %% True when the event-type binary starts with the `actor.' prefix.
 is_actor_event_type(<<"actor.", _/binary>>) -> true;
