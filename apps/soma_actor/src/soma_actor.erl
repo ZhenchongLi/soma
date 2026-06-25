@@ -16,7 +16,8 @@
 -export([idle/3]).
 
 -record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
-               runs = #{}, waiters = #{}, monitors = #{}, llm_calls = #{}}).
+               runs = #{}, waiters = #{}, monitors = #{}, llm_calls = #{},
+               budget = #{}, llm_call_counts = #{}}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -74,7 +75,8 @@ init(Opts) ->
     Data = #data{actor_id = maps:get(actor_id, Opts, undefined),
                  model_config = maps:get(model_config, Opts, undefined),
                  tool_policy = maps:get(tool_policy, Opts, undefined),
-                 event_store = maps:get(event_store, Opts, undefined)},
+                 event_store = maps:get(event_store, Opts, undefined),
+                 budget = maps:get(budget, Opts, #{})},
     emit(Data, <<"actor.started">>, #{}),
     {ok, idle, Data}.
 
@@ -132,9 +134,13 @@ idle({call, From}, {get_task_status, TaskId}, Data) ->
                  undefined ->
                      #{task_id => TaskId, status => not_found};
                  Task ->
-                     #{task_id => TaskId,
-                       correlation_id => maps:get(correlation_id, Task),
-                       status => maps:get(status, Task)}
+                     Base = #{task_id => TaskId,
+                              correlation_id => maps:get(correlation_id, Task),
+                              status => maps:get(status, Task)},
+                     case maps:get(reason, Task, undefined) of
+                         undefined -> Base;
+                         Reason -> Base#{reason => Reason}
+                     end
              end,
     {keep_state, Data, [{reply, From, Status}]};
 idle({call, From}, {get_task_result, TaskId}, Data) ->
@@ -558,35 +564,79 @@ start_owned_run(Steps, TaskId, CorrelationId, Data) ->
 maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
     case maps:get(llm, Envelope, undefined) of
         Llm when is_map(Llm) ->
-            LlmCallId = mint_llm_call_id(),
-            {ok, WorkerPid} = soma_llm_call:start(#{owner => self(),
-                                                    llm_call_id => LlmCallId,
-                                                    llm => Llm}),
-            MRef = erlang:monitor(process, WorkerPid),
-            %% Arm a call-timeout timer the actor owns: when it fires before the
-            %% worker reports a result, the actor kills the worker and records
-            %% `timeout'. The owner enforces the bound, mirroring soma_run's
-            %% per-step state_timeout -- a `slow' mock that ignores the timer is
-            %% exactly the case this proves. The timer carries the llm_call_id so
-            %% the firing maps back to its task. With no timeout_ms, no timer.
-            TimerRef = arm_llm_timeout(maps:get(timeout_ms, Llm, undefined),
-                                       LlmCallId),
-            LlmCalls = maps:put(LlmCallId, TaskId, Data#data.llm_calls),
-            Monitors = maps:put(MRef, TaskId, Data#data.monitors),
-            Task = maps:get(TaskId, Data#data.tasks),
-            Task1 = Task#{status => running, llm_call_id => LlmCallId,
-                          llm_call_pid => WorkerPid, llm_call_mref => MRef,
-                          llm_timer_ref => TimerRef},
-            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
-            Data1 = Data#data{llm_calls = LlmCalls, tasks = Tasks,
-                              monitors = Monitors},
-            emit(Data1, <<"llm.started">>,
-                 #{task_id => TaskId, correlation_id => CorrelationId,
-                   llm_call_id => LlmCallId, llm_call_pid => WorkerPid}),
-            Data1;
+            case llm_budget_available(TaskId, Data) of
+                true ->
+                    start_llm_call(Llm, TaskId, CorrelationId, Data);
+                false ->
+                    %% Spend point one: the task's LLM-call count is at the
+                    %% max_llm_calls cap, so no call is made. The task fails as
+                    %% data through the shared failure path; no llm.started fires.
+                    fail_task(TaskId, {budget_exceeded, max_llm_calls}, Data)
+            end;
         _ ->
             Data
     end.
+
+%% True when the task's started-LLM-call count is below the budget's
+%% `max_llm_calls' cap. An absent `max_llm_calls' (or absent budget) means no
+%% cap on that dimension, so the call is always available.
+llm_budget_available(TaskId, Data) ->
+    case maps:get(max_llm_calls, Data#data.budget, undefined) of
+        undefined ->
+            true;
+        Max ->
+            Count = maps:get(TaskId, Data#data.llm_call_counts, 0),
+            Count < Max
+    end.
+
+%% Fail a task as data through the existing failure shape: record `status =>
+%% failed' with the reason, emit `actor.task.failed' carrying the reason, and
+%% release any parked ask waiter with `{error, Reason}'. The actor stays alive.
+fail_task(TaskId, Reason, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    CorrelationId = maps:get(correlation_id, Task),
+    Task1 = Task#{status => failed, reason => Reason},
+    Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+    Data1 = Data#data{tasks = Tasks},
+    emit(Data1, <<"actor.task.failed">>,
+         #{task_id => TaskId, correlation_id => CorrelationId,
+           reason => Reason}),
+    case reply_waiter(TaskId, {error, Reason}, Data1) of
+        {keep_state, Data2, _Actions} -> Data2;
+        {keep_state, Data2} -> Data2
+    end.
+
+start_llm_call(Llm, TaskId, CorrelationId, Data) ->
+    LlmCallId = mint_llm_call_id(),
+    {ok, WorkerPid} = soma_llm_call:start(#{owner => self(),
+                                            llm_call_id => LlmCallId,
+                                            llm => Llm}),
+    MRef = erlang:monitor(process, WorkerPid),
+    %% Arm a call-timeout timer the actor owns: when it fires before the
+    %% worker reports a result, the actor kills the worker and records
+    %% `timeout'. The owner enforces the bound, mirroring soma_run's
+    %% per-step state_timeout -- a `slow' mock that ignores the timer is
+    %% exactly the case this proves. The timer carries the llm_call_id so
+    %% the firing maps back to its task. With no timeout_ms, no timer.
+    TimerRef = arm_llm_timeout(maps:get(timeout_ms, Llm, undefined),
+                               LlmCallId),
+    LlmCalls = maps:put(LlmCallId, TaskId, Data#data.llm_calls),
+    Monitors = maps:put(MRef, TaskId, Data#data.monitors),
+    Task = maps:get(TaskId, Data#data.tasks),
+    Task1 = Task#{status => running, llm_call_id => LlmCallId,
+                  llm_call_pid => WorkerPid, llm_call_mref => MRef,
+                  llm_timer_ref => TimerRef},
+    Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+    %% The count increments only when a call actually starts, so it tracks the
+    %% task's started-call total against the max_llm_calls cap.
+    Count = maps:get(TaskId, Data#data.llm_call_counts, 0),
+    Counts = maps:put(TaskId, Count + 1, Data#data.llm_call_counts),
+    Data1 = Data#data{llm_calls = LlmCalls, tasks = Tasks,
+                      monitors = Monitors, llm_call_counts = Counts},
+    emit(Data1, <<"llm.started">>,
+         #{task_id => TaskId, correlation_id => CorrelationId,
+           llm_call_id => LlmCallId, llm_call_pid => WorkerPid}),
+    Data1.
 
 %% Decide a task result from a successful worker output. A proposal candidate -- a
 %% map carrying a `kind' tag -- is validated through soma_proposal:normalize/1 and,
