@@ -23,3 +23,14 @@ test_run_steps_unknown_tool_returns_reject() ->
 
 run_steps_unknown_tool_returns_reject_test() ->
     test_run_steps_unknown_tool_returns_reject().
+
+%% A run_steps proposal is allowed for any tool when the policy is
+%% #{allowed_tools => all} or carries no allowed_tools key at all.
+test_run_steps_all_or_absent_allowlist_returns_allow() ->
+    Steps = [#{id => <<"s1">>, tool => echo}, #{id => <<"s2">>, tool => danger}],
+    {ok, Proposal} = soma_proposal:normalize(#{kind => run_steps, steps => Steps}),
+    ?assertEqual(allow, soma_policy:check(Proposal, #{allowed_tools => all})),
+    ?assertEqual(allow, soma_policy:check(Proposal, #{})).
+
+run_steps_all_or_absent_allowlist_returns_allow_test() ->
+    test_run_steps_all_or_absent_allowlist_returns_allow().
