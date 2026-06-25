@@ -357,9 +357,9 @@ direct_steps_completes_no_proposal_event(_Config) ->
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
-    %% STAGED RED: the direct steps path emits no proposal.* event, so this
-    %% assertion that it DOES is deliberately wrong and must fire red first.
-    true = lists:any(fun(T) -> has_prefix(T, <<"proposal.">>) end, Types),
+    %% The v0.4 direct steps path runs straight to a run; it never goes through
+    %% the proposal/policy hop, so the trail carries no `proposal.*' event.
+    false = lists:any(fun(T) -> has_prefix(T, <<"proposal.">>) end, Types),
     true = is_process_alive(ActorPid),
     ok.
 
