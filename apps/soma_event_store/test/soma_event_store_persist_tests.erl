@@ -52,6 +52,27 @@ test_in_memory_store_writes_no_file_and_queries_unchanged() ->
 in_memory_store_writes_no_file_and_queries_unchanged_test() ->
     test_in_memory_store_writes_no_file_and_queries_unchanged().
 
+%% Criterion 2: a store started with start_link/1 and #{log => Path} has a
+%% disk_log file present at Path after the first append/2. The file check reads
+%% the filesystem at Path directly.
+test_persistent_store_creates_file_after_first_append() ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    try
+        ?assertNot(filelib:is_regular(Path)),
+        {ok, Pid} = soma_event_store:start_link(#{log => Path}),
+        ok = soma_event_store:append(Pid, #{run_id => run_a,
+                                            session_id => sess_a,
+                                            correlation_id => corr_a,
+                                            event_type => a1}),
+        ?assert(filelib:is_regular(Path))
+    after
+        ok = del_tmp_dir(TmpDir)
+    end.
+
+persistent_store_creates_file_after_first_append_test() ->
+    test_persistent_store_creates_file_after_first_append().
+
 %%% Helpers
 
 make_tmp_dir() ->
