@@ -95,3 +95,17 @@ test_doc_drops_not_yet_bundled() ->
 
 doc_drops_not_yet_bundled_test() ->
     test_doc_drops_not_yet_bundled().
+
+%% Issue #75 criterion 6: docs/release.md documents a runnable actor boot smoke
+%% test, modeled on the session smoke test. The doc must name the actor start
+%% entry point (`soma_actor_sup:start_actor`), drive a one-step `echo` task, and
+%% confirm the task reaches the `completed` terminal status.
+test_doc_has_actor_smoke_test() ->
+    Doc = read_doc(),
+    ?assert(contains(Doc, <<"soma_actor_sup:start_actor">>)),
+    ?assert(contains(Doc, <<"soma_actor:get_task_status">>)),
+    ?assert(contains(Doc, <<"echo">>)),
+    ?assert(contains(Doc, <<"completed">>)).
+
+doc_has_actor_smoke_test_test() ->
+    test_doc_has_actor_smoke_test().
