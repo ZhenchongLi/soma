@@ -18,7 +18,9 @@ normalize(#{kind := run_steps, steps := Steps}) when is_list(Steps) ->
         true -> {ok, #{kind => run_steps, steps => Steps}}
     end;
 normalize(#{kind := reject, reason := Reason}) when is_binary(Reason) ->
-    {ok, #{kind => reject, reason => Reason}}.
+    {ok, #{kind => reject, reason => Reason}};
+normalize(#{kind := ask, question := Question}) when is_binary(Question) ->
+    {ok, #{kind => ask, question => Question}}.
 
 valid_step(Step) when is_map(Step) ->
     maps:is_key(id, Step) andalso maps:is_key(tool, Step);
