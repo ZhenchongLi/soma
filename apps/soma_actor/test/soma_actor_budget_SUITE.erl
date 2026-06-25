@@ -207,9 +207,7 @@ budget_within_max_steps_proposal_completes(_Config) ->
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
     Status = soma_actor:get_task_status(ActorPid, TaskId),
-    %% Staged red: deliberately wrong expected value to observe the assertion
-    %% fire before correcting it.
-    failed = maps:get(status, Status),
+    completed = maps:get(status, Status),
     true = is_process_alive(ActorPid),
     ok.
 
