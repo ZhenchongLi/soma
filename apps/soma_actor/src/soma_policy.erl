@@ -17,5 +17,8 @@ check(#{kind := run_steps, steps := Steps}, #{allowed_tools := Allowed}) ->
     Tools = [maps:get(tool, Step) || Step <- Steps],
     case lists:all(fun(Tool) -> lists:member(Tool, Allowed) end, Tools) of
         true ->
-            allow
+            allow;
+        false ->
+            Disallowed = [Tool || Tool <- Tools, not lists:member(Tool, Allowed)],
+            {reject, {tools_not_allowed, Disallowed}}
     end.
