@@ -17,12 +17,14 @@
 -export([delivered_task_inherits_a1_correlation_id/1]).
 -export([by_correlation_returns_both_actors_events/1]).
 -export([a1_emits_proposal_executed_for_actor_message/1]).
+-export([a1_actor_message_task_completed_actor_alive/1]).
 
 all() ->
     [delivered_message_accepted_by_a2_emits_task_accepted,
      delivered_task_inherits_a1_correlation_id,
      by_correlation_returns_both_actors_events,
-     a1_emits_proposal_executed_for_actor_message].
+     a1_emits_proposal_executed_for_actor_message,
+     a1_actor_message_task_completed_actor_alive].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -197,6 +199,43 @@ a1_emits_proposal_executed_for_actor_message(_Config) ->
     %% sender task before delivering the envelope to A2.
     [_ | _] = Executed,
     true = is_process_alive(A2),
+    true = is_process_alive(A1),
+    ok.
+
+%% Criterion 9: A1's `actor_message' task reaches terminal status `completed' and
+%% A1's pid stays alive. A1's mock returns a policy-approved `actor_message'
+%% proposal whose `to' is A2's pid; A1's `actor_message' arm delivers the envelope
+%% to A2 and then marks the sender task `completed'. Drives A1 through the real
+%% soma_actor:send/2, waits for A2's accepted event (so the chain has run), then
+%% reads A1's task status via get_task_status/2 and asserts it is `completed' and
+%% that A1's process is still alive.
+a1_actor_message_task_completed_actor_alive(_Config) ->
+    Store = event_store_pid(),
+    A2Opts = #{actor_id => <<"actor-a2">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2} = soma_actor_sup:start_actor(A2Opts),
+    A1Opts = #{actor_id => <<"actor-a1">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1} = soma_actor_sup:start_actor(A1Opts),
+    RawProposal = #{kind => actor_message,
+                    to => A2,
+                    payload => #{text => <<"hello a2">>}},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-a1-send">>,
+    CorrelationId = <<"corr-a1-send">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"tell a2">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(A1, Envelope),
+    ok = wait_for_a2_accepted(Store, CorrelationId, <<"actor-a2">>, 100),
+    Status = soma_actor:get_task_status(A1, TaskId),
+    failed = maps:get(status, Status),
     true = is_process_alive(A1),
     ok.
 
