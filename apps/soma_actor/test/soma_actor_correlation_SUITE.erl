@@ -4,10 +4,12 @@
 
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
--export([test_chain_retrievable_by_correlation_id/1]).
+-export([test_chain_retrievable_by_correlation_id/1,
+         test_render_driven_chain_is_ordered_and_terminal/1]).
 
 all() ->
-    [test_chain_retrievable_by_correlation_id].
+    [test_chain_retrievable_by_correlation_id,
+     test_render_driven_chain_is_ordered_and_terminal].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -72,6 +74,51 @@ test_chain_retrievable_by_correlation_id(_Config) ->
     %% plus the run's six-event completion chain (run.started, step.started,
     %% tool.started, tool.succeeded, step.succeeded, run.completed).
     10 = length(Events),
+    ok.
+
+%% Criterion 7: soma_trace:render/2 over a real driven chain returns lines that
+%% are in timestamp order, and the last line contains the terminal event type
+%% (actor.task.completed or run.completed).
+test_render_driven_chain_is_ordered_and_terminal(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-render-order">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    CorrelationId = <<"corr-render-order">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"b">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => <<"task-render-order">>,
+                 correlation_id => CorrelationId,
+                 steps => Steps},
+    {ok, _} = soma_actor:send(Pid, Envelope),
+    _ = wait_for_actor_event(Store, <<"actor.task.completed">>, 100),
+    %% render/2 queries the store and returns timeline iodata
+    IOData = soma_trace:render(Store, CorrelationId),
+    Output = lists:flatten(IOData),
+    Lines = [L || L <- string:split(Output, "\n", all), L =/= ""],
+    %% Must have at least as many lines as events
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    true = length(Lines) =:= length(Events),
+    %% Lines must be in timestamp order: verify by extracting event timestamps
+    %% in the order render/2 emits them and comparing to sorted order.
+    Sorted = lists:sort(fun(E1, E2) ->
+        maps:get(timestamp, E1, 0) =< maps:get(timestamp, E2, 0)
+    end, Events),
+    SortedTypes = [binary_to_list(maps:get(event_type, E)) || E <- Sorted],
+    %% Each sorted event_type must appear in its corresponding line
+    lists:foreach(fun({Type, Line}) ->
+        true = string:str(Line, Type) > 0
+    end, lists:zip(SortedTypes, Lines)),
+    %% The last line must be the terminal event (actor.task.completed or run.completed)
+    LastLine = lists:last(Lines),
+    LastSortedType = lists:last(SortedTypes),
+    Terminal = LastSortedType =:= "actor.task.completed" orelse
+               LastSortedType =:= "run.completed",
+    true = Terminal,
+    true = string:str(LastLine, LastSortedType) > 0,
     ok.
 
 %% Polls the store until one event of the given type appears, returning it.
