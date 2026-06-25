@@ -14,10 +14,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([budget_zero_llm_calls_fails_task_with_reason/1]).
 -export([budget_zero_llm_calls_emits_no_llm_started/1]).
+-export([budget_max_steps_fails_oversized_proposal_with_reason/1]).
 
 all() ->
     [budget_zero_llm_calls_fails_task_with_reason,
-     budget_zero_llm_calls_emits_no_llm_started].
+     budget_zero_llm_calls_emits_no_llm_started,
+     budget_max_steps_fails_oversized_proposal_with_reason].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -92,6 +94,44 @@ budget_zero_llm_calls_emits_no_llm_started(_Config) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
     false = lists:member(<<"llm.started">>, Types),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 3: an actor started with `budget => #{max_steps => N}' fails the task
+%% of an approved `run_steps' proposal carrying more than N steps with reason
+%% `{budget_exceeded, max_steps}'. The proposal arrives through the real mock
+%% worker, passes policy (every step tool is allowed), then the step-count gate in
+%% the `run_steps' branch sees a count over the cap and fails the task through the
+%% shared failure path -- no run is started. Drives the envelope through the real
+%% soma_actor:send/2 and reads the terminal `failed' status and reason back through
+%% get_task_status/2.
+budget_max_steps_fails_oversized_proposal_with_reason(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-budget-steps">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             budget => #{max_steps => 1},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    %% Two steps against a max_steps of 1: over the cap, so the proposal is
+    %% budget-failed before any run starts.
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => echo,
+                               args => #{value => <<"a">>}},
+                              #{id => <<"s2">>, tool => echo,
+                               args => #{value => <<"b">>}}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-budget-steps">>,
+    CorrelationId = <<"corr-budget-steps">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    {budget_exceeded, max_steps} = maps:get(reason, Status),
     true = is_process_alive(ActorPid),
     ok.
 
