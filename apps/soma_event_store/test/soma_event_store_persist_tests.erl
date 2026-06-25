@@ -198,6 +198,52 @@ test_by_run_after_restart_filters_to_one_run() ->
 by_run_after_restart_filters_to_one_run_test() ->
     test_by_run_after_restart_filters_to_one_run().
 
+%% Criterion 6: after a restart that replays the log, by_correlation/2 against
+%% the rebuilt index returns the full cross-layer chain for a correlation_id,
+%% in append order, and excludes the events of every other correlation_id. The
+%% chain deliberately spans more than one run_id and session_id under the same
+%% correlation_id, modeling a cross-layer chain. Runs across two store lifetimes
+%% through the public API only: append events spanning more than one
+%% correlation_id into the first store, stop it, start a second store at the
+%% same Path, and query by_correlation/2.
+test_by_correlation_after_restart_returns_full_chain() ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    try
+        {ok, Pid1} = soma_event_store:start_link(#{log => Path}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_a,
+                                             session_id => sess_a,
+                                             correlation_id => corr_a,
+                                             event_type => a1}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_b,
+                                             session_id => sess_b,
+                                             correlation_id => corr_b,
+                                             event_type => b1}),
+        %% Second event under corr_a but in a different run/session, so the chain
+        %% for corr_a spans more than one layer.
+        ok = soma_event_store:append(Pid1, #{run_id => run_c,
+                                             session_id => sess_c,
+                                             correlation_id => corr_a,
+                                             event_type => a2}),
+
+        ok = stop_store(Pid1),
+
+        {ok, Pid2} = soma_event_store:start_link(#{log => Path}),
+        RecoveredCorrA = soma_event_store:by_correlation(Pid2, corr_a),
+        ok = stop_store(Pid2),
+
+        CorrATypes = [maps:get(event_type, E) || E <- RecoveredCorrA],
+        %% Deliberately wrong expected value for the staged-red phase: corr_a's
+        %% chain is [a1, a2] (b1 belongs to corr_b), so asserting the full
+        %% three-event set fires the assertion for the right reason.
+        ?assertEqual([a1, b1, a2], CorrATypes)
+    after
+        ok = del_tmp_dir(TmpDir)
+    end.
+
+by_correlation_after_restart_returns_full_chain_test() ->
+    test_by_correlation_after_restart_returns_full_chain().
+
 %%% Helpers
 
 %% Open a fresh disk_log against an existing halt log file and read its single
