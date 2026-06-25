@@ -1,0 +1,83 @@
+%% @doc Actor-side proofs for the soma_policy gate wired into the actor's
+%% llm_result success path. Set up like soma_proposal_SUITE: boot the soma_runtime
+%% app (so the event store is alive), start an actor through
+%% soma_actor_sup:start_actor/1 with a `tool_policy', and drive it through the real
+%% soma_actor:send/2 with an `llm' envelope carrying a `proposal' directive.
+-module(soma_policy_SUITE).
+
+-include_lib("common_test/include/ct.hrl").
+
+-export([all/0]).
+-export([init_per_testcase/2, end_per_testcase/2]).
+-export([allowed_run_steps_emits_proposal_approved_with_correlation_id/1]).
+
+all() ->
+    [allowed_run_steps_emits_proposal_approved_with_correlation_id].
+
+init_per_testcase(_TestCase, Config) ->
+    {ok, Started} = application:ensure_all_started(soma_runtime),
+    {ok, Sup} = soma_actor_sup:start_link(),
+    [{sup, Sup}, {started_apps, Started} | Config].
+
+end_per_testcase(_TestCase, Config) ->
+    case ?config(sup, Config) of
+        undefined -> ok;
+        Sup ->
+            unlink(Sup),
+            exit(Sup, shutdown)
+    end,
+    application:stop(soma_runtime),
+    ok.
+
+%% Criterion 5: after a mock LLM call returns a policy-allowed `run_steps'
+%% proposal (every step's tool is in the actor's tool_policy allowlist), the actor
+%% emits a `proposal.approved' event carrying that task's `correlation_id'. Enters
+%% through the real soma_actor:send/2 with a `proposal' llm directive, waits for
+%% the task to reach `approved', then reads the correlated events back through
+%% soma_event_store:by_correlation/2 and asserts the trail contains a
+%% `proposal.approved' event tagged with the task's correlation_id.
+allowed_run_steps_emits_proposal_approved_with_correlation_id(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-policy-approved">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [<<"echo">>]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => <<"echo">>},
+                              #{id => <<"s2">>, tool => <<"echo">>}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-policy-approved">>,
+    CorrelationId = <<"corr-policy-approved">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, approved, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Approved = [E || E <- Events,
+                     maps:get(event_type, E, undefined) =:= <<"proposal.approved">>],
+    [Event] = Approved,
+    CorrelationId = maps:get(correlation_id, Event),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Polls get_task_status until the task reaches the given status.
+wait_for_status(_ActorPid, TaskId, Status, 0) ->
+    error({timeout, TaskId, Status});
+wait_for_status(ActorPid, TaskId, Status, N) ->
+    case maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)) of
+        Status ->
+            ok;
+        _ ->
+            timer:sleep(20),
+            wait_for_status(ActorPid, TaskId, Status, N - 1)
+    end.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
