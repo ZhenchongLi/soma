@@ -80,7 +80,7 @@ actor_alive_after_malformed_steps(_Config) ->
                  task_id => TaskId,
                  steps => Steps},
     _ = soma_actor:send(Pid, Envelope),
-    false = is_process_alive(Pid),
+    true = is_process_alive(Pid),
     ok.
 
 event_store_pid() ->
