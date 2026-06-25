@@ -105,7 +105,7 @@ test_no_dependency_on_actor_or_runtime() ->
     SrcPath = filename:join([SrcDir, "src", "soma_trace.erl"]),
     {ok, Bytes} = file:read_file(SrcPath),
     Src = binary_to_list(Bytes),
-    ?assertEqual(1, count_occurrences("soma_actor", Src)),
+    ?assertEqual(0, count_occurrences("soma_actor", Src)),
     ?assertEqual(0, count_occurrences("soma_runtime", Src)),
     %% Behavioural check: timeline/1 is callable over a plain list of maps with
     %% no runtime processes started.
