@@ -109,6 +109,50 @@ test_appended_event_reads_back_from_log_as_normalized() ->
 appended_event_reads_back_from_log_as_normalized_test() ->
     test_appended_event_reads_back_from_log_as_normalized().
 
+%% Criterion 4: a persistent store at Path that has several events appended,
+%% is stopped, and is then restarted at the same Path replays the log into its
+%% index so all/1 returns those events in append order. The whole assertion runs
+%% across two store lifetimes through the public API only: append/2 into the
+%% first store, stop it, start a second store at the same Path, and read all/1.
+test_restart_recovers_events_into_all() ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    try
+        {ok, Pid1} = soma_event_store:start_link(#{log => Path}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_a,
+                                             session_id => sess_a,
+                                             correlation_id => corr_a,
+                                             event_type => a1}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_b,
+                                             session_id => sess_b,
+                                             correlation_id => corr_b,
+                                             event_type => b1}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_a,
+                                             session_id => sess_a,
+                                             correlation_id => corr_a,
+                                             event_type => a2}),
+
+        %% Normalized view of what the first store holds, captured before the
+        %% restart so the recovered events can be compared exactly (event_id and
+        %% timestamp are filled at append time, not regenerated on replay).
+        Expected = soma_event_store:all(Pid1),
+
+        ok = stop_store(Pid1),
+
+        {ok, Pid2} = soma_event_store:start_link(#{log => Path}),
+        Recovered = soma_event_store:all(Pid2),
+        ok = stop_store(Pid2),
+
+        RecoveredTypes = [maps:get(event_type, E) || E <- Recovered],
+        ?assertEqual([a1, b1, a2], RecoveredTypes),
+        ?assertEqual(Expected, Recovered)
+    after
+        ok = del_tmp_dir(TmpDir)
+    end.
+
+restart_recovers_events_into_all_test() ->
+    test_restart_recovers_events_into_all().
+
 %%% Helpers
 
 %% Open a fresh disk_log against an existing halt log file and read its single
