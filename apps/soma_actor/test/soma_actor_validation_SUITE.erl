@@ -7,11 +7,13 @@
 -export([malformed_steps_rejected_or_failed_not_running/1]).
 -export([actor_alive_after_malformed_steps/1]).
 -export([valid_steps_complete_after_malformed/1]).
+-export([ask_no_steps_returns_ok_accepted/1]).
 
 all() ->
     [malformed_steps_rejected_or_failed_not_running,
      actor_alive_after_malformed_steps,
-     valid_steps_complete_after_malformed].
+     valid_steps_complete_after_malformed,
+     ask_no_steps_returns_ok_accepted].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -116,6 +118,31 @@ valid_steps_complete_after_malformed(_Config) ->
                      steps => GoodSteps},
     {ok, GoodTaskId} = soma_actor:send(Pid, GoodEnvelope),
     completed = wait_for_task_status(Pid, GoodTaskId, completed, 100),
+    ok.
+
+%% Criterion 5: a no-steps envelope is valid by design and starts no run, so
+%% ask/3 must reply IMMEDIATELY rather than parking the caller until TimeoutMs.
+%% The chosen value is the distinct 3-tuple {ok, accepted, TaskId}: accepted, no
+%% run started, here is the id to poll. The runtime is booted and the actor is
+%% started through soma_actor_sup:start_actor/1, no layer bypassed. The test
+%% passes a generous TimeoutMs and asserts the return is {ok, accepted, TaskId},
+%% arriving well before the timeout.
+ask_no_steps_returns_ok_accepted(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-no-steps">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-no-steps">>,
+    %% A no-steps envelope (no `steps' key at all).
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId},
+    %% Generous timeout: a blocking ask/3 would sit here for 5s; an immediate
+    %% reply returns at once.
+    TimeoutMs = 5000,
+    {ok, accepted, TaskId} = soma_actor:ask(Pid, Envelope, TimeoutMs),
     ok.
 
 event_store_pid() ->
