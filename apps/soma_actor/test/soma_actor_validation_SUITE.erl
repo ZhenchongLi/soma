@@ -5,9 +5,11 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([malformed_steps_rejected_or_failed_not_running/1]).
+-export([actor_alive_after_malformed_steps/1]).
 
 all() ->
-    [malformed_steps_rejected_or_failed_not_running].
+    [malformed_steps_rejected_or_failed_not_running,
+     actor_alive_after_malformed_steps].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -56,6 +58,30 @@ malformed_steps_rejected_or_failed_not_running(_Config) ->
             true = task_status(Pid, TaskId) =/= running,
             ok
     end.
+
+%% Criterion 3: submitting a malformed-steps envelope must not take the actor
+%% down with it. The actor is a long-lived gen_statem entity; a known-bad step
+%% list is rejected as data (up-front validation), never a crash. The runtime is
+%% booted so no layer is bypassed; the actor is started through
+%% soma_actor_sup:start_actor/1 and the bad envelope enters via the real
+%% soma_actor:send/2. After submission the actor pid must still be alive.
+actor_alive_after_malformed_steps(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-alive-malformed">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-alive-malformed">>,
+    %% A step map missing the required `id' key.
+    Steps = [#{tool => echo, args => #{value => <<"a">>}}],
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 steps => Steps},
+    _ = soma_actor:send(Pid, Envelope),
+    false = is_process_alive(Pid),
+    ok.
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
