@@ -16,6 +16,7 @@
 -export([crash_reaches_actor_as_failed_via_down/1]).
 -export([status_promptly_while_llm_call_in_flight/1]).
 -export([completed_call_appends_llm_event_with_correlation_id/1]).
+-export([by_correlation_returns_llm_and_actor_events/1]).
 
 all() ->
     [llm_worker_runs_in_distinct_pid,
@@ -24,7 +25,8 @@ all() ->
      cancel_in_flight_call_worker_dead_actor_alive,
      crash_reaches_actor_as_failed_via_down,
      status_promptly_while_llm_call_in_flight,
-     completed_call_appends_llm_event_with_correlation_id].
+     completed_call_appends_llm_event_with_correlation_id,
+     by_correlation_returns_llm_and_actor_events].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -249,6 +251,47 @@ completed_call_appends_llm_event_with_correlation_id(_Config) ->
                       is_llm_event_type(maps:get(event_type, E, undefined))],
     true = length(LlmEvents) >= 1,
     ok.
+
+%% Criterion 9: by_correlation/2 returns the call's `llm.*' events alongside the
+%% task's `actor.*' events under one `correlation_id'. The stronger sibling of
+%% criterion 8: it is not enough that some `llm.*' event carries the id -- the
+%% same query must surface BOTH event families for the one task. Enters through
+%% the real soma_actor:send/2 with a `success' llm envelope and an explicit
+%% `correlation_id', waits for `completed', then queries
+%% soma_event_store:by_correlation/2 and asserts at least one `actor.*'-type event
+%% AND at least one `llm.*'-type event are present (every returned event carries
+%% the correlation_id by virtue of by_correlation/2's filter).
+by_correlation_returns_llm_and_actor_events(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-both">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => success, output => <<"hi from the mock">>},
+    TaskId = <<"task-llm-both">>,
+    CorrelationId = <<"corr-llm-both">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    ActorEvents = [E || E <- Events,
+                        is_actor_event_type(maps:get(event_type, E, undefined))],
+    LlmEvents = [E || E <- Events,
+                      is_llm_event_type(maps:get(event_type, E, undefined))],
+    %% Staged red: deliberately wrong expected value -- a completed call must
+    %% surface actor.* events under the correlation_id, so asserting zero fires.
+    0 = length(ActorEvents),
+    true = length(LlmEvents) >= 1,
+    ok.
+
+%% True when the event-type binary starts with the `actor.' prefix.
+is_actor_event_type(<<"actor.", _/binary>>) -> true;
+is_actor_event_type(_) -> false.
 
 %% True when the event-type binary starts with the `llm.' prefix.
 is_llm_event_type(<<"llm.", _/binary>>) -> true;
