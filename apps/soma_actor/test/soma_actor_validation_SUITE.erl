@@ -170,7 +170,7 @@ ask_no_steps_parks_no_waiter(_Config) ->
     %% After the immediate reply the actor must hold no parked waiter for the
     %% task.
     Waiters = waiters(Pid),
-    true = maps:is_key(TaskId, Waiters),
+    false = maps:is_key(TaskId, Waiters),
     ok.
 
 waiters(Pid) ->
