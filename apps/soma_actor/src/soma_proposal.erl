@@ -16,7 +16,9 @@ normalize(#{kind := reply, text := Text}) when is_binary(Text) ->
 normalize(#{kind := run_steps, steps := Steps}) when is_list(Steps) ->
     case lists:all(fun valid_step/1, Steps) of
         true -> {ok, #{kind => run_steps, steps => Steps}}
-    end.
+    end;
+normalize(#{kind := reject, reason := Reason}) when is_binary(Reason) ->
+    {ok, #{kind => reject, reason => Reason}}.
 
 valid_step(Step) when is_map(Step) ->
     maps:is_key(id, Step) andalso maps:is_key(tool, Step);
