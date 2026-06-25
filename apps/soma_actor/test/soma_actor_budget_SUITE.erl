@@ -21,6 +21,7 @@
 -export([actor_survives_budget_failure_takes_next_envelope/1]).
 -export([parked_ask_on_budget_failed_task_gets_error/1]).
 -export([by_correlation_surfaces_budget_failed_event_with_reason/1]).
+-export([no_budget_field_executes_approved_run_steps_to_completed/1]).
 
 all() ->
     [budget_zero_llm_calls_fails_task_with_reason,
@@ -31,7 +32,8 @@ all() ->
      budget_failed_task_status_reads_failed,
      actor_survives_budget_failure_takes_next_envelope,
      parked_ask_on_budget_failed_task_gets_error,
-     by_correlation_surfaces_budget_failed_event_with_reason].
+     by_correlation_surfaces_budget_failed_event_with_reason,
+     no_budget_field_executes_approved_run_steps_to_completed].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -358,6 +360,42 @@ by_correlation_surfaces_budget_failed_event_with_reason(_Config) ->
     [Failed] = [E || E <- Events,
                      maps:get(event_type, E, undefined) =:= <<"actor.task.failed">>],
     {budget_exceeded, max_llm_calls} = maps:get(reason, Failed),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 10: an actor started with NO `budget' field still executes an
+%% approved `run_steps' proposal all the way to `completed' -- the default is
+%% unchanged from v0.5.4. With no budget, both spend-point checks see an
+%% unlimited cap: maybe_start_llm_call/4 starts the call, and the `run_steps'
+%% branch's step-count gate passes regardless of count, so a run starts via
+%% start_owned_run/4 and reaches `completed'. Drives the envelope through the
+%% real soma_actor:send/2 and reads the terminal `completed' status back through
+%% get_task_status/2.
+no_budget_field_executes_approved_run_steps_to_completed(_Config) ->
+    Store = event_store_pid(),
+    %% No `budget' key at all -- the default-unchanged path.
+    Opts = #{actor_id => <<"actor-no-budget">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => echo,
+                               args => #{value => <<"a">>}},
+                              #{id => <<"s2">>, tool => echo,
+                               args => #{value => <<"b">>}}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-no-budget">>,
+    CorrelationId = <<"corr-no-budget">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    failed = maps:get(status, Status),
     true = is_process_alive(ActorPid),
     ok.
 
