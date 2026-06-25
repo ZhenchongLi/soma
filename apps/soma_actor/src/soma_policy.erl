@@ -13,6 +13,10 @@
 -type reason() :: term().
 
 -spec check(proposal(), policy()) -> allow | {reject, reason()}.
+check(#{kind := run_steps}, #{allowed_tools := all}) ->
+    allow;
+check(#{kind := run_steps} = Proposal, Policy) when not is_map_key(allowed_tools, Policy) ->
+    check(Proposal, Policy#{allowed_tools => all});
 check(#{kind := run_steps, steps := Steps}, #{allowed_tools := Allowed}) ->
     Tools = [maps:get(tool, Step) || Step <- Steps],
     case lists:all(fun(Tool) -> lists:member(Tool, Allowed) end, Tools) of
