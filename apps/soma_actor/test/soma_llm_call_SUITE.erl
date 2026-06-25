@@ -283,9 +283,7 @@ by_correlation_returns_llm_and_actor_events(_Config) ->
                         is_actor_event_type(maps:get(event_type, E, undefined))],
     LlmEvents = [E || E <- Events,
                       is_llm_event_type(maps:get(event_type, E, undefined))],
-    %% Staged red: deliberately wrong expected value -- a completed call must
-    %% surface actor.* events under the correlation_id, so asserting zero fires.
-    0 = length(ActorEvents),
+    true = length(ActorEvents) >= 1,
     true = length(LlmEvents) >= 1,
     ok.
 
