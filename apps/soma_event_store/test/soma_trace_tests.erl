@@ -68,3 +68,22 @@ test_timeline_line_includes_step_id() ->
 
 timeline_line_includes_step_id_test() ->
     test_timeline_line_includes_step_id().
+
+test_timeline_failure_reason_from_top_and_payload() ->
+    %% Actor-shaped event: reason is a top-level key on the event map
+    ActorEvent = #{event_type => 'actor.task.failed', timestamp => 1,
+                   reason => <<"bang">>, task_id => <<"t1">>},
+    %% Run-shaped event: reason lives inside payload
+    RunEvent = #{event_type => 'run.failed', timestamp => 2,
+                 payload => #{reason => <<"crash">>}, run_id => <<"r1">>},
+    Output = soma_trace:timeline([ActorEvent, RunEvent]),
+    Lines = string:split(iolist_to_binary(Output), <<"\n">>, all),
+    NonEmptyLines = [binary_to_list(L) || L <- Lines, L =/= <<>>],
+    ActorLine = hd(NonEmptyLines),
+    RunLine = lists:nth(2, NonEmptyLines),
+    %% Both lines must contain their respective reason values
+    ?assertEqual(true, string:str(ActorLine, "bang") > 0),
+    ?assertEqual(true, string:str(RunLine, "crash") > 0).
+
+timeline_failure_reason_from_top_and_payload_test() ->
+    test_timeline_failure_reason_from_top_and_payload().
