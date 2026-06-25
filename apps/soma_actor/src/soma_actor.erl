@@ -263,13 +263,21 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
             Data0 = clear_llm_timer(TaskId, clear_llm_monitor(TaskId, Data)),
             Task = maps:get(TaskId, Data0#data.tasks),
             CorrelationId = maps:get(correlation_id, Task),
-            Task1 = Task#{status => completed, result => Output},
-            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
-            Data1 = Data0#data{tasks = Tasks},
-            emit(Data1, <<"llm.succeeded">>,
+            emit(Data0, <<"llm.succeeded">>,
                  #{task_id => TaskId, correlation_id => CorrelationId,
                    llm_call_id => LlmCallId}),
-            reply_waiter(TaskId, {ok, Output}, Data1)
+            %% A proposal-shaped output (a map carrying a `kind' tag) is validated
+            %% into a tagged proposal: on success the normalized proposal (not the
+            %% raw output) becomes the task result so get_task_result/2 returns it.
+            %% Output that is not a proposal candidate is stored verbatim, keeping
+            %% the v0.5.1 opaque-output contract.
+            case proposal_result(Output) of
+                {ok, Proposal} ->
+                    Task1 = Task#{status => completed, result => Proposal},
+                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+                    Data1 = Data0#data{tasks = Tasks},
+                    reply_waiter(TaskId, {ok, Proposal}, Data1)
+            end
     end;
 %% The call-timeout timer the actor armed fired before the worker reported a
 %% result -- a `slow' mock that ignored the timer. The actor enforces the bound:
@@ -467,6 +475,19 @@ maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
         _ ->
             Data
     end.
+
+%% Decide a task result from a successful worker output. A proposal candidate -- a
+%% map carrying a `kind' tag -- is validated through soma_proposal:normalize/1 and
+%% its normalized form becomes the result. Any other output is opaque (the v0.5.1
+%% contract: a `success' directive's output is stored verbatim) and passed
+%% through unchanged.
+proposal_result(Output) when is_map(Output) ->
+    case maps:is_key(kind, Output) of
+        true -> soma_proposal:normalize(Output);
+        false -> {ok, Output}
+    end;
+proposal_result(Output) ->
+    {ok, Output}.
 
 %% On a normal terminal message (run_completed | run_failed | run_timeout |
 %% run_cancelled) the run pid is reporting its own outcome and may still be
