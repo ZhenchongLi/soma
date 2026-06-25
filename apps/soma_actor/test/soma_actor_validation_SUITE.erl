@@ -8,12 +8,14 @@
 -export([actor_alive_after_malformed_steps/1]).
 -export([valid_steps_complete_after_malformed/1]).
 -export([ask_no_steps_returns_ok_accepted/1]).
+-export([ask_no_steps_parks_no_waiter/1]).
 
 all() ->
     [malformed_steps_rejected_or_failed_not_running,
      actor_alive_after_malformed_steps,
      valid_steps_complete_after_malformed,
-     ask_no_steps_returns_ok_accepted].
+     ask_no_steps_returns_ok_accepted,
+     ask_no_steps_parks_no_waiter].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -144,6 +146,36 @@ ask_no_steps_returns_ok_accepted(_Config) ->
     TimeoutMs = 5000,
     {ok, accepted, TaskId} = soma_actor:ask(Pid, Envelope, TimeoutMs),
     ok.
+
+%% Criterion 6: a no-steps envelope starts no run, so ask/3 replies immediately
+%% and must leave NO parked waiter behind -- a stale waiter would never be
+%% answered and would leak across the actor's lifetime. After ask/3 returns, the
+%% actor's private #data.waiters map must not hold an entry for this task id. The
+%% runtime is booted and the actor is started through
+%% soma_actor_sup:start_actor/1, no layer bypassed; the waiters map is read via
+%% the standard sys:get_state/1 introspection because it has no public getter.
+ask_no_steps_parks_no_waiter(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-ask-no-waiter">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-ask-no-waiter">>,
+    %% A no-steps envelope (no `steps' key at all).
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId},
+    {ok, accepted, TaskId} = soma_actor:ask(Pid, Envelope, 5000),
+    %% After the immediate reply the actor must hold no parked waiter for the
+    %% task.
+    Waiters = waiters(Pid),
+    true = maps:is_key(TaskId, Waiters),
+    ok.
+
+waiters(Pid) ->
+    {idle, Data} = sys:get_state(Pid),
+    element(8, Data).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
