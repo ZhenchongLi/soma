@@ -1,0 +1,81 @@
+%% @doc Actor-side proofs for v0.5.5 budget & loop limits: a budget cap
+%% exhausted at one of the actor's spend points fails the task as data, not the
+%% actor. Set up like soma_proposal_exec_SUITE: boot the soma_runtime app (so
+%% soma_run_sup and the event store are alive), start an actor through
+%% soma_actor_sup:start_actor/1 with a `budget' (and a `tool_policy' where a
+%% proposal is involved), and drive it through the real soma_actor:send/2. Each
+%% proof reads outcomes back through get_task_status/2 and
+%% soma_event_store:by_correlation/2.
+-module(soma_actor_budget_SUITE).
+
+-include_lib("common_test/include/ct.hrl").
+
+-export([all/0]).
+-export([init_per_testcase/2, end_per_testcase/2]).
+-export([budget_zero_llm_calls_fails_task_with_reason/1]).
+
+all() ->
+    [budget_zero_llm_calls_fails_task_with_reason].
+
+init_per_testcase(_TestCase, Config) ->
+    {ok, Started} = application:ensure_all_started(soma_runtime),
+    {ok, Sup} = soma_actor_sup:start_link(),
+    [{sup, Sup}, {started_apps, Started} | Config].
+
+end_per_testcase(_TestCase, Config) ->
+    case ?config(sup, Config) of
+        undefined -> ok;
+        Sup ->
+            unlink(Sup),
+            exit(Sup, shutdown)
+    end,
+    application:stop(soma_runtime),
+    ok.
+
+%% Criterion 1: an actor started with `budget => #{max_llm_calls => 0}' fails an
+%% `llm' envelope's task with reason `{budget_exceeded, max_llm_calls}'. The task
+%% LLM-call count is already at the cap before the first call, so
+%% maybe_start_llm_call/4 makes no call and fails the task through the shared
+%% failure path. Drives the envelope through the real soma_actor:send/2 and reads
+%% the terminal `failed' status and reason back through get_task_status/2.
+budget_zero_llm_calls_fails_task_with_reason(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-budget-zero">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             budget => #{max_llm_calls => 0},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => proposal,
+            output => #{kind => reply, text => <<"hi">>}},
+    TaskId = <<"task-budget-zero">>,
+    CorrelationId = <<"corr-budget-zero">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    {budget_exceeded, max_llm_calls} = maps:get(reason, Status),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Polls get_task_status until the task reaches the given status.
+wait_for_status(_ActorPid, TaskId, Status, 0) ->
+    error({timeout, TaskId, Status});
+wait_for_status(ActorPid, TaskId, Status, N) ->
+    case maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)) of
+        Status ->
+            ok;
+        _ ->
+            timer:sleep(20),
+            wait_for_status(ActorPid, TaskId, Status, N - 1)
+    end.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
