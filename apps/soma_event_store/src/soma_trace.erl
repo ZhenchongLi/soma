@@ -25,11 +25,19 @@ render(Store, CorrelationId) ->
 format_event(Event) ->
     EventType = maps:get(event_type, Event, unknown),
     Base = atom_to_list(EventType),
-    case maps:find(task_id, Event) of
+    Base1 = case maps:find(task_id, Event) of
         {ok, TaskId} when is_binary(TaskId) ->
             Base ++ " task_id=" ++ binary_to_list(TaskId);
         {ok, TaskId} ->
             Base ++ " task_id=" ++ TaskId;
         error ->
             Base
+    end,
+    case maps:find(step_id, Event) of
+        {ok, StepId} when is_binary(StepId) ->
+            Base1 ++ " step_id=" ++ binary_to_list(StepId);
+        {ok, StepId} ->
+            Base1 ++ " step_id=" ++ StepId;
+        error ->
+            Base1
     end.
