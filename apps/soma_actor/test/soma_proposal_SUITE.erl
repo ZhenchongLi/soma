@@ -184,9 +184,8 @@ actor_survives_malformed_proposal_takes_next_send(_Config) ->
                   payload => #{text => <<"again">>},
                   task_id => TaskId2,
                   llm => Llm2},
-    %% Staged red: deliberately wrong expected value -- the second send returns
-    %% {ok, TaskId2}, not {error, dead_actor}.
-    {error, dead_actor} = soma_actor:send(ActorPid, Envelope2),
+    {ok, TaskId2} = soma_actor:send(ActorPid, Envelope2),
+    true = is_process_alive(ActorPid),
     ok.
 
 %% Polls get_task_status until the task reaches the given status.
