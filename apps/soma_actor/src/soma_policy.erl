@@ -13,6 +13,12 @@
 -type reason() :: term().
 
 -spec check(proposal(), policy()) -> allow | {reject, reason()}.
+check(#{kind := reply}, _Policy) ->
+    allow;
+check(#{kind := reject}, _Policy) ->
+    allow;
+check(#{kind := ask}, _Policy) ->
+    allow;
 check(#{kind := run_steps}, #{allowed_tools := all}) ->
     allow;
 check(#{kind := run_steps} = Proposal, Policy) when not is_map_key(allowed_tools, Policy) ->
