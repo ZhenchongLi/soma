@@ -50,6 +50,16 @@ test_doc_app_list_matches_rebar_release() ->
 doc_app_list_matches_rebar_release_test() ->
     test_doc_app_list_matches_rebar_release().
 
+%% Issue #75 criteria 1, 2 & 4: soma_actor is bundled in the release — it is a
+%% member of both the rebar.config relx release app set and the docs/release.md
+%% bundled-app set.
+test_actor_bundled_in_rebar_and_doc() ->
+    ?assert(lists:member(soma_actor, rebar_release_apps())),
+    ?assert(lists:member(soma_actor, doc_named_apps(read_doc()))).
+
+actor_bundled_in_rebar_and_doc_test() ->
+    test_actor_bundled_in_rebar_and_doc().
+
 %% Criterion 8: docs/release.md states plainly that soma_actor is not yet
 %% bundled in the release.
 test_doc_states_actor_not_bundled() ->
