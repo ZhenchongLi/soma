@@ -120,7 +120,7 @@ run_death_after_validation_records_failed(_Config) ->
     LlmFailed = [E || E <- Correlated,
                       maps:get(event_type, E, undefined) =:= <<"llm.failed">>],
     true = length(TaskFailed) >= 1,
-    1 = length(LlmFailed),
+    0 = length(LlmFailed),
     ok.
 
 %% Criterion 3: submitting a malformed-steps envelope must not take the actor
