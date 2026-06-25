@@ -96,3 +96,33 @@ test_render_unknown_correlation_is_empty() ->
 
 render_unknown_correlation_is_empty_test() ->
     test_render_unknown_correlation_is_empty().
+
+test_no_dependency_on_actor_or_runtime() ->
+    %% Source-level check: soma_trace.erl must not reference soma_actor or
+    %% soma_runtime at all (one-way dependency: the event store layer never
+    %% imports the actor or runtime apps).
+    SrcDir = filename:dirname(filename:dirname(code:which(soma_trace))),
+    SrcPath = filename:join([SrcDir, "src", "soma_trace.erl"]),
+    {ok, Bytes} = file:read_file(SrcPath),
+    Src = binary_to_list(Bytes),
+    ?assertEqual(1, count_occurrences("soma_actor", Src)),
+    ?assertEqual(0, count_occurrences("soma_runtime", Src)),
+    %% Behavioural check: timeline/1 is callable over a plain list of maps with
+    %% no runtime processes started.
+    Events = [#{event_type => 'plain.event', timestamp => 1}],
+    Output = soma_trace:timeline(Events),
+    Lines = string:split(iolist_to_binary(Output), <<"\n">>, all),
+    NonEmptyLines = [binary_to_list(L) || L <- Lines, L =/= <<>>],
+    ?assertEqual(["plain.event"], NonEmptyLines).
+
+no_dependency_on_actor_or_runtime_test() ->
+    test_no_dependency_on_actor_or_runtime().
+
+%% Count non-overlapping occurrences of Needle in Haystack.
+count_occurrences(Needle, Haystack) ->
+    case string:str(Haystack, Needle) of
+        0 -> 0;
+        Pos ->
+            Rest = lists:nthtail(Pos - 1 + length(Needle), Haystack),
+            1 + count_occurrences(Needle, Rest)
+    end.
