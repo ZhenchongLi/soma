@@ -326,6 +326,32 @@ test_usage_doc_documents_start_link_1_and_durability() ->
 usage_doc_documents_start_link_1_and_durability_test() ->
     test_usage_doc_documents_start_link_1_and_durability().
 
+%% Criterion 9: docs/contracts/v0.6-test-contract.md exists and maps each
+%% persistence proof in this slice to the suite (soma_event_store_persist_tests)
+%% and case that proves it. A direct file read over the contract document
+%% asserts the file is present and names every persistence proof's case so the
+%% mapping is auditable from the contract alone.
+test_v0_6_contract_doc_maps_each_persistence_proof() ->
+    Doc = read_contract_doc(),
+
+    %% The proving suite is named so the mapping points at a concrete module.
+    ?assert(contains(Doc, <<"soma_event_store_persist_tests">>)),
+
+    %% Each persistence proof's case appears, mapping the criterion to the case
+    %% that proves it. These are this slice's durability/restart/corrupt-tail
+    %% proofs (criteria 1-7).
+    Cases = [<<"test_in_memory_store_writes_no_file_and_queries_unchanged">>,
+             <<"test_persistent_store_creates_file_after_first_append">>,
+             <<"test_appended_event_reads_back_from_log_as_normalized">>,
+             <<"test_restart_recovers_events_into_all">>,
+             <<"test_by_run_after_restart_filters_to_one_run">>,
+             <<"test_by_correlation_after_restart_returns_full_chain">>,
+             <<"test_truncated_tail_boots_and_serves_intact_events">>],
+    [?assert(contains(Doc, Case)) || Case <- Cases].
+
+v0_6_contract_doc_maps_each_persistence_proof_test() ->
+    test_v0_6_contract_doc_maps_each_persistence_proof().
+
 %%% Helpers
 
 %% Read docs/usage.md from the repo root. The test runs from the project root
@@ -341,6 +367,14 @@ usage_doc_dir() ->
     %% cwd is the umbrella root under rebar3 eunit.
     {ok, Cwd} = file:get_cwd(),
     Cwd.
+
+%% Read docs/contracts/v0.6-test-contract.md from the repo root. The test runs
+%% from the project root (rebar3's cwd), and the umbrella keeps docs/ there.
+read_contract_doc() ->
+    Path = filename:join([usage_doc_dir(), "docs", "contracts",
+                          "v0.6-test-contract.md"]),
+    {ok, Bin} = file:read_file(Path),
+    Bin.
 
 contains(Haystack, Needle) ->
     find_pos(Haystack, Needle) =/= nomatch.
