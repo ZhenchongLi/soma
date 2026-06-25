@@ -291,7 +291,7 @@ actor_survives_budget_failure_takes_next_envelope(_Config) ->
     {ok, SecondTaskId} = soma_actor:send(ActorPid, SecondEnvelope),
     ok = wait_for_status(ActorPid, SecondTaskId, completed, 100),
     Status = soma_actor:get_task_status(ActorPid, SecondTaskId),
-    failed = maps:get(status, Status),
+    completed = maps:get(status, Status),
     true = is_process_alive(ActorPid),
     ok.
 
