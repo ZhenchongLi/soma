@@ -88,6 +88,20 @@ test_timeline_failure_reason_from_top_and_payload() ->
 timeline_failure_reason_from_top_and_payload_test() ->
     test_timeline_failure_reason_from_top_and_payload().
 
+test_timeline_omits_undefined_fields() ->
+    %% The store's normalize/1 force-fills every event with step_id => undefined
+    %% (and an emitter could do the same with task_id). A present-but-undefined
+    %% field must be treated as absent, not printed as "=undefined".
+    Events = [#{event_type => 'actor.started', timestamp => 1,
+                step_id => undefined, task_id => undefined}],
+    Output = soma_trace:timeline(Events),
+    Line = binary_to_list(iolist_to_binary(Output)),
+    ?assertEqual(0, string:str(Line, "step_id=undefined")),
+    ?assertEqual(0, string:str(Line, "task_id=undefined")).
+
+timeline_omits_undefined_fields_test() ->
+    test_timeline_omits_undefined_fields().
+
 test_render_unknown_correlation_is_empty() ->
     {ok, Store} = soma_event_store:start_link(),
     Result = soma_trace:render(Store, <<"no-such-id">>),
