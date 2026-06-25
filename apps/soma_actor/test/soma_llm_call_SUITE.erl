@@ -13,12 +13,14 @@
 -export([get_task_result_holds_llm_output/1]).
 -export([slow_call_times_out_worker_dead_actor_alive/1]).
 -export([cancel_in_flight_call_worker_dead_actor_alive/1]).
+-export([crash_reaches_actor_as_failed_via_down/1]).
 
 all() ->
     [llm_worker_runs_in_distinct_pid,
      get_task_result_holds_llm_output,
      slow_call_times_out_worker_dead_actor_alive,
-     cancel_in_flight_call_worker_dead_actor_alive].
+     cancel_in_flight_call_worker_dead_actor_alive,
+     crash_reaches_actor_as_failed_via_down].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -144,6 +146,36 @@ cancel_in_flight_call_worker_dead_actor_alive(_Config) ->
     ok = wait_for_status(ActorPid, TaskId, cancelled, 100),
     false = is_process_alive(WorkerPid),
     true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 6: a mock that crashes reaches the actor as data through the monitor
+%% `'DOWN'', records the task as `failed', and keeps the actor pid alive and
+%% distinct from the dead worker pid. Enters through the real soma_actor:send/2
+%% with a `crash' directive (the worker dies abnormally). Reads the worker pid
+%% from the llm.started event, then asserts: the task status reaches `failed', the
+%% worker pid is dead, the actor pid is still alive, and the actor pid is distinct
+%% from the dead worker pid.
+crash_reaches_actor_as_failed_via_down(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-crash">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => crash},
+    TaskId = <<"task-llm-crash">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    Started = wait_for_actor_event(Store, <<"llm.started">>, 100),
+    WorkerPid = maps:get(llm_call_pid, Started),
+    true = is_pid(WorkerPid),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    false = is_process_alive(WorkerPid),
+    true = is_process_alive(ActorPid),
+    true = ActorPid =/= WorkerPid,
     ok.
 
 %% Polls get_task_status until the task reaches the given status.
