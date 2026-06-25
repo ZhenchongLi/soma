@@ -35,6 +35,11 @@ normalize(#{kind := reply}) ->
                message => <<"reply proposal requires a text field">>,
                kind => reply,
                field => text}]};
+normalize(#{kind := actor_message} = Raw) when not is_map_key(to, Raw) ->
+    {error, [#{code => missing_required_field,
+               message => <<"actor_message proposal requires a to field">>,
+               kind => actor_message,
+               field => to}]};
 normalize(#{kind := Kind}) ->
     {error, [#{code => unknown_kind,
                message => <<"unknown proposal kind">>,
