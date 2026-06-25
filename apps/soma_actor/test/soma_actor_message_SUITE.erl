@@ -16,11 +16,13 @@
 -export([delivered_message_accepted_by_a2_emits_task_accepted/1]).
 -export([delivered_task_inherits_a1_correlation_id/1]).
 -export([by_correlation_returns_both_actors_events/1]).
+-export([a1_emits_proposal_executed_for_actor_message/1]).
 
 all() ->
     [delivered_message_accepted_by_a2_emits_task_accepted,
      delivered_task_inherits_a1_correlation_id,
-     by_correlation_returns_both_actors_events].
+     by_correlation_returns_both_actors_events,
+     a1_emits_proposal_executed_for_actor_message].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -149,6 +151,52 @@ by_correlation_returns_both_actors_events(_Config) ->
                             || E <- Events, maps:is_key(actor_id, E)]),
     true = lists:member(<<"actor-a1">>, ActorIds),
     true = lists:member(<<"actor-a2">>, ActorIds),
+    true = is_process_alive(A2),
+    true = is_process_alive(A1),
+    ok.
+
+%% Criterion 8: A1 emits `proposal.executed' for the approved `actor_message'
+%% proposal. A1's mock returns a policy-approved `actor_message' proposal whose
+%% `to' is A2's pid; A1's `actor_message' arm emits `proposal.executed' for the
+%% sender task before delivering the envelope to A2. Drives A1 through the real
+%% soma_actor:send/2, waits for A2's accepted event (so the chain has run), then
+%% reads the shared event store under A1's correlation_id and asserts A1 emitted
+%% a `proposal.executed' event for this actor_message task.
+a1_emits_proposal_executed_for_actor_message(_Config) ->
+    Store = event_store_pid(),
+    A2Opts = #{actor_id => <<"actor-a2">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2} = soma_actor_sup:start_actor(A2Opts),
+    A1Opts = #{actor_id => <<"actor-a1">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1} = soma_actor_sup:start_actor(A1Opts),
+    RawProposal = #{kind => actor_message,
+                    to => A2,
+                    payload => #{text => <<"hello a2">>}},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-a1-send">>,
+    CorrelationId = <<"corr-a1-send">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"tell a2">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(A1, Envelope),
+    ok = wait_for_a2_accepted(Store, CorrelationId, <<"actor-a2">>, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Executed = [E || E <- Events,
+                     maps:get(event_type, E, undefined)
+                         =:= <<"proposal.executed">>,
+                     maps:get(actor_id, E, undefined) =:= <<"actor-a1">>,
+                     maps:get(task_id, E, undefined) =:= TaskId],
+    %% Staged red: A1 already emits `proposal.executed' for the actor_message
+    %% task, so the truthful expectation is [_ | _]. Start with the wrong
+    %% expectation ([]) so the assertion fires red.
+    [] = Executed,
     true = is_process_alive(A2),
     true = is_process_alive(A1),
     ok.
