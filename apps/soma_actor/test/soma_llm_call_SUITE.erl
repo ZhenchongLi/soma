@@ -11,10 +11,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([llm_worker_runs_in_distinct_pid/1]).
 -export([get_task_result_holds_llm_output/1]).
+-export([slow_call_times_out_worker_dead_actor_alive/1]).
 
 all() ->
     [llm_worker_runs_in_distinct_pid,
-     get_task_result_holds_llm_output].
+     get_task_result_holds_llm_output,
+     slow_call_times_out_worker_dead_actor_alive].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -79,6 +81,36 @@ get_task_result_holds_llm_output(_Config) ->
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
     {ok, Output} = soma_actor:get_task_result(ActorPid, TaskId),
+    ok.
+
+%% Criterion 4: an LLM call whose mock runs past the call timeout leaves the
+%% worker process dead, records the task as `timeout', and keeps the actor pid
+%% alive. Enters through the real soma_actor:send/2 with a `slow' directive and a
+%% short call timeout. The actor arms a call-timeout timer when it starts the
+%% call; the `slow' mock ignores it; the timer firing makes the actor kill the
+%% worker (exit(WorkerPid, kill)) and record the task `timeout'. Reads the worker
+%% pid from the llm.started event, then asserts: the worker pid is dead, the task
+%% status reads `timeout', and the actor pid is still alive.
+slow_call_times_out_worker_dead_actor_alive(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-timeout">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => slow, timeout_ms => 50},
+    TaskId = <<"task-llm-timeout">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    Started = wait_for_actor_event(Store, <<"llm.started">>, 100),
+    WorkerPid = maps:get(llm_call_pid, Started),
+    true = is_pid(WorkerPid),
+    ok = wait_for_status(ActorPid, TaskId, timeout, 100),
+    false = is_process_alive(WorkerPid),
+    true = is_process_alive(ActorPid),
     ok.
 
 %% Polls get_task_status until the task reaches the given status.
