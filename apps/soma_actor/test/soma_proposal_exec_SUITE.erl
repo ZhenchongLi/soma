@@ -20,6 +20,7 @@
 -export([approved_reply_proposal_completes_no_run/1]).
 -export([approved_run_steps_failing_tool_marks_task_failed_actor_alive/1]).
 -export([actor_survives_failed_run_takes_next_llm_envelope/1]).
+-export([direct_steps_completes_no_proposal_event/1]).
 
 all() ->
     [approved_run_steps_completes_with_step_outputs,
@@ -29,7 +30,8 @@ all() ->
      rejected_proposal_starts_no_run_status_rejected,
      approved_reply_proposal_completes_no_run,
      approved_run_steps_failing_tool_marks_task_failed_actor_alive,
-     actor_survives_failed_run_takes_next_llm_envelope].
+     actor_survives_failed_run_takes_next_llm_envelope,
+     direct_steps_completes_no_proposal_event].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -328,6 +330,36 @@ actor_survives_failed_run_takes_next_llm_envelope(_Config) ->
     ok = wait_for_status(ActorPid, <<"task-exec-next-2">>, completed, 100),
     {ok, Outputs} = soma_actor:get_task_result(ActorPid, <<"task-exec-next-2">>),
     #{<<"s1">> := #{value := <<"b">>}} = Outputs,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 9: a direct `steps' envelope (the v0.4 path, no `llm' directive)
+%% still runs straight to `completed' and emits no `proposal.*' event. Drives a
+%% bare steps envelope through the real soma_actor:send/2, waits for the task to
+%% reach `completed', then reads the trail through by_correlation/2 and asserts no
+%% event type carries the `proposal.' prefix.
+direct_steps_completes_no_proposal_event(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-direct-steps">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Steps = [#{id => <<"s1">>, tool => echo, args => #{value => <<"a">>}}],
+    TaskId = <<"task-direct-steps">>,
+    CorrelationId = <<"corr-direct-steps">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 steps => Steps},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
+    %% STAGED RED: the direct steps path emits no proposal.* event, so this
+    %% assertion that it DOES is deliberately wrong and must fire red first.
+    true = lists:any(fun(T) -> has_prefix(T, <<"proposal.">>) end, Types),
     true = is_process_alive(ActorPid),
     ok.
 
