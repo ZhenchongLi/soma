@@ -417,6 +417,9 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
     true = doc_contains(Doc, <<"v0.5.3">>),
     true = doc_contains(Doc, <<"soma_policy_tests">>),
     true = doc_contains(Doc, <<"soma_policy_SUITE">>),
+    %% The v0.5.4 approved-proposal-execution section and its proving suite.
+    true = doc_contains(Doc, <<"v0.5.4">>),
+    true = doc_contains(Doc, <<"soma_proposal_exec_SUITE">>),
     %% Every case that proves a process proof in this slice.
     Cases =
         [<<"test_mock_success_returns_configured_output">>,
@@ -458,7 +461,19 @@ pins_v0_5_test_contract_maps_each_proof(_Config) ->
          <<"rejected_proposal_starts_no_run">>,
          <<"rejected_proposal_status_reads_rejected">>,
          <<"actor_survives_rejected_proposal_takes_next_send">>,
-         <<"by_correlation_returns_verdict_created_actor_and_llm_events">>],
+         <<"by_correlation_returns_verdict_created_actor_and_llm_events">>,
+         %% v0.5.4 approved-proposal-execution proofs (soma_proposal_exec_SUITE).
+         <<"approved_run_steps_completes_with_step_outputs">>,
+         <<"approved_run_steps_emits_proposal_executed_with_correlation_id">>,
+         <<"by_correlation_returns_full_approved_run_chain">>,
+         <<"approved_run_steps_runs_in_distinct_pid">>,
+         <<"rejected_proposal_starts_no_run_status_rejected">>,
+         <<"approved_reply_proposal_completes_no_run">>,
+         <<"approved_run_steps_failing_tool_marks_task_failed_actor_alive">>,
+         <<"actor_survives_failed_run_takes_next_llm_envelope">>,
+         <<"direct_steps_completes_no_proposal_event">>,
+         %% v0.5.4 re-pinned bare no-steps no-llm proof (soma_actor_SUITE).
+         <<"no_steps_accepts_and_starts_no_run">>],
     [true = doc_contains(Doc, Case) || Case <- Cases],
     ok.
 
