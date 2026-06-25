@@ -273,9 +273,9 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
             %% the v0.5.1 opaque-output contract.
             case proposal_result(Output) of
                 {proposal, Proposal} ->
-                    Task1 = Task#{status => completed, result => Proposal},
-                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
-                    Data1 = Data0#data{tasks = Tasks},
+                    Tasks0 = maps:put(TaskId, Task#{result => Proposal},
+                                      Data0#data.tasks),
+                    Data0a = Data0#data{tasks = Tasks0},
                     %% A valid proposal was normalized and recorded. Emit
                     %% `proposal.created' carrying the task's correlation_id (and
                     %% the proposal kind). Distinct from `llm.succeeded': the
@@ -284,11 +284,29 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                     %% fires only on successful normalization (design decision 2).
                     %% Opaque passthrough output is not a normalized proposal, so
                     %% it takes the `opaque' branch and emits nothing here.
-                    emit(Data1, <<"proposal.created">>,
+                    emit(Data0a, <<"proposal.created">>,
                          #{task_id => TaskId, correlation_id => CorrelationId,
                            llm_call_id => LlmCallId,
                            kind => maps:get(kind, Proposal, undefined)}),
-                    reply_waiter(TaskId, {ok, Proposal}, Data1);
+                    %% The proposal is data; now the verdict is data too. Run the
+                    %% policy gate (a tool-name allowlist) and record the verdict.
+                    %% On `allow', emit `proposal.approved' (carrying the task's
+                    %% correlation_id and llm_call_id like `proposal.created') and
+                    %% set the task status `approved' -- honest that it passed
+                    %% policy but has not run (executing is v0.5.4). No run is
+                    %% started either way.
+                    case soma_policy:check(Proposal, Data0a#data.tool_policy) of
+                        allow ->
+                            Task1 = (maps:get(TaskId, Data0a#data.tasks))#{
+                                      status => approved},
+                            Tasks = maps:put(TaskId, Task1, Data0a#data.tasks),
+                            Data1 = Data0a#data{tasks = Tasks},
+                            emit(Data1, <<"proposal.approved">>,
+                                 #{task_id => TaskId, correlation_id => CorrelationId,
+                                   llm_call_id => LlmCallId,
+                                   kind => maps:get(kind, Proposal, undefined)}),
+                            reply_waiter(TaskId, {ok, Proposal}, Data1)
+                    end;
                 {opaque, Result} ->
                     Task1 = Task#{status => completed, result => Result},
                     Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
