@@ -76,7 +76,7 @@ test_set_env_store_persists_append_to_log(Config) ->
                                             event_type => a1}),
     %% The store's normalized form of the appended event — what should physically
     %% sit in the log.
-    [_Normalized] = soma_event_store:by_run(StorePid, run_a),
+    [Normalized] = soma_event_store:by_run(StorePid, run_a),
 
     %% Stop the app so the store's disk_log handle is closed and flushed, then
     %% read the single term back from the log at Path around the store.
@@ -84,10 +84,7 @@ test_set_env_store_persists_append_to_log(Config) ->
     ?assert(filelib:is_regular(Path)),
     FromDisk = read_one_log_term(Path),
 
-    %% Staged red: deliberately wrong expected term so the assertion fires; the
-    %% on-disk term is the store's normalized view of the appended event, not a
-    %% bare event_type. Corrected to `Normalized' in the follow-up fix(test).
-    ?assertEqual(not_the_on_disk_term, FromDisk).
+    ?assertEqual(Normalized, FromDisk).
 
 %%% Helpers
 
