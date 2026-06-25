@@ -329,11 +329,25 @@ idle(_EventType, _Event, Data) ->
 
 validate_envelope(Envelope) when is_map(Envelope) ->
     case maps:is_key(type, Envelope) andalso maps:is_key(payload, Envelope) of
-        true -> validate_steps(maps:get(steps, Envelope, undefined));
+        true ->
+            %% Decision 1, mutual exclusion: `steps' (a run) and `llm' (a call)
+            %% are two distinct dispatch paths. An envelope carrying both is
+            %% malformed and rejected up front -- before any child starts -- so
+            %% the dispatch never starts two children for one task.
+            case has_steps(Envelope) andalso has_llm(Envelope) of
+                true -> {error, steps_and_llm_mutually_exclusive};
+                false -> validate_steps(maps:get(steps, Envelope, undefined))
+            end;
         false -> {error, missing_required_field}
     end;
 validate_envelope(_Envelope) ->
     {error, not_a_map}.
+
+has_steps(Envelope) ->
+    is_list(maps:get(steps, Envelope, undefined)).
+
+has_llm(Envelope) ->
+    is_map(maps:get(llm, Envelope, undefined)).
 
 %% A no-steps envelope is valid by design. When the envelope carries a steps
 %% list, each step must be a map with an `id' and a `tool' so a known-bad step
