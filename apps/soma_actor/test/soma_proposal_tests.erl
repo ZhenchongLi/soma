@@ -51,17 +51,20 @@ test_unknown_kind_errors() ->
 unknown_kind_errors_test() ->
     test_unknown_kind_errors().
 
-%% A kind => actor_message proposal is deferred to v0.5.6 and is not a supported
-%% kind in this slice, so it normalizes to {error, [Diagnostic]} with a non-empty
-%% diagnostic list.
-test_actor_message_kind_errors() ->
-    Raw = #{kind => actor_message, to => <<"other">>, text => <<"hi">>},
+%% An actor_message proposal carrying a pid `to` but missing its required
+%% `payload` field normalizes to {error, [Diagnostic]} with a non-empty
+%% diagnostic list reporting the missing required field (not an unknown_kind
+%% error).
+test_actor_message_missing_payload_errors() ->
+    Raw = #{kind => actor_message, to => self()},
     {error, Diagnostics} = soma_proposal:normalize(Raw),
     ?assert(is_list(Diagnostics)),
-    ?assert(length(Diagnostics) >= 1).
+    ?assert(length(Diagnostics) >= 1),
+    [Diagnostic | _] = Diagnostics,
+    ?assertEqual(missing_required_field, maps:get(code, Diagnostic)).
 
-actor_message_kind_errors_test() ->
-    test_actor_message_kind_errors().
+actor_message_missing_payload_errors_test() ->
+    test_actor_message_missing_payload_errors().
 
 %% An actor_message proposal carrying a pid `to` and a map `payload` normalizes
 %% to {ok, Proposal} carrying kind => actor_message.
