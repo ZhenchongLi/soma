@@ -293,7 +293,20 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                     Task1 = Task#{status => completed, result => Result},
                     Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
                     Data1 = Data0#data{tasks = Tasks},
-                    reply_waiter(TaskId, {ok, Result}, Data1)
+                    reply_waiter(TaskId, {ok, Result}, Data1);
+                {invalid_proposal, Diagnostics} ->
+                    %% A proposal candidate that fails soma_proposal:normalize/1 is
+                    %% data, not a crash: record the task terminal `failed' carrying
+                    %% the diagnostics, emit no `proposal.created' (no valid proposal
+                    %% was recorded), release any parked waiter with the error, and
+                    %% stay alive.
+                    Task1 = Task#{status => failed, reason => Diagnostics},
+                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+                    Data1 = Data0#data{tasks = Tasks},
+                    emit(Data1, <<"actor.task.failed">>,
+                         #{task_id => TaskId, correlation_id => CorrelationId,
+                           reason => Diagnostics}),
+                    reply_waiter(TaskId, {error, Diagnostics}, Data1)
             end
     end;
 %% The call-timeout timer the actor armed fired before the worker reported a
@@ -503,7 +516,8 @@ proposal_result(Output) when is_map(Output) ->
     case maps:is_key(kind, Output) of
         true ->
             case soma_proposal:normalize(Output) of
-                {ok, Proposal} -> {proposal, Proposal}
+                {ok, Proposal} -> {proposal, Proposal};
+                {error, Diagnostics} -> {invalid_proposal, Diagnostics}
             end;
         false ->
             {opaque, Output}
