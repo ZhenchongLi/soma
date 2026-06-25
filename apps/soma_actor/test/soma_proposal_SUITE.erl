@@ -218,8 +218,7 @@ by_correlation_returns_proposal_actor_and_llm_events(_Config) ->
     ProposalCreated = [T || T <- Types, T =:= <<"proposal.created">>],
     ActorEvents = [T || T <- Types, has_prefix(T, <<"actor.">>)],
     LlmEvents = [T || T <- Types, has_prefix(T, <<"llm.">>)],
-    %% staged red: deliberately wrong expected value
-    [] = ProposalCreated,
+    [<<"proposal.created">>] = ProposalCreated,
     true = length(ActorEvents) >= 1,
     true = length(LlmEvents) >= 1,
     true = is_process_alive(ActorPid),
