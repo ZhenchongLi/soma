@@ -15,6 +15,7 @@
 -export([rejected_proposal_emits_proposal_rejected_with_reason_and_correlation_id/1]).
 -export([rejected_proposal_starts_no_run/1]).
 -export([rejected_proposal_status_reads_rejected/1]).
+-export([actor_survives_rejected_proposal_takes_next_send/1]).
 
 all() ->
     [allowed_run_steps_emits_proposal_approved_with_correlation_id,
@@ -22,7 +23,8 @@ all() ->
      allowed_proposal_status_reads_approved,
      rejected_proposal_emits_proposal_rejected_with_reason_and_correlation_id,
      rejected_proposal_starts_no_run,
-     rejected_proposal_status_reads_rejected].
+     rejected_proposal_status_reads_rejected,
+     actor_survives_rejected_proposal_takes_next_send].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -234,6 +236,47 @@ rejected_proposal_status_reads_rejected(_Config) ->
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, rejected, 100),
     rejected = maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 11: a policy-rejected proposal is terminal data, not a crash -- the
+%% actor pid stays alive and accepts and completes a second send/2. Entering
+%% through the real soma_actor:send/2 with a `proposal' llm directive whose step
+%% names a tool absent from the allowlist, waits for the first task to reach
+%% `rejected', then sends a second `proposal' envelope whose steps are all in the
+%% allowlist, waits for it to reach `approved', and asserts the actor pid is still
+%% alive and the second task's status reads `approved'.
+actor_survives_rejected_proposal_takes_next_send(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-policy-survives">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [<<"echo">>]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RejectProposal = #{kind => run_steps,
+                       steps => [#{id => <<"s1">>, tool => <<"echo">>},
+                                 #{id => <<"s2">>, tool => <<"forbidden">>}]},
+    RejectLlm = #{directive => proposal, output => RejectProposal},
+    RejectTaskId = <<"task-policy-survives-reject">>,
+    RejectEnvelope = #{type => <<"chat">>,
+                       payload => #{text => <<"do it">>},
+                       task_id => RejectTaskId,
+                       correlation_id => <<"corr-policy-survives-reject">>,
+                       llm => RejectLlm},
+    {ok, RejectTaskId} = soma_actor:send(ActorPid, RejectEnvelope),
+    ok = wait_for_status(ActorPid, RejectTaskId, rejected, 100),
+    AllowProposal = #{kind => run_steps,
+                      steps => [#{id => <<"s1">>, tool => <<"echo">>}]},
+    AllowLlm = #{directive => proposal, output => AllowProposal},
+    AllowTaskId = <<"task-policy-survives-allow">>,
+    AllowEnvelope = #{type => <<"chat">>,
+                      payload => #{text => <<"again">>},
+                      task_id => AllowTaskId,
+                      correlation_id => <<"corr-policy-survives-allow">>,
+                      llm => AllowLlm},
+    {ok, AllowTaskId} = soma_actor:send(ActorPid, AllowEnvelope),
+    ok = wait_for_status(ActorPid, AllowTaskId, approved, 100),
+    rejected = maps:get(status, soma_actor:get_task_status(ActorPid, AllowTaskId)),
     true = is_process_alive(ActorPid),
     ok.
 
