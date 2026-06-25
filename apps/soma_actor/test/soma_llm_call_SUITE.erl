@@ -196,6 +196,16 @@ crash_reaches_actor_as_failed_via_down(_Config) ->
     TaskId = maps:get(correlation_id, Failed),
     LlmCallId = maps:get(llm_call_id, Failed),
     true = LlmCallId =/= undefined,
+    %% Criterion 2: a direct by_correlation/2 read for the task's correlation id
+    %% (defaulting to the task_id) surfaces BOTH the `llm.failed' event and the
+    %% task-level `actor.task.failed' event under the one correlation id.
+    Correlated = soma_event_store:by_correlation(Store, TaskId),
+    CorrLlmFailed = [E || E <- Correlated,
+                          maps:get(event_type, E, undefined) =:= <<"llm.failed">>],
+    CorrTaskFailed = [E || E <- Correlated,
+                           maps:get(event_type, E, undefined) =:= <<"actor.task.failed">>],
+    true = length(CorrLlmFailed) >= 2,
+    true = length(CorrTaskFailed) >= 1,
     ok.
 
 %% Regression (review #77): a crashing LLM call whose envelope ALSO carried a
