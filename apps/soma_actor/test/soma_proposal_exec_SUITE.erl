@@ -18,6 +18,7 @@
 -export([approved_run_steps_runs_in_distinct_pid/1]).
 -export([rejected_proposal_starts_no_run_status_rejected/1]).
 -export([approved_reply_proposal_completes_no_run/1]).
+-export([approved_run_steps_failing_tool_marks_task_failed_actor_alive/1]).
 
 all() ->
     [approved_run_steps_completes_with_step_outputs,
@@ -25,7 +26,8 @@ all() ->
      by_correlation_returns_full_approved_run_chain,
      approved_run_steps_runs_in_distinct_pid,
      rejected_proposal_starts_no_run_status_rejected,
-     approved_reply_proposal_completes_no_run].
+     approved_reply_proposal_completes_no_run,
+     approved_run_steps_failing_tool_marks_task_failed_actor_alive].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -248,6 +250,40 @@ approved_reply_proposal_completes_no_run(_Config) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
     false = lists:member(<<"run.started">>, Types),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 7: when the run started from an approved `run_steps' proposal fails
+%% because a step's tool errors or crashes, the task reaches `failed' and the
+%% actor pid stays alive. Drives an approved `run_steps' proposal whose single
+%% step is the built-in `fail' tool in error mode (allowed by the policy) through
+%% the real soma_actor:send/2, waits for the task to reach the terminal `failed'
+%% status (the run reported `run_failed' and the actor recorded it as data), then
+%% asserts the actor process is still alive.
+approved_run_steps_failing_tool_marks_task_failed_actor_alive(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-exec-failed">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [fail]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    %% The single step runs the `fail' tool in error mode (allowed by the
+    %% policy), so the run fails and the task reaches `failed'.
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => fail,
+                               args => #{mode => error, reason => boom}}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-exec-failed">>,
+    CorrelationId = <<"corr-exec-failed">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    %% Staged red: a failing run never reaches `completed', so this wait times
+    %% out and the assertion fires. Corrected to `failed' in the green commit.
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
     true = is_process_alive(ActorPid),
     ok.
 
