@@ -305,7 +305,22 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                                  #{task_id => TaskId, correlation_id => CorrelationId,
                                    llm_call_id => LlmCallId,
                                    kind => maps:get(kind, Proposal, undefined)}),
-                            reply_waiter(TaskId, {ok, Proposal}, Data1)
+                            reply_waiter(TaskId, {ok, Proposal}, Data1);
+                        {reject, Reason} ->
+                            %% The proposal failed policy. Emit
+                            %% `proposal.rejected' carrying the reject reason and
+                            %% the task's correlation_id (and llm_call_id like
+                            %% `proposal.created'), set the task status terminal
+                            %% `rejected', and release any parked waiter with the
+                            %% rejection. No run is started.
+                            Task1 = (maps:get(TaskId, Data0a#data.tasks))#{
+                                      status => rejected, reason => Reason},
+                            Tasks = maps:put(TaskId, Task1, Data0a#data.tasks),
+                            Data1 = Data0a#data{tasks = Tasks},
+                            emit(Data1, <<"proposal.rejected">>,
+                                 #{task_id => TaskId, correlation_id => CorrelationId,
+                                   llm_call_id => LlmCallId, reason => Reason}),
+                            reply_waiter(TaskId, {error, {rejected, Reason}}, Data1)
                     end;
                 {opaque, Result} ->
                     Task1 = Task#{status => completed, result => Result},
