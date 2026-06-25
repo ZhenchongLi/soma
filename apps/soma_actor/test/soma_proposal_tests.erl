@@ -63,6 +63,16 @@ test_actor_message_kind_errors() ->
 actor_message_kind_errors_test() ->
     test_actor_message_kind_errors().
 
+%% An actor_message proposal carrying a pid `to` and a map `payload` normalizes
+%% to {ok, Proposal} carrying kind => actor_message.
+test_actor_message_normalizes_ok() ->
+    Raw = #{kind => actor_message, to => self(), payload => #{greeting => <<"hi">>}},
+    {ok, Proposal} = soma_proposal:normalize(Raw),
+    ?assertEqual(actor_message, maps:get(kind, Proposal)).
+
+actor_message_normalizes_ok_test() ->
+    test_actor_message_normalizes_ok().
+
 %% A reply proposal missing its required text field normalizes to
 %% {error, [Diagnostic]} with a non-empty diagnostic list reporting the missing
 %% required field (not an unknown_kind error).
