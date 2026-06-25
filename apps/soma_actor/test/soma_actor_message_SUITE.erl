@@ -18,13 +18,15 @@
 -export([by_correlation_returns_both_actors_events/1]).
 -export([a1_emits_proposal_executed_for_actor_message/1]).
 -export([a1_actor_message_task_completed_actor_alive/1]).
+-export([malformed_actor_message_delivers_nothing_actor_alive/1]).
 
 all() ->
     [delivered_message_accepted_by_a2_emits_task_accepted,
      delivered_task_inherits_a1_correlation_id,
      by_correlation_returns_both_actors_events,
      a1_emits_proposal_executed_for_actor_message,
-     a1_actor_message_task_completed_actor_alive].
+     a1_actor_message_task_completed_actor_alive,
+     malformed_actor_message_delivers_nothing_actor_alive].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -238,6 +240,64 @@ a1_actor_message_task_completed_actor_alive(_Config) ->
     completed = maps:get(status, Status),
     true = is_process_alive(A1),
     ok.
+
+%% Criterion 10: a malformed `actor_message' proposal (one that fails
+%% soma_proposal:normalize/1) never reaches A1's approved-proposal branch -- it
+%% takes the existing `{invalid_proposal, _}' arm, so A1's sender task is marked
+%% terminal `failed', no envelope is delivered to A2, and A1's pid stays alive.
+%% Drives A1 through the real soma_actor:send/2 with a malformed-proposal mock
+%% (its `to' is a non-pid, so normalize/1 returns `{error, _}'). A1 and A2 carry
+%% distinct actor_ids, so "no delivery" is checkable by A2's actor_id never
+%% appearing in any stored event. Polls until A1's task reaches `failed', then
+%% asserts no event in the store carries A2's actor_id and A1 is still alive.
+malformed_actor_message_delivers_nothing_actor_alive(_Config) ->
+    Store = event_store_pid(),
+    A2Opts = #{actor_id => <<"actor-a2">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2} = soma_actor_sup:start_actor(A2Opts),
+    A1Opts = #{actor_id => <<"actor-a1">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1} = soma_actor_sup:start_actor(A1Opts),
+    %% Malformed: `to' is not a pid, so soma_proposal:normalize/1 errors.
+    RawProposal = #{kind => actor_message,
+                    to => <<"actor-a2">>,
+                    payload => #{text => <<"hello a2">>}},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-a1-bad">>,
+    CorrelationId = <<"corr-a1-bad">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"tell a2">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(A1, Envelope),
+    ok = wait_for_task_failed(A1, TaskId, 100),
+    Status = soma_actor:get_task_status(A1, TaskId),
+    %% Staged red: the malformed proposal takes the `{invalid_proposal, _}' arm,
+    %% so the sender task is `failed' -- assert the wrong value first to see red.
+    completed = maps:get(status, Status),
+    AllEvents = soma_event_store:all(Store),
+    [] = [E || E <- AllEvents,
+               maps:get(actor_id, E, undefined) =:= <<"actor-a2">>],
+    true = is_process_alive(A1),
+    true = is_process_alive(A2),
+    ok.
+
+%% Polls A1's task status until it reaches terminal `failed'.
+wait_for_task_failed(_A1, _TaskId, 0) ->
+    error(no_task_failed);
+wait_for_task_failed(A1, TaskId, N) ->
+    case soma_actor:get_task_status(A1, TaskId) of
+        #{status := failed} ->
+            ok;
+        _ ->
+            timer:sleep(20),
+            wait_for_task_failed(A1, TaskId, N - 1)
+    end.
 
 a2_accepted_events(Store, CorrelationId, A2Id) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
