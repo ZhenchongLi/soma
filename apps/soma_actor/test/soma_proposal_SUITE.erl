@@ -14,12 +14,14 @@
 -export([reply_proposal_emits_proposal_created_with_correlation_id/1]).
 -export([run_steps_proposal_starts_no_run/1]).
 -export([malformed_proposal_marks_task_failed/1]).
+-export([actor_survives_malformed_proposal_takes_next_send/1]).
 
 all() ->
     [reply_proposal_stored_as_task_result,
      reply_proposal_emits_proposal_created_with_correlation_id,
      run_steps_proposal_starts_no_run,
-     malformed_proposal_marks_task_failed].
+     malformed_proposal_marks_task_failed,
+     actor_survives_malformed_proposal_takes_next_send].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -152,6 +154,39 @@ malformed_proposal_marks_task_failed(_Config) ->
     {error, _} = soma_proposal:normalize(RawProposal),
     ok = wait_for_status(ActorPid, TaskId, failed, 100),
     true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 13: after a task fails on a malformed proposal, the actor process is
+%% still alive and accepts the next soma_actor:send/2 envelope. Sends a malformed
+%% proposal, waits for that task to reach `failed', then asserts the same actor pid
+%% is still alive and a second soma_actor:send/2 to it returns {ok, TaskId2}.
+actor_survives_malformed_proposal_takes_next_send(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-proposal-survives">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => reply},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-proposal-survives-1">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
+    true = is_process_alive(ActorPid),
+    TaskId2 = <<"task-proposal-survives-2">>,
+    GoodProposal = #{kind => reply, text => <<"a normalized reply">>},
+    Llm2 = #{directive => proposal, output => GoodProposal},
+    Envelope2 = #{type => <<"chat">>,
+                  payload => #{text => <<"again">>},
+                  task_id => TaskId2,
+                  llm => Llm2},
+    %% Staged red: deliberately wrong expected value -- the second send returns
+    %% {ok, TaskId2}, not {error, dead_actor}.
+    {error, dead_actor} = soma_actor:send(ActorPid, Envelope2),
     ok.
 
 %% Polls get_task_status until the task reaches the given status.
