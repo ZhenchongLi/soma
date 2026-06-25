@@ -249,6 +249,52 @@ test_by_correlation_after_restart_returns_full_chain() ->
 by_correlation_after_restart_returns_full_chain_test() ->
     test_by_correlation_after_restart_returns_full_chain().
 
+%% Criterion 7: a persistent store opened on a path whose log has a truncated or
+%% garbage tail finishes init/1 without crashing and serves the intact events.
+%% Intact events are appended through a persistent store and the store is
+%% stopped; then the test damages the log file's tail directly at the filesystem
+%% level by appending garbage bytes (the "half-written term" condition an unclean
+%% shutdown leaves). Restarting the store at the same Path must replay the intact
+%% prefix, treat the corrupt tail as end-of-log, finish init/1 cleanly, and serve
+%% the intact events through all/1.
+test_truncated_tail_boots_and_serves_intact_events() ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    try
+        {ok, Pid1} = soma_event_store:start_link(#{log => Path}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_a,
+                                             session_id => sess_a,
+                                             correlation_id => corr_a,
+                                             event_type => a1}),
+        ok = soma_event_store:append(Pid1, #{run_id => run_b,
+                                             session_id => sess_b,
+                                             correlation_id => corr_b,
+                                             event_type => b1}),
+
+        %% Intact events captured before the restart so the recovered set can be
+        %% compared exactly.
+        Intact = soma_event_store:all(Pid1),
+
+        ok = stop_store(Pid1),
+
+        %% Damage the log's tail off-chain: append garbage bytes that form a
+        %% partial, unreadable term at the end of the halt log file.
+        append_garbage(Path),
+
+        {ok, Pid2} = soma_event_store:start_link(#{log => Path}),
+        Recovered = soma_event_store:all(Pid2),
+        ok = stop_store(Pid2),
+
+        RecoveredTypes = [maps:get(event_type, E) || E <- Recovered],
+        ?assertEqual([a1, b1], RecoveredTypes),
+        ?assertEqual(Intact, Recovered)
+    after
+        ok = del_tmp_dir(TmpDir)
+    end.
+
+truncated_tail_boots_and_serves_intact_events_test() ->
+    test_truncated_tail_boots_and_serves_intact_events().
+
 %%% Helpers
 
 %% Open a fresh disk_log against an existing halt log file and read its single
@@ -277,6 +323,14 @@ read_one_log_term(Path) ->
     {_Cont, [Term]} = disk_log:chunk(Name, start),
     ok = disk_log:close(Name),
     Term.
+
+%% Append garbage bytes to the end of the halt log file, mimicking a partial
+%% term left by an unclean shutdown. disk_log:chunk/2 reports this tail as a
+%% corrupt-log error rather than returning it as a term.
+append_garbage(Path) ->
+    {ok, Fd} = file:open(Path, [append, raw, binary]),
+    ok = file:write(Fd, <<"garbage-tail-not-a-term-", 0, 1, 2, 3, 255, 254>>),
+    ok = file:close(Fd).
 
 make_tmp_dir() ->
     Unique = erlang:integer_to_list(erlang:unique_integer([positive])),
