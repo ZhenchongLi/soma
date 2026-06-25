@@ -20,6 +20,7 @@
 -export([budget_failed_task_status_reads_failed/1]).
 -export([actor_survives_budget_failure_takes_next_envelope/1]).
 -export([parked_ask_on_budget_failed_task_gets_error/1]).
+-export([by_correlation_surfaces_budget_failed_event_with_reason/1]).
 
 all() ->
     [budget_zero_llm_calls_fails_task_with_reason,
@@ -29,7 +30,8 @@ all() ->
      budget_within_max_steps_proposal_completes,
      budget_failed_task_status_reads_failed,
      actor_survives_budget_failure_takes_next_envelope,
-     parked_ask_on_budget_failed_task_gets_error].
+     parked_ask_on_budget_failed_task_gets_error,
+     by_correlation_surfaces_budget_failed_event_with_reason].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -323,6 +325,39 @@ parked_ask_on_budget_failed_task_gets_error(_Config) ->
                  llm => Llm},
     Reply = soma_actor:ask(ActorPid, Envelope, 1000),
     {error, {budget_exceeded, max_llm_calls}} = Reply,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 9: soma_event_store:by_correlation/2 for a budget-failed task
+%% surfaces its `actor.task.failed' event carrying the budget reason. Drives the
+%% `max_llm_calls => 0' budget failure through the real soma_actor:send/2 so the
+%% shared failure helper emits `actor.task.failed' with the budget reason, waits
+%% for the terminal `failed' status, then reads the full chain back through
+%% soma_event_store:by_correlation/2 and asserts exactly one `actor.task.failed'
+%% event whose `reason' is `{budget_exceeded, max_llm_calls}'.
+by_correlation_surfaces_budget_failed_event_with_reason(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-budget-trail">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             budget => #{max_llm_calls => 0},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => proposal,
+            output => #{kind => reply, text => <<"hi">>}},
+    TaskId = <<"task-budget-trail">>,
+    CorrelationId = <<"corr-budget-trail">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    [Failed] = [E || E <- Events,
+                     maps:get(event_type, E, undefined) =:= <<"actor.task.failed">>],
+    {budget_exceeded, max_steps} = maps:get(reason, Failed),
     true = is_process_alive(ActorPid),
     ok.
 
