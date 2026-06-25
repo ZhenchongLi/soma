@@ -201,7 +201,7 @@ rejected_proposal_starts_no_run(_Config) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     RunStarted = [E || E <- Events,
                        maps:get(event_type, E, undefined) =:= <<"run.started">>],
-    [_] = RunStarted,
+    [] = RunStarted,
     true = is_process_alive(ActorPid),
     ok.
 
