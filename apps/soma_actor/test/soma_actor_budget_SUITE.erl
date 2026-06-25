@@ -169,7 +169,7 @@ budget_max_steps_oversized_proposal_emits_no_run_started(_Config) ->
     ok = wait_for_status(ActorPid, TaskId, failed, 100),
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
-    true = lists:member(<<"run.started">>, Types),
+    false = lists:member(<<"run.started">>, Types),
     true = is_process_alive(ActorPid),
     ok.
 
