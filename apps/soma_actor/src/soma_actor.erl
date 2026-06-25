@@ -272,11 +272,28 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
             %% Output that is not a proposal candidate is stored verbatim, keeping
             %% the v0.5.1 opaque-output contract.
             case proposal_result(Output) of
-                {ok, Proposal} ->
+                {proposal, Proposal} ->
                     Task1 = Task#{status => completed, result => Proposal},
                     Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
                     Data1 = Data0#data{tasks = Tasks},
-                    reply_waiter(TaskId, {ok, Proposal}, Data1)
+                    %% A valid proposal was normalized and recorded. Emit
+                    %% `proposal.created' carrying the task's correlation_id (and
+                    %% the proposal kind). Distinct from `llm.succeeded': the
+                    %% latter marks "the call returned a result" and fires on every
+                    %% success, this marks "a valid proposal was recorded" and
+                    %% fires only on successful normalization (design decision 2).
+                    %% Opaque passthrough output is not a normalized proposal, so
+                    %% it takes the `opaque' branch and emits nothing here.
+                    emit(Data1, <<"proposal.created">>,
+                         #{task_id => TaskId, correlation_id => CorrelationId,
+                           llm_call_id => LlmCallId,
+                           kind => maps:get(kind, Proposal, undefined)}),
+                    reply_waiter(TaskId, {ok, Proposal}, Data1);
+                {opaque, Result} ->
+                    Task1 = Task#{status => completed, result => Result},
+                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+                    Data1 = Data0#data{tasks = Tasks},
+                    reply_waiter(TaskId, {ok, Result}, Data1)
             end
     end;
 %% The call-timeout timer the actor armed fired before the worker reported a
@@ -477,17 +494,22 @@ maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
     end.
 
 %% Decide a task result from a successful worker output. A proposal candidate -- a
-%% map carrying a `kind' tag -- is validated through soma_proposal:normalize/1 and
-%% its normalized form becomes the result. Any other output is opaque (the v0.5.1
-%% contract: a `success' directive's output is stored verbatim) and passed
-%% through unchanged.
+%% map carrying a `kind' tag -- is validated through soma_proposal:normalize/1 and,
+%% on success, its normalized form becomes the result tagged `{proposal, _}' so the
+%% caller emits `proposal.created'. Any other output is opaque (the v0.5.1
+%% contract: a `success' directive's output is stored verbatim) and tagged
+%% `{opaque, _}' so no proposal event fires.
 proposal_result(Output) when is_map(Output) ->
     case maps:is_key(kind, Output) of
-        true -> soma_proposal:normalize(Output);
-        false -> {ok, Output}
+        true ->
+            case soma_proposal:normalize(Output) of
+                {ok, Proposal} -> {proposal, Proposal}
+            end;
+        false ->
+            {opaque, Output}
     end;
 proposal_result(Output) ->
-    {ok, Output}.
+    {opaque, Output}.
 
 %% On a normal terminal message (run_completed | run_failed | run_timeout |
 %% run_cancelled) the run pid is reporting its own outcome and may still be
