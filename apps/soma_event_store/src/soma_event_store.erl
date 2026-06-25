@@ -45,10 +45,34 @@ by_correlation(Pid, CorrelationId) ->
 init([]) ->
     {ok, #state{}};
 init(#{log := Path}) ->
-    {ok, Log} = disk_log:open([{name, {?MODULE, Path}},
-                               {file, Path},
-                               {type, halt}]),
-    {ok, #state{log = Log}}.
+    Log = {?MODULE, Path},
+    case disk_log:open([{name, Log},
+                        {file, Path},
+                        {type, halt}]) of
+        {ok, Log} -> ok;
+        {repaired, Log, _Recovered, _BadBytes} -> ok
+    end,
+    Events = replay_log(Log),
+    {ok, #state{events = Events, log = Log}}.
+
+%% Read every term the log holds, in append (oldest-first) order, and build the
+%% in-memory index in the same internal order an equivalent sequence of
+%% append/2 calls would produce (newest first). all/1 reverses it back to
+%% append order. The index is a rebuildable cache; the log is the source of
+%% truth.
+replay_log(Log) ->
+    replay_log(Log, start, []).
+
+replay_log(Log, Cont, Acc) ->
+    case disk_log:chunk(Log, Cont) of
+        eof ->
+            Acc;
+        {NextCont, Terms} ->
+            replay_log(Log, NextCont, prepend_all(Terms, Acc))
+    end.
+
+prepend_all(Terms, Acc) ->
+    lists:foldl(fun(Term, A) -> [Term | A] end, Acc, Terms).
 
 handle_call({append, Event}, _From, State = #state{events = Events, log = Log}) ->
     Normalized = normalize(Event),
