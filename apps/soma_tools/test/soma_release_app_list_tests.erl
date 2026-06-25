@@ -25,24 +25,26 @@ rebar_release_apps() ->
     {release, _Name, Apps} = lists:keyfind(release, 1, Relx),
     lists:usort(Apps).
 
-%% The app set the doc names: of the candidate apps, the ones release.md mentions
-%% by name.
+%% The bundled-app set the doc names: of the candidate apps, the ones release.md
+%% lists as a backtick-wrapped bullet item (`- `app``) in its bundled-apps list.
+%% Restricting to that shape keeps a prose mention (e.g. naming `soma_actor` to
+%% say it is *excluded*) from being miscounted as a bundled app.
 doc_named_apps(Doc) ->
     Candidates = [soma_event_store, soma_tools, soma_runtime, sasl, soma_actor],
     lists:usort(
         [App
          || App <- Candidates,
-            contains(Doc, atom_to_binary(App, utf8))]).
+            contains(Doc, bullet_item(App))]).
+
+bullet_item(App) ->
+    AppBin = atom_to_binary(App, utf8),
+    <<"- `", AppBin/binary, "`">>.
 
 %% Criterion 8: rebar.config relx release list and the docs/release.md app list
 %% name the same set of apps.
 test_doc_app_list_matches_rebar_release() ->
     RebarApps = rebar_release_apps(),
     DocApps = doc_named_apps(read_doc()),
-    %% Staged red: assert against a deliberately wrong expected set so the
-    %% assertion fires before docs/release.md is reconciled. Corrected to
-    %% DocApps in the green commit.
-    ?assertEqual([deliberately_wrong_app], RebarApps),
     ?assertEqual(RebarApps, DocApps).
 
 doc_app_list_matches_rebar_release_test() ->

@@ -1,8 +1,26 @@
 # Release packaging
 
-Soma ships as a self-contained OTP release: a tarball that bundles the three
-apps (`soma_runtime`, `soma_tools`, `soma_event_store`), `sasl`, and the Erlang
-runtime (ERTS) itself, so it runs on a machine with **no Erlang installed**.
+Soma ships as a self-contained OTP release: a tarball that bundles the runtime
+core apps, `sasl`, and the Erlang runtime (ERTS) itself, so it runs on a machine
+with **no Erlang installed**.
+
+## Bundled apps
+
+The relx release in `rebar.config` is the **execution core**. It bundles exactly
+these apps (the same set, in the same order, as the `{release, {soma, ...}, [...]}`
+list in `rebar.config`):
+
+- `soma_event_store`
+- `soma_tools`
+- `soma_runtime`
+- `sasl`
+
+The release boots the runtime core — `soma_runtime` and its supervision tree —
+and nothing above it. `soma_actor` (the v0.4 agent-entity layer) is deliberately
+**not yet bundled** in this release: it is a layer the embedding application
+starts on top of the runtime, not part of the packaged execution core. Bundling
+the actor with its own boot smoke test is tracked as a follow-up; until then the
+release ships the runtime core only.
 
 The release is built per host architecture: building on macOS arm64 yields a
 macOS arm64 artifact, building on Linux x86_64 yields a Linux x86_64 artifact,
