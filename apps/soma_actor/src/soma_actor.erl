@@ -315,6 +315,19 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                                     %% the task -- and reply any parked waiter from
                                     %% the run's completion, not from this gate.
                                     Steps = maps:get(steps, Proposal),
+                                    %% Emit `proposal.executed' at the point the
+                                    %% actor hands an approved `run_steps' proposal
+                                    %% off to a run -- the actor saying "I approved
+                                    %% this and am starting a run for it", distinct
+                                    %% from the run's own `run.started'. Carries the
+                                    %% task's correlation_id and llm_call_id like the
+                                    %% other proposal events, so by_correlation/2
+                                    %% returns the full chain under one id.
+                                    emit(Data1, <<"proposal.executed">>,
+                                         #{task_id => TaskId,
+                                           correlation_id => CorrelationId,
+                                           llm_call_id => LlmCallId,
+                                           kind => maps:get(kind, Proposal, undefined)}),
                                     Data2 = start_owned_run(Steps, TaskId,
                                                             CorrelationId, Data1),
                                     {keep_state, Data2};
