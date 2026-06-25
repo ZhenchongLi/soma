@@ -357,7 +357,7 @@ by_correlation_surfaces_budget_failed_event_with_reason(_Config) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     [Failed] = [E || E <- Events,
                      maps:get(event_type, E, undefined) =:= <<"actor.task.failed">>],
-    {budget_exceeded, max_steps} = maps:get(reason, Failed),
+    {budget_exceeded, max_llm_calls} = maps:get(reason, Failed),
     true = is_process_alive(ActorPid),
     ok.
 
