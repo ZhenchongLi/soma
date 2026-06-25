@@ -12,4 +12,13 @@
 
 -spec normalize(map()) -> {ok, proposal()} | {error, [diagnostic()]}.
 normalize(#{kind := reply, text := Text}) when is_binary(Text) ->
-    {ok, #{kind => reply, text => Text}}.
+    {ok, #{kind => reply, text => Text}};
+normalize(#{kind := run_steps, steps := Steps}) when is_list(Steps) ->
+    case lists:all(fun valid_step/1, Steps) of
+        true -> {ok, #{kind => run_steps, steps => Steps}}
+    end.
+
+valid_step(Step) when is_map(Step) ->
+    maps:is_key(id, Step) andalso maps:is_key(tool, Step);
+valid_step(_Step) ->
+    false.
