@@ -44,4 +44,11 @@ perform_call(#{directive := slow}) ->
 perform_call(#{directive := hang}) ->
     receive
         _ -> never
-    end.
+    end;
+%% The `crash' directive makes the worker die abnormally, modelling a call that
+%% blows up mid-flight (a provider client throwing, a bad decode). It never sends
+%% the owner a result; the worker's non-`normal' exit reaches the actor as the
+%% monitor's `'DOWN'', which the actor records as a `failed' task -- the call
+%% crossing a process boundary turns a crash into data, not a stuck `running'.
+perform_call(#{directive := crash}) ->
+    exit(llm_call_crashed).

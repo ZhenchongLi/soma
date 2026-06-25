@@ -172,7 +172,7 @@ crash_reaches_actor_as_failed_via_down(_Config) ->
     Started = wait_for_actor_event(Store, <<"llm.started">>, 100),
     WorkerPid = maps:get(llm_call_pid, Started),
     true = is_pid(WorkerPid),
-    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
     false = is_process_alive(WorkerPid),
     true = is_process_alive(ActorPid),
     true = ActorPid =/= WorkerPid,
