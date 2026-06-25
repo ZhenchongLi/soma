@@ -196,7 +196,7 @@ send_no_steps_accepted_no_run(_Config) ->
                  task_id => TaskId},
     {ok, TaskId} = soma_actor:send(Pid, Envelope),
     Status = soma_actor:get_task_status(Pid, TaskId),
-    running = maps:get(status, Status),
+    accepted = maps:get(status, Status),
     ok.
 
 waiters(Pid) ->
