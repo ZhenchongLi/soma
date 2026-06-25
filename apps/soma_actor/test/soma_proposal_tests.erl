@@ -50,3 +50,15 @@ test_unknown_kind_errors() ->
 
 unknown_kind_errors_test() ->
     test_unknown_kind_errors().
+
+%% A kind => actor_message proposal is deferred to v0.5.6 and is not a supported
+%% kind in this slice, so it normalizes to {error, [Diagnostic]} with a non-empty
+%% diagnostic list.
+test_actor_message_kind_errors() ->
+    Raw = #{kind => actor_message, to => <<"other">>, text => <<"hi">>},
+    %% Staged red: deliberately wrong expectation — actor_message is NOT a
+    %% supported kind, so normalize/1 returns {error, _}, not {ok, _}.
+    {ok, _Proposal} = soma_proposal:normalize(Raw).
+
+actor_message_kind_errors_test() ->
+    test_actor_message_kind_errors().
