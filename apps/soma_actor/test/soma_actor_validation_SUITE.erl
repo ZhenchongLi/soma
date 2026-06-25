@@ -9,13 +9,15 @@
 -export([valid_steps_complete_after_malformed/1]).
 -export([ask_no_steps_returns_ok_accepted/1]).
 -export([ask_no_steps_parks_no_waiter/1]).
+-export([send_no_steps_accepted_no_run/1]).
 
 all() ->
     [malformed_steps_rejected_or_failed_not_running,
      actor_alive_after_malformed_steps,
      valid_steps_complete_after_malformed,
      ask_no_steps_returns_ok_accepted,
-     ask_no_steps_parks_no_waiter].
+     ask_no_steps_parks_no_waiter,
+     send_no_steps_accepted_no_run].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -171,6 +173,30 @@ ask_no_steps_parks_no_waiter(_Config) ->
     %% task.
     Waiters = waiters(Pid),
     false = maps:is_key(TaskId, Waiters),
+    ok.
+
+%% Criterion 7: send/2 with a no-steps envelope is unchanged by this issue. A
+%% no-steps envelope is valid and starts no run, so send/2 still returns
+%% {ok, TaskId} and the task's status reads `accepted'. The runtime is booted and
+%% the actor is started through soma_actor_sup:start_actor/1, no layer bypassed.
+%% The test asserts the send/2 return is {ok, TaskId} and that
+%% soma_actor:get_task_status reports `accepted' -- proving decision 3's "send
+%% unchanged" holds.
+send_no_steps_accepted_no_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-send-no-steps">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-send-no-steps">>,
+    %% A no-steps envelope (no `steps' key at all).
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId},
+    {ok, TaskId} = soma_actor:send(Pid, Envelope),
+    Status = soma_actor:get_task_status(Pid, TaskId),
+    running = maps:get(status, Status),
     ok.
 
 waiters(Pid) ->
