@@ -91,18 +91,17 @@ test_appended_event_reads_back_from_log_as_normalized() ->
         {ok, Pid} = soma_event_store:start_link(#{log => Path}),
         ok = soma_event_store:append(Pid, RawEvent),
 
-        %% The store's normalized form of the appended event.
-        [_Normalized] = soma_event_store:by_run(Pid, run_a),
+        %% The store's normalized form of the appended event. normalize fills
+        %% event_id/timestamp/missing mandatory keys, so this is what should
+        %% physically sit in the log — not the raw input event.
+        [Normalized] = soma_event_store:by_run(Pid, run_a),
 
         %% Stop the store so its disk_log handle is closed and flushed, then
         %% read the term straight out of the disk_log at Path with our own open.
         ok = stop_store(Pid),
         FromDisk = read_one_log_term(Path),
 
-        %% Staged red: the raw input event is NOT what sits in the log —
-        %% normalize fills event_id/timestamp/missing mandatory keys — so this
-        %% assertion fires. Corrected to the normalized form in the next commit.
-        ?assertEqual(RawEvent, FromDisk)
+        ?assertEqual(Normalized, FromDisk)
     after
         ok = del_tmp_dir(TmpDir)
     end.
