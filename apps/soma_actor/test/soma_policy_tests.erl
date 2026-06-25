@@ -48,3 +48,14 @@ test_toolless_kinds_return_allow() ->
 
 toolless_kinds_return_allow_test() ->
     test_toolless_kinds_return_allow().
+
+%% An actor_message proposal carries no tool, so it passes the policy check
+%% unconditionally — even under a restrictive allowlist.
+test_actor_message_returns_allow() ->
+    Policy = #{allowed_tools => [echo]},
+    {ok, Proposal} = soma_proposal:normalize(
+        #{kind => actor_message, to => self(), payload => #{body => <<"hi">>}}),
+    ?assertEqual(allow, soma_policy:check(Proposal, Policy)).
+
+actor_message_returns_allow_test() ->
+    test_actor_message_returns_allow().
