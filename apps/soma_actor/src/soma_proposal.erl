@@ -27,6 +27,9 @@ normalize(#{kind := reject, reason := Reason}) when is_binary(Reason) ->
     {ok, #{kind => reject, reason => Reason}};
 normalize(#{kind := ask, question := Question}) when is_binary(Question) ->
     {ok, #{kind => ask, question => Question}};
+normalize(#{kind := actor_message, to := To, payload := Payload})
+  when is_pid(To), is_map(Payload) ->
+    {ok, #{kind => actor_message, to => To, payload => Payload}};
 normalize(#{kind := reply}) ->
     {error, [#{code => missing_required_field,
                message => <<"reply proposal requires a text field">>,
