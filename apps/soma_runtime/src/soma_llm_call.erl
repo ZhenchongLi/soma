@@ -37,4 +37,11 @@ perform_call(#{directive := success, output := Output}) ->
 perform_call(#{directive := slow}) ->
     receive
         _ -> never
+    end;
+%% The `hang' directive blocks until the worker is killed, modelling a call that
+%% is in flight when the owner cancels it. Like `slow' it never returns on its
+%% own; the actor's cancel path kills the worker (exit(WorkerPid, kill)).
+perform_call(#{directive := hang}) ->
+    receive
+        _ -> never
     end.

@@ -153,10 +153,35 @@ idle({call, From}, {cancel, TaskId}, Data) ->
         undefined ->
             {keep_state, Data, [{reply, From, {error, not_found}}]};
         Task ->
-            case {maps:get(status, Task), maps:get(run_pid, Task, undefined)} of
-                {running, RunPid} when is_pid(RunPid) ->
-                    RunPid ! cancel,
+            Status = maps:get(status, Task),
+            RunPid = maps:get(run_pid, Task, undefined),
+            WorkerPid = maps:get(llm_call_pid, Task, undefined),
+            case {Status, RunPid, WorkerPid} of
+                {running, RunPid1, _} when is_pid(RunPid1) ->
+                    RunPid1 ! cancel,
                     {keep_state, Data, [{reply, From, ok}]};
+                {running, _, WorkerPid1} when is_pid(WorkerPid1) ->
+                    %% Cancel of an in-flight LLM call. Unlike a soma_run, the
+                    %% bare worker has no state machine to receive a `cancel'
+                    %% message, so the actor does the kill itself
+                    %% (exit(WorkerPid, kill)) -- the same brutal teardown the
+                    %% timeout path uses. Demonitor-and-flush the worker ref so
+                    %% the kill's `'DOWN'' never reaches the backstop, cancel the
+                    %% call-timeout timer, record the task `cancelled', and emit
+                    %% `llm.cancelled'. The actor stays alive.
+                    exit(WorkerPid1, kill),
+                    LlmCallId = maps:get(llm_call_id, Task),
+                    Data0 = clear_llm_timer(TaskId,
+                                            clear_llm_monitor(TaskId, Data)),
+                    Task0 = maps:get(TaskId, Data0#data.tasks),
+                    CorrelationId = maps:get(correlation_id, Task0),
+                    Task1 = Task0#{status => cancelled},
+                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+                    Data1 = Data0#data{tasks = Tasks},
+                    emit(Data1, <<"llm.cancelled">>,
+                         #{task_id => TaskId, correlation_id => CorrelationId,
+                           llm_call_id => LlmCallId}),
+                    {keep_state, Data1, [{reply, From, ok}]};
                 _ ->
                     {keep_state, Data, [{reply, From, {error, not_running}}]}
             end
