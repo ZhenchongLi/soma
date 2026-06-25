@@ -108,10 +108,21 @@ idle({call, From}, {ask, Envelope}, Data) ->
             emit(Data1, <<"actor.task.accepted">>,
                  #{task_id => TaskId, correlation_id => CorrelationId}),
             Data2 = maybe_start_run(Envelope, TaskId, CorrelationId, Data1),
-            %% Defer the reply: park From against the task and answer when the
-            %% run completes. The caller stays blocked inside its gen_statem:call.
-            Waiters = maps:put(TaskId, From, Data2#data.waiters),
-            {keep_state, Data2#data{waiters = Waiters}};
+            case maps:get(steps, Envelope, undefined) of
+                Steps when is_list(Steps) ->
+                    %% A run was started: defer the reply, parking From against
+                    %% the task to answer when the run completes. The caller
+                    %% stays blocked inside its gen_statem:call.
+                    Waiters = maps:put(TaskId, From, Data2#data.waiters),
+                    {keep_state, Data2#data{waiters = Waiters}};
+                _ ->
+                    %% No-steps envelope: valid, but starts no run, so no
+                    %% terminal event will ever fire. Reply immediately with the
+                    %% distinct 3-tuple {ok, accepted, TaskId} and park no
+                    %% waiter, rather than blocking the caller until TimeoutMs.
+                    {keep_state, Data2,
+                     [{reply, From, {ok, accepted, TaskId}}]}
+            end;
         {error, Reason} ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
     end;
