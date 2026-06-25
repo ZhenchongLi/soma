@@ -13,6 +13,7 @@ list in `rebar.config`):
 - `soma_event_store`
 - `soma_tools`
 - `soma_runtime`
+- `soma_actor`
 - `sasl`
 
 The release boots the runtime core — `soma_runtime` and its supervision tree —
