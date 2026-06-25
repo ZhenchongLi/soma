@@ -10,10 +10,18 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_unset_env_store_is_in_memory_writes_no_file/1]).
+-export([test_set_env_store_persists_append_to_log/1]).
 
 all() ->
-    [test_unset_env_store_is_in_memory_writes_no_file].
+    [test_unset_env_store_is_in_memory_writes_no_file,
+     test_set_env_store_persists_append_to_log].
 
+init_per_testcase(test_set_env_store_persists_append_to_log, Config) ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    application:set_env(soma_runtime, event_store_log, Path),
+    {ok, _Started} = application:ensure_all_started(soma_runtime),
+    [{tmp_dir, TmpDir}, {log_path, Path} | Config];
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
     TmpDir = make_tmp_dir(),
@@ -21,7 +29,9 @@ init_per_testcase(_Case, Config) ->
     [{tmp_dir, TmpDir} | Config].
 
 end_per_testcase(_Case, Config) ->
-    ok = application:stop(soma_runtime),
+    %% A case may already have stopped the app (the persistent case stops it
+    %% in-body to flush its disk_log handle); tolerate the already-stopped case.
+    _ = application:stop(soma_runtime),
     application:unset_env(soma_runtime, event_store_log),
     ok = del_tmp_dir(?config(tmp_dir, Config)),
     ok.
@@ -47,7 +57,53 @@ test_unset_env_store_is_in_memory_writes_no_file(Config) ->
     After = list_dir(TmpDir),
     ?assertEqual(Before, After).
 
+%% Criterion 2: with `event_store_log' set to a path before boot, the
+%% `soma_event_store' child started under `soma_sup' is persistent — an event
+%% appended through it lands in a `disk_log' at that path.
+%%
+%% The case appends one event through the live sup-owned store child, then stops
+%% the app so the store's disk_log handle flushes, and reads the term straight
+%% out of its own short-lived disk_log at the path — the read-back-around-the-
+%% store technique #96 used. The on-disk term must equal the store's normalized
+%% view of the appended event.
+test_set_env_store_persists_append_to_log(Config) ->
+    Path = ?config(log_path, Config),
+
+    StorePid = store_child(),
+    ok = soma_event_store:append(StorePid, #{run_id => run_a,
+                                            session_id => sess_a,
+                                            correlation_id => corr_a,
+                                            event_type => a1}),
+    %% The store's normalized form of the appended event — what should physically
+    %% sit in the log.
+    [_Normalized] = soma_event_store:by_run(StorePid, run_a),
+
+    %% Stop the app so the store's disk_log handle is closed and flushed, then
+    %% read the single term back from the log at Path around the store.
+    ok = application:stop(soma_runtime),
+    ?assert(filelib:is_regular(Path)),
+    FromDisk = read_one_log_term(Path),
+
+    %% Staged red: deliberately wrong expected term so the assertion fires; the
+    %% on-disk term is the store's normalized view of the appended event, not a
+    %% bare event_type. Corrected to `Normalized' in the follow-up fix(test).
+    ?assertEqual(not_the_on_disk_term, FromDisk).
+
 %%% Helpers
+
+%% Open a fresh disk_log against the halt log file at Path and read its single
+%% logged term back, around the store. A halt log not closed cleanly comes back
+%% as `{repaired, _, _, {badbytes, 0}}' on reopen; with zero bad bytes the
+%% recovered term is intact, so either return is fine for reading.
+read_one_log_term(Path) ->
+    Name = {?MODULE, make_ref()},
+    case disk_log:open([{name, Name}, {file, Path}, {type, halt}]) of
+        {ok, Name} -> ok;
+        {repaired, Name, _Recovered, {badbytes, 0}} -> ok
+    end,
+    {_Cont, [Term]} = disk_log:chunk(Name, start),
+    ok = disk_log:close(Name),
+    Term.
 
 %% Resolve the live `soma_event_store' child pid out of the running supervisor.
 store_child() ->
