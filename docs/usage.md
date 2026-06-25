@@ -261,8 +261,10 @@ is in `waiting_tool`.
 long-lived `gen_statem` that takes a message, creates a task, runs it through
 `soma_run`, and returns a result. It starts the run **directly** — owning it as
 `session_pid => self()`, with no `soma_agent_session` in its path — and learns
-the outcome from the run's terminal message. v0.4 is fixed-rule only: no real
-LLM, planner, or policy gate (those are v0.5).
+the outcome from the run's terminal message. The v0.4 path documented here is the
+fixed rule: an envelope that carries `steps` runs them. The **decision layer**
+(v0.5) — a mock LLM call, a proposal schema, a policy gate, a per-task budget, and
+actor-to-actor messages — is documented in "Agent decision layer (v0.5)" below.
 
 ### Starting an actor
 
@@ -396,6 +398,299 @@ A runnable walkthrough of all of the above — `ask`, `send` + polling, the
 correlation chain, real cancel, and surviving a failure — is in
 `examples/soma_actor_demo.erl` (`c("examples/soma_actor_demo").` in `rebar3
 shell`).
+
+## Agent decision layer (soma_actor, v0.5)
+
+v0.5 adds the agent's decision step in front of execution: instead of an envelope
+that already names `steps`, you send an envelope that carries an `llm` directive;
+the actor runs a call, gets back a **proposal**, runs the proposal through a
+**policy** gate, and only then executes — all under one `correlation_id`, all
+recorded as events. Everything here is driven by a **mock LLM**: there is no real
+provider yet. The mock is directive-driven, so a test (or a shell session) decides
+exactly what the "model" returns.
+
+The whole layer is data-then-execute, mirroring the rest of the runtime: an `llm`
+call returns opaque output or a raw proposal; `soma_proposal:normalize/1` turns a
+raw proposal into validated data; `soma_policy:check/2` gives that data a verdict;
+and only an *approved* proposal causes a `soma_run` to start.
+
+### The `llm` envelope and the mock directive
+
+An envelope carries **either** `steps` (the v0.4 path) **or** `llm` (the v0.5
+path) — never both. An envelope with both is rejected up front with
+`{error, steps_and_llm_mutually_exclusive}`, before any child starts.
+
+The `llm` field is a directive map read by the mock worker `soma_llm_call`:
+
+```erlang
+#{
+    type    => <<"chat">>,         %% required (envelope field)
+    payload => #{...},             %% required (envelope field)
+    llm     => #{
+        directive  => proposal,    %% proposal | success | slow | crash | hang
+        output     => RawProposal, %% for `proposal'/`success': returned verbatim
+        timeout_ms => 5000         %% optional; the actor-owned call timeout
+    },
+    task_id        => <<"task-1">>,  %% optional; minted if absent
+    correlation_id => <<"corr-1">>   %% optional; defaults to task_id
+}
+```
+
+The `directive` selects mock behaviour (this is the single seam
+`soma_llm_call:perform_call/1` where a real provider will later slot in):
+
+| `directive` | What the mock does |
+|---|---|
+| `proposal` | Returns the `output` map verbatim; the actor runs it through `soma_proposal:normalize/1` and the policy gate |
+| `success` | Returns the `output` verbatim as **opaque** output (no proposal logic); the task completes with that output as its result |
+| `slow` | Blocks past the call timeout — proves the actor's timer (not the worker) enforces the bound; the task reaches `timeout` |
+| `hang` | Blocks until killed — models a call in flight when you `cancel/2` it; the task reaches `cancelled` |
+| `crash` | Exits abnormally — the crash reaches the actor as the worker monitor's `'DOWN'`; the task reaches `failed` |
+
+`timeout_ms` in the `llm` map is an **actor-owned** call timeout: the actor arms a
+timer when it starts the worker and, if the timer fires first, kills the worker
+itself (`exit(WorkerPid, kill)` — the bare worker is not a `gen_statem` that can
+drive its own teardown). With no `timeout_ms`, no timer is armed and the call
+waits indefinitely. The call worker runs in its own process; its pid is reported
+on the `llm.started` event as `llm_call_pid` and is distinct from the actor pid.
+
+### Proposals: `soma_proposal:normalize/1`
+
+A proposal is a raw map tagged by a `kind` field. `soma_proposal:normalize/1` is a
+pure validate/normalize boundary (like `soma_tool_manifest:normalize/1`) —
+no processes, no events:
+
+```erlang
+soma_proposal:normalize(Raw).
+%% => {ok, Proposal} | {error, [Diagnostic]}
+```
+
+The five proposal forms and their required fields:
+
+| `kind` | Required fields | Normalized form |
+|---|---|---|
+| `reply` | `text` (binary) | `#{kind => reply, text => Text}` |
+| `run_steps` | `steps` (list; each step a map with `id` and `tool`) | `#{kind => run_steps, steps => Steps}` |
+| `reject` | `reason` (binary) | `#{kind => reject, reason => Reason}` |
+| `ask` | `question` (binary) | `#{kind => ask, question => Question}` |
+| `actor_message` | `to` (pid), `payload` (map) | `#{kind => actor_message, to => To, payload => Payload}` |
+
+A missing required field, a bad step, or an unknown `kind` returns
+`{error, [Diagnostic]}` (each diagnostic a map with `code`, `message`, and the
+offending `kind` / `field`). Proposals are **data, not execution** — normalizing a
+`run_steps` proposal does not start a run.
+
+When the mock returns a `proposal` directive, the actor decides what to do with
+the output:
+
+- a map carrying a `kind` tag is run through `normalize/1`; on success the
+  **normalized** proposal becomes the task result and the actor emits
+  `proposal.created`; on a normalize error the task is recorded `failed` carrying
+  the diagnostics (no `proposal.created`), and the actor stays alive;
+- any other output is **opaque** — stored verbatim as the result, no
+  `proposal.*` event (this is the `success`-directive contract).
+
+### The policy gate: `tool_policy` / `soma_policy:check/2`
+
+Every normalized proposal gets a verdict from `soma_policy:check/2`, a pure
+function over the actor's `tool_policy`:
+
+```erlang
+soma_policy:check(Proposal, Policy).
+%% => allow | {reject, Reason}
+```
+
+The policy is a tool-name allowlist:
+
+```erlang
+#{allowed_tools => [echo, file_read]}   %% only these tools allowed
+#{allowed_tools => all}                 %% any tool allowed
+#{}                                     %% absent key => same as `all'
+```
+
+A `run_steps` proposal is allowed only when **every** step's `tool` is in the
+allowlist; otherwise the verdict is `{reject, {tools_not_allowed, Disallowed}}`.
+The toolless kinds (`reply`, `reject`, `ask`, `actor_message`) carry no tool and
+are always allowed. Matching is a plain value comparison with **no
+binary↔atom coercion**: an allowlist of `[echo]` (atom) does not allow a step
+whose `tool` is `<<"echo">>` (binary). Use the same representation in both.
+
+On `allow` the actor emits `proposal.approved` and sets the task status
+`approved`; on `{reject, Reason}` it emits `proposal.rejected` (carrying the
+reason), sets the status terminal `rejected`, and starts nothing.
+
+### The decision loop: what an approved proposal does
+
+`approved` is a transient step only for `run_steps`; for everything else the task
+moves straight to a terminal status:
+
+- **`run_steps`** → the actor emits `proposal.executed` and starts a `soma_run`
+  under `soma_run_sup` that it owns directly (the same machinery the v0.4 `steps`
+  path uses). The task tracks the run's outcome: `completed` (with the run's step
+  outputs as the result), `failed`, `timeout`, or `cancelled`.
+- **`reply` / `reject` / `ask`** → nothing to run, so the task goes straight to
+  `completed` with the normalized proposal as its result.
+- **`actor_message`** → the actor delivers the proposal's `payload` to the actor
+  named by its `to` pid (see "Actor-to-actor messages" below), then the sender
+  task reaches `completed` with the proposal as its result.
+
+The v0.4 direct `steps` path is untouched: it runs straight to a run and emits no
+`proposal.*` event.
+
+### New task statuses
+
+v0.5 adds `approved` and `rejected` to the status set. The full set
+`get_task_status/2` can report: `accepted`, `running`, `approved`, `rejected`,
+`completed`, `failed`, `timeout`, `cancelled` (and `not_found` for an unknown
+task). A terminal `failed`, `rejected`, or budget-failed task also carries a
+`reason` field in the status map.
+
+### Per-task budget
+
+`start_actor` takes an optional `budget` cap, default unlimited:
+
+```erlang
+{ok, A} = soma_actor_sup:start_actor(#{
+    actor_id    => <<"a1">>,
+    model_config => #{},
+    tool_policy => #{allowed_tools => [echo]},
+    budget      => #{max_llm_calls => 2, max_steps => 5},
+    event_store => Store
+}).
+```
+
+The cap is checked at the actor's two spend points:
+
+- `max_llm_calls` — before starting a call. Once the task's started-call count is
+  at the cap (`max_llm_calls => 0` hits this before the first call), the task is
+  failed with reason `{budget_exceeded, max_llm_calls}` and no call is made (no
+  `llm.started`).
+- `max_steps` — before starting a run for an approved `run_steps` proposal. A
+  proposal carrying more steps than the cap fails the task with reason
+  `{budget_exceeded, max_steps}` and no run is started (no `run.started`).
+
+An absent `budget` key (or an absent dimension) means no cap on that dimension.
+Either exhaustion fails the **task** as data — the **actor stays alive** for the
+next envelope — and a parked `ask/3` caller is released with `{error, Reason}`
+rather than blocking to its timeout.
+
+### Actor-to-actor messages
+
+An approved `actor_message` proposal delivers an envelope to another actor whose
+pid is the proposal's `to`. The sender builds a delivery envelope
+`#{type => <<"actor.message">>, payload => Payload, correlation_id => CorrelationId}`
+stamped with the **sender's** `correlation_id`, and hands it to the target through
+the normal `soma_actor:send/2` entry point (fire-and-forget — the sender does not
+wait on the receiver's result). The receiver's new task inherits that
+`correlation_id`, so `soma_event_store:by_correlation/2` for that one id returns
+**both** actors' events. A delivery to a dead receiver is task data, not a sender
+crash: the sender task is marked `failed` and the sender stays alive.
+
+### New events
+
+v0.5 adds two event families, both emitted by the actor (which holds the
+event-store handle) and both carrying the task's `correlation_id`:
+
+| event_type | Extra fields |
+|---|---|
+| `<<"llm.started">>` | `task_id`, `correlation_id`, `llm_call_id`, `llm_call_pid` |
+| `<<"llm.succeeded">>` | `task_id`, `correlation_id`, `llm_call_id` |
+| `<<"llm.failed">>` | `task_id`, `correlation_id`, `llm_call_id` |
+| `<<"llm.timeout">>` | `task_id`, `correlation_id`, `llm_call_id` |
+| `<<"llm.cancelled">>` | `task_id`, `correlation_id`, `llm_call_id` |
+| `<<"proposal.created">>` | `task_id`, `correlation_id`, `llm_call_id`, `kind` |
+| `<<"proposal.approved">>` | `task_id`, `correlation_id`, `llm_call_id`, `kind` |
+| `<<"proposal.rejected">>` | `task_id`, `correlation_id`, `llm_call_id`, `reason` |
+| `<<"proposal.executed">>` | `task_id`, `correlation_id`, `llm_call_id`, `kind` |
+
+For one `llm` envelope carrying a policy-approved `run_steps` proposal, the whole
+chain under one `correlation_id` reads:
+
+```text
+actor.message.received -> actor.task.accepted -> llm.started -> llm.succeeded
+-> proposal.created -> proposal.approved -> proposal.executed -> run.started
+-> step.started -> tool.started -> tool.succeeded -> step.succeeded
+-> run.completed -> actor.result.created -> actor.task.completed
+```
+
+### End-to-end: drive the decision loop in `rebar3 shell`
+
+Start `rebar3 shell`, then:
+
+```erlang
+%% 1. Boot the runtime and the actor app (soma_actor declares soma_runtime, so
+%%    this one call brings up soma_run_sup and the event store too).
+application:ensure_all_started(soma_actor).
+
+%% 2. Locate the running event store so we can query it.
+{soma_event_store, Store, _, _} =
+    lists:keyfind(soma_event_store, 1, supervisor:which_children(soma_sup)).
+
+%% 3. Start an actor whose policy allows the `echo' tool.
+{ok, A} = soma_actor_sup:start_actor(#{actor_id => <<"a1">>,
+                                       model_config => #{},
+                                       tool_policy => #{allowed_tools => [echo]},
+                                       event_store => Store}).
+
+%% 4. Send an `llm' envelope whose mock returns a `run_steps' proposal.
+Proposal = #{kind => run_steps,
+             steps => [#{id => <<"s1">>, tool => echo,
+                         args => #{value => <<"hi">>}}]},
+Env = #{type => <<"chat">>, payload => #{text => <<"do it">>},
+        task_id => <<"t1">>, correlation_id => <<"c1">>,
+        llm => #{directive => proposal, output => Proposal}},
+{ok, <<"t1">>} = soma_actor:send(A, Env).
+
+%% 5. The decision loop runs asynchronously. Poll status, then read the result.
+soma_actor:get_task_status(A, <<"t1">>).
+%% => #{task_id => <<"t1">>, correlation_id => <<"c1">>, status => completed}
+soma_actor:get_task_result(A, <<"t1">>).
+%% => {ok, #{<<"s1">> => #{value => <<"hi">>}}}   (the run's step outputs)
+
+%% 6. The whole chain, actor + llm + proposal + run events, under one id:
+[maps:get(event_type, E) || E <- soma_event_store:by_correlation(Store, <<"c1">>)].
+%% => [<<"actor.message.received">>, <<"actor.task.accepted">>, <<"llm.started">>,
+%%     <<"llm.succeeded">>, <<"proposal.created">>, <<"proposal.approved">>,
+%%     <<"proposal.executed">>, <<"run.started">>, ..., <<"run.completed">>,
+%%     <<"actor.result.created">>, <<"actor.task.completed">>]
+```
+
+**Policy-reject variant.** Propose a step whose tool is not in the allowlist; the
+task ends `rejected` and starts no run:
+
+```erlang
+Reject = #{kind => run_steps,
+           steps => [#{id => <<"s1">>, tool => sleep, args => #{ms => 1}}]},
+REnv = #{type => <<"chat">>, payload => #{text => <<"do it">>},
+         task_id => <<"t2">>, correlation_id => <<"c2">>,
+         llm => #{directive => proposal, output => Reject}},
+{ok, <<"t2">>} = soma_actor:send(A, REnv).
+soma_actor:get_task_status(A, <<"t2">>).
+%% => #{..., status => rejected, reason => {tools_not_allowed, [sleep]}}
+```
+
+**Budget-exceeded variant.** Start an actor with `max_llm_calls => 0`; the `llm`
+envelope's task fails before any call is made, and the actor stays alive:
+
+```erlang
+{ok, B} = soma_actor_sup:start_actor(#{actor_id => <<"a2">>,
+                                       model_config => #{},
+                                       tool_policy => #{allowed_tools => [echo]},
+                                       budget => #{max_llm_calls => 0},
+                                       event_store => Store}).
+BEnv = #{type => <<"chat">>, payload => #{text => <<"do it">>},
+         task_id => <<"t3">>, correlation_id => <<"c3">>,
+         llm => #{directive => proposal,
+                  output => #{kind => reply, text => <<"hi">>}}},
+{ok, <<"t3">>} = soma_actor:send(B, BEnv).
+soma_actor:get_task_status(B, <<"t3">>).
+%% => #{..., status => failed, reason => {budget_exceeded, max_llm_calls}}
+true = is_process_alive(B).
+```
+
+The full v0.5 process-behaviour proofs — each property mapped to the suite and
+case that proves it — are in
+[contracts/v0.5-test-contract.md](contracts/v0.5-test-contract.md).
 
 ## Failure reasons
 

@@ -16,16 +16,21 @@ syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `DSL -> validated step list -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 110, Common Test 134, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 135, Common Test 192, Erlang/OTP 29).
 The runtime executes sequential runs, isolates failures, and runs both in-BEAM
 Erlang tools and external one-shot CLI tools — each proven under test, asserting
 *process survival*, not just return values. An LFE DSL compile-only layer
 (v0.3) is built and proven. The **`soma_actor` agent-entity layer** (v0.4) is
 built on top of the execution core: a long-lived `gen_statem` that takes
-messages, creates tasks, runs them through `soma_run`, and returns results —
-fixed-rule decisions, no real LLM yet. A self-contained macOS arm64 release is
-built and verified; the Linux x86_64 / arm64 artifacts are the one remaining
-packaging task.
+messages, creates tasks, runs them through `soma_run`, and returns results. On top
+of that, the **agent decision layer** (v0.5) is built: a supervised LLM-call
+worker, a validated proposal schema, a policy gate, decision-loop execution,
+per-task budgets, and actor-to-actor messages — so an envelope can carry a model
+call that produces a proposal, which is gated and then executed, all under one
+auditable `correlation_id`. v0.5 runs on a **mock LLM only — there is no real
+provider yet** (the call seam is the one point a real one slots into). A
+self-contained macOS arm64 release is built and verified; the Linux x86_64 / arm64
+artifacts are the one remaining packaging task.
 
 ## The idea
 
@@ -79,7 +84,7 @@ Prerequisites: Erlang/OTP 29 and rebar3.
 
 ```bash
 rebar3 compile
-rebar3 eunit && rebar3 ct      # 110 EUnit + 134 Common Test, all green
+rebar3 eunit && rebar3 ct      # 135 EUnit + 192 Common Test, all green
 ```
 
 Drive a run in the shell:
@@ -174,7 +179,19 @@ in [docs/usage.md](docs/usage.md).
   polling, and the event stream — `soma_event_store:by_correlation/2` returns the
   whole task chain (actor *and* run events) under one `correlation_id`.
   `cancel/2` cancels a task's active run for real (the tool worker is killed).
-  No real LLM, planner, or policy gate yet — those are v0.5.
+- **An agent decision layer** (`soma_actor`, v0.5). An envelope can carry an
+  `llm` directive instead of `steps`: the actor starts a **supervised, monitored,
+  cancellable LLM-call worker** (`soma_llm_call`, owned directly — no
+  `soma_llm_call_sup`, mirroring `soma_run → soma_tool_call`), which returns a
+  **proposal**. `soma_proposal:normalize/1` validates the proposal into tagged
+  data (`reply` / `run_steps` / `reject` / `ask` / `actor_message`); a pure policy
+  gate `soma_policy:check/2` allows or rejects it against a tool-name allowlist;
+  and only an **approved** `run_steps` proposal starts a `soma_run`. A per-task
+  `budget` fails the task (not the actor) on exhaustion, and an approved
+  `actor_message` delivers to another actor under the sender's `correlation_id`.
+  It emits `llm.*` and `proposal.*` events on the same chain. This whole layer is
+  driven by a **mock LLM** — the call seam `soma_llm_call:perform_call/1` is the
+  one point a real provider slots into; there is no real provider yet.
 - **A mandatory event log** (in-memory) records the whole run, each event
   carrying 8 fields (`event_id, timestamp, session_id, run_id, step_id,
   tool_call_id, event_type, payload`): `session.started -> run.accepted ->
@@ -220,12 +237,14 @@ those hosts and are the remaining packaging work. See
 
 In scope: the runtime, sequential steps, supervised in-BEAM and one-shot CLI
 tools, real timeout/cancellation, normalized failures, the event log, a
-compile-only LFE DSL layer (`soma_lfe`), the `soma_actor` agent-entity skeleton
-(fixed-rule decisions, no real LLM), and a self-contained release.
+compile-only LFE DSL layer (`soma_lfe`), the `soma_actor` agent-entity skeleton,
+the agent decision layer (`soma_llm_call` + proposal schema + policy gate +
+decision-loop execution + budgets + actor-to-actor, **mock LLM only**), and a
+self-contained release.
 
-Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**):
-a real LLM planner and policy gate (v0.5), MCP, DAG parallelism, distributed
-Erlang, and persistent run resume.
+Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**): a
+real LLM provider behind the mock call seam, an effect-aware policy gate, MCP, DAG
+parallelism, distributed Erlang, and persistent run resume.
 
 ## Docs
 
@@ -260,7 +279,14 @@ Erlang, and persistent run resume.
   — process-behaviour proofs for the `soma_actor` agent-entity layer: actor
   start, task creation, run integration, result model, correlation lookup,
   survival under failure / crash, and cancellation. The twelve in-scope proofs
-  (P1–P11, P15) are green; P12–P14 are deferred to v0.5.
+  (P1–P11, P15) are green; P12 and P13 are delivered in v0.5, and P14 remains
+  deferred.
+- **[docs/contracts/v0.5-test-contract.md](docs/contracts/v0.5-test-contract.md)**
+  — process-behaviour proofs for the agent decision layer: the LLM-call worker
+  (distinct pid, timeout / cancel / crash become task data, the actor stays
+  responsive), proposal normalization, the policy gate, decision-loop execution,
+  budget exhaustion, and actor-to-actor `correlation_id` propagation — each
+  mapped to its suite and case. Mock-LLM only.
 
 **Chinese docs**
 
@@ -269,8 +295,8 @@ Erlang, and persistent run resume.
 - **[docs/zh/soma-actor.zh.md](docs/zh/soma-actor.zh.md)** — soma_actor complete
   design: actor entity, message-driven trigger, actor loop, decision frame,
   policy gate, LLM call, result model, event contract, memory model, and
-  minimum scope. The v0.4 build implements the minimal slice (fixed-rule
-  decisions); the LLM planner and policy gate are v0.5.
+  minimum scope. The v0.4 build implemented the minimal fixed-rule slice; v0.5
+  added the LLM call, proposal schema, and policy gate (mock LLM only).
 - **[docs/zh/erlang-otp-primer.zh.md](docs/zh/erlang-otp-primer.zh.md)** —
   Erlang/OTP primer (BEAM, process, mailbox, gen_server, gen_statem, supervisor,
   port, release) for readers unfamiliar with Erlang.

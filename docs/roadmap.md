@@ -1,13 +1,16 @@
 # Roadmap
 
 v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), v0.3 (LFE DSL
-compile-only layer), and v0.4 (the `soma_actor` agent-entity skeleton) are built
-and merged. The sequence below is what comes next.
+compile-only layer), v0.4 (the `soma_actor` agent-entity skeleton), and v0.5 (the
+agent decision layer — LLM-call worker, proposal schema, policy gate,
+decision-loop execution, budget, and actor-to-actor messages) are built and
+merged. v0.5 runs on a **mock LLM only**; a real provider is still future work.
+The sequence below is what comes next.
 
 The important sequencing rule is unchanged: do not add a layer until the layer
-below it has test coverage for its failure semantics. The next work is therefore
-not "make the agent smarter" first; it is to close the actor contract, then add
-LLM planning as another supervised child operation.
+below it has test coverage for its failure semantics. With the actor contract
+closed and LLM planning landed as a supervised child operation, the next work is
+trace tooling and a persistent event store.
 
 ## Sequence
 
@@ -17,7 +20,7 @@ v0.2    tool manifests and CLI/port adapter            [done]
 v0.3    LFE DSL -> steps                               [done]
 v0.4    soma_actor -- agent entity skeleton            [done]
 v0.4.1  actor hardening + release/docs alignment       [done]
-v0.5    LLM worker + proposal + policy + budget
+v0.5    LLM worker + proposal + policy + budget        [done]
 v0.6    trace tooling + persistent event store
 v0.7    persistent resume
 v0.8    DAG / parallel execution, only if still needed
@@ -87,36 +90,58 @@ Done means the actor still proves the process behavior that matters: bad input,
 child failure, timeout, and cancellation are data for the task; the actor stays
 alive and accepts the next message.
 
-## v0.5 — LLM worker + proposal + policy + budget
+## v0.5 — LLM worker + proposal + policy + budget [done]
 
-Add the first real planning layer without changing `soma_run` into a dynamic
-workflow engine. LLMs and rules produce proposals; `soma_actor` validates and
-executes them.
+The first planning layer, added without changing `soma_run` into a dynamic
+workflow engine. A (mock) LLM produces proposals; `soma_actor` validates them,
+gates them, and executes the approved ones. This is **mock-LLM only** — the call
+seam (`soma_llm_call:perform_call/1`) is the single point a real provider grows
+into later; there is no provider yet.
 
-Recommended slices:
+Slices (all done):
 
-- `v0.5.1` — `soma_llm_call`: a disposable worker spawned and monitored by
-  `soma_actor`, mirroring `soma_run -> soma_tool_call`; no separate
-  `soma_llm_call_sup`.
-- `v0.5.2` — structured proposal schema: direct reply, run steps, actor message,
-  or reject/ask forms; proposals are data, not execution.
-- `v0.5.3` — policy gate: validate tool effects, allowed tools, step shape,
-  budgets, and actor permissions before execution.
-- `v0.5.4` — actor decision loop: no-steps/user-intent envelopes can call rules
-  or `soma_llm_call`, then execute an allowed proposal.
-- `v0.5.5` — budget and loop limits: exhaustion fails the task, not the actor.
-- `v0.5.6` — actor-to-actor messages: preserve `correlation_id` across actors
-  and keep the event chain queryable.
+- `v0.5.1` — `soma_llm_call` [done]: a disposable, monitored, cancellable worker
+  the actor owns directly (in `apps/soma_runtime/src/`), mirroring
+  `soma_run -> soma_tool_call`; **no** separate `soma_llm_call_sup`. The mock is
+  directive-driven (`proposal` / `success` / `slow` / `crash` / `hang`).
+- `v0.5.2` — proposal schema [done]: `soma_proposal:normalize/1` (a pure
+  validate/normalize boundary in `apps/soma_actor/src/`) tags proposals by `kind`
+  — `reply`, `run_steps`, `reject`, `ask`, and (added in v0.5.6) `actor_message`.
+  Proposals are data, not execution.
+- `v0.5.3` — policy gate [done]: `soma_policy:check/2`, pure, returns
+  `allow | {reject, Reason}` against a tool-name allowlist
+  (`#{allowed_tools => [atom()] | all}`). Name-based only (no effect-aware gating
+  yet).
+- `v0.5.4` — actor decision loop [done] (node A): an approved `run_steps` proposal
+  now **executes** — the actor starts a `soma_run` and emits `proposal.executed`;
+  toolless approved proposals complete with the proposal as the result. New
+  statuses `approved` and `rejected`.
+- `v0.5.5` — budget and loop limits [done] (node C): a per-task `budget`
+  (`#{max_llm_calls => N, max_steps => M}`) checked at the actor's spend points;
+  exhaustion fails the task (`{budget_exceeded, _}`), not the actor.
+- `v0.5.6` — actor-to-actor messages [done]: an approved `actor_message` proposal
+  delivers an envelope to a target actor carrying the sender's `correlation_id`,
+  so `by_correlation/2` returns both actors' events. **Delivers P12.**
 
-Required process proofs:
+Required process proofs — all green:
 
 - an LLM call runs in a distinct worker process;
 - LLM timeout/cancel stops the active worker;
 - LLM failure reaches `soma_actor` as a message and becomes task data;
 - `soma_actor` stays responsive while an LLM call is active;
-- policy rejection fails or asks without crashing the actor;
+- policy rejection fails without crashing the actor;
 - budget exhaustion fails the task, not the actor;
 - `correlation_id` propagates across actor, LLM, run, and actor-to-actor events.
+
+Outcome — the agent decision layer is built and merged, mock-LLM only. The full
+proof→test map is in
+[contracts/v0.5-test-contract.md](contracts/v0.5-test-contract.md); the v0.4
+contract's P12 and P13 are now delivered. The **one remaining deferred proof is
+P14** (the policy proactively asks a human before executing) — there is no
+human-in-the-loop ask path yet.
+
+Real-provider planning (a real `node B` behind the `perform_call/1` seam) and an
+effect-aware policy gate remain future work beyond this layer.
 
 ## v0.6 — trace tooling + persistent event store
 
