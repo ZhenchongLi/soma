@@ -11,9 +11,11 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([reply_proposal_stored_as_task_result/1]).
+-export([reply_proposal_emits_proposal_created_with_correlation_id/1]).
 
 all() ->
-    [reply_proposal_stored_as_task_result].
+    [reply_proposal_stored_as_task_result,
+     reply_proposal_emits_proposal_created_with_correlation_id].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -55,6 +57,38 @@ reply_proposal_stored_as_task_result(_Config) ->
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
     {ok, Proposal} = soma_proposal:normalize(RawProposal),
     {ok, Proposal} = soma_actor:get_task_result(ActorPid, TaskId),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 10: after a mock LLM call returns a valid `reply' proposal, the actor
+%% emits a `proposal.created' event carrying that task's `correlation_id'. Enters
+%% through the real soma_actor:send/2 with a `proposal' llm directive, waits for
+%% the task to complete, then reads the correlated events back through
+%% soma_event_store:by_correlation/2 and asserts exactly that trail contains a
+%% `proposal.created' event tagged with the task's correlation_id.
+reply_proposal_emits_proposal_created_with_correlation_id(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-proposal-created">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => reply, text => <<"a normalized reply">>},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-proposal-created">>,
+    CorrelationId = <<"corr-proposal-created">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Created = [E || E <- Events,
+                    maps:get(event_type, E, undefined) =:= <<"proposal.created">>],
+    [Event] = Created,
+    CorrelationId = maps:get(correlation_id, Event),
     true = is_process_alive(ActorPid),
     ok.
 
