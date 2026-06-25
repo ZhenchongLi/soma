@@ -175,7 +175,7 @@ approved_run_steps_runs_in_distinct_pid(_Config) ->
     %% The run executed under soma_run_sup, so its pid is one of that
     %% supervisor's children -- a distinct process, not the actor.
     true = is_pid(RunPid),
-    true = (RunPid =:= ActorPid),
+    true = (RunPid =/= ActorPid),
     true = is_process_alive(ActorPid),
     ok.
 
