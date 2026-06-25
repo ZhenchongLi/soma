@@ -17,13 +17,15 @@
 -export([by_correlation_returns_full_approved_run_chain/1]).
 -export([approved_run_steps_runs_in_distinct_pid/1]).
 -export([rejected_proposal_starts_no_run_status_rejected/1]).
+-export([approved_reply_proposal_completes_no_run/1]).
 
 all() ->
     [approved_run_steps_completes_with_step_outputs,
      approved_run_steps_emits_proposal_executed_with_correlation_id,
      by_correlation_returns_full_approved_run_chain,
      approved_run_steps_runs_in_distinct_pid,
-     rejected_proposal_starts_no_run_status_rejected].
+     rejected_proposal_starts_no_run_status_rejected,
+     approved_reply_proposal_completes_no_run].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -212,6 +214,39 @@ rejected_proposal_starts_no_run_status_rejected(_Config) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
     true = lists:member(<<"proposal.rejected">>, Types),
+    false = lists:member(<<"run.started">>, Types),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 6: an approved toolless `reply' proposal has nothing to run, so it
+%% reaches task status `completed' with the normalized proposal as the task
+%% result -- not resting at `approved'. Drives a `reply' proposal through the
+%% real soma_actor:send/2 (the policy gate always allows a `reply' kind), waits
+%% for `completed', asserts get_task_result/2 returns the normalized proposal
+%% `#{kind => reply, text => Text}', and that the trail through by_correlation/2
+%% carries no `run.started' event (no run was ever started).
+approved_reply_proposal_completes_no_run(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-exec-reply">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => reply, text => <<"here is your answer">>},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-exec-reply">>,
+    CorrelationId = <<"corr-exec-reply">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"answer me">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    {ok, Result} = soma_actor:get_task_result(ActorPid, TaskId),
+    #{kind := reply, text := <<"here is your answer">>} = Result,
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
     false = lists:member(<<"run.started">>, Types),
     true = is_process_alive(ActorPid),
     ok.
