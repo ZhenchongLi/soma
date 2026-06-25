@@ -25,17 +25,17 @@ render(Store, CorrelationId) ->
 format_event(Event) ->
     EventType = maps:get(event_type, Event, unknown),
     Base = to_str(EventType),
-    Base1 = case maps:find(task_id, Event) of
-        {ok, TaskId} ->
-            Base ++ " task_id=" ++ to_str(TaskId);
-        error ->
-            Base
+    Base1 = case maps:get(task_id, Event, undefined) of
+        undefined ->
+            Base;
+        TaskId ->
+            Base ++ " task_id=" ++ to_str(TaskId)
     end,
-    Base2 = case maps:find(step_id, Event) of
-        {ok, StepId} ->
-            Base1 ++ " step_id=" ++ to_str(StepId);
-        error ->
-            Base1
+    Base2 = case maps:get(step_id, Event, undefined) of
+        undefined ->
+            Base1;
+        StepId ->
+            Base1 ++ " step_id=" ++ to_str(StepId)
     end,
     %% Reason: check top-level key first, then fall back to payload map
     Reason = case maps:get(reason, Event, undefined) of
