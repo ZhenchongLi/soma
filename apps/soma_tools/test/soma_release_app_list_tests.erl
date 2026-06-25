@@ -5,9 +5,9 @@
 -define(DOC_PATH, "docs/release.md").
 -define(REBAR_PATH, "rebar.config").
 
-%% Issue #73 criterion 8: the relx release app list in `rebar.config` and the
-%% app list described in `docs/release.md` name the same set of apps, and
-%% `docs/release.md` states that `soma_actor` is not yet bundled.
+%% The relx release app list in `rebar.config` and the app list described in
+%% `docs/release.md` name the same set of apps, and `soma_actor` is bundled in
+%% both (issue #75).
 
 read_doc() ->
     case file:read_file(?DOC_PATH) of
@@ -59,17 +59,6 @@ test_actor_bundled_in_rebar_and_doc() ->
 
 actor_bundled_in_rebar_and_doc_test() ->
     test_actor_bundled_in_rebar_and_doc().
-
-%% Criterion 8: docs/release.md states plainly that soma_actor is not yet
-%% bundled in the release.
-test_doc_states_actor_not_bundled() ->
-    Doc = read_doc(),
-    Lower = string:lowercase(Doc),
-    ?assert(contains(Lower, <<"soma_actor">>)),
-    ?assert(contains(Lower, <<"not yet bundled">>)).
-
-doc_states_actor_not_bundled_test() ->
-    test_doc_states_actor_not_bundled().
 
 %% Issue #75 criterion 3: docs/release.md no longer contains the phrase
 %% "not yet bundled" anywhere in the file.
