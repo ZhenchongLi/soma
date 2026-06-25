@@ -15,11 +15,13 @@
 -export([approved_run_steps_completes_with_step_outputs/1]).
 -export([approved_run_steps_emits_proposal_executed_with_correlation_id/1]).
 -export([by_correlation_returns_full_approved_run_chain/1]).
+-export([approved_run_steps_runs_in_distinct_pid/1]).
 
 all() ->
     [approved_run_steps_completes_with_step_outputs,
      approved_run_steps_emits_proposal_executed_with_correlation_id,
-     by_correlation_returns_full_approved_run_chain].
+     by_correlation_returns_full_approved_run_chain,
+     approved_run_steps_runs_in_distinct_pid].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -142,6 +144,56 @@ by_correlation_returns_full_approved_run_chain(_Config) ->
     true = lists:member(<<"run.completed">>, Types),
     true = is_process_alive(ActorPid),
     ok.
+
+%% Criterion 4: the run started from an approved `run_steps' proposal executes in
+%% a `soma_run' process whose pid is not the actor's pid. Drives the same
+%% approved-proposal chain through the real soma_actor:send/2, then catches the
+%% live run pid by polling `soma_run_sup' children while the run is in flight,
+%% asserts that pid is a child of `soma_run_sup' (i.e. it ran under the run
+%% supervisor, not in the actor), and that it differs from the actor pid.
+approved_run_steps_runs_in_distinct_pid(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-exec-pid">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => echo,
+                               args => #{value => <<"a">>}}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-exec-pid">>,
+    CorrelationId = <<"corr-exec-pid">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    RunPid = catch_run_pid(100),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    %% The run executed under soma_run_sup, so its pid is one of that
+    %% supervisor's children -- a distinct process, not the actor.
+    true = is_pid(RunPid),
+    true = (RunPid =:= ActorPid),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Polls `soma_run_sup' children until a run pid appears, returning it. The
+%% approved run_steps proposal starts exactly one short-lived run under that
+%% supervisor; this catches its pid while it is in flight.
+catch_run_pid(0) ->
+    error(no_run_pid);
+catch_run_pid(N) ->
+    case [Pid || {_Id, Pid, _Type, _Mods}
+                     <- supervisor:which_children(soma_run_sup),
+                 is_pid(Pid)] of
+        [Pid | _] ->
+            Pid;
+        [] ->
+            timer:sleep(2),
+            catch_run_pid(N - 1)
+    end.
 
 %% True when binary T starts with binary Prefix.
 has_prefix(T, Prefix) when is_binary(T) ->
