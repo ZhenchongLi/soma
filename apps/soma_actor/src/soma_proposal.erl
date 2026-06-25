@@ -15,7 +15,13 @@ normalize(#{kind := reply, text := Text}) when is_binary(Text) ->
     {ok, #{kind => reply, text => Text}};
 normalize(#{kind := run_steps, steps := Steps}) when is_list(Steps) ->
     case lists:all(fun valid_step/1, Steps) of
-        true -> {ok, #{kind => run_steps, steps => Steps}}
+        true ->
+            {ok, #{kind => run_steps, steps => Steps}};
+        false ->
+            {error, [#{code => invalid_step,
+                       message => <<"run_steps proposal has a step missing id or tool">>,
+                       kind => run_steps,
+                       field => steps}]}
     end;
 normalize(#{kind := reject, reason := Reason}) when is_binary(Reason) ->
     {ok, #{kind => reject, reason => Reason}};
