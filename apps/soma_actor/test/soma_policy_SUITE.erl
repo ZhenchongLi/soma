@@ -323,10 +323,6 @@ by_correlation_returns_verdict_created_actor_and_llm_events(_Config) ->
                     maps:get(event_type, E, undefined) =:= <<"proposal.created">>],
     ActorEvents = HasPrefix(<<"actor.">>),
     LlmEvents = HasPrefix(<<"llm.">>),
-    %% Staged red: the verdict for an allowed proposal is `proposal.approved',
-    %% so the `proposal.rejected' partition is empty -- a non-empty match must fail.
-    true = length([E || E <- Events,
-                        maps:get(event_type, E, undefined) =:= <<"proposal.rejected">>]) > 0,
     true = length(Verdict) > 0,
     true = length(Created) > 0,
     true = length(ActorEvents) > 0,
