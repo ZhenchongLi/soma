@@ -19,6 +19,7 @@
 -export([rejected_proposal_starts_no_run_status_rejected/1]).
 -export([approved_reply_proposal_completes_no_run/1]).
 -export([approved_run_steps_failing_tool_marks_task_failed_actor_alive/1]).
+-export([actor_survives_failed_run_takes_next_llm_envelope/1]).
 
 all() ->
     [approved_run_steps_completes_with_step_outputs,
@@ -27,7 +28,8 @@ all() ->
      approved_run_steps_runs_in_distinct_pid,
      rejected_proposal_starts_no_run_status_rejected,
      approved_reply_proposal_completes_no_run,
-     approved_run_steps_failing_tool_marks_task_failed_actor_alive].
+     approved_run_steps_failing_tool_marks_task_failed_actor_alive,
+     actor_survives_failed_run_takes_next_llm_envelope].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -282,6 +284,50 @@ approved_run_steps_failing_tool_marks_task_failed_actor_alive(_Config) ->
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, failed, 100),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 8: after a run started from an approved `run_steps' proposal fails
+%% (a step's tool errors), the same actor accepts a second `llm' envelope and
+%% drives it to `completed'. Sends a first `llm' envelope whose approved proposal
+%% runs the `fail' tool (run fails, first task reaches `failed'), then sends a
+%% second `llm' envelope on the same actor pid whose approved proposal runs the
+%% `echo' tool, and asserts that second task reaches `completed' with its step
+%% outputs -- proving the failed run left the actor able to take the next work.
+actor_survives_failed_run_takes_next_llm_envelope(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-exec-next">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [fail, echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    %% First envelope: an approved run_steps proposal whose single step runs the
+    %% `fail' tool in error mode, so the run fails and the task reaches `failed'.
+    FailProposal = #{kind => run_steps,
+                     steps => [#{id => <<"s1">>, tool => fail,
+                                args => #{mode => error, reason => boom}}]},
+    FailEnvelope = #{type => <<"chat">>,
+                     payload => #{text => <<"do it">>},
+                     task_id => <<"task-exec-next-1">>,
+                     correlation_id => <<"corr-exec-next-1">>,
+                     llm => #{directive => proposal, output => FailProposal}},
+    {ok, <<"task-exec-next-1">>} = soma_actor:send(ActorPid, FailEnvelope),
+    ok = wait_for_status(ActorPid, <<"task-exec-next-1">>, failed, 100),
+    true = is_process_alive(ActorPid),
+    %% Second envelope on the same actor: an approved run_steps proposal whose
+    %% single echo step drives the new task to `completed'.
+    OkProposal = #{kind => run_steps,
+                   steps => [#{id => <<"s1">>, tool => echo,
+                              args => #{value => <<"b">>}}]},
+    OkEnvelope = #{type => <<"chat">>,
+                   payload => #{text => <<"do it again">>},
+                   task_id => <<"task-exec-next-2">>,
+                   correlation_id => <<"corr-exec-next-2">>,
+                   llm => #{directive => proposal, output => OkProposal}},
+    {ok, <<"task-exec-next-2">>} = soma_actor:send(ActorPid, OkEnvelope),
+    ok = wait_for_status(ActorPid, <<"task-exec-next-2">>, failed, 100),
+    {ok, Outputs} = soma_actor:get_task_result(ActorPid, <<"task-exec-next-2">>),
+    #{<<"s1">> := #{value := <<"b">>}} = Outputs,
     true = is_process_alive(ActorPid),
     ok.
 
