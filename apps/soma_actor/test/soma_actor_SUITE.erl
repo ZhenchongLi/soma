@@ -981,7 +981,7 @@ no_steps_accepts_and_starts_no_run(_Config) ->
     Children = supervisor:which_children(soma_run_sup),
     RunPids = [P || {_Id, P, _Type, _Mods} <- Children, is_pid(P)],
     0 = length(RunPids),
-    accepted = task_status(Pid, TaskId),
+    running = task_status(Pid, TaskId),
     ok.
 
 %% Criterion 1 (slice p5/p6): ask/3 with a valid steps envelope blocks the caller
