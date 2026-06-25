@@ -16,7 +16,7 @@
 -export([idle/3]).
 
 -record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
-               runs = #{}, waiters = #{}, monitors = #{}}).
+               runs = #{}, waiters = #{}, monitors = #{}, llm_calls = #{}}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -91,7 +91,8 @@ idle({call, From}, {send, Envelope}, Data) ->
             emit(Data1, <<"actor.task.accepted">>,
                  #{task_id => TaskId, correlation_id => CorrelationId}),
             Data2 = maybe_start_run(Envelope, TaskId, CorrelationId, Data1),
-            {keep_state, Data2, [{reply, From, {ok, TaskId}}]};
+            Data3 = maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data2),
+            {keep_state, Data3, [{reply, From, {ok, TaskId}}]};
         {error, Reason} ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
     end;
@@ -320,6 +321,36 @@ maybe_start_run(Envelope, TaskId, CorrelationId, Data) ->
             Data
     end.
 
+%% When the envelope carries an `llm' directive map, start a soma_llm_call worker
+%% the actor owns directly (owner => self()), mirroring soma_run -> soma_tool_call:
+%% the worker runs in its own process so its pid is distinct from the actor pid.
+%% The actor mints an `llm_call_id', monitors the worker, tracks llm_call_id =>
+%% task_id, records the task running, and emits `llm.started' carrying the worker
+%% pid. With no `llm' field this is a no-op.
+maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
+    case maps:get(llm, Envelope, undefined) of
+        Llm when is_map(Llm) ->
+            LlmCallId = mint_llm_call_id(),
+            {ok, WorkerPid} = soma_llm_call:start(#{owner => self(),
+                                                    llm_call_id => LlmCallId,
+                                                    llm => Llm}),
+            MRef = erlang:monitor(process, WorkerPid),
+            LlmCalls = maps:put(LlmCallId, TaskId, Data#data.llm_calls),
+            Monitors = maps:put(MRef, TaskId, Data#data.monitors),
+            Task = maps:get(TaskId, Data#data.tasks),
+            Task1 = Task#{status => running, llm_call_id => LlmCallId,
+                          llm_call_pid => WorkerPid, llm_call_mref => MRef},
+            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+            Data1 = Data#data{llm_calls = LlmCalls, tasks = Tasks,
+                              monitors = Monitors},
+            emit(Data1, <<"llm.started">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId,
+                   llm_call_id => LlmCallId, llm_call_pid => WorkerPid}),
+            Data1;
+        _ ->
+            Data
+    end.
+
 %% On a normal terminal message (run_completed | run_failed | run_timeout |
 %% run_cancelled) the run pid is reporting its own outcome and may still be
 %% alive momentarily. Demonitor-and-flush its ref so a later clean (or even
@@ -356,6 +387,10 @@ mint_run_id() ->
 mint_task_id() ->
     list_to_binary(
       "task-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
+
+mint_llm_call_id() ->
+    list_to_binary(
+      "llm-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
 
 emit(#data{event_store = undefined}, _Type, _Extra) ->
     ok;
