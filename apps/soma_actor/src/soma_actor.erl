@@ -325,6 +325,19 @@ idle(info, {'DOWN', MRef, process, _RunPid, Reason}, Data)
             Task1 = Task#{status => failed, reason => Reason},
             Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
             Data1 = Data0#data{tasks = Tasks},
+            %% When the dead process was an LLM worker the task carries an
+            %% `llm_call_id' (`clear_llm_call/2' leaves it on the task map). Emit
+            %% `llm.failed' first so the trail reads worker-level cause before the
+            %% task-level outcome, mirroring the success path. A `soma_run' crash
+            %% has no `llm_call_id', so nothing extra is emitted there.
+            case maps:get(llm_call_id, Task1, undefined) of
+                undefined ->
+                    ok;
+                LlmCallId ->
+                    emit(Data1, <<"llm.failed">>,
+                         #{task_id => TaskId, correlation_id => CorrelationId,
+                           llm_call_id => LlmCallId})
+            end,
             emit(Data1, <<"actor.task.failed">>,
                  #{task_id => TaskId, correlation_id => CorrelationId,
                    reason => Reason}),
