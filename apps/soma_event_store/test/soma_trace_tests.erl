@@ -56,3 +56,15 @@ test_timeline_line_includes_task_id() ->
 
 timeline_line_includes_task_id_test() ->
     test_timeline_line_includes_task_id().
+
+test_timeline_line_includes_step_id() ->
+    Events = [#{event_type => 'tool.invoked', timestamp => 1, step_id => <<"step-xyz-456">>}],
+    Output = soma_trace:timeline(Events),
+    Lines = string:split(iolist_to_binary(Output), <<"\n">>, all),
+    NonEmptyLines = [binary_to_list(L) || L <- Lines, L =/= <<>>],
+    Line = hd(NonEmptyLines),
+    %% The line must contain the step_id value
+    ?assertEqual(true, string:str(Line, "step-xyz-456") > 0).
+
+timeline_line_includes_step_id_test() ->
+    test_timeline_line_includes_step_id().
