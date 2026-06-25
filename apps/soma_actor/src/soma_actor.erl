@@ -515,7 +515,7 @@ clear_llm_timer(TaskId, Data) ->
         undefined ->
             Data;
         TimerRef ->
-            erlang:cancel_timer(TimerRef, [{async, false}, {info, false}]),
+            _ = erlang:cancel_timer(TimerRef, [{async, false}, {info, false}]),
             Data
     end.
 
