@@ -16,12 +16,14 @@
 -export([approved_run_steps_emits_proposal_executed_with_correlation_id/1]).
 -export([by_correlation_returns_full_approved_run_chain/1]).
 -export([approved_run_steps_runs_in_distinct_pid/1]).
+-export([rejected_proposal_starts_no_run_status_rejected/1]).
 
 all() ->
     [approved_run_steps_completes_with_step_outputs,
      approved_run_steps_emits_proposal_executed_with_correlation_id,
      by_correlation_returns_full_approved_run_chain,
-     approved_run_steps_runs_in_distinct_pid].
+     approved_run_steps_runs_in_distinct_pid,
+     rejected_proposal_starts_no_run_status_rejected].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -176,6 +178,41 @@ approved_run_steps_runs_in_distinct_pid(_Config) ->
     %% supervisor's children -- a distinct process, not the actor.
     true = is_pid(RunPid),
     true = (RunPid =/= ActorPid),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 5: a policy-rejected `run_steps' proposal (a step tool NOT in the
+%% actor's tool_policy allowlist) starts no run. Drives the same proposal chain
+%% through the real soma_actor:send/2 with a step tool the policy rejects, waits
+%% for the task to reach the terminal `rejected' status, then reads the trail
+%% through by_correlation/2 and asserts it contains a `proposal.rejected' event
+%% and no `run.started' event.
+rejected_proposal_starts_no_run_status_rejected(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-exec-rejected">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    %% The step tool `sleep' is not in the allowlist (`echo' only), so the
+    %% policy rejects the proposal and no run is started.
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => sleep,
+                               args => #{ms => 1}}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-exec-rejected">>,
+    CorrelationId = <<"corr-exec-rejected">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
+    true = lists:member(<<"proposal.rejected">>, Types),
+    true = lists:member(<<"run.started">>, Types),
     true = is_process_alive(ActorPid),
     ok.
 
