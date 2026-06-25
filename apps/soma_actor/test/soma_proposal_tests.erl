@@ -39,3 +39,14 @@ test_ask_normalizes_ok() ->
 
 ask_normalizes_ok_test() ->
     test_ask_normalizes_ok().
+
+%% A proposal whose kind is unknown normalizes to {error, [Diagnostic]} with a
+%% non-empty diagnostic list.
+test_unknown_kind_errors() ->
+    Raw = #{kind => some_unknown_kind, text => <<"hi">>},
+    {error, Diagnostics} = soma_proposal:normalize(Raw),
+    ?assert(is_list(Diagnostics)),
+    ?assert(length(Diagnostics) >= 1).
+
+unknown_kind_errors_test() ->
+    test_unknown_kind_errors().
