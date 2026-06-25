@@ -106,7 +106,7 @@ delivered_task_inherits_a1_correlation_id(_Config) ->
     {ok, TaskId} = soma_actor:send(A1, Envelope),
     ok = wait_for_a2_accepted(Store, CorrelationId, <<"actor-a2">>, 100),
     [A2Accepted | _] = a2_accepted_events(Store, CorrelationId, <<"actor-a2">>),
-    <<"wrong-corr">> = maps:get(correlation_id, A2Accepted),
+    CorrelationId = maps:get(correlation_id, A2Accepted),
     true = is_process_alive(A2),
     true = is_process_alive(A1),
     ok.
