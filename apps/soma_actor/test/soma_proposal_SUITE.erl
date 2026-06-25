@@ -123,8 +123,7 @@ run_steps_proposal_starts_no_run(_Config) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     RunStarted = [E || E <- Events,
                        maps:get(event_type, E, undefined) =:= <<"run.started">>],
-    %% staged red: deliberately wrong expected value to observe the assertion fire
-    [_] = RunStarted,
+    [] = RunStarted,
     true = is_process_alive(ActorPid),
     ok.
 
