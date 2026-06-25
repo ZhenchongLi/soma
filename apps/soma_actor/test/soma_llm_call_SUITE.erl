@@ -12,11 +12,13 @@
 -export([llm_worker_runs_in_distinct_pid/1]).
 -export([get_task_result_holds_llm_output/1]).
 -export([slow_call_times_out_worker_dead_actor_alive/1]).
+-export([cancel_in_flight_call_worker_dead_actor_alive/1]).
 
 all() ->
     [llm_worker_runs_in_distinct_pid,
      get_task_result_holds_llm_output,
-     slow_call_times_out_worker_dead_actor_alive].
+     slow_call_times_out_worker_dead_actor_alive,
+     cancel_in_flight_call_worker_dead_actor_alive].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -109,6 +111,37 @@ slow_call_times_out_worker_dead_actor_alive(_Config) ->
     WorkerPid = maps:get(llm_call_pid, Started),
     true = is_pid(WorkerPid),
     ok = wait_for_status(ActorPid, TaskId, timeout, 100),
+    false = is_process_alive(WorkerPid),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 5: cancelling an in-flight LLM call leaves the worker process dead,
+%% records the task as `cancelled', and keeps the actor pid alive. Enters through
+%% the real soma_actor:send/2 with a `hang' directive (the worker blocks until
+%% killed), reads the worker pid from the llm.started event, then calls
+%% soma_actor:cancel/2. The actor kills the worker (exit(WorkerPid, kill)) and
+%% records the task `cancelled' -- the actor does the kill itself because the bare
+%% worker has no state machine to drive its own teardown. Asserts: the worker pid
+%% is dead, the task status reads `cancelled', and the actor pid is still alive.
+cancel_in_flight_call_worker_dead_actor_alive(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-cancel">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => hang},
+    TaskId = <<"task-llm-cancel">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    Started = wait_for_actor_event(Store, <<"llm.started">>, 100),
+    WorkerPid = maps:get(llm_call_pid, Started),
+    true = is_pid(WorkerPid),
+    ok = soma_actor:cancel(ActorPid, TaskId),
+    ok = wait_for_status(ActorPid, TaskId, cancelled, 100),
     false = is_process_alive(WorkerPid),
     true = is_process_alive(ActorPid),
     ok.
