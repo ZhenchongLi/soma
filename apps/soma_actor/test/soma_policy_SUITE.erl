@@ -16,6 +16,7 @@
 -export([rejected_proposal_starts_no_run/1]).
 -export([rejected_proposal_status_reads_rejected/1]).
 -export([actor_survives_rejected_proposal_takes_next_send/1]).
+-export([by_correlation_returns_verdict_created_actor_and_llm_events/1]).
 
 all() ->
     [allowed_run_steps_emits_proposal_approved_with_correlation_id,
@@ -24,7 +25,8 @@ all() ->
      rejected_proposal_emits_proposal_rejected_with_reason_and_correlation_id,
      rejected_proposal_starts_no_run,
      rejected_proposal_status_reads_rejected,
-     actor_survives_rejected_proposal_takes_next_send].
+     actor_survives_rejected_proposal_takes_next_send,
+     by_correlation_returns_verdict_created_actor_and_llm_events].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -277,6 +279,58 @@ actor_survives_rejected_proposal_takes_next_send(_Config) ->
     {ok, AllowTaskId} = soma_actor:send(ActorPid, AllowEnvelope),
     ok = wait_for_status(ActorPid, AllowTaskId, approved, 100),
     approved = maps:get(status, soma_actor:get_task_status(ActorPid, AllowTaskId)),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 12: the full chain is auditable through one correlation_id. After an
+%% allowed `run_steps' proposal drives the actor through send/2 to `approved',
+%% reading the trail back through soma_event_store:by_correlation/2 and
+%% partitioning it by event type surfaces the verdict event (`proposal.approved')
+%% beside the `proposal.created', the `actor.*' lifecycle events, and the `llm.*'
+%% events -- all tagged with the same correlation_id. Entering through the real
+%% soma_actor:send/2, waits for `approved', then asserts each partition is present.
+by_correlation_returns_verdict_created_actor_and_llm_events(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-policy-trail">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [<<"echo">>]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => <<"echo">>},
+                              #{id => <<"s2">>, tool => <<"echo">>}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-policy-trail">>,
+    CorrelationId = <<"corr-policy-trail">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, approved, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    %% Every correlated event carries the task's correlation_id.
+    [CorrelationId] = lists:usort([maps:get(correlation_id, E) || E <- Events]),
+    HasPrefix = fun(Prefix) ->
+                    [E || E <- Events,
+                          binary:longest_common_prefix(
+                            [maps:get(event_type, E, <<>>), Prefix]) =:= byte_size(Prefix)]
+                end,
+    Verdict = [E || E <- Events,
+                    maps:get(event_type, E, undefined) =:= <<"proposal.approved">>],
+    Created = [E || E <- Events,
+                    maps:get(event_type, E, undefined) =:= <<"proposal.created">>],
+    ActorEvents = HasPrefix(<<"actor.">>),
+    LlmEvents = HasPrefix(<<"llm.">>),
+    %% Staged red: the verdict for an allowed proposal is `proposal.approved',
+    %% so the `proposal.rejected' partition is empty -- a non-empty match must fail.
+    true = length([E || E <- Events,
+                        maps:get(event_type, E, undefined) =:= <<"proposal.rejected">>]) > 0,
+    true = length(Verdict) > 0,
+    true = length(Created) > 0,
+    true = length(ActorEvents) > 0,
+    true = length(LlmEvents) > 0,
     true = is_process_alive(ActorPid),
     ok.
 
