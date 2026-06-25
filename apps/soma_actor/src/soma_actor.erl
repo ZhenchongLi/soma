@@ -119,12 +119,30 @@ idle({call, From}, {ask, Envelope}, Data) ->
                     Waiters = maps:put(TaskId, From, Data2#data.waiters),
                     {keep_state, Data2#data{waiters = Waiters}};
                 _ ->
-                    %% No-steps envelope: valid, but starts no run, so no
-                    %% terminal event will ever fire. Reply immediately with the
-                    %% distinct 3-tuple {ok, accepted, TaskId} and park no
-                    %% waiter, rather than blocking the caller until TimeoutMs.
-                    {keep_state, Data2,
-                     [{reply, From, {ok, accepted, TaskId}}]}
+                    case has_llm(Envelope) of
+                        true ->
+                            %% An `llm' envelope: park From against the task,
+                            %% then start the LLM call. The decision loop ends in
+                            %% a terminal task event (or a budget failure through
+                            %% the shared failure helper), each of which releases
+                            %% the parked waiter -- so a budget-failed `llm' task
+                            %% answers the caller with `{error, Reason}' rather
+                            %% than blocking until TimeoutMs.
+                            Waiters = maps:put(TaskId, From,
+                                               Data2#data.waiters),
+                            Data3 = maybe_start_llm_call(
+                                      Envelope, TaskId, CorrelationId,
+                                      Data2#data{waiters = Waiters}),
+                            {keep_state, Data3};
+                        false ->
+                            %% No-steps, no-llm envelope: valid, but starts no
+                            %% child, so no terminal event will ever fire. Reply
+                            %% immediately with the distinct 3-tuple
+                            %% {ok, accepted, TaskId} and park no waiter, rather
+                            %% than blocking the caller until TimeoutMs.
+                            {keep_state, Data2,
+                             [{reply, From, {ok, accepted, TaskId}}]}
+                    end
             end;
         {error, Reason} ->
             {keep_state, Data, [{reply, From, {error, Reason}}]}
@@ -634,9 +652,18 @@ fail_task(TaskId, Reason, Data) ->
     emit(Data1, <<"actor.task.failed">>,
          #{task_id => TaskId, correlation_id => CorrelationId,
            reason => Reason}),
-    case reply_waiter(TaskId, {error, Reason}, Data1) of
-        {keep_state, Data2, _Actions} -> Data2;
-        {keep_state, Data2} -> Data2
+    %% Release any parked ask waiter directly: fail_task returns plain `#data'
+    %% (it is called from maybe_start_llm_call/4, off the gen_statem return
+    %% path), so a `{reply, From, _}' action threaded back through reply_waiter
+    %% would be dropped by the caller. Reply via gen_statem:reply/2 and drop the
+    %% waiter here so the parked `llm'-budget caller gets `{error, Reason}'
+    %% instead of blocking until its timeout.
+    case maps:get(TaskId, Data1#data.waiters, undefined) of
+        undefined ->
+            Data1;
+        From ->
+            gen_statem:reply(From, {error, Reason}),
+            Data1#data{waiters = maps:remove(TaskId, Data1#data.waiters)}
     end.
 
 start_llm_call(Llm, TaskId, CorrelationId, Data) ->
