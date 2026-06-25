@@ -1,0 +1,21 @@
+%% soma_policy gives a normalized proposal an allow/reject verdict.
+%%
+%% Pure module, mirroring soma_proposal: no processes, no events, no execution.
+%% The policy is a tool-name allowlist `#{allowed_tools => [atom()] | all}`. A
+%% run_steps proposal is allowed when every step's tool is in the allowlist.
+%% Membership is a plain value comparison (no binary<->atom normalization).
+-module(soma_policy).
+
+-export([check/2]).
+
+-type proposal() :: map().
+-type policy() :: map().
+-type reason() :: term().
+
+-spec check(proposal(), policy()) -> allow | {reject, reason()}.
+check(#{kind := run_steps, steps := Steps}, #{allowed_tools := Allowed}) ->
+    Tools = [maps:get(tool, Step) || Step <- Steps],
+    case lists:all(fun(Tool) -> lists:member(Tool, Allowed) end, Tools) of
+        true ->
+            allow
+    end.
