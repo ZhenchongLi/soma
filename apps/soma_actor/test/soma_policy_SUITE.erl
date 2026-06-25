@@ -11,10 +11,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([allowed_run_steps_emits_proposal_approved_with_correlation_id/1]).
 -export([allowed_proposal_starts_no_run/1]).
+-export([allowed_proposal_status_reads_approved/1]).
 
 all() ->
     [allowed_run_steps_emits_proposal_approved_with_correlation_id,
-     allowed_proposal_starts_no_run].
+     allowed_proposal_starts_no_run,
+     allowed_proposal_status_reads_approved].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -96,6 +98,35 @@ allowed_proposal_starts_no_run(_Config) ->
     RunStarted = [E || E <- Events,
                        maps:get(event_type, E, undefined) =:= <<"run.started">>],
     [] = RunStarted,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 7: a policy-allowed proposal passes the gate but executes nothing,
+%% leaving the task status reading `approved'. Entering through the real
+%% soma_actor:send/2 with a `proposal' llm directive, waits for the task to reach
+%% `approved', then reads the task status back through soma_actor:get_task_status/2
+%% and asserts it reads `approved' (not `completed', which is the pre-gate status).
+allowed_proposal_status_reads_approved(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-policy-status">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [<<"echo">>]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => <<"echo">>},
+                              #{id => <<"s2">>, tool => <<"echo">>}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-policy-status">>,
+    CorrelationId = <<"corr-policy-status">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, approved, 100),
+    completed = maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)),
     true = is_process_alive(ActorPid),
     ok.
 
