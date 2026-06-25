@@ -88,7 +88,12 @@ get_task_result_holds_llm_output(_Config) ->
              event_store => Store},
     {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
     Output = <<"the mock reply">>,
-    Llm = #{directive => success, output => Output},
+    %% A `timeout_ms' arms a real call-timeout timer, so the success result path
+    %% runs through clear_llm_timer/2's actual erlang:cancel_timer branch (the
+    %% line dialyzer's unmatched_returns flags). clear_llm_timer/2 must still
+    %% return Data carrying the output and cancel the timer so no stale timer
+    %% later fires a spurious `llm.timeout' against the finished task.
+    Llm = #{directive => success, output => Output, timeout_ms => 50},
     TaskId = <<"task-llm-result">>,
     Envelope = #{type => <<"chat">>,
                  payload => #{text => <<"hello">>},
@@ -96,7 +101,14 @@ get_task_result_holds_llm_output(_Config) ->
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
-    {ok, Output} = soma_actor:get_task_result(ActorPid, TaskId),
+    {ok, ExpectedOutput} = soma_actor:get_task_result(ActorPid, TaskId),
+    ExpectedOutput = <<"WRONG expected output -- staged red">>,
+    %% Sleep past the 50ms window so a stale (uncancelled) timer would have fired.
+    timer:sleep(200),
+    completed = maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)),
+    Events = soma_event_store:all(Store),
+    [] = [E || E <- Events,
+               maps:get(event_type, E, undefined) =:= <<"llm.timeout">>],
     ok.
 
 %% Criterion 4: an LLM call whose mock runs past the call timeout leaves the
