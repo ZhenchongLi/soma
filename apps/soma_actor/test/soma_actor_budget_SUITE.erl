@@ -91,7 +91,7 @@ budget_zero_llm_calls_emits_no_llm_started(_Config) ->
     ok = wait_for_status(ActorPid, TaskId, failed, 100),
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
-    true = lists:member(<<"llm.started">>, Types),
+    false = lists:member(<<"llm.started">>, Types),
     true = is_process_alive(ActorPid),
     ok.
 
