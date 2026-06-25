@@ -31,6 +31,13 @@ start(#{owner := Owner, llm_call_id := LlmCallId, llm := Llm}) ->
 %% touched.
 perform_call(#{directive := success, output := Output}) ->
     {ok, Output};
+%% The `proposal' directive returns a raw proposal map carried under `output',
+%% unchanged -- exactly like `success' returns its output verbatim. No proposal
+%% logic lives in the worker: the actor runs the returned map through
+%% soma_proposal:normalize/1. The raw proposal lives entirely in the `llm' map the
+%% caller supplies, so the caller controls which proposal comes back.
+perform_call(#{directive := proposal, output := Output}) ->
+    {ok, Output};
 %% The `slow' directive runs past the call timeout: it blocks indefinitely,
 %% ignoring the actor's call-timeout timer entirely. This proves the owner, not
 %% the worker, enforces the bound -- the actor's timer fires and kills the worker.
