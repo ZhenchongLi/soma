@@ -11,10 +11,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_unset_env_store_is_in_memory_writes_no_file/1]).
 -export([test_set_env_store_persists_append_to_log/1]).
+-export([test_unset_env_boot_order/1]).
 
 all() ->
     [test_unset_env_store_is_in_memory_writes_no_file,
-     test_set_env_store_persists_append_to_log].
+     test_set_env_store_persists_append_to_log,
+     test_unset_env_boot_order].
 
 init_per_testcase(test_set_env_store_persists_append_to_log, Config) ->
     TmpDir = make_tmp_dir(),
@@ -85,6 +87,19 @@ test_set_env_store_persists_append_to_log(Config) ->
     FromDisk = read_one_log_term(Path),
 
     ?assertEqual(Normalized, FromDisk).
+
+%% Criterion 3: with `event_store_log' unset, `soma_sup' boots its four children
+%% in start order `[soma_event_store, soma_tool_registry, soma_session_sup,
+%% soma_run_sup]' with `soma_event_store' first.
+%%
+%% `supervisor:which_children/1' returns children in the *reverse* of their start
+%% order, so the case reverses that list to recover start order before asserting.
+test_unset_env_boot_order(_Config) ->
+    Children = supervisor:which_children(soma_sup),
+    StartOrder = [Id || {Id, _Pid, _Type, _Mods} <- lists:reverse(Children)],
+    ?assertEqual([soma_run_sup, soma_session_sup,
+                  soma_tool_registry, soma_event_store],
+                 StartOrder).
 
 %%% Helpers
 
