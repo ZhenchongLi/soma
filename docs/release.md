@@ -51,6 +51,36 @@ tar xzf soma-0.1.0.tar.gz -C /opt/soma
 /opt/soma/bin/soma foreground   # run in the foreground (e.g. under a supervisor)
 ```
 
+## Enabling event persistence
+
+By default the runtime's event store is **in-memory**: events are queryable while
+the node is up, but a restart loses them. To make the store **durable** — so
+events survive a node restart by being appended to an on-disk `disk_log` and
+replayed on boot — set the `soma_runtime` application environment variable
+`event_store_log` to a log file path **before** the runtime starts. When
+`event_store_log` is set, `soma_sup` starts its `soma_event_store` child against
+that path instead of the in-memory store; when it is unset, the store stays
+in-memory and writes nothing to disk.
+
+The release reads application environment from `sys.config`. Point
+`event_store_log` at a writable path (the directory must exist and be writable by
+the user running the node) with a `sys.config` such as:
+
+```erlang
+[
+  {soma_runtime, [{event_store_log, "/var/lib/soma/events.log"}]}
+].
+```
+
+Start the release with that config so persistence is enabled from boot:
+
+```bash
+/opt/soma/bin/soma console -config /path/to/sys.config
+```
+
+Leave `event_store_log` unset (omit it from `sys.config`) to keep the default
+in-memory store.
+
 ## Smoke test
 
 Boot the packaged release, drive one run end to end, and confirm it completes —
