@@ -21,3 +21,12 @@ test_run_steps_normalizes_ok() ->
 
 run_steps_normalizes_ok_test() ->
     test_run_steps_normalizes_ok().
+
+%% A valid reject proposal normalizes to {ok, Proposal} carrying kind => reject.
+test_reject_normalizes_ok() ->
+    Raw = #{kind => reject, reason => <<"out of scope">>},
+    {ok, Proposal} = soma_proposal:normalize(Raw),
+    ?assertEqual(reject, maps:get(kind, Proposal)).
+
+reject_normalizes_ok_test() ->
+    test_reject_normalizes_ok().
