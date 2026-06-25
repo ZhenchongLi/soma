@@ -14,10 +14,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([approved_run_steps_completes_with_step_outputs/1]).
 -export([approved_run_steps_emits_proposal_executed_with_correlation_id/1]).
+-export([by_correlation_returns_full_approved_run_chain/1]).
 
 all() ->
     [approved_run_steps_completes_with_step_outputs,
-     approved_run_steps_emits_proposal_executed_with_correlation_id].
+     approved_run_steps_emits_proposal_executed_with_correlation_id,
+     by_correlation_returns_full_approved_run_chain].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -101,6 +103,54 @@ approved_run_steps_emits_proposal_executed_with_correlation_id(_Config) ->
     CorrelationId = maps:get(correlation_id, Event),
     true = is_process_alive(ActorPid),
     ok.
+
+%% Criterion 3: for an approved `run_steps' proposal, by_correlation/2 returns the
+%% full chain under one correlation_id. Drives the same approved-proposal chain
+%% through the real soma_actor:send/2, waits for `completed' (so the whole chain
+%% emitted), then reads every event back through by_correlation/2 and asserts the
+%% trail names an `actor.*' event, an `llm.*' event, `proposal.created',
+%% `proposal.approved', `proposal.executed', `run.started', and `run.completed'.
+by_correlation_returns_full_approved_run_chain(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-exec-chain">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => run_steps,
+                    steps => [#{id => <<"s1">>, tool => echo,
+                               args => #{value => <<"a">>}}]},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-exec-chain">>,
+    CorrelationId = <<"corr-exec-chain">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do it">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
+    %% An `actor.*' and an `llm.*' event each appear (any subtype under the prefix).
+    true = lists:any(fun(T) -> has_prefix(T, <<"actor.">>) end, Types),
+    true = lists:any(fun(T) -> has_prefix(T, <<"llm.">>) end, Types),
+    true = lists:member(<<"proposal.created">>, Types),
+    true = lists:member(<<"proposal.approved">>, Types),
+    true = lists:member(<<"proposal.executed.WRONG">>, Types),
+    true = lists:member(<<"run.started">>, Types),
+    true = lists:member(<<"run.completed">>, Types),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% True when binary T starts with binary Prefix.
+has_prefix(T, Prefix) when is_binary(T) ->
+    case T of
+        <<Prefix:(byte_size(Prefix))/binary, _/binary>> -> true;
+        _ -> false
+    end;
+has_prefix(_, _) ->
+    false.
 
 %% Polls get_task_status until the task reaches the given status.
 wait_for_status(_ActorPid, TaskId, Status, 0) ->
