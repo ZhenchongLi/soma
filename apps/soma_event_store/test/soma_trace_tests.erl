@@ -27,8 +27,8 @@ test_timeline_orders_by_timestamp() ->
     Output = soma_trace:timeline(Events),
     Lines = string:split(iolist_to_binary(Output), <<"\n">>, all),
     NonEmptyLines = [binary_to_list(L) || L <- Lines, L =/= <<>>],
-    %% STAGED RED: wrong order — assert descending to see the assertion fire
-    ?assertEqual(["event_third", "event_second", "event_first"], NonEmptyLines).
+    %% Ascending timestamp order: 100, 200, 300
+    ?assertEqual(["event_first", "event_second", "event_third"], NonEmptyLines).
 
 timeline_orders_by_timestamp_test() ->
     test_timeline_orders_by_timestamp().
