@@ -54,12 +54,12 @@ allowed_run_steps_emits_proposal_approved_with_correlation_id(_Config) ->
     Store = event_store_pid(),
     Opts = #{actor_id => <<"actor-policy-approved">>,
              model_config => #{},
-             tool_policy => #{allowed_tools => [<<"echo">>]},
+             tool_policy => #{allowed_tools => [echo]},
              event_store => Store},
     {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
     RawProposal = #{kind => run_steps,
-                    steps => [#{id => <<"s1">>, tool => <<"echo">>},
-                              #{id => <<"s2">>, tool => <<"echo">>}]},
+                    steps => [#{id => <<"s1">>, tool => echo},
+                              #{id => <<"s2">>, tool => echo}]},
     Llm = #{directive => proposal, output => RawProposal},
     TaskId = <<"task-policy-approved">>,
     CorrelationId = <<"corr-policy-approved">>,
@@ -69,7 +69,10 @@ allowed_run_steps_emits_proposal_approved_with_correlation_id(_Config) ->
                  correlation_id => CorrelationId,
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
-    ok = wait_for_status(ActorPid, TaskId, approved, 100),
+    %% v0.5.4: an approved `run_steps' proposal now executes, so the task moves
+    %% past the transient `approved' to `completed' once the run finishes. The
+    %% `proposal.approved' event still fires before the run starts.
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Approved = [E || E <- Events,
                      maps:get(event_type, E, undefined) =:= <<"proposal.approved">>],
@@ -78,22 +81,22 @@ allowed_run_steps_emits_proposal_approved_with_correlation_id(_Config) ->
     true = is_process_alive(ActorPid),
     ok.
 
-%% Criterion 6: a policy-allowed proposal passes the gate but executes nothing --
-%% the actor sets the task `approved' and starts no soma_run. Entering through the
-%% real soma_actor:send/2 with a `proposal' llm directive, waits for the task to
-%% reach `approved', then reads the correlated events back through
-%% soma_event_store:by_correlation/2 and asserts the trail carries no
-%% `run.started' event for that task's correlation_id (executing is v0.5.4).
+%% Criterion 6: a policy-allowed toolless proposal passes the gate but has nothing
+%% to run -- the actor sets the task `approved' and starts no soma_run. v0.5.4 made
+%% an approved `run_steps' proposal execute, so this "approved, no run" proof now
+%% rides the toolless `ask' kind, which the policy gate allows without a tool check
+%% and which has no steps to run. Entering through the real soma_actor:send/2 with a
+%% `proposal' llm directive, waits for the task to reach `approved', then reads the
+%% correlated events back through soma_event_store:by_correlation/2 and asserts the
+%% trail carries no `run.started' event for that task's correlation_id.
 allowed_proposal_starts_no_run(_Config) ->
     Store = event_store_pid(),
     Opts = #{actor_id => <<"actor-policy-no-run">>,
              model_config => #{},
-             tool_policy => #{allowed_tools => [<<"echo">>]},
+             tool_policy => #{allowed_tools => [echo]},
              event_store => Store},
     {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
-    RawProposal = #{kind => run_steps,
-                    steps => [#{id => <<"s1">>, tool => <<"echo">>},
-                              #{id => <<"s2">>, tool => <<"echo">>}]},
+    RawProposal = #{kind => ask, question => <<"which file?">>},
     Llm = #{directive => proposal, output => RawProposal},
     TaskId = <<"task-policy-no-run">>,
     CorrelationId = <<"corr-policy-no-run">>,
@@ -111,21 +114,22 @@ allowed_proposal_starts_no_run(_Config) ->
     true = is_process_alive(ActorPid),
     ok.
 
-%% Criterion 7: a policy-allowed proposal passes the gate but executes nothing,
-%% leaving the task status reading `approved'. Entering through the real
-%% soma_actor:send/2 with a `proposal' llm directive, waits for the task to reach
-%% `approved', then reads the task status back through soma_actor:get_task_status/2
-%% and asserts it reads `approved' (not `completed', which is the pre-gate status).
+%% Criterion 7: a policy-allowed toolless proposal passes the gate but has nothing
+%% to run, leaving the task status reading `approved'. v0.5.4 made an approved
+%% `run_steps' proposal execute (so its status moves on to `running'/`completed'),
+%% which makes the toolless `ask' kind the carrier for the terminal-`approved'
+%% proof: it is allowed without a tool check and has no steps, so it rests at
+%% `approved'. Entering through the real soma_actor:send/2 with a `proposal' llm
+%% directive, waits for the task to reach `approved', then reads the task status
+%% back through soma_actor:get_task_status/2 and asserts it reads `approved'.
 allowed_proposal_status_reads_approved(_Config) ->
     Store = event_store_pid(),
     Opts = #{actor_id => <<"actor-policy-status">>,
              model_config => #{},
-             tool_policy => #{allowed_tools => [<<"echo">>]},
+             tool_policy => #{allowed_tools => [echo]},
              event_store => Store},
     {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
-    RawProposal = #{kind => run_steps,
-                    steps => [#{id => <<"s1">>, tool => <<"echo">>},
-                              #{id => <<"s2">>, tool => <<"echo">>}]},
+    RawProposal = #{kind => ask, question => <<"which file?">>},
     Llm = #{directive => proposal, output => RawProposal},
     TaskId = <<"task-policy-status">>,
     CorrelationId = <<"corr-policy-status">>,
@@ -252,12 +256,12 @@ actor_survives_rejected_proposal_takes_next_send(_Config) ->
     Store = event_store_pid(),
     Opts = #{actor_id => <<"actor-policy-survives">>,
              model_config => #{},
-             tool_policy => #{allowed_tools => [<<"echo">>]},
+             tool_policy => #{allowed_tools => [echo]},
              event_store => Store},
     {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
     RejectProposal = #{kind => run_steps,
-                       steps => [#{id => <<"s1">>, tool => <<"echo">>},
-                                 #{id => <<"s2">>, tool => <<"forbidden">>}]},
+                       steps => [#{id => <<"s1">>, tool => echo},
+                                 #{id => <<"s2">>, tool => forbidden}]},
     RejectLlm = #{directive => proposal, output => RejectProposal},
     RejectTaskId = <<"task-policy-survives-reject">>,
     RejectEnvelope = #{type => <<"chat">>,
@@ -267,8 +271,10 @@ actor_survives_rejected_proposal_takes_next_send(_Config) ->
                        llm => RejectLlm},
     {ok, RejectTaskId} = soma_actor:send(ActorPid, RejectEnvelope),
     ok = wait_for_status(ActorPid, RejectTaskId, rejected, 100),
-    AllowProposal = #{kind => run_steps,
-                      steps => [#{id => <<"s1">>, tool => <<"echo">>}]},
+    %% v0.5.4: an approved `run_steps' proposal now executes (moving past
+    %% `approved'), so the "actor survives and approves the next proposal" proof
+    %% uses a toolless `ask' kind for the second send -- it rests at `approved'.
+    AllowProposal = #{kind => ask, question => <<"again?">>},
     AllowLlm = #{directive => proposal, output => AllowProposal},
     AllowTaskId = <<"task-policy-survives-allow">>,
     AllowEnvelope = #{type => <<"chat">>,
@@ -293,12 +299,12 @@ by_correlation_returns_verdict_created_actor_and_llm_events(_Config) ->
     Store = event_store_pid(),
     Opts = #{actor_id => <<"actor-policy-trail">>,
              model_config => #{},
-             tool_policy => #{allowed_tools => [<<"echo">>]},
+             tool_policy => #{allowed_tools => [echo]},
              event_store => Store},
     {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
     RawProposal = #{kind => run_steps,
-                    steps => [#{id => <<"s1">>, tool => <<"echo">>},
-                              #{id => <<"s2">>, tool => <<"echo">>}]},
+                    steps => [#{id => <<"s1">>, tool => echo},
+                              #{id => <<"s2">>, tool => echo}]},
     Llm = #{directive => proposal, output => RawProposal},
     TaskId = <<"task-policy-trail">>,
     CorrelationId = <<"corr-policy-trail">>,
@@ -308,7 +314,10 @@ by_correlation_returns_verdict_created_actor_and_llm_events(_Config) ->
                  correlation_id => CorrelationId,
                  llm => Llm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
-    ok = wait_for_status(ActorPid, TaskId, approved, 100),
+    %% v0.5.4: an approved `run_steps' proposal executes, so the task reaches
+    %% `completed'; the verdict (`proposal.approved'), `proposal.created',
+    %% `actor.*', and `llm.*' events are all still on the trail.
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     %% Every correlated event carries the task's correlation_id.
     [CorrelationId] = lists:usort([maps:get(correlation_id, E) || E <- Events]),

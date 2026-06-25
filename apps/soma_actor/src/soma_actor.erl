@@ -305,7 +305,22 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                                  #{task_id => TaskId, correlation_id => CorrelationId,
                                    llm_call_id => LlmCallId,
                                    kind => maps:get(kind, Proposal, undefined)}),
-                            reply_waiter(TaskId, {ok, Proposal}, Data1);
+                            case maps:get(kind, Proposal, undefined) of
+                                run_steps ->
+                                    %% Approved steps execute: start a run via the
+                                    %% shared owned-and-monitored path (the same the
+                                    %% direct `steps' envelope uses), leaving the
+                                    %% task `running'. The existing run-terminal
+                                    %% clauses store the step outputs and complete
+                                    %% the task -- and reply any parked waiter from
+                                    %% the run's completion, not from this gate.
+                                    Steps = maps:get(steps, Proposal),
+                                    Data2 = start_owned_run(Steps, TaskId,
+                                                            CorrelationId, Data1),
+                                    {keep_state, Data2};
+                                _ ->
+                                    reply_waiter(TaskId, {ok, Proposal}, Data1)
+                            end;
                         {reject, Reason} ->
                             %% The proposal failed policy. Emit
                             %% `proposal.rejected' carrying the reject reason and
@@ -473,32 +488,39 @@ resolve_correlation_id(Envelope, TaskId) ->
 maybe_start_run(Envelope, TaskId, CorrelationId, Data) ->
     case maps:get(steps, Envelope, undefined) of
         Steps when is_list(Steps) ->
-            RunId = mint_run_id(),
-            RunOpts = #{run_id => RunId,
-                        session_id => Data#data.actor_id,
-                        session_pid => self(),
-                        event_store => Data#data.event_store,
-                        steps => Steps,
-                        correlation_id => CorrelationId},
-            {ok, RunPid} = soma_run_sup:start_run(RunOpts),
-            %% Monitor the run pid, mirroring soma_run -> soma_tool_call. A run
-            %% that dies without sending one of the four terminal messages
-            %% (a crash inside soma_run itself, not a tool crash it catches)
-            %% arrives here as a `'DOWN'' and is recorded as a terminal `failed'
-            %% task -- data, not a stuck `running'. The normal terminal messages
-            %% demonitor-and-flush so a still-alive completed run leaves no
-            %% dangling monitor.
-            MRef = erlang:monitor(process, RunPid),
-            Runs = maps:put(RunId, TaskId, Data#data.runs),
-            Monitors = maps:put(MRef, TaskId, Data#data.monitors),
-            Task = maps:get(TaskId, Data#data.tasks),
-            Task1 = Task#{status => running, run_id => RunId,
-                          run_pid => RunPid, run_mref => MRef},
-            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
-            Data#data{runs = Runs, tasks = Tasks, monitors = Monitors};
+            start_owned_run(Steps, TaskId, CorrelationId, Data);
         _ ->
             Data
     end.
+
+%% Start a soma_run the actor owns (session_pid => self()) for the given steps,
+%% monitor it, track run_id => task_id, and set the task `running'. Shared by the
+%% direct `steps' envelope path (maybe_start_run/4) and the approved `run_steps'
+%% proposal path, so both inherit one set of run-ownership and failure semantics.
+start_owned_run(Steps, TaskId, CorrelationId, Data) ->
+    RunId = mint_run_id(),
+    RunOpts = #{run_id => RunId,
+                session_id => Data#data.actor_id,
+                session_pid => self(),
+                event_store => Data#data.event_store,
+                steps => Steps,
+                correlation_id => CorrelationId},
+    {ok, RunPid} = soma_run_sup:start_run(RunOpts),
+    %% Monitor the run pid, mirroring soma_run -> soma_tool_call. A run
+    %% that dies without sending one of the four terminal messages
+    %% (a crash inside soma_run itself, not a tool crash it catches)
+    %% arrives here as a `'DOWN'' and is recorded as a terminal `failed'
+    %% task -- data, not a stuck `running'. The normal terminal messages
+    %% demonitor-and-flush so a still-alive completed run leaves no
+    %% dangling monitor.
+    MRef = erlang:monitor(process, RunPid),
+    Runs = maps:put(RunId, TaskId, Data#data.runs),
+    Monitors = maps:put(MRef, TaskId, Data#data.monitors),
+    Task = maps:get(TaskId, Data#data.tasks),
+    Task1 = Task#{status => running, run_id => RunId,
+                  run_pid => RunPid, run_mref => MRef},
+    Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+    Data#data{runs = Runs, tasks = Tasks, monitors = Monitors}.
 
 %% When the envelope carries an `llm' directive map, start a soma_llm_call worker
 %% the actor owns directly (owner => self()), mirroring soma_run -> soma_tool_call:
