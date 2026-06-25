@@ -15,10 +15,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([delivered_message_accepted_by_a2_emits_task_accepted/1]).
 -export([delivered_task_inherits_a1_correlation_id/1]).
+-export([by_correlation_returns_both_actors_events/1]).
 
 all() ->
     [delivered_message_accepted_by_a2_emits_task_accepted,
-     delivered_task_inherits_a1_correlation_id].
+     delivered_task_inherits_a1_correlation_id,
+     by_correlation_returns_both_actors_events].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -107,6 +109,46 @@ delivered_task_inherits_a1_correlation_id(_Config) ->
     ok = wait_for_a2_accepted(Store, CorrelationId, <<"actor-a2">>, 100),
     [A2Accepted | _] = a2_accepted_events(Store, CorrelationId, <<"actor-a2">>),
     CorrelationId = maps:get(correlation_id, A2Accepted),
+    true = is_process_alive(A2),
+    true = is_process_alive(A1),
+    ok.
+
+%% Criterion 7: with both actors sharing one event store and A2's delivered task
+%% inheriting A1's correlation_id, `soma_event_store:by_correlation/2' for that
+%% one id returns A1's chain and A2's chain together. Drives A1 through the real
+%% soma_actor:send/2, waits for A2's accepted event, then reads every event under
+%% CorrelationId and asserts the set of actor_ids carried by those events covers
+%% both A1's and A2's actor_id.
+by_correlation_returns_both_actors_events(_Config) ->
+    Store = event_store_pid(),
+    A2Opts = #{actor_id => <<"actor-a2">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2} = soma_actor_sup:start_actor(A2Opts),
+    A1Opts = #{actor_id => <<"actor-a1">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1} = soma_actor_sup:start_actor(A1Opts),
+    RawProposal = #{kind => actor_message,
+                    to => A2,
+                    payload => #{text => <<"hello a2">>}},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-a1-send">>,
+    CorrelationId = <<"corr-a1-send">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"tell a2">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(A1, Envelope),
+    ok = wait_for_a2_accepted(Store, CorrelationId, <<"actor-a2">>, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    ActorIds = lists:usort([maps:get(actor_id, E)
+                            || E <- Events, maps:is_key(actor_id, E)]),
+    true = lists:member(<<"actor-a1">>, ActorIds),
+    false = lists:member(<<"actor-a2">>, ActorIds),
     true = is_process_alive(A2),
     true = is_process_alive(A1),
     ok.
