@@ -105,7 +105,16 @@ parse_msg_step([Other | _], _Acc) ->
 %% soma_proposal:normalize/1 accepts.
 -spec parse_proposal([term()]) -> {ok, map()} | {error, [diagnostic()]}.
 parse_proposal([reply, [text, Text]]) when is_binary(Text) ->
-    {ok, #{kind => reply, text => Text}}.
+    {ok, #{kind => reply, text => Text}};
+parse_proposal(['run-steps' | StepForms]) ->
+    %% Reuse the L.1 step parser (parse_msg_steps) so the step maps are
+    %% identical to the run path's steps.
+    case parse_msg_steps(StepForms, []) of
+        {ok, Steps} ->
+            {ok, #{kind => run_steps, steps => Steps}};
+        {error, Diags} ->
+            {error, Diags}
+    end.
 
 -spec parse_run([term()]) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
