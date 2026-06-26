@@ -3,7 +3,7 @@
     {vsn, "0.1.0"},
     {registered, [soma_sup]},
     {mod, {soma_app, []}},
-    {applications, [kernel, stdlib, soma_event_store, soma_tools]},
+    {applications, [kernel, stdlib, inets, ssl, soma_event_store, soma_tools]},
     {env, []},
     {modules, []}
 ]}.
