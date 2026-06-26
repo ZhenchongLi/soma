@@ -2,9 +2,52 @@
 %% run representation, or a list of structured diagnostics.
 -module(soma_lfe_parser).
 
--export([parse_run/1]).
+-export([parse_run/1, parse_msg/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
+
+%% @doc Parse a single (msg ...) form into an actor envelope map.
+-spec parse_msg([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_msg([msg | SubForms]) ->
+    parse_msg_fields(SubForms, #{}).
+
+parse_msg_fields([], Acc) ->
+    {ok, Acc};
+parse_msg_fields([[type, Value] | Rest], Acc) ->
+    parse_msg_fields(Rest, Acc#{type => Value});
+parse_msg_fields([[payload, Value] | Rest], Acc) ->
+    parse_msg_fields(Rest, Acc#{payload => Value});
+parse_msg_fields([[steps | StepForms] | Rest], Acc) ->
+    case parse_msg_steps(StepForms, []) of
+        {ok, Steps} ->
+            parse_msg_fields(Rest, Acc#{steps => Steps});
+        {error, Diags} ->
+            {error, Diags}
+    end.
+
+parse_msg_steps([], Acc) ->
+    {ok, lists:reverse(Acc)};
+parse_msg_steps([[step | StepChildren] | Rest], Acc) ->
+    case parse_msg_step(StepChildren, #{args => #{}}) of
+        {ok, Step} ->
+            parse_msg_steps(Rest, [Step | Acc]);
+        {error, Diags} ->
+            {error, Diags}
+    end.
+
+parse_msg_step([], Acc) ->
+    {ok, Acc};
+parse_msg_step([[id, Id] | Rest], Acc) ->
+    parse_msg_step(Rest, Acc#{id => Id});
+parse_msg_step([[tool, Tool] | Rest], Acc) ->
+    parse_msg_step(Rest, Acc#{tool => Tool});
+parse_msg_step([[args | KVPairs] | Rest], Acc) ->
+    case parse_args(KVPairs, #{}) of
+        {ok, ArgsMap} ->
+            parse_msg_step(Rest, Acc#{args => ArgsMap});
+        {error, Diags} ->
+            {error, Diags}
+    end.
 
 -spec parse_run([term()]) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
