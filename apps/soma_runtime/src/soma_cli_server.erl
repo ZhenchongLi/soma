@@ -102,10 +102,27 @@ first_byte(<<>>) ->
     0.
 
 %% Parse the Lisp `(run ...)' request with `soma_lfe', run it, and render the
-%% terminal result map as a `(result ...)' s-expr. Criterion 1 needs only the
-%% completed echo path: compile -> run -> render of the completed result map.
+%% terminal result map as a `(result ...)' s-expr. A malformed request --
+%% `soma_lfe:compile/2' returning `{error, Diagnostics}', or the reader crashing
+%% on garbage bytes -- is not a handler crash: it renders the same `(result ...)'
+%% head with `status => error' and an `error' sub-form carrying the diagnostics.
 handle_lisp_request(Bytes) ->
-    {ok, #{run := #{steps := Steps}}} = soma_lfe:compile(Bytes, #{}),
+    Compiled = try soma_lfe:compile(Bytes, #{})
+               catch
+                   Class:Reason ->
+                       {error, [#{code => malformed_request,
+                                  message => iolist_to_binary(
+                                               io_lib:format("~p:~p",
+                                                             [Class, Reason]))}]}
+               end,
+    case Compiled of
+        {ok, #{run := #{steps := Steps}}} ->
+            run_steps(Steps);
+        {error, Diagnostics} ->
+            soma_lisp:render(#{status => error, error => Diagnostics})
+    end.
+
+run_steps(Steps) ->
     TaskId = mint_id("task"),
     CorrId = mint_id("corr"),
     RunId = mint_id("run"),
