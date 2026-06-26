@@ -29,10 +29,7 @@ cli_1b_sources() ->
      <<"soma_cli_server_tests.erl">>,
      <<"soma_cli_SUITE.erl">>,
      <<"soma_cli_wire_docs_tests.erl">>,
-     <<"soma_cli_1b_contract_tests.erl">>,
-     %% RED stage: this is a real-provider test, not a CLI.1b source. Including
-     %% it here makes the provider-marker assertion fire.
-     <<"soma_llm_openai_tests.erl">>].
+     <<"soma_cli_1b_contract_tests.erl">>].
 
 test_cli_1b_sources_have_no_real_provider_or_socket_marker() ->
     lists:foreach(fun(File) ->
