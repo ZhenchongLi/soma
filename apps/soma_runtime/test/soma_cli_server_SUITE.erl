@@ -134,10 +134,10 @@ test_server_serves_after_failed_run(Config) ->
     <<"completed">> = maps:get(<<"status">>, json:decode(Reply)),
     ok = gen_tcp:close(C2).
 
-%% A retrying client connect. AF_UNIX `connect' on macOS can transiently return
-%% `eopnotsupp'/`econnrefused' under heavy load (the kernel briefly rejects, or
-%% the listener is mid-bind); retry a few times so the suite is deterministic.
-%% The server itself is fine -- this only smooths the client side.
+%% A small defensive retry for the client connect: right after start_link the
+%% accept loop may not have reached gen_tcp:accept yet, so a connect can briefly
+%% see econnrefused. (The eopnotsupp "flake" this once seemed to address was
+%% actually a socket_path collision across BEAM runs, now fixed in socket_path/1.)
 connect(Path) -> connect(Path, 80).
 connect(_Path, 0) ->
     {error, giving_up};
@@ -154,11 +154,21 @@ connect(Path, N) ->
 %% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS), so the
 %% long CT priv_dir cannot hold a bindable socket. Use a short unique path
 %% under the system temp dir.
+%%
+%% os:getpid() makes the path unique ACROSS BEAM runs. erlang:unique_integer
+%% resets every run, so without the pid, repeated `rebar3 ct' invocations (which
+%% relay's tdd-check does, plus its retry) regenerate the same low-numbered paths
+%% and collide with the socket files earlier runs left behind -- and
+%% file:write_file onto a leftover socket file fails with eopnotsupp on macOS,
+%% which was the real source of the "flaky" stale-socket test. The pre-delete
+%% clears any leftover at the (now unique) path so the slate is always clean.
 socket_path(_Config) ->
     Tmp = case os:getenv("TMPDIR") of
               false -> "/tmp";
               Dir -> Dir
           end,
-    Name = "soma_cli_" ++ integer_to_list(erlang:unique_integer([positive]))
-           ++ ".sock",
-    filename:join(Tmp, Name).
+    Name = "soma_cli_" ++ os:getpid() ++ "_"
+           ++ integer_to_list(erlang:unique_integer([positive])) ++ ".sock",
+    Path = filename:join(Tmp, Name),
+    _ = file:delete(Path),
+    Path.

@@ -279,7 +279,7 @@ test_session_alive_runs_new_cli_run_after_cancel(_Config) ->
 %% the session still accepts and completes fresh runs.
 write_fast_helper() ->
     Base = filename:basedir(user_cache, "soma_cli_lifecycle_SUITE"),
-    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Unique = os:getpid() ++ "_" ++ integer_to_list(erlang:unique_integer([positive])),
     Dir = filename:join(Base, Unique),
     ok = filelib:ensure_dir(filename:join(Dir, "x")),
     Path = filename:join(Dir, "fast.sh"),
@@ -295,7 +295,7 @@ write_fast_helper() ->
 %% -- i.e. was never killed mid-sleep. Returns `{HelperPath, MarkerPath}'.
 write_marker_helper() ->
     Base = filename:basedir(user_cache, "soma_cli_lifecycle_SUITE"),
-    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Unique = os:getpid() ++ "_" ++ integer_to_list(erlang:unique_integer([positive])),
     Dir = filename:join(Base, Unique),
     ok = filelib:ensure_dir(filename:join(Dir, "x")),
     Path = filename:join(Dir, "marker.sh"),
@@ -313,7 +313,7 @@ write_marker_helper() ->
 %% input protocol.
 write_sleep_helper() ->
     Base = filename:basedir(user_cache, "soma_cli_lifecycle_SUITE"),
-    Unique = integer_to_list(erlang:unique_integer([positive])),
+    Unique = os:getpid() ++ "_" ++ integer_to_list(erlang:unique_integer([positive])),
     Dir = filename:join(Base, Unique),
     ok = filelib:ensure_dir(filename:join(Dir, "x")),
     Path = filename:join(Dir, "sleep.sh"),
