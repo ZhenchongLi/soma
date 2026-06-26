@@ -23,6 +23,15 @@ parse_msg_fields([[steps | StepForms] | Rest], Acc) ->
             parse_msg_fields(Rest, Acc#{steps => Steps});
         {error, Diags} ->
             {error, Diags}
+    end;
+parse_msg_fields([['correlation-id', Value] | Rest], Acc) ->
+    parse_msg_fields(Rest, Acc#{correlation_id => Value});
+parse_msg_fields([[llm | LlmForms] | Rest], Acc) ->
+    case parse_args(LlmForms, #{}) of
+        {ok, LlmMap} ->
+            parse_msg_fields(Rest, Acc#{llm => LlmMap});
+        {error, Diags} ->
+            {error, Diags}
     end.
 
 parse_msg_steps([], Acc) ->
