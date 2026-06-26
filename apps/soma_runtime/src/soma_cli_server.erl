@@ -73,12 +73,50 @@ accept_loop(ListenSocket) ->
 handle(Socket) ->
     case gen_tcp:recv(Socket, 0, 60000) of
         {ok, Bytes} ->
-            Response = handle_request(json:decode(Bytes)),
-            _ = gen_tcp:send(Socket, iolist_to_binary(encode_response(Response))),
+            Reply = dispatch_request(Bytes),
+            _ = gen_tcp:send(Socket, iolist_to_binary(Reply)),
             gen_tcp:close(Socket);
         {error, _} ->
             ok
     end.
+
+%% The wire is Lisp s-exprs: a `(run (step ...) ...)' request is parsed by
+%% `soma_lfe:compile/2' into the atom-keyed step maps `soma_run' accepts, run
+%% under a `soma_run' the handler owns, and the terminal result is rendered back
+%% as a `(result ...)' s-expr by `soma_lisp:render/1'. The legacy JSON `{...}'
+%% request shape is still served for the pre-CLI.1b cases -- dispatch on the
+%% first non-whitespace byte: `(' is Lisp, anything else is JSON.
+dispatch_request(Bytes) ->
+    case first_byte(Bytes) of
+        $( ->
+            handle_lisp_request(Bytes);
+        _ ->
+            encode_response(handle_request(json:decode(Bytes)))
+    end.
+
+first_byte(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t; C =:= $\n; C =:= $\r ->
+    first_byte(Rest);
+first_byte(<<C, _/binary>>) ->
+    C;
+first_byte(<<>>) ->
+    0.
+
+%% Parse the Lisp `(run ...)' request with `soma_lfe', run it, and render the
+%% terminal result map as a `(result ...)' s-expr. Criterion 1 needs only the
+%% completed echo path: compile -> run -> render of the completed result map.
+handle_lisp_request(Bytes) ->
+    {ok, #{run := #{steps := Steps}}} = soma_lfe:compile(Bytes, #{}),
+    TaskId = mint_id("task"),
+    CorrId = mint_id("corr"),
+    RunId = mint_id("run"),
+    {ok, _RunPid} = soma_run_sup:start_run(
+        #{run_id => RunId,
+          session_id => TaskId,
+          session_pid => self(),
+          steps => Steps,
+          correlation_id => CorrId}),
+    Result = await_run(RunId, TaskId, CorrId),
+    soma_lisp:render(Result).
 
 %% Decode a `run' request, start a `soma_run' the handler owns (session_pid =>
 %% self(), a minted correlation_id), wait for its terminal message, and shape the
