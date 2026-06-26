@@ -24,6 +24,33 @@ piece: it grows into the message parser.
 
 One line: **Lisp flows between agents; Erlang executes in the core.**
 
+## The wire protocol speaks Lisp too (CLI.1b + L.4)
+
+The client↔daemon channel carries **Lisp s-exprs, not JSON** — pushing "Lisp at
+the edges" all the way to the wire. The request is an s-expr the daemon parses
+with `soma_lfe` (it *is* the protocol parser); the response is an s-expr produced
+by the **term→Lisp renderer** (L.4), which also renders the audit trace. So
+`soma_lfe` is the single bidirectional protocol boundary; only the BEAM-internal
+terms stay Erlang.
+
+```lisp
+(run (msg (type chat)
+          (steps (step (id s1) (tool echo) (args (value "hi"))))))        ; request
+(result (status completed) (outputs ((s1 (value "hi")))) (correlation-id "c-7")) ; response
+```
+
+`soma run` takes a `.lfe` workflow **only** — no JSON input. The trade: the wire
+is soma-Lisp, not universal JSON; fine for the single-user / own-agents scope,
+where agents emit Lisp and L.5 repairs imperfect Lisp.
+
+**Not Turing-complete (yet) — and that's deliberate.** s-exprs *can* express
+Turing-complete programs (Lisp is), but soma's grammar + runtime are a constrained
+subset: `soma_lfe` compiles to a flat **sequential** step list — no `if` / `cond`
+/ `loop`, no branching. So this is "Lisp as the message/plan *syntax*," not a
+Turing-complete interpreter. The s-expr substrate leaves room to grow toward real
+control flow later (JSON could not); but *executing* control flow needs runtime
+branching — that is v0.8 (DAG), a separate, bigger step.
+
 ## The homoiconic payoff
 
 A Lisp message can be **data or an executable plan — one language**, so an agent
