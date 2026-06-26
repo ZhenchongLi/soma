@@ -131,3 +131,18 @@ test_reply_proposal_normalizes() ->
 
 reply_proposal_normalizes_test() ->
     test_reply_proposal_normalizes().
+
+test_app_src_lists_inets_and_ssl() ->
+    %% The OpenAI provider makes real HTTPS calls via httpc, so `inets' (httpc)
+    %% and `ssl' must be declared in the runtime's `applications' list to start
+    %% with the release. This proof parses the app.src and asserts both are
+    %% members of the applications list.
+    Path = filename:join([code:lib_dir(soma_runtime), "src",
+                          "soma_runtime.app.src"]),
+    {ok, [{application, soma_runtime, Props}]} = file:consult(Path),
+    {applications, Apps} = lists:keyfind(applications, 1, Props),
+    ?assert(lists:member(inets, Apps)),
+    ?assert(lists:member(ssl, Apps)).
+
+app_src_lists_inets_and_ssl_test() ->
+    test_app_src_lists_inets_and_ssl().
