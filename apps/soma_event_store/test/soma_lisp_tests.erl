@@ -32,6 +32,20 @@ test_render_event_map_carries_fields() ->
 render_event_map_carries_fields_test() ->
     test_render_event_map_carries_fields().
 
+test_msg_envelope_round_trips_through_render() ->
+    %% The criterion's (msg ...) shape, with the parser-required (payload ...)
+    %% field added so the seed parse succeeds. Parse -> render -> re-parse must
+    %% land on a term equal to the original parsed envelope: the renderer is the
+    %% exact inverse of the parser for the (msg ...) shape.
+    Source = <<"(msg (type chat) (payload (text \"hi\")) "
+               "(steps (step (id s1) (tool echo) (args (value \"hi\")))))">>,
+    {ok, Envelope} = soma_lfe:compile(Source, #{}),
+    Rendered = iolist_to_binary(soma_lisp:render(Envelope)),
+    ?assertEqual({ok, Envelope}, soma_lfe:compile(Rendered, #{})).
+
+msg_envelope_round_trips_through_render_test() ->
+    test_msg_envelope_round_trips_through_render().
+
 test_render_pid_becomes_quoted_string() ->
     Map = #{pid => self()},
     Rendered = iolist_to_binary(soma_lisp:render(Map)),
