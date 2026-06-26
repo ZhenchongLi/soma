@@ -39,9 +39,7 @@ test_doc_names_l3_suites_and_cases() ->
     %% Mock-only guard (criterion 9)
     ?assert(contains(Doc, <<"soma_l3_mock_only_tests">>)),
     ?assert(contains(Doc, <<"test_every_llm_directive_is_the_proposal_mock">>)),
-    ?assert(contains(Doc, <<"test_no_real_provider_config_in_suite">>)),
-    %% Staged-red sentinel: deliberately wrong expectation, corrected in green.
-    ?assert(contains(Doc, <<"STAGED_RED_SENTINEL_should_not_exist">>)).
+    ?assert(contains(Doc, <<"test_no_real_provider_config_in_suite">>)).
 
 doc_names_l3_suites_and_cases_test() ->
     test_doc_names_l3_suites_and_cases().
