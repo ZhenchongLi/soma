@@ -39,12 +39,12 @@ test_no_real_provider_or_socket_in_l4_tests() ->
                <<"https">>,
                <<"gen_tcp">>,
                <<"ssl:connect">>],
+    [?assertEqual({Path, Marker, 0}, {Path, Marker, count(read_source(Path), Marker)})
+     || Path <- ?L4_TEST_SOURCES, Marker <- Markers],
+    %% No real-provider or socket marker appears in any L.4 test source.
     TotalMarkers = lists:sum([count(read_source(Path), Marker)
                               || Path <- ?L4_TEST_SOURCES, Marker <- Markers]),
-    %% Deliberately-wrong expected value for the staged-red phase: the true count
-    %% of real-provider markers in the L.4 sources is 0, so expecting 1 must fail
-    %% for the right reason (the assertion fires, not a compile/import error).
-    ?assertEqual(1, TotalMarkers).
+    ?assertEqual(0, TotalMarkers).
 
 no_real_provider_or_socket_in_l4_tests_test() ->
     test_no_real_provider_or_socket_in_l4_tests().
