@@ -14,11 +14,13 @@
 -export([test_lisp_send_matches_map_send_outputs/1]).
 -export([test_lisp_send_correlation_chain_matches_map/1]).
 -export([test_malformed_lisp_send_actor_survives/1]).
+-export([test_lisp_ask_matches_map_ask_result/1]).
 
 all() ->
     [test_lisp_send_matches_map_send_outputs,
      test_lisp_send_correlation_chain_matches_map,
-     test_malformed_lisp_send_actor_survives].
+     test_malformed_lisp_send_actor_survives,
+     test_lisp_ask_matches_map_ask_result].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -141,6 +143,39 @@ test_malformed_lisp_send_actor_survives(_Config) ->
                                 args => #{value => <<"hi">>}}]},
     {ok, TaskId} = soma_actor:send(Pid, MapEnvelope),
     {ok, _Result} = wait_for_task_result(Pid, TaskId, 100),
+    true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 8: soma_actor:ask/3 called with a valid Lisp `(msg ...)' string
+%% returns the same result as ask/3 called with the equivalent map envelope. The
+%% `(msg ...)' string is parsed at the wrapper through soma_lfe:compile/2 into the
+%% exact map envelope the map path takes, then runs through the unchanged
+%% {ask, Envelope} path: ask/3 blocks inside its gen_statem:call until the run
+%% completes and returns {ok, Result}. Both forms carry one echo step on a single
+%% actor; the two {ok, Result} replies are asserted equal.
+test_lisp_ask_matches_map_ask_result(_Config) ->
+    Opts = #{actor_id => <<"actor-lisp-ask">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => event_store_pid()},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+
+    %% Lisp path: a `(msg ...)' string with one echo step, submitted via ask/3.
+    LispSource = <<"(msg (type chat) (payload \"hi\") "
+                   "(steps (step (id s1) (tool echo) "
+                   "(args (value \"hi\")))))">>,
+    {ok, LispResult} = soma_actor:ask(Pid, LispSource, 2000),
+
+    %% Map path: the equivalent map envelope the parser produces for that string.
+    MapEnvelope = #{type => chat,
+                    payload => <<"hi">>,
+                    steps => [#{id => s1,
+                                tool => echo,
+                                args => #{value => <<"hi">>}}]},
+    {ok, MapResult} = soma_actor:ask(Pid, MapEnvelope, 2000),
+
+    %% The same work through both ask/3 entry forms yields equal run results.
+    LispResult = MapResult,
     true = is_process_alive(Pid),
     ok.
 
