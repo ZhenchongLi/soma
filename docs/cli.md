@@ -94,7 +94,8 @@ soma run WORKFLOW [--json] [--trace] [--root DIR] [--timeout-ms N]
 - Sends a `run` request; the daemon owns a supervised run, waits for the terminal
   state, returns it. `--root` is your sandbox root for file tools (your own FS).
 - `--json` → a machine object: `{"status":"completed","outputs":{…},
-  "correlation_id":"…","trace":[…]}`. Exit `0` completed, non-zero otherwise.
+  "task_id":"…","correlation_id":"…"}` (the `trace` array is added only with
+  `--trace`). Exit `0` completed, non-zero otherwise.
 
 ## `soma ask` — the agent (client; needs node B)
 
@@ -109,11 +110,18 @@ Builds an `llm` envelope from INTENT, drives the v0.5 decision loop against the
 are the guardrails. Provider `base_url`/`model` from config; **API key only from
 the daemon's env** (set when `soma daemon` starts — clients never pass a key).
 
+**Near-term scope:** the real provider initially returns only `reply` proposals
+(a text answer), so `soma ask` answers in text and does **not** yet execute tools.
+The policy gate, `--allow`, and `--budget-steps` become load-bearing only once
+structured (`run_steps`) proposals land (the real planner); until then they are
+accepted but inert for a `reply`.
+
 ## Output for agent consumption (`--json`)
 
-One JSON object on stdout — `{status, outputs|reply, correlation_id, trace?,
-error?}` — plus a meaningful exit code. Diagnostics go to stderr so stdout stays
-clean JSON.
+One JSON object on stdout — `{status, task_id, correlation_id, outputs|reply,
+trace?, error?}` — plus a meaningful exit code. Diagnostics go to stderr so stdout
+stays clean JSON. **Identifiers**: `--json` returns both ids; `soma status` /
+`soma cancel` take the `task_id`, `soma trace` takes the `correlation_id`.
 
 **Erlang-term → JSON mapping** (outputs, reasons, trace carry Erlang terms, which
 have no 1:1 JSON form — this is a defined, documented mapping):
@@ -161,7 +169,10 @@ documented now, fixed later, not v1 blockers:
 1. **CLI.1 — daemon + Unix socket + `soma run` client.** `soma daemon` (the node +
    a socket listener: accept loop, one handler process per connection, length-
    prefixed JSON, the term→JSON mapping, cancel-on-disconnect) and a thin `soma
-   run` client. No LLM. *Foundational.*
+   run` client. No LLM. *Foundational.* Daemon-lifecycle acceptance items: an
+   **atomic single-winner socket bind** (concurrent first-calls / auto-start must
+   not spawn duplicate daemons) and **stale-socket cleanup** (unlink a leftover
+   socket file before bind, so a restart after a crash succeeds).
 2. **node B.2 — actor uses the real provider** (separate track): wire the actor's
    `model_config` to the real `soma_llm_openai`. The brain `soma ask` needs.
 3. **CLI.2 — `soma ask`** client on node B.2.
