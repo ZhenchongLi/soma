@@ -852,10 +852,14 @@ ModelConfig = #{
     event_store  => Store
 }).
 
-%% A plain prompt envelope — no `llm' directive, no `steps'. The actor builds the
-%% real call from its model_config and the payload prompt.
+%% A prompt envelope with no mock `directive' and no `steps'. The `llm' key is
+%% still required — it is the field `maybe_start_llm_call/4' gates on to take the
+%% llm-call path — but it carries no directive: the actor's model_config selects
+%% the real provider and build_call_opts/2 turns the payload prompt into the
+%% real chat-completions call.
 Env = #{type => <<"chat">>, payload => #{prompt => <<"Say hello.">>},
-        task_id => <<"t1">>, correlation_id => <<"c1">>},
+        task_id => <<"t1">>, correlation_id => <<"c1">>,
+        llm => #{}},
 {ok, <<"t1">>} = soma_actor:send(Actor, Env).
 soma_actor:get_task_result(Actor, <<"t1">>).
 %% => {ok, #{kind => reply, text => <<"Hello!">>}}   (the parsed reply proposal)
