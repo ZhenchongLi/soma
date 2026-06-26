@@ -57,3 +57,16 @@ test_build_request_body_includes_optional_opts() ->
 
 build_request_body_includes_optional_opts_test() ->
     test_build_request_body_includes_optional_opts().
+
+test_build_request_body_omits_optional_opts() ->
+    Config = #{base_url => <<"https://api.example.test/v1">>,
+               api_key => <<"dummy-key">>,
+               model => <<"dummy-model">>,
+               messages => [#{role => <<"user">>, content => <<"hi">>}]},
+    #{body := Body} = soma_llm_openai:build_request(Config),
+    Decoded = json:decode(Body),
+    ?assert(maps:is_key(<<"enable_thinking">>, Decoded)),
+    ?assert(maps:is_key(<<"max_tokens">>, Decoded)).
+
+build_request_body_omits_optional_opts_test() ->
+    test_build_request_body_omits_optional_opts().
