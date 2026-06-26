@@ -16,7 +16,13 @@ render(Map) when is_map(Map) ->
              render_pair(correlation_id, maps:get(correlation_id, Map)),
              ")"];
         false ->
-            render_value(Map)
+            case is_event_map(Map) of
+                true ->
+                    Pairs = [render_pair(K, V) || {K, V} <- maps:to_list(Map)],
+                    ["(event ", lists:join(" ", Pairs), ")"];
+                false ->
+                    render_value(Map)
+            end
     end;
 render(Atom) when is_atom(Atom) ->
     render_symbol(Atom);
@@ -49,6 +55,9 @@ render_value(Map) when is_map(Map) ->
     end;
 render_value(Value) ->
     render(Value).
+
+is_event_map(Map) ->
+    maps:is_key(event_type, Map).
 
 is_result_map(Map) ->
     lists:all(fun(K) -> maps:is_key(K, Map) end,
