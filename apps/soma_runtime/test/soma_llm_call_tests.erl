@@ -74,11 +74,7 @@ test_perform_call_routing_opens_no_socket() ->
             model => <<"a-model">>,
             messages => [#{role => <<"user">>, content => <<"hi">>}],
             response => {200, Body}},
-    %% STAGED-RED: deliberately wrong expectation. The offline routing path
-    %% returns the parsed `reply' proposal; asserting it instead errored with an
-    %% http failure must fire. Flipped to the true expectation in the follow-up
-    %% fix(test) commit.
-    ?assertEqual({error, {http_request_failed, nxdomain}},
+    ?assertEqual({ok, #{kind => reply, text => <<"offline reply">>}},
                  soma_llm_call:perform_call(Llm)).
 
 perform_call_routing_opens_no_socket_test() ->
