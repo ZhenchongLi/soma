@@ -17,10 +17,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([lisp_body_reaches_same_terminal_status_as_map/1]).
 -export([lisp_body_produces_same_step_outputs_as_map/1]).
+-export([by_correlation_spans_both_actors_for_lisp_body/1]).
 
 all() ->
     [lisp_body_reaches_same_terminal_status_as_map,
-     lisp_body_produces_same_step_outputs_as_map].
+     lisp_body_produces_same_step_outputs_as_map,
+     by_correlation_spans_both_actors_for_lisp_body].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -183,6 +185,54 @@ lisp_body_produces_same_step_outputs_as_map(_Config) ->
     LispOutputs = MapOutputs,
     true = is_process_alive(A2L),
     true = is_process_alive(A2M),
+    ok.
+
+%% Criterion 3: `soma_event_store:by_correlation/2' on the sender's
+%% correlation_id returns both the sender's and the receiver's events for a
+%% Lisp-bodied actor-to-actor message. A1's mock returns an approved
+%% `actor_message' whose body is a Lisp `(msg ...)' string carrying one echo
+%% step, delivered to A2; the sender appends its own correlation_id to the Lisp
+%% source before delivery, so A2's parsed task lands under A1's id. A single
+%% `by_correlation/2' read on A1's id is then asserted to carry events emitted by
+%% both A1 (the sender's `actor.task.accepted') and A2 (the receiver's
+%% `actor.task.accepted'), proving the chain spans both actors.
+by_correlation_spans_both_actors_for_lisp_body(_Config) ->
+    Store = event_store_pid(),
+    A2Opts = #{actor_id => <<"actor-a2-corr">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2} = soma_actor_sup:start_actor(A2Opts),
+    A1Opts = #{actor_id => <<"actor-a1-corr">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1} = soma_actor_sup:start_actor(A1Opts),
+    LispBody = <<"(msg (type chat) (payload \"hi\") "
+                 "(steps (step (id s1) (tool echo) "
+                 "(args (value \"hi\")))))">>,
+    LispProposal = #{kind => actor_message, to => A2, payload => LispBody},
+    Corr = <<"corr-l2-span">>,
+    Envelope = #{type => <<"chat">>,
+                payload => #{text => <<"tell a2">>},
+                task_id => <<"task-l2-span">>,
+                correlation_id => Corr,
+                llm => #{directive => proposal, output => LispProposal}},
+    {ok, <<"task-l2-span">>} = soma_actor:send(A1, Envelope),
+    %% Wait for the receiver task on A2 to land under A1's correlation_id and
+    %% reach a terminal status, so both chains have been written to the store.
+    ReceiverTask = wait_for_a2_task(Store, Corr, <<"actor-a2-corr">>, 100),
+    completed = wait_for_terminal(A2, ReceiverTask, 100),
+
+    %% One by_correlation/2 read on the sender's id returns events from both
+    %% actors: the sender (A1) and the receiver (A2).
+    Events = soma_event_store:by_correlation(Store, Corr),
+    ActorIds = lists:usort([maps:get(actor_id, E)
+                            || E <- Events, maps:is_key(actor_id, E)]),
+    true = lists:member(<<"actor-a1-corr">>, ActorIds),
+    %% Staged-red: deliberately wrong -- assert the receiver's events are NOT
+    %% present under the sender's id, which the implementation contradicts.
+    false = lists:member(<<"actor-a2-corr">>, ActorIds),
     ok.
 
 %% Polls the shared store until an `actor.task.accepted' event emitted by the
