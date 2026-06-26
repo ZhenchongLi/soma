@@ -14,3 +14,20 @@ test_render_result_map_produces_fixed_sexpr() ->
 
 render_result_map_produces_fixed_sexpr_test() ->
     test_render_result_map_produces_fixed_sexpr().
+
+test_render_event_map_carries_fields() ->
+    EventMap = #{
+        event_type => llm_started,
+        task_id => <<"t-1">>,
+        step_id => <<"s1">>
+    },
+    Rendered = iolist_to_binary(soma_lisp:render(EventMap)),
+    %% An event map renders with an `event' head, and its sub-forms carry the
+    %% event's fields.
+    ?assertMatch(<<"(event ", _/binary>>, Rendered),
+    ?assert(binary:match(Rendered, <<"(event-type llm-started)">>) =/= nomatch),
+    ?assert(binary:match(Rendered, <<"(task-id \"t-1\")">>) =/= nomatch),
+    ?assert(binary:match(Rendered, <<"(step-id \"s1\")">>) =/= nomatch).
+
+render_event_map_carries_fields_test() ->
+    test_render_event_map_carries_fields().
