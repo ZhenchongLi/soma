@@ -180,7 +180,7 @@ lisp_body_produces_same_step_outputs_as_map(_Config) ->
     {ok, MapOutputs} = soma_actor:get_task_result(A2M, MapReceiverTask),
 
     %% The Lisp body and the equivalent map body produce identical step outputs.
-    LispOutputs = MapOutputs#{s1 => <<"WRONG-staged-red">>},
+    LispOutputs = MapOutputs,
     true = is_process_alive(A2L),
     true = is_process_alive(A2M),
     ok.
