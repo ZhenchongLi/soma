@@ -6,9 +6,10 @@ agent decision layer — LLM-call worker, proposal schema, policy gate,
 decision-loop execution, budget, and actor-to-actor messages), and v0.6 (trace
 tooling + a durable, opt-in `disk_log` event store) are built and merged. v0.5 ran on a **mock LLM only**, but the real provider has
 since landed as **node B.1** (`soma_llm_openai`, smoke-proven against SophNet).
-Two tracks now build in parallel with the v0.X layers: **node B** (the real LLM
-provider) and the **CLI / daemon** (a single-user `soma` daemon + CLI clients —
-see [cli.md](cli.md)). The sequence below is what comes next.
+Three tracks now build alongside the v0.X layers: **node B** (the real LLM
+provider), the **CLI / daemon** (a single-user `soma` daemon + CLI clients — see
+[cli.md](cli.md)), and a **Lisp s-expr message language** for actors/agents (see
+[lisp-messages.md](lisp-messages.md)). The sequence below is what comes next.
 
 The important sequencing rule is unchanged: do not add a layer until the layer
 below it has test coverage for its failure semantics. With the actor contract
@@ -32,6 +33,7 @@ v0.8    DAG / parallel execution, only if still needed
 Active tracks (parallel to v0.7+, building now):
 node B  real LLM provider behind the perform_call seam   [B.1 done; B.2 next]
 CLI     single-user soma daemon + CLI clients            [CLI.1 in progress]
+Lisp    s-expr actor/agent message language (soma_lfe)   [design]
 ```
 
 ## v0.4 — soma_actor skeleton [done]
@@ -259,6 +261,26 @@ with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
   node B.2.
 - `CLI.3` — `soma status` / `soma cancel` / `soma trace` clients, `--detach`,
   auto-start.
+
+## Lisp — s-expr actor/agent message language
+
+Make Lisp s-expressions the message / interchange language between actors and
+agents — **Lisp at the edges, Erlang at the core** (the execution substrate and
+BEAM message-passing stay Erlang/OTP). Turns the v0.3 `soma_lfe` parser from an
+orphan into the message parser. A Lisp message is homoiconic — data or an
+executable plan in one language. Full design: [lisp-messages.md](lisp-messages.md).
+
+- `L.1` — Lisp envelope: `soma_lfe` parses `(msg …)` → the internal envelope;
+  `soma_actor:send` / `ask` accept a Lisp string (additive — map envelopes still
+  work).
+- `L.2` — actor-to-actor Lisp messages (correlation_id preserved, per v0.5.6).
+- `L.3` — Lisp proposals: the LLM emits Lisp, parsed into a proposal — coherent
+  once the whole system speaks Lisp.
+- `L.4` — Lisp audit: the event store records the s-expr form; `soma_trace`
+  renders a correlation chain as readable, replayable Lisp.
+- `L.5` — self-repair: a parse-failure → LLM-repair(source, diagnostics) →
+  re-parse loop, bounded by the v0.5.5 budget. The repaired message re-enters the
+  full normalize + policy + budget pipeline — a second chance, **never a bypass**.
 
 ## Packaging
 
