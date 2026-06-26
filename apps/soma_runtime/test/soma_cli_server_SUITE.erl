@@ -5,10 +5,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_start_link_listens_and_accepts_connect/1]).
 -export([test_start_link_unlinks_stale_socket_file/1]).
+-export([test_second_start_link_on_live_path_errors/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
-     test_start_link_unlinks_stale_socket_file].
+     test_start_link_unlinks_stale_socket_file,
+     test_second_start_link_on_live_path_errors].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -33,6 +35,21 @@ test_start_link_unlinks_stale_socket_file(Config) ->
     Path = socket_path(Config),
     ok = file:write_file(Path, <<"stale">>),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = gen_tcp:connect({local, Path}, 0,
+                                   [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:close(Client).
+
+%% Criterion 6: a second start_link on a Path already served by a live server
+%% returns an error (the bind cannot take the in-use address) and does not start
+%% a duplicate listener -- the live server's path is not stolen, so server A is
+%% the single listener and still answers a connect.
+test_second_start_link_on_live_path_errors(Config) ->
+    Path = socket_path(Config),
+    {ok, ServerA} = soma_cli_server:start_link(#{socket => Path}),
+    %% STAGED RED: the live-path bind actually returns {error, _}; assert
+    %% {ok, _} first so the match fails and we observe red for the right reason.
+    {ok, _ServerB} = soma_cli_server:start_link(#{socket => Path}),
+    true = is_process_alive(ServerA),
     {ok, Client} = gen_tcp:connect({local, Path}, 0,
                                    [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:close(Client).
