@@ -21,9 +21,7 @@ contains(Haystack, Needle) ->
 %% Criterion 7: the contract names the L.2 suite and each of its cases.
 test_doc_names_lisp_to_lisp_suite_and_cases() ->
     Doc = read_doc(),
-    %% STAGED RED: deliberately wrong expected suite name to make the assertion
-    %% fire on the first run; corrected to reality in the green commit.
-    ?assert(contains(Doc, <<"soma_actor_THIS_SUITE_DOES_NOT_EXIST">>)),
+    ?assert(contains(Doc, <<"soma_actor_lisp_to_lisp_SUITE">>)),
     ?assert(contains(Doc, <<"lisp_body_reaches_same_terminal_status_as_map">>)),
     ?assert(contains(Doc, <<"lisp_body_produces_same_step_outputs_as_map">>)),
     ?assert(contains(Doc, <<"by_correlation_spans_both_actors_for_lisp_body">>)),
