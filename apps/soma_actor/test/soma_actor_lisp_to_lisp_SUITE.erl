@@ -230,9 +230,7 @@ by_correlation_spans_both_actors_for_lisp_body(_Config) ->
     ActorIds = lists:usort([maps:get(actor_id, E)
                             || E <- Events, maps:is_key(actor_id, E)]),
     true = lists:member(<<"actor-a1-corr">>, ActorIds),
-    %% Staged-red: deliberately wrong -- assert the receiver's events are NOT
-    %% present under the sender's id, which the implementation contradicts.
-    false = lists:member(<<"actor-a2-corr">>, ActorIds),
+    true = lists:member(<<"actor-a2-corr">>, ActorIds),
     ok.
 
 %% Polls the shared store until an `actor.task.accepted' event emitted by the
