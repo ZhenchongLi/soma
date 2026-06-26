@@ -24,8 +24,14 @@ test_start_link_listens_and_accepts_connect(Config) ->
                                    [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:close(Client).
 
-socket_path(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+%% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS), so the
+%% long CT priv_dir cannot hold a bindable socket. Use a short unique path
+%% under the system temp dir.
+socket_path(_Config) ->
+    Tmp = case os:getenv("TMPDIR") of
+              false -> "/tmp";
+              Dir -> Dir
+          end,
     Name = "soma_cli_" ++ integer_to_list(erlang:unique_integer([positive]))
            ++ ".sock",
-    filename:join(PrivDir, Name).
+    filename:join(Tmp, Name).
