@@ -16,7 +16,7 @@ syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `DSL -> validated step list -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 135, Common Test 192, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 154, Common Test 198, Erlang/OTP 29).
 The runtime executes sequential runs, isolates failures, and runs both in-BEAM
 Erlang tools and external one-shot CLI tools — each proven under test, asserting
 *process survival*, not just return values. An LFE DSL compile-only layer
@@ -28,7 +28,12 @@ worker, a validated proposal schema, a policy gate, decision-loop execution,
 per-task budgets, and actor-to-actor messages — so an envelope can carry a model
 call that produces a proposal, which is gated and then executed, all under one
 auditable `correlation_id`. v0.5 runs on a **mock LLM only — there is no real
-provider yet** (the call seam is the one point a real one slots into). A
+provider yet** (the call seam is the one point a real one slots into). The
+**durability + observability layer** (v0.6) then makes the event stream both
+readable and durable: `soma_trace` renders one `correlation_id` as a
+timestamp-ordered timeline, and the event store gains an **opt-in `disk_log`
+backend** (turned on with one app env) whose events survive a BEAM restart —
+behind the same query API, with the in-memory store still the default. A
 self-contained macOS arm64 release is built and verified; the Linux x86_64 / arm64
 artifacts are the one remaining packaging task.
 
@@ -84,7 +89,7 @@ Prerequisites: Erlang/OTP 29 and rebar3.
 
 ```bash
 rebar3 compile
-rebar3 eunit && rebar3 ct      # 135 EUnit + 192 Common Test, all green
+rebar3 eunit && rebar3 ct      # 154 EUnit + 198 Common Test, all green
 ```
 
 Drive a run in the shell:
@@ -192,14 +197,28 @@ in [docs/usage.md](docs/usage.md).
   It emits `llm.*` and `proposal.*` events on the same chain. This whole layer is
   driven by a **mock LLM** — the call seam `soma_llm_call:perform_call/1` is the
   one point a real provider slots into; there is no real provider yet.
-- **A mandatory event log** (in-memory) records the whole run, each event
-  carrying 8 fields (`event_id, timestamp, session_id, run_id, step_id,
+- **A mandatory event log** (in-memory by default) records the whole run, each
+  event carrying 8 fields (`event_id, timestamp, session_id, run_id, step_id,
   tool_call_id, event_type, payload`): `session.started -> run.accepted ->
   run.started ->` per step `step.started -> tool.started -> tool.succeeded ->
   step.succeeded -> ... -> run.completed` (or `run.failed` / `run.timeout` /
   `run.cancelled`). Actor-layer events add `actor.*` types and an
   `actor_id` / `task_id` / `correlation_id` extension; a `soma_run` started by an
   actor stamps the `correlation_id` onto every run event too.
+- **A durable event store, opt-in** (v0.6). The store also has a `disk_log`
+  backend: start it with a log path and `append/2` writes each event to the
+  durable log *and* the in-memory index, replaying the log on boot to rebuild the
+  index — so events survive a BEAM restart. The in-memory store stays the default;
+  the prod release turns persistence on by setting one app env
+  (`event_store_log`), and the `by_*` query API does not change. The principle is
+  **the durable log is the source of truth, the in-memory index is a rebuildable
+  cache**.
+- **A readable trace view** (v0.6). `soma_trace:render/2` takes one
+  `correlation_id` and renders the whole chain as a timestamp-ordered timeline,
+  one line per event (`actor.* -> llm.* -> run.* -> step.* -> tool.* ->
+  actor.*`); `soma_trace:timeline/1` is the pure renderer over a list of event
+  maps. Read-only, it turns the event stream into an operational view without
+  changing it.
 
 ![A tool call crosses a process boundary — soma_run spawns and monitors a soma_tool_call worker; the worker runs an erlang_module tool in-BEAM or a cli tool through a port, then sends the result back as a message. On timeout or cancel the run kills the worker, and a cli tool's external OS process with it.](docs/diagrams/tool-call.svg)
 
@@ -236,11 +255,12 @@ those hosts and are the remaining packaging work. See
 ## Scope
 
 In scope: the runtime, sequential steps, supervised in-BEAM and one-shot CLI
-tools, real timeout/cancellation, normalized failures, the event log, a
-compile-only LFE DSL layer (`soma_lfe`), the `soma_actor` agent-entity skeleton,
-the agent decision layer (`soma_llm_call` + proposal schema + policy gate +
-decision-loop execution + budgets + actor-to-actor, **mock LLM only**), and a
-self-contained release.
+tools, real timeout/cancellation, normalized failures, the event log (in-memory,
+with an opt-in durable `disk_log` backend) and a read-only trace view
+(`soma_trace`), a compile-only LFE DSL layer (`soma_lfe`), the `soma_actor`
+agent-entity skeleton, the agent decision layer (`soma_llm_call` + proposal schema
++ policy gate + decision-loop execution + budgets + actor-to-actor, **mock LLM
+only**), and a self-contained release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**): a
 real LLM provider behind the mock call seam, an effect-aware policy gate, MCP, DAG
@@ -287,6 +307,12 @@ parallelism, distributed Erlang, and persistent run resume.
   responsive), proposal normalization, the policy gate, decision-loop execution,
   budget exhaustion, and actor-to-actor `correlation_id` propagation — each
   mapped to its suite and case. Mock-LLM only.
+- **[docs/contracts/v0.6-test-contract.md](docs/contracts/v0.6-test-contract.md)**
+  — persistence proofs for the durable `disk_log` event store: an appended event
+  reads back from the log as its normalized form, a restart at the same path
+  replays the log so `all/1` / `by_run/2` / `by_correlation/2` return the events
+  in append order, and a truncated tail boots and still serves the intact events
+  — while the in-memory default writes no file and queries unchanged.
 
 **Chinese docs**
 

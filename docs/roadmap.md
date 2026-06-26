@@ -1,16 +1,18 @@
 # Roadmap
 
 v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), v0.3 (LFE DSL
-compile-only layer), v0.4 (the `soma_actor` agent-entity skeleton), and v0.5 (the
+compile-only layer), v0.4 (the `soma_actor` agent-entity skeleton), v0.5 (the
 agent decision layer — LLM-call worker, proposal schema, policy gate,
-decision-loop execution, budget, and actor-to-actor messages) are built and
-merged. v0.5 runs on a **mock LLM only**; a real provider is still future work.
-The sequence below is what comes next.
+decision-loop execution, budget, and actor-to-actor messages), and v0.6 (trace
+tooling + a durable, opt-in `disk_log` event store) are built and merged. v0.5
+runs on a **mock LLM only**; a real provider is still future work. The sequence
+below is what comes next.
 
 The important sequencing rule is unchanged: do not add a layer until the layer
 below it has test coverage for its failure semantics. With the actor contract
-closed and LLM planning landed as a supervised child operation, the next work is
-trace tooling and a persistent event store.
+closed, LLM planning landed as a supervised child operation, and the event stream
+now both readable (a trace view) and durable (it survives a restart), the next
+work is persistent run resume.
 
 ## Sequence
 
@@ -21,7 +23,7 @@ v0.3    LFE DSL -> steps                               [done]
 v0.4    soma_actor -- agent entity skeleton            [done]
 v0.4.1  actor hardening + release/docs alignment       [done]
 v0.5    LLM worker + proposal + policy + budget        [done]
-v0.6    trace tooling + persistent event store
+v0.6    trace tooling + persistent event store         [done]
 v0.7    persistent resume
 v0.8    DAG / parallel execution, only if still needed
 ```
@@ -143,20 +145,46 @@ human-in-the-loop ask path yet.
 Real-provider planning (a real `node B` behind the `perform_call/1` seam) and an
 effect-aware policy gate remain future work beyond this layer.
 
-## v0.6 — trace tooling + persistent event store
+## v0.6 — trace tooling + persistent event store [done]
 
 Before persistent resume, make the event stream useful as a product surface and
-as an operational boundary.
+as an operational boundary. The event log was always mandatory; this layer makes
+it **readable** (a trace view over one `correlation_id`) and **durable** (it
+survives a BEAM restart) without changing the `by_*` query API any caller already
+uses.
 
-Target capabilities:
+Slices (all done):
 
-- a trace helper that renders one `correlation_id` as a readable timeline
-  (`actor.* -> llm.* -> run.* -> step.* -> tool.* -> actor.*`);
-- an "incident desk" style demo that drives success, failure, timeout, and
-  cancellation through one long-lived actor;
-- a persistent event store backend behind the existing event-store API;
-- event query tests for session, run, and correlation ordering across restarts
-  where the backend supports it.
+- `v0.6.1` — `soma_trace` [done]: read-side trace tooling in
+  `apps/soma_event_store/src/`. `soma_trace:timeline/1` is pure — it renders a
+  list of event maps as a readable, timestamp-ordered timeline, one line per
+  event; `soma_trace:render/2` is `by_correlation/2` then `timeline/1`, so one
+  `correlation_id` reads back as `actor.* -> llm.* -> run.* -> step.* -> tool.*
+  -> actor.*`. Read-only, depends on nothing above `soma_event_store`.
+- `v0.6.2` — durable `soma_event_store` [done]: an opt-in `disk_log` backend
+  behind the existing API. `start_link/1` with `#{log => Path}` opens a `halt`
+  `disk_log`; `append/2` writes the normalized event to the log *and* the
+  in-memory index; `init/1` replays the log on boot to rebuild the index,
+  tolerating a truncated tail (an unclean shutdown's half-written term is treated
+  as end-of-log). `start_link/0` stays in-memory, byte for byte. Events survive a
+  BEAM restart. This establishes the principle the next layer leans on: **the
+  durable log is the source of truth, the in-memory index is a rebuildable
+  cache**. Proofs in
+  [contracts/v0.6-test-contract.md](contracts/v0.6-test-contract.md).
+- `v0.6.3` — env-wired persistence [done]: `soma_sup` chooses the store's mode
+  from app env — `application:get_env(soma_runtime, event_store_log, undefined)`:
+  a path starts the persistent store (`start_link/1`), unset keeps the in-memory
+  default (`start_link/0`) for dev and tests. The prod release becomes durable by
+  setting that env (a `sys.config` example is in `docs/release.md`).
+
+Outcome — trace tooling, a durable `disk_log` event store, and env-wired
+persistence are built and merged. The event stream is now both a readable
+operational view (`soma_trace`) and a durable record that survives a restart,
+behind the same query API; the "durable log = source of truth, in-memory index =
+rebuildable cache" principle is the foundation v0.7's persistent resume builds
+on. The one piece deferred within this layer is the **"incident desk" demo** (an
+example driving success / failure / timeout / cancellation through one long-lived
+actor) — not built.
 
 This keeps Soma's strongest property visible: the event stream is the source of
 truth, while `ask` and polling are convenience views.
