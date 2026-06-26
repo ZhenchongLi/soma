@@ -68,3 +68,30 @@ test_run_form_unchanged_after_msg_added() ->
 
 run_form_unchanged_after_msg_added_test() ->
     test_run_form_unchanged_after_msg_added().
+
+%% Review fix — a malformed step sub-form (a step child that is not
+%% id/tool/args, or a steps body that is not a (step ...) list) must return
+%% {error, [Diagnostic]} in the diagnostic shape, not crash with
+%% function_clause out of parse_msg_step/2 or parse_msg_steps/2.
+test_malformed_step_subform_returns_diagnostics() ->
+    %% Bad step child: 'bogus' is not (id ...)/(tool ...)/(args ...).
+    BadChildSource =
+        <<"(msg (type chat) (payload \"hi\") "
+          "(steps (step (id s1) (tool echo) bogus)))">>,
+    BadChildResult = soma_lfe:compile(BadChildSource, #{}),
+    ?assertMatch({error, [_ | _]}, BadChildResult),
+    {error, [BadChildDiag | _]} = BadChildResult,
+    ?assert(maps:is_key(message, BadChildDiag)),
+    ?assert(maps:is_key(line, BadChildDiag)),
+
+    %% Bad steps body: 'bogus' is not a (step ...) list.
+    BadStepsSource =
+        <<"(msg (type chat) (payload \"hi\") (steps bogus))">>,
+    BadStepsResult = soma_lfe:compile(BadStepsSource, #{}),
+    ?assertMatch({error, [_ | _]}, BadStepsResult),
+    {error, [BadStepsDiag | _]} = BadStepsResult,
+    ?assert(maps:is_key(message, BadStepsDiag)),
+    ?assert(maps:is_key(line, BadStepsDiag)).
+
+malformed_step_subform_returns_diagnostics_test() ->
+    test_malformed_step_subform_returns_diagnostics().
