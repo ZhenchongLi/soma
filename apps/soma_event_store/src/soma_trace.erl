@@ -1,6 +1,6 @@
 -module(soma_trace).
 
--export([timeline/1, render/2]).
+-export([timeline/1, render/2, render_lisp/2]).
 
 %% Pure function: takes a list of events, returns iodata with one line per event.
 %% Events are sorted by timestamp ascending.
@@ -20,6 +20,16 @@ timeline(Events) ->
 render(Store, CorrelationId) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     timeline(Events).
+
+%% Fetch the correlation chain, sort it by timestamp ascending, and render
+%% each event as a Lisp s-expr (one per line, event order).
+-spec render_lisp(Store :: pid(), CorrelationId :: term()) -> iodata().
+render_lisp(Store, CorrelationId) ->
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Sorted = lists:sort(fun(E1, E2) ->
+                            maps:get(timestamp, E1, 0) =< maps:get(timestamp, E2, 0)
+                        end, Events),
+    [[soma_lisp:render(Event), "\n"] || Event <- Sorted].
 
 %% Internal: format a single event as a line (string).
 format_event(Event) ->
