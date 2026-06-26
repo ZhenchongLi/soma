@@ -2,7 +2,7 @@
 %% run representation, or a list of structured diagnostics.
 -module(soma_lfe_parser).
 
--export([parse_run/1, parse_msg/1]).
+-export([parse_run/1, parse_msg/1, parse_proposal/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -100,6 +100,12 @@ parse_msg_step([Other | _], _Acc) ->
                message => iolist_to_binary(
                    io_lib:format("unexpected token in step children: ~p", [Other])),
                line => 0}]}.
+
+%% @doc Parse a single proposal form into the #{kind => ...} map
+%% soma_proposal:normalize/1 accepts.
+-spec parse_proposal([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_proposal([reply, [text, Text]]) when is_binary(Text) ->
+    {ok, #{kind => reply, text => Text}}.
 
 -spec parse_run([term()]) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
