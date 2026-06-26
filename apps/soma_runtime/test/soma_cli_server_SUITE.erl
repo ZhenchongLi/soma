@@ -7,9 +7,6 @@
 -export([test_start_link_unlinks_stale_socket_file/1]).
 -export([test_second_start_link_on_live_path_errors/1]).
 -export([test_first_server_survives_failed_second_start_link/1]).
--export([test_run_echo_returns_completed_with_outputs/1]).
--export([test_run_failed_returns_failed_with_error/1]).
--export([test_server_serves_after_failed_run/1]).
 -export([test_run_lisp_echo_returns_completed_result/1]).
 -export([test_run_lisp_result_carries_correlation_id/1]).
 -export([test_run_lisp_failed_returns_error_result/1]).
@@ -22,9 +19,6 @@ all() ->
      test_start_link_unlinks_stale_socket_file,
      test_second_start_link_on_live_path_errors,
      test_first_server_survives_failed_second_start_link,
-     test_run_echo_returns_completed_with_outputs,
-     test_run_failed_returns_failed_with_error,
-     test_server_serves_after_failed_run,
      test_run_lisp_echo_returns_completed_result,
      test_run_lisp_result_carries_correlation_id,
      test_run_lisp_failed_returns_error_result,
@@ -79,72 +73,6 @@ test_first_server_survives_failed_second_start_link(Config) ->
     true = is_process_alive(ServerA),
     {ok, Client} = connect(Path),
     ok = gen_tcp:close(Client).
-
-%% Criterion 8: a framed `run' request carrying a one-step `echo' workflow drives
-%% the real server -> run -> tool-call path and returns a framed response with
-%% status "completed", a non-empty task_id, a non-empty correlation_id, and an
-%% `outputs' object holding the echo step's result. No layer is bypassed: a real
-%% gen_tcp client over the local Unix socket sends the request and reads the reply.
-test_run_echo_returns_completed_with_outputs(Config) ->
-    Path = socket_path(Config),
-    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
-    {ok, Client} = connect(Path),
-    Request = #{<<"cmd">> => <<"run">>,
-                <<"workflow">> =>
-                    [#{<<"id">> => <<"s1">>,
-                       <<"tool">> => <<"echo">>,
-                       <<"args">> => #{<<"value">> => <<"hi">>}}]},
-    ok = gen_tcp:send(Client, iolist_to_binary(json:encode(Request))),
-    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
-    Response = json:decode(Reply),
-    <<"completed">> = maps:get(<<"status">>, Response),
-    TaskId = maps:get(<<"task_id">>, Response),
-    true = is_binary(TaskId) andalso byte_size(TaskId) > 0,
-    CorrId = maps:get(<<"correlation_id">>, Response),
-    true = is_binary(CorrId) andalso byte_size(CorrId) > 0,
-    Outputs = maps:get(<<"outputs">>, Response),
-    #{<<"value">> := <<"hi">>} = maps:get(<<"s1">>, Outputs),
-    ok = gen_tcp:close(Client).
-
-%% Criterion 9: a `run' request whose step fails returns a framed response with a
-%% status other than "completed" and an `error' field -- the run's failure is data
-%% in the response, not a handler crash (the `fail' tool's step fails the run).
-test_run_failed_returns_failed_with_error(Config) ->
-    Path = socket_path(Config),
-    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
-    {ok, Client} = connect(Path),
-    Request = #{<<"cmd">> => <<"run">>,
-                <<"workflow">> =>
-                    [#{<<"id">> => <<"s1">>,
-                       <<"tool">> => <<"fail">>,
-                       <<"args">> => #{<<"mode">> => <<"error">>}}]},
-    ok = gen_tcp:send(Client, iolist_to_binary(json:encode(Request))),
-    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
-    Response = json:decode(Reply),
-    true = maps:get(<<"status">>, Response) =/= <<"completed">>,
-    true = maps:is_key(<<"error">>, Response),
-    ok = gen_tcp:close(Client).
-
-%% Criterion 10: the server keeps serving after a failed run -- a fresh client
-%% gets a completed `echo' run after an earlier request whose step failed.
-test_server_serves_after_failed_run(Config) ->
-    Path = socket_path(Config),
-    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
-    {ok, C1} = connect(Path),
-    Fail = #{<<"cmd">> => <<"run">>,
-             <<"workflow">> => [#{<<"id">> => <<"s1">>, <<"tool">> => <<"fail">>,
-                                  <<"args">> => #{<<"mode">> => <<"error">>}}]},
-    ok = gen_tcp:send(C1, iolist_to_binary(json:encode(Fail))),
-    {ok, _} = gen_tcp:recv(C1, 0, 5000),
-    ok = gen_tcp:close(C1),
-    {ok, C2} = connect(Path),
-    Echo = #{<<"cmd">> => <<"run">>,
-             <<"workflow">> => [#{<<"id">> => <<"s1">>, <<"tool">> => <<"echo">>,
-                                  <<"args">> => #{<<"value">> => <<"ok">>}}]},
-    ok = gen_tcp:send(C2, iolist_to_binary(json:encode(Echo))),
-    {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
-    <<"completed">> = maps:get(<<"status">>, json:decode(Reply)),
-    ok = gen_tcp:close(C2).
 
 %% Criterion 1 (CLI.1b): a framed Lisp `(run (step ...))' request carrying a
 %% one-step `echo' workflow drives the real server -> soma_lfe:compile ->

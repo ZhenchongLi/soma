@@ -34,7 +34,7 @@ test_doc_names_cli_1b_suites_and_cases() ->
     ?assert(contains(Doc, <<"test_server_serves_after_malformed_request">>)),
     %% Server source-text tests (criterion 3)
     ?assert(contains(Doc, <<"soma_cli_server_tests">>)),
-    ?assert(contains(Doc, <<"test_run_path_uses_lisp_not_json">>)),
+    ?assert(contains(Doc, <<"cli_server_source_is_json_free_test">>)),
     %% Client CT suite (criteria 8, 9, 10, 11)
     ?assert(contains(Doc, <<"soma_cli_SUITE">>)),
     ?assert(contains(Doc, <<"test_run_echo_file_prints_result_exit_zero">>)),

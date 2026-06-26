@@ -45,7 +45,7 @@ socket path. See [../../design-110.md](../../design-110.md).
 | --- | --- | --- | --- |
 | 1 | A completed run replies a `(result ...)` with `completed` status and the echo output | `soma_cli_server_SUITE` | `test_run_lisp_echo_returns_completed_result` |
 | 2 | The completed `(result ...)` carries a non-empty `(correlation-id "...")` sub-form | `soma_cli_server_SUITE` | `test_run_lisp_result_carries_correlation_id` |
-| 3 | The `run` path uses `soma_lfe` + `soma_lisp`, never `json:decode` / `json:encode` | `soma_cli_server_tests` | `test_run_path_uses_lisp_not_json` |
+| 3 | `soma_cli_server` uses `soma_lfe` + `soma_lisp`, never `json:decode` / `json:encode` (whole module, CLI.1c) | `soma_cli_server_tests` | `cli_server_source_is_json_free_test` |
 | 4 | A failed run replies a `(result ...)` with non-`completed` status and an `(error ...)` sub-form | `soma_cli_server_SUITE` | `test_run_lisp_failed_returns_error_result` |
 | 5 | The server stays up after a failed run and answers the next request on a new connection | `soma_cli_server_SUITE` | `test_server_serves_after_failed_lisp_run` |
 | 6 | A malformed Lisp request replies a defined error s-expr, no handler crash | `soma_cli_server_SUITE` | `test_malformed_request_returns_error_sexpr` |

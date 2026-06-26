@@ -4,6 +4,14 @@ This document maps each proof of the CLI.1 daemon-socket-server slice to the
 suite and case that proves it. It is the companion to the v0.2–v0.6 contracts and
 the design in [../cli.md](../cli.md).
 
+> **Superseded by the Lisp wire (CLI.1b + CLI.1c).** This slice's original wire was
+> JSON; CLI.1b added the Lisp `(run …)` / `(result …)` wire and CLI.1c removed JSON
+> entirely. The JSON-specific proofs below — the `encode_*` term→JSON tests
+> (criteria 1–2) and the JSON `test_run_*` run tests (criteria 8–10), now removed —
+> are superseded; the surviving CLI.1 proofs are the framing round-trip (3) and the
+> listener/lifecycle (4–7). The live run-path proofs are in
+> [cli-1b-test-contract.md](cli-1b-test-contract.md).
+
 ## What this slice builds
 
 The server side of the soma daemon: a Unix-domain (`{local, Path}`) listener with
