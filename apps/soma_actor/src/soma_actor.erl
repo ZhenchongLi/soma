@@ -630,9 +630,16 @@ execute_actor_message(TaskId, CorrelationId, LlmCallId, Proposal, Data) ->
            kind => maps:get(kind, Proposal, undefined)}),
     To = maps:get(to, Proposal),
     Payload = maps:get(payload, Proposal),
-    Delivery = #{type => <<"actor.message">>,
-                 payload => Payload,
-                 correlation_id => CorrelationId},
+    %% Branch on the body's shape. A map body builds the v0.5.6 delivery
+    %% envelope byte-for-byte and goes down send/2's map clause. A Lisp string
+    %% body (binary or iolist) is handed to send/2 as a string, so the receiver
+    %% compiles it through soma_lfe:compile/2 at its own string clause (the L.1
+    %% path) -- Lisp is parsed only at the receiving boundary. The sender's
+    %% correlation_id has to ride along either way: the map delivery carries it
+    %% as a wrapper field; the Lisp source gets a `(correlation-id "...")' form
+    %% appended (Option 2 in the design) so the receiver's parse picks it up and
+    %% by_correlation/2 still spans both actors.
+    Delivery = build_delivery(Payload, CorrelationId),
     try soma_actor:send(To, Delivery) of
         _ ->
             Task = (maps:get(TaskId, Data#data.tasks))#{
@@ -647,6 +654,65 @@ execute_actor_message(TaskId, CorrelationId, LlmCallId, Proposal, Data) ->
             %% stay alive -- the sender must survive a dead receiver.
             Data1 = fail_task(TaskId, {delivery_failed, Reason}, Data),
             {keep_state, Data1}
+    end.
+
+%% Build the delivery the sender hands to soma_actor:send/2, branching on the
+%% body's shape. A Lisp string body (binary or iolist) is delivered as a string
+%% with the sender's `(correlation-id "...")' appended -- the receiver parses it
+%% at its own send/2 string clause (the L.1 path). A map body that is already a
+%% full envelope (carrying `type' and `payload') is delivered as that envelope,
+%% stamped with the sender's correlation_id, so its steps run on the receiver --
+%% the map counterpart of the Lisp `(msg ...)' body. Any other map (the v0.5.6
+%% plain payload, no `type') is wrapped in the fixed `actor.message' envelope
+%% exactly as before, so the v0.5.6 delivery path is unchanged.
+build_delivery(Payload, CorrelationId) when is_binary(Payload);
+                                            is_list(Payload) ->
+    append_correlation_id(Payload, CorrelationId);
+build_delivery(Payload, CorrelationId) when is_map(Payload) ->
+    case maps:is_key(type, Payload) andalso maps:is_key(payload, Payload) of
+        true ->
+            Payload#{correlation_id => CorrelationId};
+        false ->
+            #{type => <<"actor.message">>,
+              payload => Payload,
+              correlation_id => CorrelationId}
+    end.
+
+%% Append a `(correlation-id "Id")' form to a Lisp `(msg ...)' source, just inside
+%% its closing paren, so the receiver's soma_lfe:compile/2 picks the sender's id
+%% up and the delivered task lands under it. parse_msg_fields folds fields left to
+%% right, so an appended id wins over any the body already carried -- the sender's
+%% id should override, matching the map path where the wrapper id wins. The source
+%% may be a binary or an iolist; it is flattened to a binary first.
+append_correlation_id(Source, CorrelationId) ->
+    Bin = iolist_to_binary(Source),
+    Trimmed = trim_trailing_ws(Bin),
+    Size = byte_size(Trimmed),
+    case Trimmed of
+        <<Body:(Size - 1)/binary, $)>> ->
+            <<Body/binary, " (correlation-id \"", CorrelationId/binary,
+              "\")", $)>>;
+        _ ->
+            %% No closing paren to insert before (a malformed body): hand it
+            %% through unchanged, so soma_lfe:compile/2 reports the parse error at
+            %% the receiver's send/2 rather than this helper masking it.
+            Bin
+    end.
+
+%% Drop trailing whitespace bytes so the appended form sits just before the final
+%% `)' of the `(msg ...)' source.
+trim_trailing_ws(Bin) ->
+    Size = byte_size(Bin),
+    case Size of
+        0 ->
+            Bin;
+        _ ->
+            case binary:at(Bin, Size - 1) of
+                C when C =:= $\s; C =:= $\t; C =:= $\n; C =:= $\r ->
+                    trim_trailing_ws(binary:part(Bin, 0, Size - 1));
+                _ ->
+                    Bin
+            end
     end.
 
 %% Start a soma_run the actor owns (session_pid => self()) for the given steps,
