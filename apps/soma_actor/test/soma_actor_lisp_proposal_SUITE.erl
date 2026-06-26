@@ -16,11 +16,13 @@
 -export([lisp_reply_reaches_same_terminal_result_as_map_reply/1]).
 -export([lisp_run_steps_emits_proposal_executed_and_runs/1]).
 -export([malformed_lisp_proposal_fails_task_actor_alive/1]).
+-export([map_proposal_path_unchanged/1]).
 
 all() ->
     [lisp_reply_reaches_same_terminal_result_as_map_reply,
      lisp_run_steps_emits_proposal_executed_and_runs,
-     malformed_lisp_proposal_fails_task_actor_alive].
+     malformed_lisp_proposal_fails_task_actor_alive,
+     map_proposal_path_unchanged].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -180,6 +182,39 @@ malformed_lisp_proposal_fails_task_actor_alive(_Config) ->
     ok = wait_for_status(ActorPid, GoodTaskId, completed, 100),
     {ok, #{kind := reply, text := <<"hi">>}} =
         soma_actor:get_task_result(ActorPid, GoodTaskId),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 7: the v0.5 raw-map proposal path is unchanged. A `proposal'
+%% directive whose `output' is a raw map (not a Lisp string) still flows through
+%% proposal_result/1's `is_map' clause -> soma_proposal:normalize/1 ->
+%% soma_policy:check/2 -> execute, never touching soma_lfe. Drives a raw-map
+%% `reply' proposal through the real soma_actor:send/2 and asserts it reaches the
+%% same terminal result it always did, with the actor alive.
+map_proposal_path_unchanged(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-map-unchanged">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+
+    %% A raw-map reply proposal -- the v0.5 path, no Lisp string involved.
+    MapProposal = #{kind => reply, text => <<"hi">>},
+    MapLlm = #{directive => proposal, output => MapProposal},
+    MapTaskId = <<"task-map-unchanged">>,
+    MapEnvelope = #{type => <<"chat">>,
+                   payload => #{text => <<"answer me">>},
+                   task_id => MapTaskId,
+                   correlation_id => <<"corr-map-unchanged">>,
+                   llm => MapLlm},
+    {ok, MapTaskId} = soma_actor:send(ActorPid, MapEnvelope),
+    ok = wait_for_status(ActorPid, MapTaskId, completed, 100),
+    {ok, MapResult} = soma_actor:get_task_result(ActorPid, MapTaskId),
+
+    %% The raw map normalizes, gates, and executes to the same reply proposal as
+    %% before -- the v0.5 path is untouched.
+    #{kind := reply, text := <<"WRONG">>} = MapResult,
     true = is_process_alive(ActorPid),
     ok.
 
