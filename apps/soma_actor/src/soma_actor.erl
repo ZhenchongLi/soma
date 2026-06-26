@@ -831,7 +831,13 @@ build_call_opts(#{provider := openai_compat,
     #{provider => openai_compat,
       base_url => BaseUrl,
       model => Model,
-      messages => [#{role => <<"user">>, content => Prompt}]}.
+      messages => [#{role => <<"user">>, content => Prompt}]};
+%% A non-real-provider `model_config' -- empty or carrying a `directive' (the
+%% v0.5 mock default) -- is not routed: the builder returns the envelope's
+%% `llm' map unchanged, the mock directive opts the actor passes to
+%% `soma_llm_call' today.
+build_call_opts(_ModelConfig, Envelope) ->
+    maps:get(llm, Envelope, #{}).
 
 maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
     case maps:get(llm, Envelope, undefined) of
