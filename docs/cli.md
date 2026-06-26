@@ -77,7 +77,7 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
 | Command | Needs LLM? | Role |
 |---|---|---|
 | `soma daemon` | no | Boot the service: runtime + persistent store, listen on the socket. |
-| `soma run <workflow>` | no | client → run a step list / LFE workflow under supervision; return result + trace. |
+| `soma run <workflow>` | no | client → run an LFE workflow under supervision; return result + trace. |
 | `soma ask "<intent>"` | yes (node B) | client → the agent loop: intent → LLM → proposal → policy → execute. |
 | `soma status <id>` / `soma cancel <id>` | no | client → poll / cancel a task by id (tasks outlive the caller). |
 | `soma trace <correlation_id>` | no | client → render a stored correlation chain as a timeline. |
@@ -88,7 +88,7 @@ depends on node B (the real LLM provider).
 ## `soma run` — deterministic supervised execution (client)
 
 ```
-soma run WORKFLOW [--json] [--trace] [--root DIR] [--timeout-ms N]
+soma run WORKFLOW [--trace] [--root DIR] [--timeout-ms N]
 ```
 
 - **WORKFLOW**: a file (or `-` for stdin) — an **LFE workflow** (a `(run …)`
@@ -121,22 +121,20 @@ The policy gate, `--allow`, and `--budget-steps` become load-bearing only once
 structured (`run_steps`) proposals land (the real planner); until then they are
 accepted but inert for a `reply`.
 
-## Output for agent consumption (`--json`)
+## Output for agent consumption
 
-One JSON object on stdout — `{status, task_id, correlation_id, outputs|reply,
-trace?, error?}` — plus a meaningful exit code. Diagnostics go to stderr so stdout
-stays clean JSON. **Identifiers**: `--json` returns both ids; `soma status` /
-`soma cancel` take the `task_id`, `soma trace` takes the `correlation_id`.
+`soma run` prints one **`(result …)` s-expr** on stdout — `(result (status …)
+(task-id …) (correlation-id …) (outputs …))`, with an `(error …)` sub-form on
+failure and a `(trace …)` sub-form only under `--trace` — plus a meaningful exit
+code (`0` on `(status completed)`, non-zero otherwise). Diagnostics go to stderr
+so stdout stays a clean s-expr. **Identifiers**: `soma status` / `soma cancel`
+take the `task-id`, `soma trace` takes the `correlation-id`.
 
-**Erlang-term → JSON mapping** (outputs, reasons, trace carry Erlang terms, which
-have no 1:1 JSON form — this is a defined, documented mapping):
-
-- atoms & binaries → strings; integers/floats → numbers; maps → objects (keys
-  stringified); lists → arrays.
-- **tuples** → arrays; a structured `reason` tuple `{Tag, Detail…}` renders as
-  `{"tag": "<Tag>", "detail": [<Detail…>]}` (e.g. `{budget_exceeded, max_steps}`
-  → `{"tag":"budget_exceeded","detail":["max_steps"]}`), so callers can switch on
-  `tag` without parsing strings.
+**Erlang-term → Lisp rendering** (`soma_lisp:render/1`, the same renderer the
+audit trace uses): atoms → symbols, binaries → `"strings"`, integers/floats →
+numbers, maps → nested `(key value)` forms, lists → `(a b c)`, and a reason tuple
+`{Tag, Detail…}` → `(Tag Detail…)`. The same Lisp the workflows are written in is
+what comes back — no JSON anywhere.
 
 ## Connection / cancellation semantics
 

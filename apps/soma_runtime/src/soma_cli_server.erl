@@ -1,20 +1,15 @@
-%% @doc CLI.1 daemon socket server. This slice adds the pure term->JSON shaping
-%% layer; the Unix listener, framing, and run handler arrive in later cycles.
-%%
-%% `encode_response/1' turns a Soma result term into the JSON bytes a client
-%% reads. OTP 29's `json:encode/1' already maps atoms and binaries to strings,
-%% leaves numbers as numbers, renders lists as arrays, and maps as objects with
-%% stringified keys -- exactly the shape this surface needs for plain terms.
+%% @doc CLI daemon socket server. A Unix-domain (`{local, Path}') listener with
+%% `{packet, 4}' framing; one handler process per accepted connection. The wire is
+%% Lisp s-exprs, and Lisp only: a `(run (step ...) ...)' request is parsed by
+%% `soma_lfe:compile/2', run under a `soma_run' the handler owns, and the terminal
+%% result is rendered back as a `(result ...)' s-expr by `soma_lisp:render/1'.
 -module(soma_cli_server).
 
--export([start_link/1, encode_response/1, frame/1, unframe/1]).
+-export([start_link/1, frame/1, unframe/1]).
 
 %% Start the listener. `start_link(#{socket => Path})' opens an AF_UNIX
 %% (`{local, Path}') listening socket with `{packet, 4}' framing and runs an
-%% accept loop in a linked process, spawning one handler per accepted
-%% connection. This cycle only needs the listener to exist and accept a
-%% connect; the handler currently just holds the connection -- decoding and
-%% running a request arrive in later cycles.
+%% accept loop in a linked process, spawning one handler per accepted connection.
 -spec start_link(#{socket := file:filename_all()}) ->
     {ok, pid()} | {error, term()}.
 start_link(#{socket := Path}) ->
@@ -66,46 +61,25 @@ accept_loop(ListenSocket) ->
     end.
 
 %% Per-connection handler, one process per accepted connection. It reads one
-%% framed `run' request, drives a supervised run it owns directly, frames the
-%% terminal result back, then closes. The socket is `{packet, 4}', so the driver
-%% strips the length prefix on recv and prepends it on send -- the payload here is
-%% the bare JSON.
+%% framed `(run ...)' request, drives a supervised run it owns directly, frames
+%% the terminal `(result ...)' s-expr back, then closes. The socket is
+%% `{packet, 4}', so the driver strips the length prefix on recv and prepends it
+%% on send -- the payload here is the bare s-expr.
 handle(Socket) ->
     case gen_tcp:recv(Socket, 0, 60000) of
         {ok, Bytes} ->
-            Reply = dispatch_request(Bytes),
+            Reply = handle_lisp_request(Bytes),
             _ = gen_tcp:send(Socket, iolist_to_binary(Reply)),
             gen_tcp:close(Socket);
         {error, _} ->
             ok
     end.
 
-%% The wire is Lisp s-exprs: a `(run (step ...) ...)' request is parsed by
-%% `soma_lfe:compile/2' into the atom-keyed step maps `soma_run' accepts, run
-%% under a `soma_run' the handler owns, and the terminal result is rendered back
-%% as a `(result ...)' s-expr by `soma_lisp:render/1'. The legacy JSON `{...}'
-%% request shape is still served for the pre-CLI.1b cases -- dispatch on the
-%% first non-whitespace byte: `(' is Lisp, anything else is JSON.
-dispatch_request(Bytes) ->
-    case first_byte(Bytes) of
-        $( ->
-            handle_lisp_request(Bytes);
-        _ ->
-            encode_response(handle_request(json:decode(Bytes)))
-    end.
-
-first_byte(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t; C =:= $\n; C =:= $\r ->
-    first_byte(Rest);
-first_byte(<<C, _/binary>>) ->
-    C;
-first_byte(<<>>) ->
-    0.
-
 %% Parse the Lisp `(run ...)' request with `soma_lfe', run it, and render the
 %% terminal result map as a `(result ...)' s-expr. A malformed request --
 %% `soma_lfe:compile/2' returning `{error, Diagnostics}', or the reader crashing
-%% on garbage bytes -- is not a handler crash: it renders the same `(result ...)'
-%% head with `status => error' and an `error' sub-form carrying the diagnostics.
+%% on garbage bytes -- is not a handler crash: it renders a `(result ...)' with
+%% `status => error' and an `error' sub-form carrying the diagnostics.
 handle_lisp_request(Bytes) ->
     Compiled = try soma_lfe:compile(Bytes, #{})
                catch
@@ -135,26 +109,8 @@ run_steps(Steps) ->
     Result = await_run(RunId, TaskId, CorrId),
     soma_lisp:render(Result).
 
-%% Decode a `run' request, start a `soma_run' the handler owns (session_pid =>
-%% self(), a minted correlation_id), wait for its terminal message, and shape the
-%% result into the response map. The JSON step list is converted into the
-%% atom-keyed step maps `soma_run' accepts (the tool name becomes an atom so the
-%% registry can resolve it).
-handle_request(#{<<"cmd">> := <<"run">>, <<"workflow">> := Workflow}) ->
-    TaskId = mint_id("task"),
-    CorrId = mint_id("corr"),
-    RunId = mint_id("run"),
-    Steps = [shape_step(Step) || Step <- Workflow],
-    {ok, _RunPid} = soma_run_sup:start_run(
-        #{run_id => RunId,
-          session_id => TaskId,
-          session_pid => self(),
-          steps => Steps,
-          correlation_id => CorrId}),
-    await_run(RunId, TaskId, CorrId).
-
-%% Wait for the owned run's terminal message and shape the response. On
-%% `run_completed' the recorded step outputs become the `outputs' object; on a
+%% Wait for the owned run's terminal message and shape the result map. On
+%% `run_completed' the recorded step outputs become the `outputs' sub-form; on a
 %% failure the status is non-`completed' and the reason travels in `error'.
 await_run(RunId, TaskId, CorrId) ->
     receive
@@ -174,49 +130,11 @@ await_run(RunId, TaskId, CorrId) ->
             #{status => cancelled, task_id => TaskId, correlation_id => CorrId}
     end.
 
-%% Shape one JSON step object (binary keys) into the step map `soma_run' accepts.
-%% `tool' must be an atom for the registry to resolve it; `id' and `args' carry
-%% through as the decoded request terms.
-shape_step(Step) ->
-    #{id => maps:get(<<"id">>, Step),
-      tool => binary_to_existing_atom(maps:get(<<"tool">>, Step), utf8),
-      args => maps:get(<<"args">>, Step, #{})}.
-
 mint_id(Prefix) ->
     list_to_binary(
       Prefix ++ "-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
 
-%% Encode a Soma result term to JSON bytes. Returns an iolist (the `json'
-%% encoder's native output); callers that need a binary wrap with
-%% `iolist_to_binary/1'.
-%%
-%% A reason tuple `{Tag, Detail...}' is shaped to
-%% `{"tag":"<Tag>","detail":[<Detail...>]}' so a caller can switch on `tag'
-%% without parsing a string; `json:encode/1' has no tuple encoding of its own.
--spec encode_response(term()) -> iolist().
-encode_response(Term) ->
-    json:encode(jsonable(Term)).
-
-%% Recursively make a term JSON-encodable. `json:encode/1' has no tuple clause, so
-%% any tuple -- a reason like `{unregistered_tool, T}' / `{budget_exceeded, _}'
-%% nested under `error', or a tuple inside a step's `outputs' -- would crash the
-%% encoder. Map every tuple to `{"tag": First, "detail": [Rest...]}' (so a caller
-%% switches on `tag' without parsing a string), recursing through maps and lists.
-jsonable(T) when is_map(T) ->
-    maps:map(fun(_K, V) -> jsonable(V) end, T);
-jsonable(T) when is_list(T) ->
-    [jsonable(E) || E <- T];
-jsonable(T) when is_tuple(T) ->
-    [Tag | Detail] = tuple_to_list(T),
-    #{tag => Tag, detail => [jsonable(E) || E <- Detail]};
-jsonable(T) when is_atom(T); is_binary(T); is_number(T) ->
-    T;
-jsonable(T) ->
-    %% pids, refs, funs, ports -- not JSON-encodable; render for the audit trail
-    %% rather than crash the encoder on a failure reason that carries one.
-    iolist_to_binary(io_lib:format("~p", [T])).
-
-%% Prepend a 4-byte big-endian length prefix to a JSON payload, the wire frame
+%% Prepend a 4-byte big-endian length prefix to an s-expr payload, the wire frame
 %% a client reads. `{packet, 4}' produces the same shape in the driver; this is
 %% the pure, documented contract a non-Erlang client reproduces.
 -spec frame(iodata()) -> iolist().
