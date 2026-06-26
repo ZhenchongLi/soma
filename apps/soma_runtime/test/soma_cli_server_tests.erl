@@ -20,3 +20,15 @@ test_encode_map_atoms_binaries_numbers_lists() ->
 
 encode_map_atoms_binaries_numbers_lists_test() ->
     test_encode_map_atoms_binaries_numbers_lists().
+
+%% Criterion 2: term->JSON encoding of the reason tuple `{budget_exceeded,
+%% max_steps}' produces `{"tag":"budget_exceeded","detail":["max_steps"]}' --
+%% so a caller switches on `tag' without parsing a string.
+test_encode_reason_tuple_to_tag_detail() ->
+    Json = soma_cli_server:encode_response({budget_exceeded, max_steps}),
+    Decoded = json:decode(iolist_to_binary(Json)),
+    ?assertEqual(<<"budget_exceeded">>, maps:get(<<"tag">>, Decoded)),
+    ?assertEqual([<<"max_steps">>], maps:get(<<"detail">>, Decoded)).
+
+encode_reason_tuple_to_tag_detail_test() ->
+    test_encode_reason_tuple_to_tag_detail().
