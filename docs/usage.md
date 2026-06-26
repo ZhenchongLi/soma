@@ -751,6 +751,73 @@ The full v0.5 process-behaviour proofs — each property mapped to the suite and
 case that proves it — are in
 [contracts/v0.5-test-contract.md](contracts/v0.5-test-contract.md).
 
+## Configuring a real LLM provider (OpenAI-compatible)
+
+v0.6.x slots a real, OpenAI-compatible provider in behind the same
+`soma_llm_call:perform_call/1` seam the mock uses. The mock is still the default:
+a `directive`-keyed `llm` map (above) runs the mock unchanged. The real provider
+is selected by a different key — `provider => openai_compat` — which the mock
+directives never carry, so the two paths do not collide.
+
+The `soma_llm_openai` module shapes and parses the request:
+
+- `soma_llm_openai:build_request/1` is pure — it returns the pieces of the chat-
+  completions POST (`url`, `headers`, `body`) and opens no socket. The url is
+  `{base_url}/chat/completions`; the `Authorization` header is `Bearer <api_key>`;
+  the JSON body always carries `model` and `messages`, and carries `max_tokens`
+  and `enable_thinking` only when you supply them.
+- `soma_llm_openai:parse_response/1` is pure — it maps a `{Status, Body}` pair to
+  either `{ok, #{kind => reply, text => Content}}` (a `reply` proposal that
+  `soma_proposal:normalize/1` accepts) or a bounded, named `{error, Reason}`. A
+  non-200 status, an undecodable body, or a 200 body missing
+  `choices[0].message.content` all stay inside the function as a tagged error
+  rather than escaping as a crash; the raw provider blob is never returned.
+- `soma_llm_openai:chat/1` is the build-then-send-then-parse path. The live
+  variant runs `httpc:request/4`, so a release must have `inets` and `ssl`
+  started — they are declared in `soma_runtime.app.src`'s `applications` list.
+
+### Where the config and the secret come from
+
+The split is deliberate: the **base_url and model are config**, and the **API key
+is a secret read from the environment**, never hard-coded.
+
+```erlang
+Config = #{
+    base_url => <<"https://www.sophnet.com/api/open-apis/v1">>,  %% config
+    model    => <<"DeepSeek-V3">>,                               %% config
+    api_key  => list_to_binary(os:getenv("SOMA_LLM_API_KEY")),  %% secret, from env
+    messages => [#{role => <<"user">>, content => <<"Say hello.">>}],
+    max_tokens => 64                                             %% optional opt
+}.
+```
+
+The API key is read from the `SOMA_LLM_API_KEY` environment variable. The
+base_url and model in the example are the validated SophNet contract; any
+OpenAI-compatible endpoint that differs in request or response shape is out of
+scope for this slice.
+
+### Running the opt-in smoke test
+
+The real round trip is proven only by an opt-in smoke test, never by the gate —
+it opens a real socket and needs a real key, which `rebar3 eunit` and `rebar3 ct`
+must never do. The smoke test lives in `soma_llm_smoke` (a plain `src/` module,
+not a `*_test`/`*_SUITE`, so neither test runner picks it up). Run it by hand:
+
+```bash
+SOMA_LLM_API_KEY=sk-... rebar3 shell
+```
+
+```erlang
+1> soma_llm_smoke:run().
+%% reply proposal: {ok, #{kind => reply, text => <<"Hello!">>}}
+```
+
+`soma_llm_smoke:run/0` reads the key from `SOMA_LLM_API_KEY` (failing loudly if
+it is unset rather than sending an empty key), starts `inets`/`ssl` so the live
+`httpc` path works from a bare shell, takes the base_url and model from its own
+config (the SophNet defaults), sends one real chat-completions call through
+`soma_llm_openai`, and prints the `reply` proposal it gets back.
+
 ## Failure reasons
 
 When any step fails, the `reason` in `tool.failed`'s payload is one of:

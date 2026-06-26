@@ -21,8 +21,7 @@ contains(Haystack, Needle) ->
 test_usage_docs_real_provider_and_smoke_test() ->
     Doc = read_usage_md(),
     %% The real OpenAI-compatible provider is documented.
-    %% Staged red: deliberately wrong expected substring so the assertion fires.
-    ?assert(contains(Doc, <<"anthropic_compat_provider_XYZ">>)),
+    ?assert(contains(Doc, <<"openai_compat">>)),
     %% The API key comes from an environment variable.
     ?assert(contains(Doc, <<"SOMA_LLM_API_KEY">>)),
     %% base_url and model come from config.
