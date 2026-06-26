@@ -8,13 +8,17 @@
 -export([test_second_start_link_on_live_path_errors/1]).
 -export([test_first_server_survives_failed_second_start_link/1]).
 -export([test_run_echo_returns_completed_with_outputs/1]).
+-export([test_run_failed_returns_failed_with_error/1]).
+-export([test_server_serves_after_failed_run/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
      test_start_link_unlinks_stale_socket_file,
      test_second_start_link_on_live_path_errors,
      test_first_server_survives_failed_second_start_link,
-     test_run_echo_returns_completed_with_outputs].
+     test_run_echo_returns_completed_with_outputs,
+     test_run_failed_returns_failed_with_error,
+     test_server_serves_after_failed_run].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -94,6 +98,49 @@ test_run_echo_returns_completed_with_outputs(Config) ->
     Outputs = maps:get(<<"outputs">>, Response),
     #{<<"value">> := <<"hi">>} = maps:get(<<"s1">>, Outputs),
     ok = gen_tcp:close(Client).
+
+%% Criterion 9: a `run' request whose step fails returns a framed response with a
+%% status other than "completed" and an `error' field -- the run's failure is data
+%% in the response, not a handler crash (the `fail' tool's step fails the run).
+test_run_failed_returns_failed_with_error(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = gen_tcp:connect({local, Path}, 0,
+                                   [binary, {packet, 4}, {active, false}]),
+    Request = #{<<"cmd">> => <<"run">>,
+                <<"workflow">> =>
+                    [#{<<"id">> => <<"s1">>,
+                       <<"tool">> => <<"fail">>,
+                       <<"args">> => #{<<"mode">> => <<"error">>}}]},
+    ok = gen_tcp:send(Client, iolist_to_binary(json:encode(Request))),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    Response = json:decode(Reply),
+    true = maps:get(<<"status">>, Response) =/= <<"completed">>,
+    true = maps:is_key(<<"error">>, Response),
+    ok = gen_tcp:close(Client).
+
+%% Criterion 10: the server keeps serving after a failed run -- a fresh client
+%% gets a completed `echo' run after an earlier request whose step failed.
+test_server_serves_after_failed_run(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, C1} = gen_tcp:connect({local, Path}, 0,
+                               [binary, {packet, 4}, {active, false}]),
+    Fail = #{<<"cmd">> => <<"run">>,
+             <<"workflow">> => [#{<<"id">> => <<"s1">>, <<"tool">> => <<"fail">>,
+                                  <<"args">> => #{<<"mode">> => <<"error">>}}]},
+    ok = gen_tcp:send(C1, iolist_to_binary(json:encode(Fail))),
+    {ok, _} = gen_tcp:recv(C1, 0, 5000),
+    ok = gen_tcp:close(C1),
+    {ok, C2} = gen_tcp:connect({local, Path}, 0,
+                               [binary, {packet, 4}, {active, false}]),
+    Echo = #{<<"cmd">> => <<"run">>,
+             <<"workflow">> => [#{<<"id">> => <<"s1">>, <<"tool">> => <<"echo">>,
+                                  <<"args">> => #{<<"value">> => <<"ok">>}}]},
+    ok = gen_tcp:send(C2, iolist_to_binary(json:encode(Echo))),
+    {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
+    <<"completed">> = maps:get(<<"status">>, json:decode(Reply)),
+    ok = gen_tcp:close(C2).
 
 %% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS), so the
 %% long CT priv_dir cannot hold a bindable socket. Use a short unique path
