@@ -48,12 +48,23 @@ send(ActorRef, Source) when is_binary(Source); is_list(Source) ->
 %% run completes the call returns `timeout' on the caller side while the actor
 %% finishes the task. The work runs inside the actor via `idle/3', so the actor
 %% is never bypassed.
-ask(ActorRef, Envelope, TimeoutMs) ->
+ask(ActorRef, Envelope, TimeoutMs) when is_map(Envelope) ->
     try
         gen_statem:call(ActorRef, {ask, Envelope}, TimeoutMs)
     catch
         exit:{timeout, _} ->
             timeout
+    end;
+ask(ActorRef, Source, TimeoutMs) when is_binary(Source); is_list(Source) ->
+    %% A Lisp `(msg ...)' string (binary or iolist) is parsed at the wrapper,
+    %% before the actor is touched, into the exact map envelope the map path
+    %% takes -- mirroring send/2. The actor's message contract stays map-only.
+    %% A parse error is returned to the caller without calling the actor at all.
+    case soma_lfe:compile(Source, #{}) of
+        {ok, Envelope} ->
+            ask(ActorRef, Envelope, TimeoutMs);
+        {error, Diagnostics} ->
+            {error, Diagnostics}
     end.
 
 %% @doc Reads a task's current status from the actor's task table. Returns a map
