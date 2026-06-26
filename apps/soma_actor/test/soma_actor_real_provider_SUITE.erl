@@ -164,10 +164,9 @@ api_key_appears_in_no_emitted_event(_Config) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     true = length(Events) > 0,
     Payloads = [maps:get(payload, E, #{}) || E <- Events],
-    %% Staged-red: expected value deliberately wrong so the assertion fires.
-    %% The actor emits ids only, never the api_key, so this `true' is false in
-    %% reality. Corrected to `false' in the green commit (fix(test)).
-    true = lists:any(fun(P) -> term_contains(P, Sentinel) end, Payloads),
+    %% The actor emits ids only -- never the api_key -- so the sentinel appears
+    %% in no event payload.
+    false = lists:any(fun(P) -> term_contains(P, Sentinel) end, Payloads),
     true = is_process_alive(ActorPid),
     ok.
 
