@@ -380,7 +380,7 @@ map_body_path_unchanged(_Config) ->
 
     %% The map-bodied delivery runs on the receiver and reaches the terminal
     %% status it reached before L.2.
-    failed = Status,
+    completed = Status,
     true = is_process_alive(A1),
     true = is_process_alive(A2),
     ok.
