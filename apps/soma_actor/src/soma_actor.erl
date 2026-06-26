@@ -17,7 +17,8 @@
 
 -record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
                runs = #{}, waiters = #{}, monitors = #{}, llm_calls = #{},
-               budget = #{}, llm_call_counts = #{}}).
+               budget = #{}, llm_call_counts = #{}, repair = auto,
+               max_repairs = 1}).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -99,7 +100,9 @@ init(Opts) ->
                  model_config = maps:get(model_config, Opts, undefined),
                  tool_policy = maps:get(tool_policy, Opts, undefined),
                  event_store = maps:get(event_store, Opts, undefined),
-                 budget = maps:get(budget, Opts, #{})},
+                 budget = maps:get(budget, Opts, #{}),
+                 repair = maps:get(repair, Opts, auto),
+                 max_repairs = maps:get(max_repairs, Opts, 1)},
     emit(Data, <<"actor.started">>, #{}),
     {ok, idle, Data}.
 
@@ -432,18 +435,14 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                     Data1 = Data0#data{tasks = Tasks},
                     reply_waiter(TaskId, {ok, Result}, Data1);
                 {invalid_proposal, Diagnostics} ->
-                    %% A proposal candidate that fails soma_proposal:normalize/1 is
-                    %% data, not a crash: record the task terminal `failed' carrying
-                    %% the diagnostics, emit no `proposal.created' (no valid proposal
-                    %% was recorded), release any parked waiter with the error, and
-                    %% stay alive.
-                    Task1 = Task#{status => failed, reason => Diagnostics},
-                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
-                    Data1 = Data0#data{tasks = Tasks},
-                    emit(Data1, <<"actor.task.failed">>,
-                         #{task_id => TaskId, correlation_id => CorrelationId,
-                           reason => Diagnostics}),
-                    reply_waiter(TaskId, {error, Diagnostics}, Data1)
+                    %% A malformed proposal is the entry of the bounded repair
+                    %% loop (L.5). With repair on (the default), a repair budget
+                    %% left, and an llm-call budget left, the actor hands the
+                    %% malformed source back to the LLM for one more attempt; the
+                    %% repaired output re-enters the full pipeline through an
+                    %% ordinary owned llm call. Otherwise the task fails with the
+                    %% diagnostics as data, exactly as before.
+                    maybe_repair(TaskId, CorrelationId, Diagnostics, Task, Data0)
             end
     end;
 %% The call-timeout timer the actor armed fired before the worker reported a
@@ -520,6 +519,41 @@ idle(info, {'DOWN', MRef, process, _RunPid, Reason}, Data)
     end;
 idle(_EventType, _Event, Data) ->
     {keep_state, Data}.
+
+%% The bounded repair loop entry. A malformed proposal is handed back to the LLM
+%% for one more attempt when repair is on (`auto', the default), the per-task
+%% repair count is below `max_repairs', a `repair_output' is staged on the task,
+%% and the llm-call budget has room. The repair call is an ordinary owned
+%% `soma_llm_call' built from the staged `repair_output' (a fresh `proposal'
+%% directive `llm' map), so its result re-enters the same `proposal_result/2'
+%% chain -- no side-path parse-and-inject. When repair is off, exhausted, or the
+%% budget is gone, the task fails with the parse diagnostics as data, exactly as
+%% before; the actor stays alive either way.
+maybe_repair(TaskId, CorrelationId, Diagnostics, Task, Data) ->
+    RepairCount = maps:get(repair_count, Task, 0),
+    RepairOutput = maps:get(repair_output, Task, undefined),
+    case Data#data.repair =/= strict
+        andalso RepairCount < Data#data.max_repairs
+        andalso RepairOutput =/= undefined
+        andalso llm_budget_available(TaskId, Data) of
+        true ->
+            Task1 = Task#{repair_count => RepairCount + 1},
+            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+            Data1 = Data#data{tasks = Tasks},
+            RepairLlm = #{directive => proposal,
+                          output => RepairOutput,
+                          repair_output => RepairOutput},
+            Data2 = start_llm_call(RepairLlm, TaskId, CorrelationId, Data1),
+            {keep_state, Data2};
+        false ->
+            Task1 = Task#{status => failed, reason => Diagnostics},
+            Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+            Data1 = Data#data{tasks = Tasks},
+            emit(Data1, <<"actor.task.failed">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId,
+                   reason => Diagnostics}),
+            reply_waiter(TaskId, {error, Diagnostics}, Data1)
+    end.
 
 validate_envelope(Envelope) when is_map(Envelope) ->
     case maps:is_key(type, Envelope) andalso maps:is_key(payload, Envelope) of
@@ -832,7 +866,8 @@ start_llm_call(Llm, TaskId, CorrelationId, Data) ->
     Task1 = Task#{status => running, llm_call_id => LlmCallId,
                   llm_call_pid => WorkerPid, llm_call_mref => MRef,
                   llm_timer_ref => TimerRef,
-                  llm_directive => maps:get(directive, Llm, undefined)},
+                  llm_directive => maps:get(directive, Llm, undefined),
+                  repair_output => maps:get(repair_output, Llm, undefined)},
     Tasks = maps:put(TaskId, Task1, Data#data.tasks),
     %% The count increments only when a call actually starts, so it tracks the
     %% task's started-call total against the max_llm_calls cap.
