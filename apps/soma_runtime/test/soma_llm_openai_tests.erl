@@ -65,8 +65,8 @@ test_build_request_body_omits_optional_opts() ->
                messages => [#{role => <<"user">>, content => <<"hi">>}]},
     #{body := Body} = soma_llm_openai:build_request(Config),
     Decoded = json:decode(Body),
-    ?assert(maps:is_key(<<"enable_thinking">>, Decoded)),
-    ?assert(maps:is_key(<<"max_tokens">>, Decoded)).
+    ?assertNot(maps:is_key(<<"enable_thinking">>, Decoded)),
+    ?assertNot(maps:is_key(<<"max_tokens">>, Decoded)).
 
 build_request_body_omits_optional_opts_test() ->
     test_build_request_body_omits_optional_opts().
