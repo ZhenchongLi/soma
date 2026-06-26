@@ -1,0 +1,31 @@
+-module(soma_cli_server_SUITE).
+
+-include_lib("common_test/include/ct.hrl").
+
+-export([all/0, init_per_testcase/2, end_per_testcase/2]).
+-export([test_start_link_listens_and_accepts_connect/1]).
+
+all() ->
+    [test_start_link_listens_and_accepts_connect].
+
+init_per_testcase(_Case, Config) ->
+    {ok, Started} = application:ensure_all_started(soma_runtime),
+    [{started_apps, Started} | Config].
+
+end_per_testcase(_Case, Config) ->
+    Config.
+
+%% Criterion 4: start_link(#{socket => Path}) leaves a listening socket file at
+%% Path that an Erlang gen_tcp client can connect to.
+test_start_link_listens_and_accepts_connect(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = gen_tcp:connect({local, Path}, 0,
+                                   [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:close(Client).
+
+socket_path(Config) ->
+    PrivDir = ?config(priv_dir, Config),
+    Name = "soma_cli_" ++ integer_to_list(erlang:unique_integer([positive]))
+           ++ ".sock",
+    filename:join(PrivDir, Name).
