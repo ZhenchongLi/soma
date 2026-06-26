@@ -282,10 +282,10 @@ test_server_serves_after_malformed_request(Config) ->
     Echo = <<"(run (step s1 echo (args (value \"ok\"))))">>,
     ok = gen_tcp:send(C2, Echo),
     {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
-    %% Staged red: the well-formed echo on the fresh connection completes, so the
-    %% second reply DOES carry `(status completed)'. Asserting `nomatch' here
-    %% fires the assertion -- corrected to `match' in the green phase.
-    nomatch = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+    %% The second reply must be a completed `(result ...)' -- the server survived
+    %% the earlier malformed request and served this fresh well-formed request.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
 
 %% A small defensive retry for the client connect: right after start_link the
