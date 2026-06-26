@@ -59,7 +59,7 @@ test_run_failed_workflow_exit_nonzero(Config) ->
     match = re:run(Printed, "^\\(result ", [{capture, none}]),
     nomatch = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
     %% A run that does not reach `completed' returns a non-zero exit code.
-    true = (Exit =:= 0).
+    true = (Exit =/= 0).
 
 %% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS), so the long
 %% CT priv_dir cannot hold a bindable socket. Use a short unique path under the
