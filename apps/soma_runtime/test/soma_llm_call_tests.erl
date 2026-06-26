@@ -48,3 +48,38 @@ test_perform_call_routes_to_openai() ->
 
 perform_call_routes_to_openai_test() ->
     test_perform_call_routes_to_openai().
+
+%% Criterion 14: `rebar3 eunit && rebar3 ct' is green and opens no socket -- the
+%% gate exercises only the mock path and the pure provider unit tests. This pins
+%% the offline guarantee of the provider-routing path: when `perform_call/1' is
+%% given a provider map carrying a fixed `response', it must resolve that response
+%% (build-then-parse over supplied data) and never reach `httpc'. We make that
+%% falsifiable by pointing `base_url' at an address that cannot be dialled -- an
+%% unroutable, reserved-TEST-NET-1 host. If the routing clause stayed offline it
+%% returns the parsed reply regardless of `base_url'; if a regression made the
+%% gate path open a socket it would have to dial that dead host and could not
+%% return the parsed `reply' proposal, turning this red. The assert is bounded by
+%% the EUnit default test timeout, so a hang (a socket connect on the dead host)
+%% also fails rather than passing.
+test_perform_call_routing_opens_no_socket() ->
+    Body = iolist_to_binary(
+             json:encode(#{<<"choices">> =>
+                               [#{<<"message">> =>
+                                      #{<<"content">> => <<"offline reply">>}}]})),
+    Llm = #{provider => openai_compat,
+            %% 192.0.2.0/24 is TEST-NET-1 (RFC 5737): guaranteed not routable, so
+            %% any real socket attempt cannot succeed.
+            base_url => <<"https://192.0.2.1:9/v1">>,
+            api_key => <<"k">>,
+            model => <<"a-model">>,
+            messages => [#{role => <<"user">>, content => <<"hi">>}],
+            response => {200, Body}},
+    %% STAGED-RED: deliberately wrong expectation. The offline routing path
+    %% returns the parsed `reply' proposal; asserting it instead errored with an
+    %% http failure must fire. Flipped to the true expectation in the follow-up
+    %% fix(test) commit.
+    ?assertEqual({error, {http_request_failed, nxdomain}},
+                 soma_llm_call:perform_call(Llm)).
+
+perform_call_routing_opens_no_socket_test() ->
+    test_perform_call_routing_opens_no_socket().
