@@ -158,8 +158,12 @@ malformed_lisp_proposal_fails_task_actor_alive(_Config) ->
                     llm => BadLlm},
     {ok, BadTaskId} = soma_actor:send(ActorPid, BadEnvelope),
 
-    %% The malformed proposal drives the task to terminal `failed' as data.
-    ok = wait_for_status(ActorPid, BadTaskId, completed, 100),
+    %% The malformed proposal drives the task to terminal `failed' as data: the
+    %% compile diagnostics are recorded as the task reason, and the actor survives.
+    ok = wait_for_status(ActorPid, BadTaskId, failed, 100),
+    #{status := failed, reason := BadReason} =
+        soma_actor:get_task_status(ActorPid, BadTaskId),
+    true = BadReason =/= undefined,
     true = is_process_alive(ActorPid),
 
     %% The actor stays alive and accepts the next message: a valid Lisp `(reply
