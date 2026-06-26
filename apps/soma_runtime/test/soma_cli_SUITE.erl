@@ -4,9 +4,11 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_run_echo_file_prints_result_exit_zero/1]).
+-export([test_run_failed_workflow_exit_nonzero/1]).
 
 all() ->
-    [test_run_echo_file_prints_result_exit_zero].
+    [test_run_echo_file_prints_result_exit_zero,
+     test_run_failed_workflow_exit_nonzero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -37,6 +39,27 @@ test_run_echo_file_prints_result_exit_zero(Config) ->
     match = re:run(Printed, "\\(s1 \\(value \"hi\"\\)\\)", [{capture, none}]),
     %% A completed run returns exit code 0.
     0 = Exit.
+
+%% Criterion 9 (CLI.1b): `soma_cli:run/1' returns a non-zero exit code when the
+%% workflow's run does not reach `completed'. The client reads a one-step `.lfe'
+%% file whose only step uses the `fail' tool, connects to the temp socket served
+%% by a real `soma_cli_server', frames + sends the bytes, and reads the framed
+%% `(result ...)' reply whose status sub-form is not `completed'. The behavior
+%% under test is the exit code: a non-completed run returns non-zero.
+test_run_failed_workflow_exit_nonzero(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    File = filename:join(?config(priv_dir, Config), "fail_flow.lfe"),
+    ok = file:write_file(File, <<"(run (step s1 fail (args (mode error))))">>),
+    ct:capture_start(),
+    Exit = soma_cli:run(#{file => File, socket => Path}),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+    %% The printed reply is a `(result ...)' s-expr whose status is not `completed'.
+    match = re:run(Printed, "^\\(result ", [{capture, none}]),
+    nomatch = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
+    %% A run that does not reach `completed' returns a non-zero exit code.
+    true = (Exit =:= 0).
 
 %% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS), so the long
 %% CT priv_dir cannot hold a bindable socket. Use a short unique path under the
