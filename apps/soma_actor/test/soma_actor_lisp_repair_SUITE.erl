@@ -21,6 +21,7 @@
 -export([all_repairs_malformed_fails_after_max_attempts_with_diagnostics/1]).
 -export([actor_alive_after_repair_failure_runs_next_valid_message/1]).
 -export([repair_blocked_by_max_llm_calls_fails_budget_exceeded/1]).
+-export([strict_mode_fails_malformed_without_repair_call/1]).
 
 all() ->
     [repaired_reply_reaches_same_terminal_result_as_valid_reply,
@@ -28,7 +29,8 @@ all() ->
      repaired_run_steps_outside_allowlist_is_rejected,
      all_repairs_malformed_fails_after_max_attempts_with_diagnostics,
      actor_alive_after_repair_failure_runs_next_valid_message,
-     repair_blocked_by_max_llm_calls_fails_budget_exceeded].
+     repair_blocked_by_max_llm_calls_fails_budget_exceeded,
+     strict_mode_fails_malformed_without_repair_call].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -325,6 +327,61 @@ repair_blocked_by_max_llm_calls_fails_budget_exceeded(_Config) ->
     Started = [E || E <- Events,
                     maps:get(event_type, E, undefined) =:= <<"llm.started">>],
     1 = length(Started),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 7: an actor started in `strict' mode fails a malformed Lisp proposal
+%% immediately -- no repair call is made. With `repair => strict' the bounded
+%% repair loop is off, so a malformed proposal fails the task with the parse
+%% diagnostics as the reason the way it did before L.5. The malformed proposal's
+%% `llm' map stages a valid `(reply ...)' under `repair_output' that would be a
+%% perfectly good repair -- but strict mode never calls for it. The task lands
+%% `failed', and the event trail (read through soma_event_store:by_correlation/2)
+%% carries exactly one `llm.started' (the first call, no repair call) and no
+%% `proposal.repaired' event. The actor stays alive.
+strict_mode_fails_malformed_without_repair_call(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-lisp-repair-7">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             repair => strict,
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+
+    %% A malformed (unterminated) form whose repair would return a valid reply --
+    %% but strict mode never makes the repair call.
+    BadProposal = <<"(reply (text \"hi\"">>,
+    RepairedProposal = <<"(reply (text \"hi\"))">>,
+    RepairLlm = #{directive => proposal,
+                  output => BadProposal,
+                  repair_output => RepairedProposal},
+    TaskId = <<"task-lisp-repair-strict">>,
+    CorrelationId = <<"corr-lisp-repair-strict">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"answer me">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => RepairLlm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
+
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    failed = maps:get(status, Status),
+    %% Strict mode fails with the parse diagnostics, not a budget/timeout atom.
+    Reason = maps:get(reason, Status),
+    true = is_list(Reason) andalso Reason =/= [],
+
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    %% Exactly one `llm.started' fired (the first call); no repair call started.
+    Started = [E || E <- Events,
+                    maps:get(event_type, E, undefined) =:= <<"llm.started">>],
+    %% RED (staged): deliberately wrong expected count; strict mode makes the
+    %% first call, so this is 1, not 0. Fixed in the following commit.
+    0 = length(Started),
+    %% No `proposal.repaired' event: strict mode never repairs.
+    Repaired = [E || E <- Events,
+                     maps:get(event_type, E, undefined) =:= <<"proposal.repaired">>],
+    [] = Repaired,
     true = is_process_alive(ActorPid),
     ok.
 
