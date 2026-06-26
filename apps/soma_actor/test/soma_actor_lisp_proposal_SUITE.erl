@@ -214,7 +214,7 @@ map_proposal_path_unchanged(_Config) ->
 
     %% The raw map normalizes, gates, and executes to the same reply proposal as
     %% before -- the v0.5 path is untouched.
-    #{kind := reply, text := <<"WRONG">>} = MapResult,
+    #{kind := reply, text := <<"hi">>} = MapResult,
     true = is_process_alive(ActorPid),
     ok.
 
