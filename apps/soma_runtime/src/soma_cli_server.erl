@@ -26,6 +26,7 @@ start_link(#{socket := Path}) ->
     end.
 
 listen(Parent, Path) ->
+    unlink_stale(Path),
     case gen_tcp:listen(0, [{ifaddr, {local, Path}},
                             {packet, 4}, binary,
                             {active, false}, {reuseaddr, true}]) of
@@ -34,6 +35,25 @@ listen(Parent, Path) ->
             accept_loop(ListenSocket);
         {error, Reason} ->
             Parent ! {self(), {error, Reason}}
+    end.
+
+%% Unlink only a *stale* leftover at Path -- a file no live server answers --
+%% so a restart after a crash that left a socket file still binds, while a live
+%% server's path is left alone (a second start_link then fails the bind rather
+%% than stealing the path). Probe by connecting: if a server answers, the path
+%% is live and untouched; if no file is there, or nothing answers, clear it.
+unlink_stale(Path) ->
+    case file:read_file_info(Path) of
+        {ok, _} ->
+            case gen_tcp:connect({local, Path}, 0,
+                                 [binary, {active, false}], 200) of
+                {ok, Probe} ->
+                    gen_tcp:close(Probe);
+                {error, _} ->
+                    file:delete(Path)
+            end;
+        {error, _} ->
+            ok
     end.
 
 accept_loop(ListenSocket) ->
