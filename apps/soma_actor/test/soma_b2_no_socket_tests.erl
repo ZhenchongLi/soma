@@ -5,6 +5,8 @@
 -define(REAL_PROVIDER_SUITE_PATH,
         "apps/soma_actor/test/soma_actor_real_provider_SUITE.erl").
 
+-define(USAGE_DOC_PATH, "docs/usage.md").
+
 %% Issue #119 criterion 7: the actor's real-provider gate suite
 %% (`soma_actor_real_provider_SUITE') exercises only the mock and the pure
 %% builder, opening no real-provider network connection. This is a
@@ -54,3 +56,46 @@ test_real_provider_suite_uses_response_seam_only() ->
 
 real_provider_suite_uses_response_seam_only_test() ->
     test_real_provider_suite_uses_response_seam_only().
+
+read_usage_doc() ->
+    case file:read_file(?USAGE_DOC_PATH) of
+        {ok, Bin} -> Bin;
+        {error, Reason} ->
+            erlang:error({cannot_read, ?USAGE_DOC_PATH, Reason})
+    end.
+
+%% Issue #119 criterion 8: `docs/usage.md' documents configuring an actor with a
+%% real-provider `model_config' and running the opt-in smoke. This is a
+%% doc-presence guard -- it reads the doc source and asserts the markers are
+%% there, rather than running anything. The new section must show starting an
+%% actor whose `model_config' carries `provider => openai_compat' (the two
+%% markers appear together, in the same window) and point at the opt-in smoke.
+test_usage_documents_actor_real_provider_config() ->
+    Doc = read_usage_doc(),
+    %% A new section heading naming the real-provider actor config.
+    ?assert(count(Doc, <<"actor with a real LLM provider">>) > 0),
+    %% The two markers appear together: the section shows an actor `model_config'
+    %% carrying `provider => openai_compat'. Pin them in one window so a stray
+    %% `model_config' elsewhere and a stray provider mention can't satisfy this.
+    ?assert(markers_together(Doc, <<"model_config">>,
+                             <<"provider => openai_compat">>)),
+    %% It points the reader at the opt-in smoke.
+    ?assert(count(Doc, <<"soma_llm_smoke:run()">>) > 0),
+    ok.
+
+%% True when both needles occur within one ~600-byte window of each other --
+%% close enough to be the same section rather than two unrelated mentions.
+markers_together(Haystack, A, B) ->
+    case {binary:matches(Haystack, A), binary:matches(Haystack, B)} of
+        {[], _} -> false;
+        {_, []} -> false;
+        {AsMatches, BsMatches} ->
+            As = [Pos || {Pos, _Len} <- AsMatches],
+            Bs = [Pos || {Pos, _Len} <- BsMatches],
+            lists:any(fun(Pa) ->
+                              lists:any(fun(Pb) -> abs(Pa - Pb) =< 600 end, Bs)
+                      end, As)
+    end.
+
+usage_documents_actor_real_provider_config_test() ->
+    test_usage_documents_actor_real_provider_config().
