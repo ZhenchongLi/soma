@@ -17,10 +17,17 @@ compile(Source, _Opts) when is_list(Source) ->
 compile(Source, _Opts) when is_binary(Source) ->
     case soma_lfe_reader:read_forms(Source) of
         {ok, Forms} ->
-            soma_lfe_parser:parse_run(Forms);
+            dispatch(Forms);
         {error, Diags} ->
             {error, Diags}
     end.
+
+%% Route on the top-level head: a single (msg ...) form parses to an actor
+%% envelope; anything else stays on the run path.
+dispatch([[msg | _] = Form]) ->
+    soma_lfe_parser:parse_msg(Form);
+dispatch(Forms) ->
+    soma_lfe_parser:parse_run(Forms).
 
 %% @doc Compile an LFE source file to an internal run map.
 %%
