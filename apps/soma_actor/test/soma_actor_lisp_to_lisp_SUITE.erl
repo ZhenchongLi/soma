@@ -16,9 +16,11 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([lisp_body_reaches_same_terminal_status_as_map/1]).
+-export([lisp_body_produces_same_step_outputs_as_map/1]).
 
 all() ->
-    [lisp_body_reaches_same_terminal_status_as_map].
+    [lisp_body_reaches_same_terminal_status_as_map,
+     lisp_body_produces_same_step_outputs_as_map].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -110,6 +112,77 @@ lisp_body_reaches_same_terminal_status_as_map(_Config) ->
     true = is_process_alive(A2M),
     true = is_process_alive(A1L),
     true = is_process_alive(A1M),
+    ok.
+
+%% Criterion 2: the receiving actor's run for a Lisp-bodied `actor_message'
+%% produces the same step outputs as the run for the equivalent map-bodied
+%% `actor_message'. Both bodies carry one deterministic `echo' step over a fixed
+%% value, so the two receiver runs' step outputs (read from each A2's
+%% `get_task_result/2', which is the `run_completed' outputs map keyed by step id)
+%% are directly comparable. Driven through the same real A1 decision-to-delivery
+%% chain as Criterion 1 (a `proposal' mock directive), once per body form.
+lisp_body_produces_same_step_outputs_as_map(_Config) ->
+    Store = event_store_pid(),
+
+    %% --- Lisp-bodied delivery: A1 -> A2L ---
+    A2LOpts = #{actor_id => <<"actor-a2-lisp">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2L} = soma_actor_sup:start_actor(A2LOpts),
+    A1LOpts = #{actor_id => <<"actor-a1-lisp">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1L} = soma_actor_sup:start_actor(A1LOpts),
+    LispBody = <<"(msg (type chat) (payload \"hi\") "
+                 "(steps (step (id s1) (tool echo) "
+                 "(args (value \"hi\")))))">>,
+    LispProposal = #{kind => actor_message, to => A2L, payload => LispBody},
+    LispCorr = <<"corr-l2-out-lisp">>,
+    LispEnvelope = #{type => <<"chat">>,
+                    payload => #{text => <<"tell a2">>},
+                    task_id => <<"task-l2-out-lisp">>,
+                    correlation_id => LispCorr,
+                    llm => #{directive => proposal, output => LispProposal}},
+    {ok, <<"task-l2-out-lisp">>} = soma_actor:send(A1L, LispEnvelope),
+    LispReceiverTask =
+        wait_for_a2_task(Store, LispCorr, <<"actor-a2-lisp">>, 100),
+    completed = wait_for_terminal(A2L, LispReceiverTask, 100),
+    {ok, LispOutputs} = soma_actor:get_task_result(A2L, LispReceiverTask),
+
+    %% --- Map-bodied delivery: A1 -> A2M, same steps ---
+    A2MOpts = #{actor_id => <<"actor-a2-map">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2M} = soma_actor_sup:start_actor(A2MOpts),
+    A1MOpts = #{actor_id => <<"actor-a1-map">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1M} = soma_actor_sup:start_actor(A1MOpts),
+    MapBody = #{type => chat,
+                payload => <<"hi">>,
+                steps => [#{id => s1, tool => echo,
+                            args => #{value => <<"hi">>}}]},
+    MapProposal = #{kind => actor_message, to => A2M, payload => MapBody},
+    MapCorr = <<"corr-l2-out-map">>,
+    MapEnvelope = #{type => <<"chat">>,
+                   payload => #{text => <<"tell a2">>},
+                   task_id => <<"task-l2-out-map">>,
+                   correlation_id => MapCorr,
+                   llm => #{directive => proposal, output => MapProposal}},
+    {ok, <<"task-l2-out-map">>} = soma_actor:send(A1M, MapEnvelope),
+    MapReceiverTask =
+        wait_for_a2_task(Store, MapCorr, <<"actor-a2-map">>, 100),
+    completed = wait_for_terminal(A2M, MapReceiverTask, 100),
+    {ok, MapOutputs} = soma_actor:get_task_result(A2M, MapReceiverTask),
+
+    %% The Lisp body and the equivalent map body produce identical step outputs.
+    LispOutputs = MapOutputs#{s1 => <<"WRONG-staged-red">>},
+    true = is_process_alive(A2L),
+    true = is_process_alive(A2M),
     ok.
 
 %% Polls the shared store until an `actor.task.accepted' event emitted by the
