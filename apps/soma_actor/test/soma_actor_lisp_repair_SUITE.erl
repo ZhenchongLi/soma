@@ -421,7 +421,7 @@ valid_proposal_completes_with_one_llm_started_no_repair(_Config) ->
     %% Exactly one `llm.started' fired (the single proposal call; no repair call).
     Started = [E || E <- Events,
                     maps:get(event_type, E, undefined) =:= <<"llm.started">>],
-    2 = length(Started),
+    1 = length(Started),
     %% No `proposal.repaired' event: the happy path makes no repair.
     Repaired = [E || E <- Events,
                      maps:get(event_type, E, undefined) =:= <<"proposal.repaired">>],
