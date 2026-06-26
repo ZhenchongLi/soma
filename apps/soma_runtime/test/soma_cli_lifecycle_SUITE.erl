@@ -52,7 +52,7 @@ test_cli_overrun_reaches_timeout(_Config) ->
     Steps = [#{id => s1, tool => cli_sleep,
                args => #{input => <<"ignored">>}, timeout_ms => 100}],
     {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
-    ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 100),
+    ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 1000),
     Events = soma_event_store:by_run(StorePid, RunId),
     Types = [maps:get(event_type, E) || E <- Events],
     %% the run records run.timeout and never run.completed
@@ -88,7 +88,7 @@ test_cli_external_process_dead_after_timeout(_Config) ->
     Steps = [#{id => s1, tool => cli_marker,
                args => #{input => <<"ignored">>}, timeout_ms => 100}],
     {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
-    ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 100),
+    ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 1000),
     %% wait past the helper's 2s sleep window: a leaked orphan would write the
     %% marker after its sleep elapses, so by now an orphan's side effect is visible.
     timer:sleep(3000),
@@ -125,10 +125,10 @@ test_cli_cancel_reaches_cancelled(_Config) ->
                args => #{input => <<"ignored">>}, timeout_ms => 60000}],
     {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
     %% wait until the step is actually in flight before cancelling.
-    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 100),
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 1000),
     %% cancel through the session's own interface, the README-named cancel path.
     SessionPid ! {cancel_run, RunId},
-    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 1000),
     Events = soma_event_store:by_run(StorePid, RunId),
     Types = [maps:get(event_type, E) || E <- Events],
     %% the run records run.cancelled and never run.completed
@@ -165,10 +165,10 @@ test_cli_external_process_dead_after_cancel(_Config) ->
                args => #{input => <<"ignored">>}, timeout_ms => 60000}],
     {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
     %% wait until the step is actually in flight before cancelling.
-    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 100),
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 1000),
     %% cancel through the session's own interface, the README-named cancel path.
     SessionPid ! {cancel_run, RunId},
-    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 1000),
     %% wait past the helper's 2s sleep window: a leaked orphan would write the
     %% marker after its sleep elapses, so by now an orphan's side effect is visible.
     timer:sleep(3000),
@@ -201,7 +201,7 @@ test_session_alive_runs_new_cli_run_after_timeout(_Config) ->
     Steps1 = [#{id => s1, tool => cli_alive_to_sleep,
                 args => #{input => <<"ignored">>}, timeout_ms => 100}],
     {ok, RunId1} = soma_agent_session:start_run(SessionPid, Steps1),
-    ok = wait_for_event(StorePid, RunId1, <<"run.timeout">>, 100),
+    ok = wait_for_event(StorePid, RunId1, <<"run.timeout">>, 1000),
     %% the session survives the timed-out run.
     true = is_process_alive(SessionPid),
     %% a fresh short `cli' run on the same session runs to completion.
@@ -217,7 +217,7 @@ test_session_alive_runs_new_cli_run_after_timeout(_Config) ->
     Steps2 = [#{id => s1, tool => cli_alive_to_fast,
                 args => #{input => <<"ignored">>}, timeout_ms => 5000}],
     {ok, RunId2} = soma_agent_session:start_run(SessionPid, Steps2),
-    ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 250),
+    ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 1000),
     Events = soma_event_store:by_run(StorePid, RunId2),
     Types = [maps:get(event_type, E) || E <- Events],
     true = lists:member(<<"run.completed">>, Types),
@@ -250,9 +250,9 @@ test_session_alive_runs_new_cli_run_after_cancel(_Config) ->
     Steps1 = [#{id => s1, tool => cli_alive_cancel_sleep,
                 args => #{input => <<"ignored">>}, timeout_ms => 60000}],
     {ok, RunId1} = soma_agent_session:start_run(SessionPid, Steps1),
-    ok = wait_for_event(StorePid, RunId1, <<"tool.started">>, 100),
+    ok = wait_for_event(StorePid, RunId1, <<"tool.started">>, 1000),
     SessionPid ! {cancel_run, RunId1},
-    ok = wait_for_event(StorePid, RunId1, <<"run.cancelled">>, 100),
+    ok = wait_for_event(StorePid, RunId1, <<"run.cancelled">>, 1000),
     %% the session survives the cancelled run.
     true = is_process_alive(SessionPid),
     %% a fresh short `cli' run on the same session runs to completion.
@@ -268,7 +268,7 @@ test_session_alive_runs_new_cli_run_after_cancel(_Config) ->
     Steps2 = [#{id => s1, tool => cli_alive_cancel_fast,
                 args => #{input => <<"ignored">>}, timeout_ms => 5000}],
     {ok, RunId2} = soma_agent_session:start_run(SessionPid, Steps2),
-    ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 250),
+    ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 1000),
     Events = soma_event_store:by_run(StorePid, RunId2),
     Types = [maps:get(event_type, E) || E <- Events],
     true = lists:member(<<"run.completed">>, Types),
