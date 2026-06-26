@@ -32,8 +32,7 @@ end_per_testcase(_Case, Config) ->
 test_start_link_listens_and_accepts_connect(Config) ->
     Path = socket_path(Config),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
-    {ok, Client} = gen_tcp:connect({local, Path}, 0,
-                                   [binary, {packet, 4}, {active, false}]),
+    {ok, Client} = connect(Path),
     ok = gen_tcp:close(Client).
 
 %% Criterion 5: a leftover file at Path (e.g. a stale socket left by a crashed
@@ -43,8 +42,7 @@ test_start_link_unlinks_stale_socket_file(Config) ->
     Path = socket_path(Config),
     ok = file:write_file(Path, <<"stale">>),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
-    {ok, Client} = gen_tcp:connect({local, Path}, 0,
-                                   [binary, {packet, 4}, {active, false}]),
+    {ok, Client} = connect(Path),
     ok = gen_tcp:close(Client).
 
 %% Criterion 6: a second start_link on a Path already served by a live server
@@ -56,8 +54,7 @@ test_second_start_link_on_live_path_errors(Config) ->
     {ok, ServerA} = soma_cli_server:start_link(#{socket => Path}),
     {error, _Reason} = soma_cli_server:start_link(#{socket => Path}),
     true = is_process_alive(ServerA),
-    {ok, Client} = gen_tcp:connect({local, Path}, 0,
-                                   [binary, {packet, 4}, {active, false}]),
+    {ok, Client} = connect(Path),
     ok = gen_tcp:close(Client).
 
 %% Criterion 7: after a second start_link on server A's live path fails, server A
@@ -68,8 +65,7 @@ test_first_server_survives_failed_second_start_link(Config) ->
     {ok, ServerA} = soma_cli_server:start_link(#{socket => Path}),
     {error, _Reason} = soma_cli_server:start_link(#{socket => Path}),
     true = is_process_alive(ServerA),
-    {ok, Client} = gen_tcp:connect({local, Path}, 0,
-                                   [binary, {packet, 4}, {active, false}]),
+    {ok, Client} = connect(Path),
     ok = gen_tcp:close(Client).
 
 %% Criterion 8: a framed `run' request carrying a one-step `echo' workflow drives
@@ -80,8 +76,7 @@ test_first_server_survives_failed_second_start_link(Config) ->
 test_run_echo_returns_completed_with_outputs(Config) ->
     Path = socket_path(Config),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
-    {ok, Client} = gen_tcp:connect({local, Path}, 0,
-                                   [binary, {packet, 4}, {active, false}]),
+    {ok, Client} = connect(Path),
     Request = #{<<"cmd">> => <<"run">>,
                 <<"workflow">> =>
                     [#{<<"id">> => <<"s1">>,
@@ -105,8 +100,7 @@ test_run_echo_returns_completed_with_outputs(Config) ->
 test_run_failed_returns_failed_with_error(Config) ->
     Path = socket_path(Config),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
-    {ok, Client} = gen_tcp:connect({local, Path}, 0,
-                                   [binary, {packet, 4}, {active, false}]),
+    {ok, Client} = connect(Path),
     Request = #{<<"cmd">> => <<"run">>,
                 <<"workflow">> =>
                     [#{<<"id">> => <<"s1">>,
@@ -124,16 +118,14 @@ test_run_failed_returns_failed_with_error(Config) ->
 test_server_serves_after_failed_run(Config) ->
     Path = socket_path(Config),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
-    {ok, C1} = gen_tcp:connect({local, Path}, 0,
-                               [binary, {packet, 4}, {active, false}]),
+    {ok, C1} = connect(Path),
     Fail = #{<<"cmd">> => <<"run">>,
              <<"workflow">> => [#{<<"id">> => <<"s1">>, <<"tool">> => <<"fail">>,
                                   <<"args">> => #{<<"mode">> => <<"error">>}}]},
     ok = gen_tcp:send(C1, iolist_to_binary(json:encode(Fail))),
     {ok, _} = gen_tcp:recv(C1, 0, 5000),
     ok = gen_tcp:close(C1),
-    {ok, C2} = gen_tcp:connect({local, Path}, 0,
-                               [binary, {packet, 4}, {active, false}]),
+    {ok, C2} = connect(Path),
     Echo = #{<<"cmd">> => <<"run">>,
              <<"workflow">> => [#{<<"id">> => <<"s1">>, <<"tool">> => <<"echo">>,
                                   <<"args">> => #{<<"value">> => <<"ok">>}}]},
@@ -141,6 +133,23 @@ test_server_serves_after_failed_run(Config) ->
     {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
     <<"completed">> = maps:get(<<"status">>, json:decode(Reply)),
     ok = gen_tcp:close(C2).
+
+%% A retrying client connect. AF_UNIX `connect' on macOS can transiently return
+%% `eopnotsupp'/`econnrefused' under heavy load (the kernel briefly rejects, or
+%% the listener is mid-bind); retry a few times so the suite is deterministic.
+%% The server itself is fine -- this only smooths the client side.
+connect(Path) -> connect(Path, 80).
+connect(_Path, 0) ->
+    {error, giving_up};
+connect(Path, N) ->
+    case gen_tcp:connect({local, Path}, 0,
+                         [binary, {packet, 4}, {active, false}]) of
+        {ok, Sock} ->
+            {ok, Sock};
+        {error, _} ->
+            timer:sleep(25),
+            connect(Path, N - 1)
+    end.
 
 %% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS), so the
 %% long CT priv_dir cannot hold a bindable socket. Use a short unique path
