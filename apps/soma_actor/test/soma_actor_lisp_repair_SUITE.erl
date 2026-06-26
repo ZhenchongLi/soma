@@ -271,7 +271,7 @@ actor_alive_after_repair_failure_runs_next_valid_message(_Config) ->
                      correlation_id => <<"corr-lisp-repair-5-next">>,
                      llm => ValidLlm},
     {ok, NextTaskId} = soma_actor:send(ActorPid, NextEnvelope),
-    ok = wait_for_status(ActorPid, NextTaskId, rejected, 100),
+    ok = wait_for_status(ActorPid, NextTaskId, completed, 100),
     {ok, NextResult} = soma_actor:get_task_result(ActorPid, NextTaskId),
     #{kind := reply, text := <<"hi">>} = NextResult,
     true = is_process_alive(ActorPid),
