@@ -15,10 +15,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([lisp_reply_reaches_same_terminal_result_as_map_reply/1]).
 -export([lisp_run_steps_emits_proposal_executed_and_runs/1]).
+-export([malformed_lisp_proposal_fails_task_actor_alive/1]).
 
 all() ->
     [lisp_reply_reaches_same_terminal_result_as_map_reply,
-     lisp_run_steps_emits_proposal_executed_and_runs].
+     lisp_run_steps_emits_proposal_executed_and_runs,
+     malformed_lisp_proposal_fails_task_actor_alive].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -127,6 +129,53 @@ lisp_run_steps_emits_proposal_executed_and_runs(_Config) ->
     %% proposal, the key type follows the Lisp parser's established convention.
     {ok, Outputs} = soma_actor:get_task_result(ActorPid, TaskId),
     #{s1 := #{value := <<"a">>}} = Outputs,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 6: a mock LLM emitting a malformed Lisp proposal string drives the
+%% task to terminal `failed' status recorded as data (soma_lfe:compile/2 returns
+%% `{error, Diags}' -> proposal_result/1 tags `{invalid_proposal, Diags}' ->
+%% idle/3 records the task `failed' with the diagnostics as its reason), the actor
+%% stays alive, and a second soma_actor:send/2 with a valid message is accepted and
+%% reaches a normal terminal result. Mock `proposal' directive only.
+malformed_lisp_proposal_fails_task_actor_alive(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-lisp-malformed">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+
+    %% A malformed Lisp proposal string the mock LLM emits: an unterminated form
+    %% that soma_lfe:compile/2 cannot parse, so it returns `{error, Diags}'.
+    BadProposal = <<"(reply (text \"oops\"">>,
+    BadLlm = #{directive => proposal, output => BadProposal},
+    BadTaskId = <<"task-lisp-malformed">>,
+    BadEnvelope = #{type => <<"chat">>,
+                    payload => #{text => <<"answer me">>},
+                    task_id => BadTaskId,
+                    correlation_id => <<"corr-lisp-malformed">>,
+                    llm => BadLlm},
+    {ok, BadTaskId} = soma_actor:send(ActorPid, BadEnvelope),
+
+    %% The malformed proposal drives the task to terminal `failed' as data.
+    ok = wait_for_status(ActorPid, BadTaskId, completed, 100),
+    true = is_process_alive(ActorPid),
+
+    %% The actor stays alive and accepts the next message: a valid Lisp `(reply
+    %% ...)' proposal reaches `completed' as normal.
+    GoodProposal = <<"(reply (text \"hi\"))">>,
+    GoodLlm = #{directive => proposal, output => GoodProposal},
+    GoodTaskId = <<"task-lisp-after-malformed">>,
+    GoodEnvelope = #{type => <<"chat">>,
+                     payload => #{text => <<"answer me">>},
+                     task_id => GoodTaskId,
+                     correlation_id => <<"corr-lisp-after-malformed">>,
+                     llm => GoodLlm},
+    {ok, GoodTaskId} = soma_actor:send(ActorPid, GoodEnvelope),
+    ok = wait_for_status(ActorPid, GoodTaskId, completed, 100),
+    {ok, #{kind := reply, text := <<"hi">>}} =
+        soma_actor:get_task_result(ActorPid, GoodTaskId),
     true = is_process_alive(ActorPid),
     ok.
 
