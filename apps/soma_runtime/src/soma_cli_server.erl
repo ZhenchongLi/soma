@@ -139,11 +139,27 @@ mint_id(Prefix) ->
 %% `{"tag":"<Tag>","detail":[<Detail...>]}' so a caller can switch on `tag'
 %% without parsing a string; `json:encode/1' has no tuple encoding of its own.
 -spec encode_response(term()) -> iolist().
-encode_response(Term) when is_tuple(Term), tuple_size(Term) >= 1 ->
-    [Tag | Detail] = tuple_to_list(Term),
-    json:encode(#{tag => Tag, detail => Detail});
 encode_response(Term) ->
-    json:encode(Term).
+    json:encode(jsonable(Term)).
+
+%% Recursively make a term JSON-encodable. `json:encode/1' has no tuple clause, so
+%% any tuple -- a reason like `{unregistered_tool, T}' / `{budget_exceeded, _}'
+%% nested under `error', or a tuple inside a step's `outputs' -- would crash the
+%% encoder. Map every tuple to `{"tag": First, "detail": [Rest...]}' (so a caller
+%% switches on `tag' without parsing a string), recursing through maps and lists.
+jsonable(T) when is_map(T) ->
+    maps:map(fun(_K, V) -> jsonable(V) end, T);
+jsonable(T) when is_list(T) ->
+    [jsonable(E) || E <- T];
+jsonable(T) when is_tuple(T) ->
+    [Tag | Detail] = tuple_to_list(T),
+    #{tag => Tag, detail => [jsonable(E) || E <- Detail]};
+jsonable(T) when is_atom(T); is_binary(T); is_number(T) ->
+    T;
+jsonable(T) ->
+    %% pids, refs, funs, ports -- not JSON-encodable; render for the audit trail
+    %% rather than crash the encoder on a failure reason that carries one.
+    iolist_to_binary(io_lib:format("~p", [T])).
 
 %% Prepend a 4-byte big-endian length prefix to a JSON payload, the wire frame
 %% a client reads. `{packet, 4}' produces the same shape in the driver; this is
