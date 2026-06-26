@@ -1,0 +1,151 @@
+%% @doc Actor-to-actor Lisp proofs (L.2): one actor (A1) whose mock returns a
+%% policy-approved `actor_message' proposal whose *body* is a Lisp `(msg ...)'
+%% string carrying steps delivers it to a second actor (A2); A2 parses the Lisp
+%% at its own `soma_actor:send/2' string clause (reusing the L.1 path) and runs
+%% the steps. The proof compares the receiving actor's terminal task status with
+%% the equivalent map-bodied `actor_message' carrying the same steps. Set up like
+%% soma_actor_message_SUITE: boot the soma_runtime app (so the shared event store
+%% and soma_run_sup are alive), start two actors through
+%% soma_actor_sup:start_actor/1, and drive A1 through the real soma_actor:send/2
+%% with a `proposal' llm directive -- the full decision-to-delivery chain, no
+%% layer bypassed, mock LLM only.
+-module(soma_actor_lisp_to_lisp_SUITE).
+
+-include_lib("common_test/include/ct.hrl").
+
+-export([all/0]).
+-export([init_per_testcase/2, end_per_testcase/2]).
+-export([lisp_body_reaches_same_terminal_status_as_map/1]).
+
+all() ->
+    [lisp_body_reaches_same_terminal_status_as_map].
+
+init_per_testcase(_TestCase, Config) ->
+    {ok, Started} = application:ensure_all_started(soma_runtime),
+    {ok, Sup} = soma_actor_sup:start_link(),
+    [{sup, Sup}, {started_apps, Started} | Config].
+
+end_per_testcase(_TestCase, Config) ->
+    case ?config(sup, Config) of
+        undefined -> ok;
+        Sup ->
+            unlink(Sup),
+            exit(Sup, shutdown)
+    end,
+    application:stop(soma_runtime),
+    ok.
+
+%% Criterion 1: an approved `actor_message' proposal whose body is a Lisp
+%% `(msg ...)' string carrying steps drives the receiving actor's task to the same
+%% terminal status as the equivalent map-bodied `actor_message' carrying the same
+%% steps. Two A2 receivers (one per body form) each get exactly one delivery
+%% driven through the real A1 decision-to-delivery chain (a `proposal' mock
+%% directive whose `actor_message' proposal names that A2's pid as `to'). Each A2
+%% receiver task is found by its `actor.task.accepted' event under A1's
+%% correlation_id, then its terminal status is read from A2 and the two are
+%% asserted equal -- and not stuck at `accepted', so the comparison proves a real
+%% run ran on each.
+lisp_body_reaches_same_terminal_status_as_map(_Config) ->
+    Store = event_store_pid(),
+
+    %% --- Lisp-bodied delivery: A1 -> A2L ---
+    A2LOpts = #{actor_id => <<"actor-a2-lisp">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2L} = soma_actor_sup:start_actor(A2LOpts),
+    A1LOpts = #{actor_id => <<"actor-a1-lisp">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1L} = soma_actor_sup:start_actor(A1LOpts),
+    %% The proposal body is a Lisp `(msg ...)' string carrying one echo step.
+    LispBody = <<"(msg (type chat) (payload \"hi\") "
+                 "(steps (step (id s1) (tool echo) "
+                 "(args (value \"hi\")))))">>,
+    LispProposal = #{kind => actor_message, to => A2L, payload => LispBody},
+    LispCorr = <<"corr-l2-lisp">>,
+    LispEnvelope = #{type => <<"chat">>,
+                    payload => #{text => <<"tell a2">>},
+                    task_id => <<"task-l2-lisp">>,
+                    correlation_id => LispCorr,
+                    llm => #{directive => proposal, output => LispProposal}},
+    {ok, <<"task-l2-lisp">>} = soma_actor:send(A1L, LispEnvelope),
+    LispReceiverTask = wait_for_a2_task(Store, LispCorr, <<"actor-a2-lisp">>, 100),
+    LispStatus = wait_for_terminal(A2L, LispReceiverTask, 100),
+
+    %% --- Map-bodied delivery: A1 -> A2M, same steps ---
+    A2MOpts = #{actor_id => <<"actor-a2-map">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2M} = soma_actor_sup:start_actor(A2MOpts),
+    A1MOpts = #{actor_id => <<"actor-a1-map">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1M} = soma_actor_sup:start_actor(A1MOpts),
+    %% The map body is the envelope the Lisp string parses into: same type,
+    %% payload and one echo step.
+    MapBody = #{type => chat,
+                payload => <<"hi">>,
+                steps => [#{id => s1, tool => echo,
+                            args => #{value => <<"hi">>}}]},
+    MapProposal = #{kind => actor_message, to => A2M, payload => MapBody},
+    MapCorr = <<"corr-l2-map">>,
+    MapEnvelope = #{type => <<"chat">>,
+                   payload => #{text => <<"tell a2">>},
+                   task_id => <<"task-l2-map">>,
+                   correlation_id => MapCorr,
+                   llm => #{directive => proposal, output => MapProposal}},
+    {ok, <<"task-l2-map">>} = soma_actor:send(A1M, MapEnvelope),
+    MapReceiverTask = wait_for_a2_task(Store, MapCorr, <<"actor-a2-map">>, 100),
+    MapStatus = wait_for_terminal(A2M, MapReceiverTask, 100),
+
+    %% The Lisp body and the equivalent map body drive their receivers to the same
+    %% terminal status -- and both ran a step, so neither is stuck at `accepted'.
+    completed = LispStatus,
+    LispStatus = MapStatus,
+    true = is_process_alive(A2L),
+    true = is_process_alive(A2M),
+    true = is_process_alive(A1L),
+    true = is_process_alive(A1M),
+    ok.
+
+%% Polls the shared store until an `actor.task.accepted' event emitted by the
+%% named A2 actor_id appears under CorrelationId, returning that task_id -- the
+%% receiver task the delivery created on A2.
+wait_for_a2_task(_Store, _CorrelationId, _A2Id, 0) ->
+    error(no_a2_task);
+wait_for_a2_task(Store, CorrelationId, A2Id, N) ->
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Accepted = [E || E <- Events,
+                     maps:get(event_type, E, undefined)
+                         =:= <<"actor.task.accepted">>,
+                     maps:get(actor_id, E, undefined) =:= A2Id],
+    case Accepted of
+        [E | _] ->
+            maps:get(task_id, E);
+        [] ->
+            timer:sleep(20),
+            wait_for_a2_task(Store, CorrelationId, A2Id, N - 1)
+    end.
+
+%% Polls A2's task status until it leaves `accepted' for a terminal status,
+%% returning that status.
+wait_for_terminal(_ActorPid, _TaskId, 0) ->
+    error(no_terminal_status);
+wait_for_terminal(ActorPid, TaskId, N) ->
+    case maps:get(status, soma_actor:get_task_status(ActorPid, TaskId)) of
+        accepted ->
+            timer:sleep(20),
+            wait_for_terminal(ActorPid, TaskId, N - 1);
+        Status ->
+            Status
+    end.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
