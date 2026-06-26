@@ -108,8 +108,7 @@ test_lisp_send_correlation_chain_matches_map(_Config) ->
     MapChain = correlation_event_types(Store, MapCorr),
 
     %% Both forms drive the same work, so the correlation chains match in shape.
-    %% Staged red: pin a deliberately-wrong expected chain first.
-    LispChain = [<<"deliberately.wrong">> | MapChain],
+    LispChain = MapChain,
     true = is_process_alive(Pid),
     ok.
 
