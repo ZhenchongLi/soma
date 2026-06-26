@@ -4,7 +4,7 @@
 %% workflow source through unchanged; the daemon is the parser.
 -module(soma_cli).
 
--export([run/1]).
+-export([run/1, daemon/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -20,6 +20,31 @@ run(#{file := File, socket := Path}) ->
     ok = gen_tcp:close(Sock),
     io:format("~s~n", [Reply]),
     exit_code(Reply).
+
+%% Boot the daemon: start the runtime, then a `soma_cli_server' listener on a
+%% resolved socket path. A test-supplied `socket' override points both ends at a
+%% temp path; absent it, resolve `$XDG_RUNTIME_DIR/soma.sock', else
+%% `/tmp/soma-$UID.sock'. Returns `{ok, Path}' -- the listener runs in its own
+%% linked process, so the daemon stays up without blocking the caller.
+-spec daemon(map()) -> {ok, file:filename_all()}.
+daemon(Args) ->
+    {ok, _Started} = application:ensure_all_started(soma_runtime),
+    Path = socket_path(Args),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Path}.
+
+%% Resolve the listener socket path: a `socket' override (a temp path a test
+%% points both ends at) wins; otherwise `$XDG_RUNTIME_DIR/soma.sock', else
+%% `/tmp/soma-$UID.sock'.
+socket_path(#{socket := Path}) ->
+    Path;
+socket_path(_Args) ->
+    case os:getenv("XDG_RUNTIME_DIR") of
+        false ->
+            "/tmp/soma-" ++ os:getpid() ++ ".sock";
+        Dir ->
+            filename:join(Dir, "soma.sock")
+    end.
 
 %% Resolve the workflow bytes from the path arg: `-' reads stdin (the process
 %% group leader) to EOF, any other value reads that file. The bytes are shipped to
