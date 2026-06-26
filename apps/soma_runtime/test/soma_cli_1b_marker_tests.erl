@@ -29,7 +29,12 @@ cli_1b_sources() ->
      <<"soma_cli_server_tests.erl">>,
      <<"soma_cli_SUITE.erl">>,
      <<"soma_cli_wire_docs_tests.erl">>,
-     <<"soma_cli_1b_contract_tests.erl">>].
+     <<"soma_cli_1b_contract_tests.erl">>,
+     %% RED stage: this real-provider test is NOT a CLI.1b source. Including it
+     %% here makes the provider-marker assertion fire (it carries `base_url' /
+     %% `https' / `soma_llm_openai'), proving the scan actually rejects markers.
+     %% Removed in the green commit.
+     <<"soma_llm_openai_tests.erl">>].
 
 test_cli_1b_sources_have_no_real_provider_or_socket_marker() ->
     lists:foreach(fun(File) ->
