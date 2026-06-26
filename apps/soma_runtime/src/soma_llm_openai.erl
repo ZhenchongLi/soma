@@ -10,8 +10,11 @@
 
 %% Build the pieces of the chat-completions POST from a config map. Pure: it
 %% opens no socket. The url is the configured `base_url' with `/chat/completions'
-%% appended.
-build_request(#{base_url := BaseUrl, api_key := ApiKey}) ->
+%% appended; the body is `json:encode/1' of a map carrying `model' and
+%% `messages'.
+build_request(#{base_url := BaseUrl, api_key := ApiKey,
+                model := Model, messages := Messages}) ->
     Url = <<BaseUrl/binary, "/chat/completions">>,
     Headers = [{"Authorization", "Bearer " ++ binary_to_list(ApiKey)}],
-    #{url => Url, headers => Headers}.
+    Body = iolist_to_binary(json:encode(#{model => Model, messages => Messages})),
+    #{url => Url, headers => Headers, body => Body}.
