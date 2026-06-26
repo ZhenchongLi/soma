@@ -222,7 +222,7 @@ test_server_serves_after_failed_lisp_run(Config) ->
     %% The second reply must be a completed `(result ...)' -- the server survived
     %% the earlier failed run and served this fresh well-formed request.
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
-    match = re:run(Reply, "\\(status failed\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
 
 %% A small defensive retry for the client connect: right after start_link the
