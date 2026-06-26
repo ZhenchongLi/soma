@@ -99,3 +99,24 @@ markers_together(Haystack, A, B) ->
 
 usage_documents_actor_real_provider_config_test() ->
     test_usage_documents_actor_real_provider_config().
+
+%% Issue #119 review fix: the real-provider example envelope in `docs/usage.md'
+%% must carry the `llm' key the actor actually gates on. `maybe_start_llm_call/4'
+%% (soma_actor.erl) takes the llm-call path only when `maps:get(llm, Envelope)'
+%% is a map; an envelope with no `llm' key falls into the `_ ->' clause and no
+%% call is started, so the task stops at `accepted' and never produces the
+%% documented `{ok, #{kind => reply, ...}}' result. The marker-grep criterion-8
+%% test above does not catch this because it never inspects the example envelope.
+%% This guard pins that the real-provider example carries `llm =>' close to the
+%% prompt-envelope marker, so a copy-paste of the doc actually starts a call.
+test_usage_real_provider_example_envelope_carries_llm() ->
+    Doc = read_usage_doc(),
+    %% The real-provider example's prompt envelope (its payload carries `prompt')
+    %% must sit in the same window as an `llm =>' key, so the envelope the reader
+    %% copies takes the actor's llm-call path rather than the no-op `_ ->' clause.
+    ?assert(markers_together(Doc, <<"payload => #{prompt =>">>,
+                             <<"llm =>">>)),
+    ok.
+
+usage_real_provider_example_envelope_carries_llm_test() ->
+    test_usage_real_provider_example_envelope_carries_llm().
