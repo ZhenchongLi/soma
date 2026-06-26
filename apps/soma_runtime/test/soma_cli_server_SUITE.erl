@@ -172,7 +172,7 @@ test_run_lisp_result_carries_correlation_id(Config) ->
     {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
     %% The reply must carry a `(correlation-id "...")' sub-form whose quoted
     %% string is non-empty (at least one character between the quotes).
-    match = re:run(Reply, "\\(correlation-id \"\"\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(correlation-id \"[^\"]+\"\\)", [{capture, none}]),
     ok = gen_tcp:close(Client).
 
 %% A small defensive retry for the client connect: right after start_link the
