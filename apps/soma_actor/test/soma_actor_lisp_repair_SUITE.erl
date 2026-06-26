@@ -375,9 +375,7 @@ strict_mode_fails_malformed_without_repair_call(_Config) ->
     %% Exactly one `llm.started' fired (the first call); no repair call started.
     Started = [E || E <- Events,
                     maps:get(event_type, E, undefined) =:= <<"llm.started">>],
-    %% RED (staged): deliberately wrong expected count; strict mode makes the
-    %% first call, so this is 1, not 0. Fixed in the following commit.
-    0 = length(Started),
+    1 = length(Started),
     %% No `proposal.repaired' event: strict mode never repairs.
     Repaired = [E || E <- Events,
                      maps:get(event_type, E, undefined) =:= <<"proposal.repaired">>],
