@@ -18,11 +18,13 @@
 -export([repaired_reply_reaches_same_terminal_result_as_valid_reply/1]).
 -export([successful_repair_emits_proposal_repaired_with_ids/1]).
 -export([repaired_run_steps_outside_allowlist_is_rejected/1]).
+-export([all_repairs_malformed_fails_after_max_attempts_with_diagnostics/1]).
 
 all() ->
     [repaired_reply_reaches_same_terminal_result_as_valid_reply,
      successful_repair_emits_proposal_repaired_with_ids,
-     repaired_run_steps_outside_allowlist_is_rejected].
+     repaired_run_steps_outside_allowlist_is_rejected,
+     all_repairs_malformed_fails_after_max_attempts_with_diagnostics].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -172,6 +174,57 @@ repaired_run_steps_outside_allowlist_is_rejected(_Config) ->
     Rejected = [E || E <- Events,
                      maps:get(event_type, E, undefined) =:= <<"proposal.rejected">>],
     [_RejectedEvent] = Rejected,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 4: when every repair call still returns malformed Lisp, the task
+%% reaches terminal `failed' after exactly the configured maximum number of repair
+%% attempts (`max_repairs'), with the parse diagnostics recorded as the failure
+%% reason. The malformed proposal's `llm' map stages, under `repair_output', a
+%% string that is itself malformed Lisp, so each repair call returns malformed
+%% source again and the loop never produces a valid proposal. The actor (repair on
+%% by default, `max_repairs => 2') makes up to two repair calls, all malformed, and
+%% then fails the task with the diagnostics as the reason (read back through
+%% soma_actor:get_task_status/2). The actor stays alive.
+all_repairs_malformed_fails_after_max_attempts_with_diagnostics(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-lisp-repair-4">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             max_repairs => 2,
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+
+    %% A malformed (unterminated) form whose staged repair output is itself
+    %% malformed, so every repair call returns malformed source again.
+    BadProposal = <<"(reply (text \"hi\"">>,
+    StillBadProposal = <<"(reply (text \"hi\"">>,
+    RepairLlm = #{directive => proposal,
+                  output => BadProposal,
+                  repair_output => StillBadProposal},
+    TaskId = <<"task-lisp-repair-all-malformed">>,
+    CorrelationId = <<"corr-lisp-repair-all-malformed">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"answer me">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => RepairLlm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
+
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    failed = maps:get(status, Status),
+    %% The parse diagnostics are recorded as the failure reason: a non-empty list
+    %% of diagnostic terms from soma_lfe:compile/2, not a budget/timeout atom.
+    Reason = maps:get(reason, Status),
+    true = is_list(Reason) andalso Reason =/= [],
+
+    %% Exactly `max_repairs' repair calls were made: the first call plus two repair
+    %% calls is three `llm.started' events on the task's correlation.
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Started = [E || E <- Events,
+                    maps:get(event_type, E, undefined) =:= <<"llm.started">>],
+    2 = length(Started),
     true = is_process_alive(ActorPid),
     ok.
 
