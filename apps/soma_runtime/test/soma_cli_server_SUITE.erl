@@ -13,6 +13,7 @@
 -export([test_run_lisp_echo_returns_completed_result/1]).
 -export([test_run_lisp_result_carries_correlation_id/1]).
 -export([test_run_lisp_failed_returns_error_result/1]).
+-export([test_server_serves_after_failed_lisp_run/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -24,7 +25,8 @@ all() ->
      test_server_serves_after_failed_run,
      test_run_lisp_echo_returns_completed_result,
      test_run_lisp_result_carries_correlation_id,
-     test_run_lisp_failed_returns_error_result].
+     test_run_lisp_failed_returns_error_result,
+     test_server_serves_after_failed_lisp_run].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -197,6 +199,31 @@ test_run_lisp_failed_returns_error_result(Config) ->
     nomatch = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "\\(error ", [{capture, none}]),
     ok = gen_tcp:close(Client).
+
+%% Criterion 5 (CLI.1b): the server stays up after a failed Lisp run and answers
+%% the next request on a new connection. The first connection sends a `(run (step
+%% ...))' whose only step uses the `fail' tool (the Criterion 4 chain), failing the
+%% run; the second connection (a fresh socket) sends an echo `(run (step ...))'
+%% (the Criterion 1 chain) and reads a `(result ...)' s-expr whose status sub-form
+%% is `completed'. The proof is that the same server process serves a second
+%% well-formed request after a failed run -- it did not crash with the failed run.
+test_server_serves_after_failed_lisp_run(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, C1} = connect(Path),
+    Fail = <<"(run (step s1 fail (args (mode error))))">>,
+    ok = gen_tcp:send(C1, Fail),
+    {ok, _} = gen_tcp:recv(C1, 0, 5000),
+    ok = gen_tcp:close(C1),
+    {ok, C2} = connect(Path),
+    Echo = <<"(run (step s1 echo (args (value \"ok\"))))">>,
+    ok = gen_tcp:send(C2, Echo),
+    {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
+    %% The second reply must be a completed `(result ...)' -- the server survived
+    %% the earlier failed run and served this fresh well-formed request.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status failed\\)", [{capture, none}]),
+    ok = gen_tcp:close(C2).
 
 %% A small defensive retry for the client connect: right after start_link the
 %% accept loop may not have reached gen_tcp:accept yet, so a connect can briefly
