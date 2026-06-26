@@ -36,9 +36,7 @@ test_every_llm_directive_is_the_proposal_mock() ->
     ProposalCount = count(Suite, <<"directive => proposal">>),
     ?assert(DirectiveCount > 0),
     %% Every LLM directive the suite drives the actor with is the `proposal' mock.
-    %% STAGED RED: deliberately wrong expectation -- claims one fewer proposal
-    %% directive than there are, so the equality assertion fires.
-    ?assertEqual(DirectiveCount - 1, ProposalCount).
+    ?assertEqual(DirectiveCount, ProposalCount).
 
 %% Criterion 10 (part b): no L.5 test opt carries a real-provider config -- the
 %% suite source names no real OpenAI provider module, no API key / base URL opt,
@@ -51,9 +49,7 @@ test_no_real_provider_config_in_suite() ->
                <<"api_base">>,
                <<"http">>,
                <<"https">>],
-    %% STAGED RED: deliberately wrong expectation -- claims each marker appears
-    %% once, so the equality assertion fires (the markers are in fact absent).
-    [?assertEqual({Marker, 1}, {Marker, count(Suite, Marker)})
+    [?assertEqual({Marker, 0}, {Marker, count(Suite, Marker)})
      || Marker <- Markers],
     ok.
 
