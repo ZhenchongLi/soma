@@ -14,9 +14,11 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([real_provider_actor_completes_llm_task_through_openai_no_socket/1]).
+-export([mock_model_config_completes_llm_task_same_result_and_events/1]).
 
 all() ->
-    [real_provider_actor_completes_llm_task_through_openai_no_socket].
+    [real_provider_actor_completes_llm_task_through_openai_no_socket,
+     mock_model_config_completes_llm_task_same_result_and_events].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -79,6 +81,58 @@ real_provider_actor_completes_llm_task_through_openai_no_socket(_Config) ->
     #{kind := reply, text := Content} = Result,
     true = is_process_alive(ActorPid),
     ok.
+
+%% Criterion 5: an actor started with an empty `model_config' still drives an
+%% `llm' task to completion through the mock, with the same task result and the
+%% same events as in v0.5. The actor is started with an empty `model_config'
+%% (so build_call_opts/2 takes its mock branch and returns the envelope's `llm'
+%% map unchanged) and sent the same `proposal' mock envelope the v0.5
+%% soma_proposal_exec_SUITE uses for an approved `reply' proposal. The test
+%% asserts the task result is the normalized `#{kind => reply, text => Text}'
+%% proposal and that the by_correlation/2 event set matches the v0.5 mock
+%% behaviour: an `actor.*' and an `llm.*' event, `proposal.created' and
+%% `proposal.approved', and no `run.started' (a toolless reply runs nothing).
+mock_model_config_completes_llm_task_same_result_and_events(_Config) ->
+    Store = event_store_pid(),
+    %% Empty model_config -> build_call_opts/2 mock branch -> mock LLM path.
+    Opts = #{actor_id => <<"actor-mock-config">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    RawProposal = #{kind => reply, text => <<"here is your answer">>},
+    Llm = #{directive => proposal, output => RawProposal},
+    TaskId = <<"task-mock-config">>,
+    CorrelationId = <<"corr-mock-config">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"answer me">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    %% Same task result as v0.5: the normalized reply proposal.
+    {ok, Result} = soma_actor:get_task_result(ActorPid, TaskId),
+    #{kind := reply, text := <<"WRONG EXPECTED REPLY">>} = Result,
+    %% Same events as v0.5: the mock proposal trail, no run started.
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
+    true = lists:any(fun(T) -> has_prefix(T, <<"actor.">>) end, Types),
+    true = lists:any(fun(T) -> has_prefix(T, <<"llm.">>) end, Types),
+    true = lists:member(<<"proposal.created">>, Types),
+    true = lists:member(<<"proposal.approved">>, Types),
+    false = lists:member(<<"run.started">>, Types),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% True when binary T starts with binary Prefix.
+has_prefix(T, Prefix) when is_binary(T) ->
+    case T of
+        <<Prefix:(byte_size(Prefix))/binary, _/binary>> -> true;
+        _ -> false
+    end;
+has_prefix(_, _) ->
+    false.
 
 %% Polls get_task_status until the task reaches the given status.
 wait_for_status(_ActorPid, TaskId, Status, 0) ->
