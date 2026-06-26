@@ -315,7 +315,7 @@ actor_alive_and_accepts_after_malformed_body(_Config) ->
 
     %% Between deliveries: the receiving actor pid is still alive -- the malformed
     %% body never reached it.
-    false = is_process_alive(A2),
+    true = is_process_alive(A2),
 
     %% --- Second delivery: a valid map-bodied message to the same A2 ---
     MapBody = #{type => chat,
