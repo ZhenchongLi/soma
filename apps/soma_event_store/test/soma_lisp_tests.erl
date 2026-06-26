@@ -39,8 +39,6 @@ test_render_pid_becomes_quoted_string() ->
     %% (the `io_lib:format("~p", ...)' text of the pid) and never crashes.
     PidText = iolist_to_binary(io_lib:format("~p", [self()])),
     Expected = iolist_to_binary(["(pid \"", PidText, "\")"]),
-    %% Deliberately wrong expected value to observe the red assertion fire.
-    ?assertEqual(<<"(pid <0.0.0>)">>, Rendered),
     ?assertEqual(Expected, Rendered).
 
 render_pid_becomes_quoted_string_test() ->
