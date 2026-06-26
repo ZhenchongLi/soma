@@ -21,7 +21,7 @@ mock_success_returns_configured_output_test() ->
 test_perform_call_directive_unchanged() ->
     Output = #{reply => <<"unchanged">>},
     Llm = #{directive => success, output => Output},
-    ?assertEqual({error, changed}, soma_llm_call:perform_call(Llm)).
+    ?assertEqual({ok, Output}, soma_llm_call:perform_call(Llm)).
 
 perform_call_directive_unchanged_test() ->
     test_perform_call_directive_unchanged().
