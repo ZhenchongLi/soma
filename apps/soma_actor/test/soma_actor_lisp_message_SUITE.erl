@@ -130,7 +130,7 @@ test_malformed_lisp_send_actor_survives(_Config) ->
     %% A malformed Lisp string: unbalanced parens, so the reader/parser rejects
     %% it. The wrapper returns the diagnostics without calling the actor.
     Malformed = <<"(msg (type chat) (payload \"hi\"">>,
-    {ok, _} = soma_actor:send(Pid, Malformed),
+    {error, _} = soma_actor:send(Pid, Malformed),
     true = is_process_alive(Pid),
 
     %% The same actor accepts and completes a following valid map envelope.
