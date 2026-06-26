@@ -121,9 +121,12 @@ lisp_run_steps_emits_proposal_executed_and_runs(_Config) ->
     true = lists:member(<<"run.completed">>, Types),
 
     %% Same terminal result: the single echo step s1 echoes its args unchanged,
-    %% keyed by the step id, identical to the raw-map run_steps proposal.
+    %% keyed by the step id. The soma_lfe layer renders step ids as atoms (the
+    %% v0.3 run path and L.1/L.2 message path do the same), so the run's outputs
+    %% are keyed by the atom `s1' -- the run executed identically to the raw-map
+    %% proposal, the key type follows the Lisp parser's established convention.
     {ok, Outputs} = soma_actor:get_task_result(ActorPid, TaskId),
-    #{<<"s1">> := #{value := <<"a">>}} = Outputs,
+    #{s1 := #{value := <<"a">>}} = Outputs,
     true = is_process_alive(ActorPid),
     ok.
 
