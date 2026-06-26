@@ -110,3 +110,24 @@ test_parse_response_bounded_errors() ->
 
 parse_response_bounded_errors_test() ->
     test_parse_response_bounded_errors().
+
+test_reply_proposal_normalizes() ->
+    %% The `reply' proposal that `parse_response/1' returns on a 200 must pass
+    %% `soma_proposal:normalize/1' unchanged -- i.e. the provider's reply shape is
+    %% a valid proposal at the actor boundary, not something the normalize gate
+    %% rejects.
+    Body = <<"{\"id\":\"chatcmpl-abc123\","
+             "\"object\":\"chat.completion\","
+             "\"created\":1700000000,"
+             "\"model\":\"dummy-model\","
+             "\"choices\":[{\"index\":0,"
+             "\"message\":{\"role\":\"assistant\","
+             "\"content\":\"Hello from the model.\"},"
+             "\"finish_reason\":\"stop\"}],"
+             "\"usage\":{\"prompt_tokens\":5,"
+             "\"completion_tokens\":4,\"total_tokens\":9}}">>,
+    {ok, Proposal} = soma_llm_openai:parse_response({200, Body}),
+    ?assertMatch({error, _}, soma_proposal:normalize(Proposal)).
+
+reply_proposal_normalizes_test() ->
+    test_reply_proposal_normalizes().
