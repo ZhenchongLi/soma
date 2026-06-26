@@ -146,3 +146,16 @@ test_app_src_lists_inets_and_ssl() ->
 
 app_src_lists_inets_and_ssl_test() ->
     test_app_src_lists_inets_and_ssl().
+
+test_smoke_module_exports_run() ->
+    %% Criterion 12: the opt-in smoke entry point exists as a `run/0' export on
+    %% the `soma_llm_smoke' module. This is a structural proof only -- it loads
+    %% the module and checks the export with `function_exported/3'; it never
+    %% calls `run/0', so it opens no socket and needs no real key. The smoke
+    %% test itself lives off the gate (a `src/' module with no `*_test'/`*_SUITE'
+    %% name), so neither eunit nor ct picks it up.
+    ?assertEqual({module, soma_llm_smoke}, code:ensure_loaded(soma_llm_smoke)),
+    ?assert(erlang:function_exported(soma_llm_smoke, run, 0)).
+
+smoke_module_exports_run_test() ->
+    test_smoke_module_exports_run().
