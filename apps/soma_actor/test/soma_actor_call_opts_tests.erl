@@ -35,3 +35,17 @@ test_real_provider_opts_carry_prompt_as_user_message() ->
 
 real_provider_opts_carry_prompt_as_user_message_test() ->
     test_real_provider_opts_carry_prompt_as_user_message().
+
+%% A model_config that is empty or carries a `directive' (the v0.5 mock default)
+%% is not a real-provider config: the builder returns the envelope's `llm' map
+%% unchanged -- the mock directive opts the actor passes to soma_llm_call today.
+test_empty_or_directive_model_config_returns_mock_opts_unchanged() ->
+    Llm = #{directive => proposal,
+            proposal => #{kind => reply, body => <<"hi">>}},
+    Envelope = #{llm => Llm, payload => #{prompt => <<"hello">>}},
+    ?assertEqual(Llm, soma_actor:build_call_opts(#{}, Envelope)),
+    ?assertEqual(Llm, soma_actor:build_call_opts(#{directive => proposal},
+                                                 Envelope)).
+
+empty_or_directive_model_config_returns_mock_opts_unchanged_test() ->
+    test_empty_or_directive_model_config_returns_mock_opts_unchanged().
