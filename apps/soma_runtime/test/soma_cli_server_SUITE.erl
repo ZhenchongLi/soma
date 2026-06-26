@@ -14,6 +14,7 @@
 -export([test_run_lisp_result_carries_correlation_id/1]).
 -export([test_run_lisp_failed_returns_error_result/1]).
 -export([test_server_serves_after_failed_lisp_run/1]).
+-export([test_malformed_request_returns_error_sexpr/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -26,7 +27,8 @@ all() ->
      test_run_lisp_echo_returns_completed_result,
      test_run_lisp_result_carries_correlation_id,
      test_run_lisp_failed_returns_error_result,
-     test_server_serves_after_failed_lisp_run].
+     test_server_serves_after_failed_lisp_run,
+     test_malformed_request_returns_error_sexpr].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -223,6 +225,39 @@ test_server_serves_after_failed_lisp_run(Config) ->
     %% the earlier failed run and served this fresh well-formed request.
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+    ok = gen_tcp:close(C2).
+
+%% Criterion 6 (CLI.1b): a malformed Lisp request (one `soma_lfe:compile/2'
+%% rejects, here a top-level form that is not `run') makes the handler reply a
+%% defined error s-expr instead of crashing the connection handler. A real
+%% gen_tcp client over a temp Unix socket sends bytes that do not parse; the
+%% reply must be a parseable `(result ...)' s-expr whose status sub-form is
+%% `error' and which carries an `(error ...)' sub-form. The server stays up and
+%% answers a second well-formed request on a fresh connection -- the handler
+%% closed the socket like every other reply rather than crashing.
+test_malformed_request_returns_error_sexpr(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = connect(Path),
+    %% Starts with `(' so it routes to the Lisp handler, but is not a valid
+    %% `(run ...)' request -- `soma_lfe:compile/2' returns `{error, _}'.
+    Malformed = <<"(nonsense foo bar)">>,
+    ok = gen_tcp:send(Client, Malformed),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The reply must be a `(result ...)' s-expr whose status sub-form is `error'
+    %% and which carries an `(error ...)' sub-form -- a defined error reply, not a
+    %% dropped connection.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(error ", [{capture, none}]),
+    ok = gen_tcp:close(Client),
+    %% The server survived the malformed request: a fresh connection still gets a
+    %% completed echo result.
+    {ok, C2} = connect(Path),
+    Echo = <<"(run (step s1 echo (args (value \"ok\"))))">>,
+    ok = gen_tcp:send(C2, Echo),
+    {ok, Reply2} = gen_tcp:recv(C2, 0, 5000),
+    match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
 
 %% A small defensive retry for the client connect: right after start_link the
