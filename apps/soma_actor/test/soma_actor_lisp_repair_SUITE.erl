@@ -166,7 +166,7 @@ repaired_run_steps_outside_allowlist_is_rejected(_Config) ->
                  correlation_id => CorrelationId,
                  llm => RepairLlm},
     {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
-    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    ok = wait_for_status(ActorPid, TaskId, rejected, 100),
 
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Rejected = [E || E <- Events,
