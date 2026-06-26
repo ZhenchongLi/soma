@@ -14,3 +14,14 @@ test_mock_success_returns_configured_output() ->
 
 mock_success_returns_configured_output_test() ->
     test_mock_success_returns_configured_output().
+
+%% Criterion 8: `perform_call/1' with a `#{directive => ...}' opts map returns the
+%% same result it returns today. This pins the directive path so the later
+%% provider-routing clause (criterion 9) cannot silently change it.
+test_perform_call_directive_unchanged() ->
+    Output = #{reply => <<"unchanged">>},
+    Llm = #{directive => success, output => Output},
+    ?assertEqual({error, changed}, soma_llm_call:perform_call(Llm)).
+
+perform_call_directive_unchanged_test() ->
+    test_perform_call_directive_unchanged().
