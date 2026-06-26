@@ -6,11 +6,13 @@
 -export([test_run_echo_file_prints_result_exit_zero/1]).
 -export([test_run_failed_workflow_exit_nonzero/1]).
 -export([test_run_reads_workflow_from_stdin_dash/1]).
+-export([test_daemon_boots_listener_client_connects/1]).
 
 all() ->
     [test_run_echo_file_prints_result_exit_zero,
      test_run_failed_workflow_exit_nonzero,
-     test_run_reads_workflow_from_stdin_dash].
+     test_run_reads_workflow_from_stdin_dash,
+     test_daemon_boots_listener_client_connects].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -98,6 +100,25 @@ test_run_reads_workflow_from_stdin_dash(Config) ->
     match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Printed, "\\(s1 \\(value \"hi\"\\)\\)", [{capture, none}]),
     0 = Exit.
+
+%% Criterion 11 (CLI.1b): `soma_cli:daemon/1', given a temp socket override, boots
+%% the runtime and a listener on that resolved path; a real `gen_tcp' client can
+%% then connect to the path the daemon resolved. The behavior under test is that
+%% `daemon/1' both started the runtime (a runtime-owned process is registered) and
+%% bound a listener a client reaches -- so we read the resolved path back from
+%% `daemon/1' and prove a `{local, _}' connect to it succeeds.
+test_daemon_boots_listener_client_connects(Config) ->
+    Path = socket_path(Config),
+    %% The daemon must boot the runtime: stop it first so the boot is observable.
+    application:stop(soma_runtime),
+    {ok, Resolved} = soma_cli:daemon(#{socket => Path}),
+    %% The daemon resolved the override path and started the runtime.
+    Path = Resolved,
+    true = is_pid(whereis(soma_sup)),
+    %% A real client connects to the path the daemon's listener bound.
+    {ok, Sock} = gen_tcp:connect({local, Resolved}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:close(Sock).
 
 %% A minimal IO server usable as a group leader: it answers `get_chars' / `get_line'
 %% / `get_until' read requests by delivering `Bytes' once then EOF (so a reader
