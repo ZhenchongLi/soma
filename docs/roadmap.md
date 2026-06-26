@@ -4,9 +4,11 @@ v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), v0.3 (LFE DSL
 compile-only layer), v0.4 (the `soma_actor` agent-entity skeleton), v0.5 (the
 agent decision layer — LLM-call worker, proposal schema, policy gate,
 decision-loop execution, budget, and actor-to-actor messages), and v0.6 (trace
-tooling + a durable, opt-in `disk_log` event store) are built and merged. v0.5
-runs on a **mock LLM only**; a real provider is still future work. The sequence
-below is what comes next.
+tooling + a durable, opt-in `disk_log` event store) are built and merged. v0.5 ran on a **mock LLM only**, but the real provider has
+since landed as **node B.1** (`soma_llm_openai`, smoke-proven against SophNet).
+Two tracks now build in parallel with the v0.X layers: **node B** (the real LLM
+provider) and the **CLI / daemon** (a single-user `soma` daemon + CLI clients —
+see [cli.md](cli.md)). The sequence below is what comes next.
 
 The important sequencing rule is unchanged: do not add a layer until the layer
 below it has test coverage for its failure semantics. With the actor contract
@@ -26,6 +28,10 @@ v0.5    LLM worker + proposal + policy + budget        [done]
 v0.6    trace tooling + persistent event store         [done]
 v0.7    persistent resume
 v0.8    DAG / parallel execution, only if still needed
+
+Active tracks (parallel to v0.7+, building now):
+node B  real LLM provider behind the perform_call seam   [B.1 done; B.2 next]
+CLI     single-user soma daemon + CLI clients            [CLI.1 in progress]
 ```
 
 ## v0.4 — soma_actor skeleton [done]
@@ -214,6 +220,45 @@ land, it must preserve the same invariants:
 - branch failure is normalized into bounded task/run data;
 - event ordering remains queryable and explainable;
 - tests prove process survival, not only output values.
+
+## node B — real LLM provider (接真模型)
+
+The real provider behind the v0.5.1 call seam (`soma_llm_call:perform_call/1`), so
+the decision loop can run against a real model instead of the mock. The mock stays
+the gate default; real calls are opt-in and **off the test gate** (no network in
+`rebar3 eunit` / `ct`).
+
+- `node B.1` — provider [done] (#101): `soma_llm_openai` (in
+  `apps/soma_runtime/src/`) calls an OpenAI-compatible chat-completions API and
+  turns the model's text into a `reply` proposal; `perform_call/1` routes to it for
+  real-provider opts. Pure request-build / response-parse tests on the gate; an
+  opt-in `soma_llm_smoke:run/0` (key from `SOMA_LLM_API_KEY`) proves it live
+  against SophNet (validated: DeepSeek-V4, Qwen3.6 + the `enable_thinking` toggle).
+- `node B.2` — actor wiring [next]: select the real provider from the actor's
+  `model_config` so a task runs end to end against a real model. The brain
+  `soma ask` needs this.
+- Later: structured proposals from the model (`run_steps` / tool-use planning, not
+  just `reply`) and an effect-aware policy gate.
+
+Provider `base_url` / `model` live in local config; the **API key is only ever
+read from an env var / a gitignored file, never committed**.
+
+## CLI — single-user soma daemon + CLI
+
+Expose soma as a **CLI** that your own autonomous agents (Claude Code, Codex) shell
+out to — soma as the supervised, auditable execution substrate they delegate to.
+Architecture: a long-lived **daemon** (runtime + actors + the durable event store)
+with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
+(no cross-client auth). Not MCP. Full design: [cli.md](cli.md).
+
+- `CLI.1` — daemon socket server [in progress] (#102): the Unix-socket listener +
+  length-prefixed JSON protocol + the `run` handler (supervised run → result), with
+  stale-socket cleanup, atomic single-winner bind, and cancel-on-disconnect.
+- `CLI.1b` — the `soma daemon` boot command + the thin `soma run` client binary.
+- `CLI.2` — `soma ask` (intent → real LLM → proposal → policy → execute); needs
+  node B.2.
+- `CLI.3` — `soma status` / `soma cancel` / `soma trace` clients, `--detach`,
+  auto-start.
 
 ## Packaging
 
