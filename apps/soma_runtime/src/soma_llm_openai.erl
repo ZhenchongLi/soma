@@ -11,6 +11,7 @@
 %% Build the pieces of the chat-completions POST from a config map. Pure: it
 %% opens no socket. The url is the configured `base_url' with `/chat/completions'
 %% appended.
-build_request(#{base_url := BaseUrl}) ->
+build_request(#{base_url := BaseUrl, api_key := ApiKey}) ->
     Url = <<BaseUrl/binary, "/chat/completions">>,
-    #{url => Url}.
+    Headers = [{"Authorization", "Bearer " ++ binary_to_list(ApiKey)}],
+    #{url => Url, headers => Headers}.
