@@ -818,6 +818,62 @@ it is unset rather than sending an empty key), starts `inets`/`ssl` so the live
 config (the SophNet defaults), sends one real chat-completions call through
 `soma_llm_openai`, and prints the `reply` proposal it gets back.
 
+### Starting an actor with a real LLM provider
+
+The provider config above is what `soma_llm_openai` runs; an actor reaches it
+through its `model_config`. Where the v0.5 actor drives the mock (a
+`directive`-keyed `llm` map), a real-provider actor is configured once at start:
+its `model_config` carries `provider => openai_compat`, the `base_url`, the
+`model`, and the `api_key` (read from `SOMA_LLM_API_KEY`, never hard-coded). The
+actor then turns each incoming prompt envelope into a real chat-completions call
+— `soma_actor:build_call_opts/2` derives the `messages` list (one user message
+holding the prompt) from the envelope payload and threads the config's
+`provider` / `base_url` / `model` through to the worker, so
+`soma_llm_call:perform_call/1` routes to `soma_llm_openai`. The `api_key` rides
+in the call opts but is never written into any emitted event.
+
+```erlang
+{ok, _} = application:ensure_all_started(soma_actor).
+{soma_event_store, Store, _, _} =
+    lists:keyfind(soma_event_store, 1, supervisor:which_children(soma_sup)).
+
+%% The real-provider model_config: provider => openai_compat selects the real
+%% path (the mock directives never carry this key, so the two never collide).
+ModelConfig = #{
+    provider => openai_compat,
+    base_url => <<"https://www.sophnet.com/api/open-apis/v1">>,
+    model    => <<"DeepSeek-V3">>,
+    api_key  => list_to_binary(os:getenv("SOMA_LLM_API_KEY"))
+},
+{ok, Actor} = soma_actor_sup:start_actor(#{
+    actor_id     => <<"actor-real">>,
+    model_config => ModelConfig,
+    tool_policy  => #{},
+    event_store  => Store
+}).
+
+%% A plain prompt envelope — no `llm' directive, no `steps'. The actor builds the
+%% real call from its model_config and the payload prompt.
+Env = #{type => <<"chat">>, payload => #{prompt => <<"Say hello.">>},
+        task_id => <<"t1">>, correlation_id => <<"c1">>},
+{ok, <<"t1">>} = soma_actor:send(Actor, Env).
+soma_actor:get_task_result(Actor, <<"t1">>).
+%% => {ok, #{kind => reply, text => <<"Hello!">>}}   (the parsed reply proposal)
+```
+
+This call opens a real socket and needs a real key, so the gate never runs it;
+the round trip is proven by the same opt-in smoke as above. From a bare shell
+with the key set:
+
+```bash
+SOMA_LLM_API_KEY=sk-... rebar3 shell
+```
+
+```erlang
+1> soma_llm_smoke:run().
+%% reply proposal: {ok, #{kind => reply, text => <<"Hello!">>}}
+```
+
 ## Failure reasons
 
 When any step fails, the `reason` in `tool.failed`'s payload is one of:
