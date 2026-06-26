@@ -3,7 +3,7 @@
     {vsn, "0.1.0"},
     {registered, []},
     {mod, {soma_actor_app, []}},
-    {applications, [kernel, stdlib, soma_runtime]},
+    {applications, [kernel, stdlib, soma_runtime, soma_lfe]},
     {env, []},
     {modules, []}
 ]}.

@@ -26,8 +26,20 @@ start_link(Opts) when is_map(Opts) ->
 %% returns `{ok, TaskId}' once the task is accepted, or `{error, Reason}' if the
 %% envelope is invalid. The work runs inside the actor via `idle/3', so the
 %% actor is never bypassed.
-send(ActorRef, Envelope) ->
-    gen_statem:call(ActorRef, {send, Envelope}).
+send(ActorRef, Envelope) when is_map(Envelope) ->
+    gen_statem:call(ActorRef, {send, Envelope});
+send(ActorRef, Source) when is_binary(Source); is_list(Source) ->
+    %% A Lisp `(msg ...)' string (binary or iolist) is parsed at the wrapper,
+    %% before the actor is touched, into the exact map envelope the map path
+    %% takes. The actor's message contract stays map-only -- it never learns
+    %% Lisp exists. A parse error is returned to the caller without calling the
+    %% actor at all.
+    case soma_lfe:compile(Source, #{}) of
+        {ok, Envelope} ->
+            send(ActorRef, Envelope);
+        {error, Diagnostics} ->
+            {error, Diagnostics}
+    end.
 
 %% @doc Synchronous submit-and-wait entry point. Hands the envelope to the actor
 %% and blocks the caller inside the `gen_statem:call' until the run completes,
