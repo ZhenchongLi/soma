@@ -16,9 +16,11 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([repaired_reply_reaches_same_terminal_result_as_valid_reply/1]).
+-export([successful_repair_emits_proposal_repaired_with_ids/1]).
 
 all() ->
-    [repaired_reply_reaches_same_terminal_result_as_valid_reply].
+    [repaired_reply_reaches_same_terminal_result_as_valid_reply,
+     successful_repair_emits_proposal_repaired_with_ids].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -87,6 +89,45 @@ repaired_reply_reaches_same_terminal_result_as_valid_reply(_Config) ->
     %% proposal the directly-valid one does.
     #{kind := reply, text := <<"hi">>} = RepairResult,
     RepairResult = ValidResult,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 2: when a malformed proposal is repaired and the repaired form
+%% re-parses successfully, the actor emits exactly one `proposal.repaired' event
+%% carrying the task's `task_id' and `correlation_id'. The malformed proposal's
+%% `llm' map stages a valid `(reply ...)' under `repair_output'; the repair call
+%% returns it, it re-parses, and at that re-parse point `proposal.repaired' fires.
+%% The event is read back through soma_event_store:by_correlation/2 for the task's
+%% correlation, and is distinct from `proposal.created'.
+successful_repair_emits_proposal_repaired_with_ids(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-lisp-repair-2">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+
+    BadProposal = <<"(reply (text \"hi\"">>,
+    RepairedProposal = <<"(reply (text \"hi\"))">>,
+    RepairLlm = #{directive => proposal,
+                  output => BadProposal,
+                  repair_output => RepairedProposal},
+    TaskId = <<"task-lisp-repaired-event">>,
+    CorrelationId = <<"corr-lisp-repaired-event">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"answer me">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => RepairLlm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Repaired = [E || E <- Events,
+                     maps:get(event_type, E, undefined) =:= <<"proposal.repaired">>],
+    [RepairedEvent] = Repaired,
+    TaskId = maps:get(task_id, RepairedEvent),
+    CorrelationId = maps:get(correlation_id, RepairedEvent),
     true = is_process_alive(ActorPid),
     ok.
 
