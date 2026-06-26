@@ -61,8 +61,7 @@ test_first_server_survives_failed_second_start_link(Config) ->
     Path = socket_path(Config),
     {ok, ServerA} = soma_cli_server:start_link(#{socket => Path}),
     {error, _Reason} = soma_cli_server:start_link(#{socket => Path}),
-    %% staged red: deliberately wrong expectation -- A must still be alive.
-    false = is_process_alive(ServerA),
+    true = is_process_alive(ServerA),
     {ok, Client} = gen_tcp:connect({local, Path}, 0,
                                    [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:close(Client).
