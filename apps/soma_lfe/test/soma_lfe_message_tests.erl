@@ -63,7 +63,7 @@ test_run_form_unchanged_after_msg_added() ->
     {ok, Compiled} = soma_lfe:compile(Source, #{}),
     Expected = #{run => #{steps => [#{id => s1,
                                       tool => echo,
-                                      args => #{value => <<"WRONG">>}}]}},
+                                      args => #{value => <<"hi">>}}]}},
     ?assertEqual(Expected, Compiled).
 
 run_form_unchanged_after_msg_added_test() ->
