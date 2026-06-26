@@ -65,7 +65,17 @@ parse_msg_steps([[step | StepChildren] | Rest], Acc) ->
             parse_msg_steps(Rest, [Step | Acc]);
         {error, Diags} ->
             {error, Diags}
-    end.
+    end;
+parse_msg_steps([[Head | _] | _], _Acc) when is_atom(Head) ->
+    {error, [#{code => unknown_form,
+               message => iolist_to_binary(
+                   io_lib:format("steps child form must be 'step', got '~s'", [Head])),
+               line => 0}]};
+parse_msg_steps([Other | _], _Acc) ->
+    {error, [#{code => unknown_form,
+               message => iolist_to_binary(
+                   io_lib:format("unexpected form inside steps: ~p", [Other])),
+               line => 0}]}.
 
 parse_msg_step([], Acc) ->
     {ok, Acc};
@@ -79,7 +89,17 @@ parse_msg_step([[args | KVPairs] | Rest], Acc) ->
             parse_msg_step(Rest, Acc#{args => ArgsMap});
         {error, Diags} ->
             {error, Diags}
-    end.
+    end;
+parse_msg_step([[Head | _] | _], _Acc) when is_atom(Head) ->
+    {error, [#{code => unknown_form,
+               message => iolist_to_binary(
+                   io_lib:format("unknown step child form: '~s' (expected 'id', 'tool' or 'args')", [Head])),
+               line => 0}]};
+parse_msg_step([Other | _], _Acc) ->
+    {error, [#{code => unknown_form,
+               message => iolist_to_binary(
+                   io_lib:format("unexpected token in step children: ~p", [Other])),
+               line => 0}]}.
 
 -spec parse_run([term()]) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
