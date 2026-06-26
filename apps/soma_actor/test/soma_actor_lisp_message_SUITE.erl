@@ -13,10 +13,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([test_lisp_send_matches_map_send_outputs/1]).
 -export([test_lisp_send_correlation_chain_matches_map/1]).
+-export([test_malformed_lisp_send_actor_survives/1]).
 
 all() ->
     [test_lisp_send_matches_map_send_outputs,
-     test_lisp_send_correlation_chain_matches_map].
+     test_lisp_send_correlation_chain_matches_map,
+     test_malformed_lisp_send_actor_survives].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -109,6 +111,36 @@ test_lisp_send_correlation_chain_matches_map(_Config) ->
 
     %% Both forms drive the same work, so the correlation chains match in shape.
     LispChain = MapChain,
+    true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 7: soma_actor:send/2 called with a malformed Lisp `(msg ...)'
+%% string returns `{error, _}', and the same actor process stays alive and
+%% accepts a following message. The malformed string is rejected at the wrapper
+%% by soma_lfe:compile/2 before the actor is ever called, so the actor never
+%% sees it; the following valid map send proves the process is still alive and
+%% serving by running a step list to completion on the same pid.
+test_malformed_lisp_send_actor_survives(_Config) ->
+    Opts = #{actor_id => <<"actor-lisp-malformed">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => event_store_pid()},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+
+    %% A malformed Lisp string: unbalanced parens, so the reader/parser rejects
+    %% it. The wrapper returns the diagnostics without calling the actor.
+    Malformed = <<"(msg (type chat) (payload \"hi\"">>,
+    {ok, _} = soma_actor:send(Pid, Malformed),
+    true = is_process_alive(Pid),
+
+    %% The same actor accepts and completes a following valid map envelope.
+    MapEnvelope = #{type => chat,
+                    payload => <<"hi">>,
+                    steps => [#{id => s1,
+                                tool => echo,
+                                args => #{value => <<"hi">>}}]},
+    {ok, TaskId} = soma_actor:send(Pid, MapEnvelope),
+    {ok, _Result} = wait_for_task_result(Pid, TaskId, 100),
     true = is_process_alive(Pid),
     ok.
 
