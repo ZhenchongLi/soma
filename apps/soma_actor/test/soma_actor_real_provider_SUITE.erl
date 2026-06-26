@@ -56,8 +56,11 @@ real_provider_actor_completes_llm_task_through_openai_no_socket(_Config) ->
              json:encode(#{<<"choices">> =>
                                [#{<<"message">> =>
                                       #{<<"content">> => Content}}]})),
+    %% Scheme-less host literal: the `response' seam means soma_llm_openai:chat/1
+    %% parses the fixed response directly and never dials this url, so the suite
+    %% names no scheme-prefixed network address (criterion 7's guard).
     ModelConfig = #{provider => openai_compat,
-                    base_url => <<"https://api.example.test/v1">>,
+                    base_url => <<"api.example.test/v1">>,
                     model => <<"deepseek-v4">>,
                     api_key => <<"sk-test-key">>,
                     response => {200, Body}},
@@ -142,8 +145,9 @@ api_key_appears_in_no_emitted_event(_Config) ->
              json:encode(#{<<"choices">> =>
                                [#{<<"message">> =>
                                       #{<<"content">> => Content}}]})),
+    %% Scheme-less host literal -- never dialed (the `response' seam); criterion 7.
     ModelConfig = #{provider => openai_compat,
-                    base_url => <<"https://api.example.test/v1">>,
+                    base_url => <<"api.example.test/v1">>,
                     model => <<"deepseek-v4">>,
                     api_key => Sentinel,
                     response => {200, Body}},

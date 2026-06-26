@@ -38,13 +38,15 @@ count(Haystack, Needle) ->
 test_real_provider_suite_uses_response_seam_only() ->
     Suite = read_suite(),
     ResponseCount = count(Suite, <<"response =>">>),
-    ProviderCount = count(Suite, <<"provider => openai_compat">>),
-    %% The `response' seam is present and gates every real-provider config.
-    ?assert(ResponseCount > 0),
-    %% DELIBERATELY WRONG expected (staged red): assert the seam appears more
-    %% times than the suite could carry, so the assertion fires for the right
-    %% reason before being corrected to current reality.
-    ?assertEqual(ProviderCount + 1, ResponseCount),
+    %% Count real-provider config *literals* (`#{provider => openai_compat'),
+    %% not prose: the map-literal marker excludes the comment that names the
+    %% provider in passing, so this is the number of real-provider configs the
+    %% suite actually carries.
+    ProviderCount = count(Suite, <<"#{provider => openai_compat">>),
+    %% The `response' seam is present and gates every real-provider config:
+    %% there is at least one, and each one carries a `response'.
+    ?assert(ProviderCount > 0),
+    ?assertEqual(ProviderCount, ResponseCount),
     %% No network host/port literal -- the seam short-circuits before `httpc'.
     ?assertEqual(0, count(Suite, <<"http://">>)),
     ?assertEqual(0, count(Suite, <<"https://">>)),
