@@ -18,11 +18,13 @@
 -export([lisp_body_reaches_same_terminal_status_as_map/1]).
 -export([lisp_body_produces_same_step_outputs_as_map/1]).
 -export([by_correlation_spans_both_actors_for_lisp_body/1]).
+-export([malformed_lisp_body_marks_task_failed/1]).
 
 all() ->
     [lisp_body_reaches_same_terminal_status_as_map,
      lisp_body_produces_same_step_outputs_as_map,
-     by_correlation_spans_both_actors_for_lisp_body].
+     by_correlation_spans_both_actors_for_lisp_body,
+     malformed_lisp_body_marks_task_failed].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -231,6 +233,49 @@ by_correlation_spans_both_actors_for_lisp_body(_Config) ->
                             || E <- Events, maps:is_key(actor_id, E)]),
     true = lists:member(<<"actor-a1-corr">>, ActorIds),
     true = lists:member(<<"actor-a2-corr">>, ActorIds),
+    ok.
+
+%% Criterion 4: a malformed Lisp body delivered as an approved `actor_message'
+%% leaves a terminal `failed' task with no crash. The malformed body never creates
+%% a receiver task -- the parse fails at the sender's `send/2' string clause
+%% (`soma_lfe:compile/2' returns `{error, _}', so `send/2' returns `{error, _}')
+%% before the receiver process is reached. So the task that lands in `failed' is
+%% the sender's own `actor_message' task, recorded as data. The proof drives A1
+%% through the real decision-to-delivery chain (a `proposal' mock directive whose
+%% `actor_message' body is an unparseable Lisp string naming A2 as `to'), then
+%% asserts the sender task is `failed' and both actor pids survive.
+malformed_lisp_body_marks_task_failed(_Config) ->
+    Store = event_store_pid(),
+    A2Opts = #{actor_id => <<"actor-a2-bad">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2} = soma_actor_sup:start_actor(A2Opts),
+    A1Opts = #{actor_id => <<"actor-a1-bad">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1} = soma_actor_sup:start_actor(A1Opts),
+    %% An unparseable Lisp body: an unterminated `(msg ...)' form with no closing
+    %% paren, so soma_lfe:compile/2 fails to parse it.
+    BadBody = <<"(msg (type chat) (payload \"hi\"">>,
+    BadProposal = #{kind => actor_message, to => A2, payload => BadBody},
+    Corr = <<"corr-l2-bad">>,
+    Envelope = #{type => <<"chat">>,
+                payload => #{text => <<"tell a2">>},
+                task_id => <<"task-l2-bad">>,
+                correlation_id => Corr,
+                llm => #{directive => proposal, output => BadProposal}},
+    {ok, <<"task-l2-bad">>} = soma_actor:send(A1, Envelope),
+
+    %% The sender's `actor_message' task fails as data: it leaves `accepted' for
+    %% the terminal `failed' status. No receiver task is ever created.
+    failed = wait_for_terminal(A1, <<"task-l2-bad">>, 100),
+
+    %% Both actor pids survive -- the malformed body was recorded as data, not a
+    %% crash, and the receiver was never reached.
+    true = is_process_alive(A1),
+    true = is_process_alive(A2),
     ok.
 
 %% Polls the shared store until an `actor.task.accepted' event emitted by the
