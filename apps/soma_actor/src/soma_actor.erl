@@ -641,6 +641,14 @@ execute_actor_message(TaskId, CorrelationId, LlmCallId, Proposal, Data) ->
     %% by_correlation/2 still spans both actors.
     Delivery = build_delivery(Payload, CorrelationId),
     try soma_actor:send(To, Delivery) of
+        {error, Reason} ->
+            %% A malformed Lisp body fails the receiver's send/2 string clause
+            %% (soma_lfe:compile/2 returns `{error, _}') before the receiver
+            %% process is reached, so no receiver task is ever created. Record the
+            %% failed delivery as the sender task's data: mark it `failed', emit
+            %% `actor.task.failed', release any parked waiter, and stay alive.
+            Data1 = fail_task(TaskId, {delivery_failed, Reason}, Data),
+            {keep_state, Data1};
         _ ->
             Task = (maps:get(TaskId, Data#data.tasks))#{
                      status => completed, result => Proposal},
