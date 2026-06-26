@@ -54,3 +54,17 @@ test_malformed_msg_returns_diagnostics() ->
 
 malformed_msg_returns_diagnostics_test() ->
     test_malformed_msg_returns_diagnostics().
+
+%% Criterion 4 — a top-level (run ...) form still returns
+%% {ok, #{run => #{steps => Steps}}} in the pre-slice shape: the (msg ...)
+%% path added in this slice is additive, not a replacement.
+test_run_form_unchanged_after_msg_added() ->
+    Source = <<"(run (step s1 echo (args (value \"hi\"))))">>,
+    {ok, Compiled} = soma_lfe:compile(Source, #{}),
+    Expected = #{run => #{steps => [#{id => s1,
+                                      tool => echo,
+                                      args => #{value => <<"WRONG">>}}]}},
+    ?assertEqual(Expected, Compiled).
+
+run_form_unchanged_after_msg_added_test() ->
+    test_run_form_unchanged_after_msg_added().
