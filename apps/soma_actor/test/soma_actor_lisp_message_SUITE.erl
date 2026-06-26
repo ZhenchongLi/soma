@@ -15,12 +15,14 @@
 -export([test_lisp_send_correlation_chain_matches_map/1]).
 -export([test_malformed_lisp_send_actor_survives/1]).
 -export([test_lisp_ask_matches_map_ask_result/1]).
+-export([test_map_send_path_untouched/1]).
 
 all() ->
     [test_lisp_send_matches_map_send_outputs,
      test_lisp_send_correlation_chain_matches_map,
      test_malformed_lisp_send_actor_survives,
-     test_lisp_ask_matches_map_ask_result].
+     test_lisp_ask_matches_map_ask_result,
+     test_map_send_path_untouched].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -176,6 +178,41 @@ test_lisp_ask_matches_map_ask_result(_Config) ->
 
     %% The same work through both ask/3 entry forms yields equal run results.
     LispResult = MapResult,
+    true = is_process_alive(Pid),
+    ok.
+
+%% Criterion 9: soma_actor:send/2 called with a map envelope still runs
+%% unchanged -- the existing map path is untouched by the Lisp boundary added
+%% for the binary/string argument. A map argument never goes through
+%% soma_lfe:compile/2; it drives the same {send, Envelope} path it does today and
+%% runs to `actor.task.completed'. The test sends a plain map envelope under a
+%% known correlation id, waits for the task result, then asserts the task status
+%% reached `completed' and an `actor.task.completed' event landed in the store
+%% for that correlation chain.
+test_map_send_path_untouched(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-map-untouched">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+
+    Corr = <<"corr-map-untouched-1">>,
+    MapEnvelope = #{type => chat,
+                    payload => <<"hi">>,
+                    correlation_id => Corr,
+                    steps => [#{id => s1,
+                                tool => echo,
+                                args => #{value => <<"hi">>}}]},
+    {ok, TaskId} = soma_actor:send(Pid, MapEnvelope),
+    {ok, _Result} = wait_for_task_result(Pid, TaskId, 100),
+
+    %% The map path runs to completion: status `completed' and the
+    %% `actor.task.completed' event is in the correlation chain.
+    %% Staged red: deliberately wrong expected status to see the assertion fire.
+    #{status := running} = soma_actor:get_task_status(Pid, TaskId),
+    Chain = correlation_event_types(Store, Corr),
+    true = lists:member(<<"actor.task.completed">>, Chain),
     true = is_process_alive(Pid),
     ok.
 
