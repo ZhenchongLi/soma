@@ -46,9 +46,7 @@ test_start_link_unlinks_stale_socket_file(Config) ->
 test_second_start_link_on_live_path_errors(Config) ->
     Path = socket_path(Config),
     {ok, ServerA} = soma_cli_server:start_link(#{socket => Path}),
-    %% STAGED RED: the live-path bind actually returns {error, _}; assert
-    %% {ok, _} first so the match fails and we observe red for the right reason.
-    {ok, _ServerB} = soma_cli_server:start_link(#{socket => Path}),
+    {error, _Reason} = soma_cli_server:start_link(#{socket => Path}),
     true = is_process_alive(ServerA),
     {ok, Client} = gen_tcp:connect({local, Path}, 0,
                                    [binary, {packet, 4}, {active, false}]),
