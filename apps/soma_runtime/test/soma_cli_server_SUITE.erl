@@ -11,6 +11,7 @@
 -export([test_run_failed_returns_failed_with_error/1]).
 -export([test_server_serves_after_failed_run/1]).
 -export([test_run_lisp_echo_returns_completed_result/1]).
+-export([test_run_lisp_result_carries_correlation_id/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -20,7 +21,8 @@ all() ->
      test_run_echo_returns_completed_with_outputs,
      test_run_failed_returns_failed_with_error,
      test_server_serves_after_failed_run,
-     test_run_lisp_echo_returns_completed_result].
+     test_run_lisp_echo_returns_completed_result,
+     test_run_lisp_result_carries_correlation_id].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -154,6 +156,23 @@ test_run_lisp_echo_returns_completed_result(Config) ->
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "\\(s1 \\(value \"hi\"\\)\\)", [{capture, none}]),
+    ok = gen_tcp:close(Client).
+
+%% Criterion 2 (CLI.1b): the completed `(result ...)' reply carries a non-empty
+%% `(correlation-id "...")' sub-form. Same call chain as Criterion 1 -- a real
+%% gen_tcp client over a temp Unix socket sends the framed `(run (step ...))'
+%% s-expr -- and the reply's correlation-id sub-form holds a non-empty quoted
+%% string (the run's minted correlation id, stamped on every run event).
+test_run_lisp_result_carries_correlation_id(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = connect(Path),
+    Request = <<"(run (step s1 echo (args (value \"hi\"))))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The reply must carry a `(correlation-id "...")' sub-form whose quoted
+    %% string is non-empty (at least one character between the quotes).
+    match = re:run(Reply, "\\(correlation-id \"\"\\)", [{capture, none}]),
     ok = gen_tcp:close(Client).
 
 %% A small defensive retry for the client connect: right after start_link the
