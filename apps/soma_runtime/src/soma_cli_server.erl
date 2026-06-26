@@ -26,7 +26,7 @@ start_link(#{socket := Path}) ->
     end.
 
 listen(Parent, Path) ->
-    unlink_stale(Path),
+    _ = unlink_stale(Path),
     case gen_tcp:listen(0, [{ifaddr, {local, Path}},
                             {packet, 4}, binary,
                             {active, false}, {reuseaddr, true}]) of
