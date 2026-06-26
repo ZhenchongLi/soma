@@ -114,7 +114,17 @@ parse_proposal(['run-steps' | StepForms]) ->
             {ok, #{kind => run_steps, steps => Steps}};
         {error, Diags} ->
             {error, Diags}
-    end.
+    end;
+parse_proposal([Head | _]) when is_atom(Head) ->
+    {error, [#{code => malformed_proposal,
+               message => iolist_to_binary(
+                   io_lib:format("malformed proposal form: '~s'", [Head])),
+               line => 0}]};
+parse_proposal(Other) ->
+    {error, [#{code => malformed_proposal,
+               message => iolist_to_binary(
+                   io_lib:format("malformed proposal form: ~p", [Other])),
+               line => 0}]}.
 
 -spec parse_run([term()]) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
