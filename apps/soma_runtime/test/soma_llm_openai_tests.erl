@@ -70,3 +70,20 @@ test_build_request_body_omits_optional_opts() ->
 
 build_request_body_omits_optional_opts_test() ->
     test_build_request_body_omits_optional_opts().
+
+test_parse_response_success_to_reply() ->
+    Body = <<"{\"id\":\"chatcmpl-abc123\","
+             "\"object\":\"chat.completion\","
+             "\"created\":1700000000,"
+             "\"model\":\"dummy-model\","
+             "\"choices\":[{\"index\":0,"
+             "\"message\":{\"role\":\"assistant\","
+             "\"content\":\"Hello from the model.\"},"
+             "\"finish_reason\":\"stop\"}],"
+             "\"usage\":{\"prompt_tokens\":5,"
+             "\"completion_tokens\":4,\"total_tokens\":9}}">>,
+    ?assertEqual({ok, #{kind => reply, text => <<"Hello from the model.">>}},
+                 soma_llm_openai:parse_response({200, Body})).
+
+parse_response_success_to_reply_test() ->
+    test_parse_response_success_to_reply().
