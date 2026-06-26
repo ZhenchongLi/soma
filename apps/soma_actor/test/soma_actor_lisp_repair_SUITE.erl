@@ -224,7 +224,7 @@ all_repairs_malformed_fails_after_max_attempts_with_diagnostics(_Config) ->
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Started = [E || E <- Events,
                     maps:get(event_type, E, undefined) =:= <<"llm.started">>],
-    2 = length(Started),
+    3 = length(Started),
     true = is_process_alive(ActorPid),
     ok.
 
