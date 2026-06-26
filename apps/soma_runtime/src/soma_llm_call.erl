@@ -26,6 +26,13 @@ start(#{owner := Owner, llm_call_id := LlmCallId, llm := Llm}) ->
                       end),
     {ok, WorkerPid}.
 
+%% The `openai_compat' provider routes to the real OpenAI-compatible provider
+%% module: `perform_call/1' hands the opts map to `soma_llm_openai:chat/1', which
+%% builds the request and parses the response into a reply proposal. This is the
+%% one place the provider seam lives -- matched on the `provider' key, which the
+%% mock directives never carry, so the directive clauses below are untouched.
+perform_call(#{provider := openai_compat} = Opts) ->
+    soma_llm_openai:chat(Opts);
 %% Run one mock call from its `llm' directive map and return the result. The
 %% `success' directive returns the configured `output' verbatim; no network is
 %% touched.
