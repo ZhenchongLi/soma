@@ -19,12 +19,14 @@
 -export([lisp_body_produces_same_step_outputs_as_map/1]).
 -export([by_correlation_spans_both_actors_for_lisp_body/1]).
 -export([malformed_lisp_body_marks_task_failed/1]).
+-export([actor_alive_and_accepts_after_malformed_body/1]).
 
 all() ->
     [lisp_body_reaches_same_terminal_status_as_map,
      lisp_body_produces_same_step_outputs_as_map,
      by_correlation_spans_both_actors_for_lisp_body,
-     malformed_lisp_body_marks_task_failed].
+     malformed_lisp_body_marks_task_failed,
+     actor_alive_and_accepts_after_malformed_body].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -276,6 +278,64 @@ malformed_lisp_body_marks_task_failed(_Config) ->
     %% crash, and the receiver was never reached.
     true = is_process_alive(A1),
     true = is_process_alive(A2),
+    ok.
+
+%% Criterion 5: after a malformed Lisp body fails a sender task, the receiving
+%% actor pid is still alive and accepts a following valid message. The malformed
+%% body fails A1's first `actor_message' task as data (its parse fails at the
+%% sender's `send/2' before the receiver process is reached, so A2 is never
+%% touched); then a second, valid map-bodied `actor_message' is delivered to the
+%% *same* A2 through the real A1 decision-to-delivery chain. The proof asserts A2
+%% is alive between the two deliveries and that the following valid message
+%% reaches a terminal status on A2.
+actor_alive_and_accepts_after_malformed_body(_Config) ->
+    Store = event_store_pid(),
+    A2Opts = #{actor_id => <<"actor-a2-after">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2} = soma_actor_sup:start_actor(A2Opts),
+    A1Opts = #{actor_id => <<"actor-a1-after">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1} = soma_actor_sup:start_actor(A1Opts),
+
+    %% --- First delivery: a malformed Lisp body fails A1's task ---
+    BadBody = <<"(msg (type chat) (payload \"hi\"">>,
+    BadProposal = #{kind => actor_message, to => A2, payload => BadBody},
+    BadCorr = <<"corr-l2-after-bad">>,
+    BadEnvelope = #{type => <<"chat">>,
+                   payload => #{text => <<"tell a2">>},
+                   task_id => <<"task-l2-after-bad">>,
+                   correlation_id => BadCorr,
+                   llm => #{directive => proposal, output => BadProposal}},
+    {ok, <<"task-l2-after-bad">>} = soma_actor:send(A1, BadEnvelope),
+    failed = wait_for_terminal(A1, <<"task-l2-after-bad">>, 100),
+
+    %% Between deliveries: the receiving actor pid is still alive -- the malformed
+    %% body never reached it.
+    false = is_process_alive(A2),
+
+    %% --- Second delivery: a valid map-bodied message to the same A2 ---
+    MapBody = #{type => chat,
+                payload => <<"hi">>,
+                steps => [#{id => s1, tool => echo,
+                            args => #{value => <<"hi">>}}]},
+    MapProposal = #{kind => actor_message, to => A2, payload => MapBody},
+    GoodCorr = <<"corr-l2-after-good">>,
+    GoodEnvelope = #{type => <<"chat">>,
+                    payload => #{text => <<"tell a2">>},
+                    task_id => <<"task-l2-after-good">>,
+                    correlation_id => GoodCorr,
+                    llm => #{directive => proposal, output => MapProposal}},
+    {ok, <<"task-l2-after-good">>} = soma_actor:send(A1, GoodEnvelope),
+    ReceiverTask = wait_for_a2_task(Store, GoodCorr, <<"actor-a2-after">>, 100),
+    completed = wait_for_terminal(A2, ReceiverTask, 100),
+
+    %% Both actors survive the whole sequence.
+    true = is_process_alive(A2),
+    true = is_process_alive(A1),
     ok.
 
 %% Polls the shared store until an `actor.task.accepted' event emitted by the
