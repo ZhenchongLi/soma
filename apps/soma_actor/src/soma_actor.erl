@@ -826,12 +826,19 @@ start_owned_run(Steps, TaskId, CorrelationId, Data) ->
 %% holding the prompt the payload carries, so the provider has something to send.
 build_call_opts(#{provider := openai_compat,
                   base_url := BaseUrl,
-                  model := Model} = _ModelConfig, Envelope) ->
+                  model := Model} = ModelConfig, Envelope) ->
     Prompt = maps:get(prompt, maps:get(payload, Envelope, #{}), <<>>),
-    #{provider => openai_compat,
-      base_url => BaseUrl,
-      model => Model,
-      messages => [#{role => <<"user">>, content => Prompt}]};
+    Opts = #{provider => openai_compat,
+             base_url => BaseUrl,
+             model => Model,
+             messages => [#{role => <<"user">>, content => Prompt}]},
+    %% Copy the provider-side fields the model_config carries through to the
+    %% worker opts: the `api_key' soma_llm_openai:build_request/1 needs for the
+    %% Authorization header, and the fixed `response' that short-circuits
+    %% soma_llm_openai:chat/1 to parse a {Status, Body} pair directly and open no
+    %% socket (the same no-socket seam node B.1 exposed). Each is copied only when
+    %% present, so a config without one leaves that key off the opts.
+    copy_optional([api_key, response], ModelConfig, Opts);
 %% A non-real-provider `model_config' -- empty or carrying a `directive' (the
 %% v0.5 mock default) -- is not routed: the builder returns the envelope's
 %% `llm' map unchanged, the mock directive opts the actor passes to
@@ -839,12 +846,34 @@ build_call_opts(#{provider := openai_compat,
 build_call_opts(_ModelConfig, Envelope) ->
     maps:get(llm, Envelope, #{}).
 
+%% Copy the given keys from Src into Dst, each only when Src carries it. Used by
+%% build_call_opts/2 to thread the model_config's optional provider-side fields
+%% (api_key, response) into the worker opts without overwriting anything when a
+%% field is absent.
+copy_optional(Keys, Src, Dst) ->
+    lists:foldl(
+      fun(Key, Acc) ->
+              case maps:find(Key, Src) of
+                  {ok, Value} -> Acc#{Key => Value};
+                  error -> Acc
+              end
+      end,
+      Dst,
+      Keys).
+
 maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
     case maps:get(llm, Envelope, undefined) of
         Llm when is_map(Llm) ->
             case llm_budget_available(TaskId, Data) of
                 true ->
-                    start_llm_call(Llm, TaskId, CorrelationId, Data);
+                    %% Build the worker opts from the actor's model_config plus
+                    %% this envelope. A real-provider model_config yields
+                    %% openai_compat routing opts (reaching soma_llm_openai); an
+                    %% empty / directive-shaped one returns the envelope's `llm'
+                    %% map unchanged, so the mock path the actor drives today is
+                    %% byte-for-byte what it was.
+                    CallOpts = build_call_opts(Data#data.model_config, Envelope),
+                    start_llm_call(CallOpts, TaskId, CorrelationId, Data);
                 false ->
                     %% Spend point one: the task's LLM-call count is at the
                     %% max_llm_calls cap, so no call is made. The task fails as
