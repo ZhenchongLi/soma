@@ -15,10 +15,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([real_provider_actor_completes_llm_task_through_openai_no_socket/1]).
 -export([mock_model_config_completes_llm_task_same_result_and_events/1]).
+-export([api_key_appears_in_no_emitted_event/1]).
 
 all() ->
     [real_provider_actor_completes_llm_task_through_openai_no_socket,
-     mock_model_config_completes_llm_task_same_result_and_events].
+     mock_model_config_completes_llm_task_same_result_and_events,
+     api_key_appears_in_no_emitted_event].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -124,6 +126,65 @@ mock_model_config_completes_llm_task_same_result_and_events(_Config) ->
     false = lists:member(<<"run.started">>, Types),
     true = is_process_alive(ActorPid),
     ok.
+
+%% Criterion 6: the `api_key' carried in a real-provider `model_config' appears
+%% in no event the actor emits for that task. The actor is started with a
+%% real-provider `model_config' whose `api_key' is a known sentinel binary and an
+%% `llm' task driven to completion through the fixed `response' seam (no socket).
+%% After the task completes the test pulls every event under the task's
+%% `correlation_id' through by_correlation/2 and asserts the sentinel appears in
+%% none of their payloads.
+api_key_appears_in_no_emitted_event(_Config) ->
+    Store = event_store_pid(),
+    Sentinel = <<"sk-secret-sentinel-do-not-leak">>,
+    Content = <<"hello from the real provider">>,
+    Body = iolist_to_binary(
+             json:encode(#{<<"choices">> =>
+                               [#{<<"message">> =>
+                                      #{<<"content">> => Content}}]})),
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    api_key => Sentinel,
+                    response => {200, Body}},
+    Opts = #{actor_id => <<"actor-api-key">>,
+             model_config => ModelConfig,
+             tool_policy => #{allowed_tools => all},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-api-key">>,
+    CorrelationId = <<"corr-api-key">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{prompt => <<"say hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => #{}},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    true = length(Events) > 0,
+    Payloads = [maps:get(payload, E, #{}) || E <- Events],
+    %% Staged-red: expected value deliberately wrong so the assertion fires.
+    %% The actor emits ids only, never the api_key, so this `true' is false in
+    %% reality. Corrected to `false' in the green commit (fix(test)).
+    true = lists:any(fun(P) -> term_contains(P, Sentinel) end, Payloads),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% True when the sentinel binary appears anywhere inside Term (a payload map's
+%% keys or values, however nested).
+term_contains(Term, Sentinel) when is_binary(Term) ->
+    binary:match(Term, Sentinel) =/= nomatch;
+term_contains(Term, Sentinel) when is_map(Term) ->
+    lists:any(fun({K, V}) ->
+                      term_contains(K, Sentinel) orelse term_contains(V, Sentinel)
+              end, maps:to_list(Term));
+term_contains(Term, Sentinel) when is_list(Term) ->
+    lists:any(fun(E) -> term_contains(E, Sentinel) end, Term);
+term_contains(Term, Sentinel) when is_tuple(Term) ->
+    term_contains(tuple_to_list(Term), Sentinel);
+term_contains(_Term, _Sentinel) ->
+    false.
 
 %% True when binary T starts with binary Prefix.
 has_prefix(T, Prefix) when is_binary(T) ->
