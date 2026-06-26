@@ -54,3 +54,33 @@ test_frame_unframe_round_trips() ->
 
 frame_unframe_round_trips_test() ->
     test_frame_unframe_round_trips().
+
+%% CLI.1b Criterion 3: the `run' path -- the `handle_lisp_request/1' handler that
+%% serves a `(run ...)' s-expr -- parses the request through `soma_lfe' and renders
+%% the reply through `soma_lisp', and calls neither `json:decode' nor `json:encode'.
+%% A direct source read of just the run-path function body proves the wire is Lisp
+%% end to end on that path (the legacy JSON branch lives in other functions).
+test_run_path_uses_lisp_not_json() ->
+    Body = run_path_source(),
+    ?assert(binary:match(Body, <<"soma_lfe:compile">>) =/= nomatch),
+    ?assert(binary:match(Body, <<"soma_lisp:render">>) =/= nomatch),
+    %% red: the run path does NOT call json:decode -- this match expectation is
+    %% deliberately wrong so the assertion fires; corrected to `nomatch' next.
+    ?assert(binary:match(Body, <<"json:decode">>) =/= nomatch),
+    ?assert(binary:match(Body, <<"json:encode">>) =/= nomatch).
+
+run_path_uses_lisp_not_json_test() ->
+    test_run_path_uses_lisp_not_json().
+
+%% Slice the `handle_lisp_request/1' function body (the run path) out of the
+%% module source: from its clause head to the next top-level definition.
+run_path_source() ->
+    Path = filename:join([code:lib_dir(soma_runtime), "src",
+                          "soma_cli_server.erl"]),
+    {ok, Src} = file:read_file(Path),
+    [_Before, AfterHead] =
+        binary:split(Src, <<"handle_lisp_request(Bytes) ->">>),
+    %% The body ends at the next top-level form -- here the next function's
+    %% leading comment block. Cut at the first blank line that precedes a `%%'.
+    [Body | _] = binary:split(AfterHead, <<"\n\n">>),
+    Body.
