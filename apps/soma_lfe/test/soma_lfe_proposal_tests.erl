@@ -35,3 +35,20 @@ test_run_steps_form_normalizes_with_equivalent_steps() ->
 
 run_steps_form_normalizes_with_equivalent_steps_test() ->
     test_run_steps_form_normalizes_with_equivalent_steps().
+
+%% Criterion 3 — a malformed proposal form (a (reply (text)) missing its string)
+%% returns {error, [Diagnostic]} through soma_lfe:compile/2, where the diagnostic
+%% carries both a message and a line key, and the compiler does not crash. The
+%% real parser boundary is exercised; the diagnostic shape matches the one
+%% parse_msg/parse_run already produce.
+test_malformed_proposal_form_returns_diagnostic() ->
+    Source = <<"(reply (text))">>,
+    Result = soma_lfe:compile(Source, #{}),
+    ?assertMatch({error, [_ | _]}, Result),
+    {error, [Diag | _]} = Result,
+    ?assert(maps:is_key(message, Diag)),
+    ?assert(maps:is_key(line, Diag)),
+    ?assert(is_binary(maps:get(message, Diag))).
+
+malformed_proposal_form_returns_diagnostic_test() ->
+    test_malformed_proposal_form_returns_diagnostic().
