@@ -16,3 +16,15 @@ test_build_request_url() ->
 
 build_request_url_test() ->
     test_build_request_url().
+
+test_build_request_auth_header() ->
+    Config = #{base_url => <<"https://api.example.test/v1">>,
+               api_key => <<"dummy-key">>,
+               model => <<"dummy-model">>,
+               messages => [#{role => <<"user">>, content => <<"hi">>}]},
+    #{headers := Headers} = soma_llm_openai:build_request(Config),
+    ?assertEqual({"Authorization", "Bearer dummy-key"},
+                 lists:keyfind("Authorization", 1, Headers)).
+
+build_request_auth_header_test() ->
+    test_build_request_auth_header().
