@@ -33,8 +33,7 @@ test_every_llm_directive_is_the_proposal_mock() ->
     DirectiveCount = count(Suite, <<"directive =>">>),
     ProposalCount = count(Suite, <<"directive => proposal">>),
     ?assert(DirectiveCount > 0),
-    %% Staged-red: deliberately wrong expectation fires the assertion first.
-    ?assertEqual(0, DirectiveCount),
+    %% Every LLM directive the suite drives A1 with is the `proposal' mock.
     ?assertEqual(DirectiveCount, ProposalCount).
 
 %% Criterion 9 (part b): no L.2 test opt carries a real-provider config -- the
