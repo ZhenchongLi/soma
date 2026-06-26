@@ -32,3 +32,25 @@ test_encode_reason_tuple_to_tag_detail() ->
 
 encode_reason_tuple_to_tag_detail_test() ->
     test_encode_reason_tuple_to_tag_detail().
+
+%% Criterion 3: length-prefix framing round-trips. `frame/1' prepends a 4-byte
+%% big-endian length to the payload; `unframe/1' splits the prefix back off.
+%% Decoding the framed bytes of a sample request, then re-encoding, yields the
+%% original framed bytes (4-byte big-endian length + JSON payload).
+test_frame_unframe_round_trips() ->
+    Payload = iolist_to_binary(
+                soma_cli_server:encode_response(
+                  #{cmd => run, workflow => [], root => <<"/tmp">>})),
+    Framed = iolist_to_binary(soma_cli_server:frame(Payload)),
+    %% The wire shape: a 4-byte big-endian length, then the payload.
+    Len = byte_size(Payload),
+    ?assertEqual(<<Len:32/big, Payload/binary>>, Framed),
+    %% Decode the framed bytes back to the payload...
+    ?assertEqual(Payload, soma_cli_server:unframe(Framed)),
+    %% ...and re-encoding yields the original framed bytes.
+    ?assertEqual(Framed,
+                 iolist_to_binary(
+                   soma_cli_server:frame(soma_cli_server:unframe(Framed)))).
+
+frame_unframe_round_trips_test() ->
+    test_frame_unframe_round_trips().
