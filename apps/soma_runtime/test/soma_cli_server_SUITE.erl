@@ -15,6 +15,7 @@
 -export([test_run_lisp_failed_returns_error_result/1]).
 -export([test_server_serves_after_failed_lisp_run/1]).
 -export([test_malformed_request_returns_error_sexpr/1]).
+-export([test_server_serves_after_malformed_request/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -28,7 +29,8 @@ all() ->
      test_run_lisp_result_carries_correlation_id,
      test_run_lisp_failed_returns_error_result,
      test_server_serves_after_failed_lisp_run,
-     test_malformed_request_returns_error_sexpr].
+     test_malformed_request_returns_error_sexpr,
+     test_server_serves_after_malformed_request].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -258,6 +260,32 @@ test_malformed_request_returns_error_sexpr(Config) ->
     ok = gen_tcp:send(C2, Echo),
     {ok, Reply2} = gen_tcp:recv(C2, 0, 5000),
     match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]),
+    ok = gen_tcp:close(C2).
+
+%% Criterion 7 (CLI.1b): the server stays up after a malformed request and answers
+%% the next well-formed request on a new connection. The first connection sends
+%% garbage bytes that `soma_lfe:compile/2' rejects (the Criterion 6 path); the
+%% second connection (a fresh socket) sends an echo `(run (step ...))' (the
+%% Criterion 1 path) and reads a `(result ...)' s-expr whose status sub-form is
+%% `completed'. The proof is that the same server process serves a second
+%% well-formed request after a malformed one -- the handler replied a defined
+%% error and closed rather than crashing the listener.
+test_server_serves_after_malformed_request(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, C1} = connect(Path),
+    Malformed = <<"(nonsense foo bar)">>,
+    ok = gen_tcp:send(C1, Malformed),
+    {ok, _} = gen_tcp:recv(C1, 0, 5000),
+    ok = gen_tcp:close(C1),
+    {ok, C2} = connect(Path),
+    Echo = <<"(run (step s1 echo (args (value \"ok\"))))">>,
+    ok = gen_tcp:send(C2, Echo),
+    {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
+    %% Staged red: the well-formed echo on the fresh connection completes, so the
+    %% second reply DOES carry `(status completed)'. Asserting `nomatch' here
+    %% fires the assertion -- corrected to `match' in the green phase.
+    nomatch = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
 
 %% A small defensive retry for the client connect: right after start_link the
