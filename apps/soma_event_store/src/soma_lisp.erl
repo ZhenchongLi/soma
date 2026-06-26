@@ -10,11 +10,7 @@
 render(Map) when is_map(Map) ->
     case is_result_map(Map) of
         true ->
-            ["(result ",
-             render_pair(status, maps:get(status, Map)), " ",
-             render_pair(outputs, maps:get(outputs, Map)), " ",
-             render_pair(correlation_id, maps:get(correlation_id, Map)),
-             ")"];
+            ["(result ", lists:join(" ", result_pairs(Map)), ")"];
         false ->
             case is_event_map(Map) of
                 true ->
@@ -87,9 +83,23 @@ render_step(Step) when is_map(Step) ->
     Pairs = [render_pair(K, V) || {K, V} <- maps:to_list(Step)],
     ["(step ", lists:join(" ", Pairs), ")"].
 
+%% A result map is marked by `status' plus either `outputs' (a completed run) or
+%% `error' (a failed run / malformed request). The completed case keeps its fixed
+%% `status outputs correlation-id' order; the failed case omits `outputs', emits
+%% `(error ...)' in its place, and carries `correlation-id' only when present.
 is_result_map(Map) ->
-    lists:all(fun(K) -> maps:is_key(K, Map) end,
-              [status, outputs, correlation_id]).
+    maps:is_key(status, Map)
+        andalso (maps:is_key(outputs, Map) orelse maps:is_key(error, Map)).
+
+%% The result sub-forms, in order: status, then outputs if present, then error if
+%% present, then correlation-id if present. The completed-result order
+%% (`status outputs correlation-id') is preserved.
+result_pairs(Map) ->
+    [render_pair(status, maps:get(status, Map))]
+        ++ [render_pair(outputs, V) || {ok, V} <- [maps:find(outputs, Map)]]
+        ++ [render_pair(error, V) || {ok, V} <- [maps:find(error, Map)]]
+        ++ [render_pair(correlation_id, V)
+            || {ok, V} <- [maps:find(correlation_id, Map)]].
 
 render_symbol(Atom) when is_atom(Atom) ->
     %% `_' in the atom maps back to `-' in the Lisp symbol text.
