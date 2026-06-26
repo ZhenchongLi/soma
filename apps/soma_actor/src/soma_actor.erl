@@ -338,6 +338,23 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                          #{task_id => TaskId, correlation_id => CorrelationId,
                            llm_call_id => LlmCallId,
                            kind => maps:get(kind, Proposal, undefined)}),
+                    %% When this valid proposal is the output of a repair call (the
+                    %% task's `repair_count' was bumped above zero when the repair
+                    %% call started), a previously malformed proposal has now
+                    %% re-parsed. Emit `proposal.repaired' carrying the task's
+                    %% `task_id' and `correlation_id' (L.5 criterion 2), distinct
+                    %% from `proposal.created'. A first-call success has
+                    %% `repair_count' 0 and emits nothing here.
+                    case maps:get(repair_count, Task, 0) > 0 of
+                        true ->
+                            emit(Data0a, <<"proposal.repaired">>,
+                                 #{task_id => TaskId,
+                                   correlation_id => CorrelationId,
+                                   llm_call_id => LlmCallId,
+                                   kind => maps:get(kind, Proposal, undefined)});
+                        false ->
+                            ok
+                    end,
                     %% The proposal is data; now the verdict is data too. Run the
                     %% policy gate (a tool-name allowlist) and record the verdict.
                     %% On `allow', emit `proposal.approved' (carrying the task's
