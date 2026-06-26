@@ -127,7 +127,7 @@ test_reply_proposal_normalizes() ->
              "\"usage\":{\"prompt_tokens\":5,"
              "\"completion_tokens\":4,\"total_tokens\":9}}">>,
     {ok, Proposal} = soma_llm_openai:parse_response({200, Body}),
-    ?assertMatch({error, _}, soma_proposal:normalize(Proposal)).
+    ?assertMatch({ok, _}, soma_proposal:normalize(Proposal)).
 
 reply_proposal_normalizes_test() ->
     test_reply_proposal_normalizes().
