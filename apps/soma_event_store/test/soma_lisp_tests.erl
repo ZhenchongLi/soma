@@ -31,3 +31,17 @@ test_render_event_map_carries_fields() ->
 
 render_event_map_carries_fields_test() ->
     test_render_event_map_carries_fields().
+
+test_render_pid_becomes_quoted_string() ->
+    Map = #{pid => self()},
+    Rendered = iolist_to_binary(soma_lisp:render(Map)),
+    %% A pid has no s-expr form, so it renders as a double-quoted string
+    %% (the `io_lib:format("~p", ...)' text of the pid) and never crashes.
+    PidText = iolist_to_binary(io_lib:format("~p", [self()])),
+    Expected = iolist_to_binary(["(pid \"", PidText, "\")"]),
+    %% Deliberately wrong expected value to observe the red assertion fire.
+    ?assertEqual(<<"(pid <0.0.0>)">>, Rendered),
+    ?assertEqual(Expected, Rendered).
+
+render_pid_becomes_quoted_string_test() ->
+    test_render_pid_becomes_quoted_string().
