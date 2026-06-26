@@ -64,10 +64,8 @@ test_run_path_uses_lisp_not_json() ->
     Body = run_path_source(),
     ?assert(binary:match(Body, <<"soma_lfe:compile">>) =/= nomatch),
     ?assert(binary:match(Body, <<"soma_lisp:render">>) =/= nomatch),
-    %% red: the run path does NOT call json:decode -- this match expectation is
-    %% deliberately wrong so the assertion fires; corrected to `nomatch' next.
-    ?assert(binary:match(Body, <<"json:decode">>) =/= nomatch),
-    ?assert(binary:match(Body, <<"json:encode">>) =/= nomatch).
+    ?assertEqual(nomatch, binary:match(Body, <<"json:decode">>)),
+    ?assertEqual(nomatch, binary:match(Body, <<"json:encode">>)).
 
 run_path_uses_lisp_not_json_test() ->
     test_run_path_uses_lisp_not_json().
