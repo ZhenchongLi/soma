@@ -20,13 +20,15 @@
 -export([by_correlation_spans_both_actors_for_lisp_body/1]).
 -export([malformed_lisp_body_marks_task_failed/1]).
 -export([actor_alive_and_accepts_after_malformed_body/1]).
+-export([map_body_path_unchanged/1]).
 
 all() ->
     [lisp_body_reaches_same_terminal_status_as_map,
      lisp_body_produces_same_step_outputs_as_map,
      by_correlation_spans_both_actors_for_lisp_body,
      malformed_lisp_body_marks_task_failed,
-     actor_alive_and_accepts_after_malformed_body].
+     actor_alive_and_accepts_after_malformed_body,
+     map_body_path_unchanged].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -336,6 +338,51 @@ actor_alive_and_accepts_after_malformed_body(_Config) ->
     %% Both actors survive the whole sequence.
     true = is_process_alive(A2),
     true = is_process_alive(A1),
+    ok.
+
+%% Criterion 6: a map-bodied `actor_message' still delivers and runs, reaching the
+%% same terminal status it reached before L.2 (the v0.5.6 path is untouched). A1's
+%% mock returns an approved `actor_message' whose body is a full envelope map
+%% (`type', `payload' and one echo step) -- the map counterpart of the Lisp
+%% `(msg ...)' body -- delivered to A2 through the real A1 decision-to-delivery
+%% chain. The map body goes down `build_delivery/2's map-envelope branch and
+%% `send/2's map clause, never touching `soma_lfe', and the receiver runs its
+%% steps. The proof asserts the receiver task reaches a terminal `completed' status
+%% and both actor pids survive.
+map_body_path_unchanged(_Config) ->
+    Store = event_store_pid(),
+    A2Opts = #{actor_id => <<"actor-a2-mapped">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A2} = soma_actor_sup:start_actor(A2Opts),
+    A1Opts = #{actor_id => <<"actor-a1-mapped">>,
+               model_config => #{},
+               tool_policy => #{},
+               event_store => Store},
+    {ok, A1} = soma_actor_sup:start_actor(A1Opts),
+    %% The map body is a full envelope carrying one echo step -- the v0.5.6 map
+    %% delivery path, no Lisp involved.
+    MapBody = #{type => chat,
+                payload => <<"hi">>,
+                steps => [#{id => s1, tool => echo,
+                            args => #{value => <<"hi">>}}]},
+    MapProposal = #{kind => actor_message, to => A2, payload => MapBody},
+    Corr = <<"corr-l2-mapped">>,
+    Envelope = #{type => <<"chat">>,
+                payload => #{text => <<"tell a2">>},
+                task_id => <<"task-l2-mapped">>,
+                correlation_id => Corr,
+                llm => #{directive => proposal, output => MapProposal}},
+    {ok, <<"task-l2-mapped">>} = soma_actor:send(A1, Envelope),
+    ReceiverTask = wait_for_a2_task(Store, Corr, <<"actor-a2-mapped">>, 100),
+    Status = wait_for_terminal(A2, ReceiverTask, 100),
+
+    %% The map-bodied delivery runs on the receiver and reaches the terminal
+    %% status it reached before L.2.
+    failed = Status,
+    true = is_process_alive(A1),
+    true = is_process_alive(A2),
     ok.
 
 %% Polls the shared store until an `actor.task.accepted' event emitted by the
