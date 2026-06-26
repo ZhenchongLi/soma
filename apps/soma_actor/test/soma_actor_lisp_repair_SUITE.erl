@@ -20,13 +20,15 @@
 -export([repaired_run_steps_outside_allowlist_is_rejected/1]).
 -export([all_repairs_malformed_fails_after_max_attempts_with_diagnostics/1]).
 -export([actor_alive_after_repair_failure_runs_next_valid_message/1]).
+-export([repair_blocked_by_max_llm_calls_fails_budget_exceeded/1]).
 
 all() ->
     [repaired_reply_reaches_same_terminal_result_as_valid_reply,
      successful_repair_emits_proposal_repaired_with_ids,
      repaired_run_steps_outside_allowlist_is_rejected,
      all_repairs_malformed_fails_after_max_attempts_with_diagnostics,
-     actor_alive_after_repair_failure_runs_next_valid_message].
+     actor_alive_after_repair_failure_runs_next_valid_message,
+     repair_blocked_by_max_llm_calls_fails_budget_exceeded].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -274,6 +276,55 @@ actor_alive_after_repair_failure_runs_next_valid_message(_Config) ->
     ok = wait_for_status(ActorPid, NextTaskId, completed, 100),
     {ok, NextResult} = soma_actor:get_task_result(ActorPid, NextTaskId),
     #{kind := reply, text := <<"hi">>} = NextResult,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 6: a repair attempt that would exceed the budget's `max_llm_calls'
+%% cap is not made; the task fails with `{budget_exceeded, max_llm_calls}' instead.
+%% The actor is started with `budget => #{max_llm_calls => 1}', so the first
+%% (malformed) proposal call spends the only allowed LLM call. When that call's
+%% `{invalid_proposal, _}' enters the repair loop, the budget check refuses a
+%% second call before any repair worker starts, and the task fails with
+%% `{budget_exceeded, max_llm_calls}' -- proving each repair attempt is counted as
+%% one LLM call against the per-task budget. Exactly one `llm.started' event fires
+%% (the first call, no repair call), read back through
+%% soma_event_store:by_correlation/2; the actor stays alive.
+repair_blocked_by_max_llm_calls_fails_budget_exceeded(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-lisp-repair-6">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             budget => #{max_llm_calls => 1},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+
+    %% A malformed (unterminated) form whose repair would return a valid reply --
+    %% but the budget caps LLM calls at one, so the repair call is never made.
+    BadProposal = <<"(reply (text \"hi\"">>,
+    RepairedProposal = <<"(reply (text \"hi\"))">>,
+    RepairLlm = #{directive => proposal,
+                  output => BadProposal,
+                  repair_output => RepairedProposal},
+    TaskId = <<"task-lisp-repair-budget">>,
+    CorrelationId = <<"corr-lisp-repair-budget">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"answer me">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => RepairLlm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, failed, 100),
+
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    failed = maps:get(status, Status),
+    {budget_exceeded, max_llm_calls} = maps:get(reason, Status),
+
+    %% The repair attempt counted against the budget: exactly one `llm.started'
+    %% event fired (the first call); no second/repair call was started.
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Started = [E || E <- Events,
+                    maps:get(event_type, E, undefined) =:= <<"llm.started">>],
+    1 = length(Started),
     true = is_process_alive(ActorPid),
     ok.
 
