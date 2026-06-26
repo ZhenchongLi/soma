@@ -209,8 +209,7 @@ test_map_send_path_untouched(_Config) ->
 
     %% The map path runs to completion: status `completed' and the
     %% `actor.task.completed' event is in the correlation chain.
-    %% Staged red: deliberately wrong expected status to see the assertion fire.
-    #{status := running} = soma_actor:get_task_status(Pid, TaskId),
+    #{status := completed} = soma_actor:get_task_status(Pid, TaskId),
     Chain = correlation_event_types(Store, Corr),
     true = lists:member(<<"actor.task.completed">>, Chain),
     true = is_process_alive(Pid),
