@@ -17,10 +17,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([repaired_reply_reaches_same_terminal_result_as_valid_reply/1]).
 -export([successful_repair_emits_proposal_repaired_with_ids/1]).
+-export([repaired_run_steps_outside_allowlist_is_rejected/1]).
 
 all() ->
     [repaired_reply_reaches_same_terminal_result_as_valid_reply,
-     successful_repair_emits_proposal_repaired_with_ids].
+     successful_repair_emits_proposal_repaired_with_ids,
+     repaired_run_steps_outside_allowlist_is_rejected].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -128,6 +130,48 @@ successful_repair_emits_proposal_repaired_with_ids(_Config) ->
     [RepairedEvent] = Repaired,
     TaskId = maps:get(task_id, RepairedEvent),
     CorrelationId = maps:get(correlation_id, RepairedEvent),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 3: a repaired `run_steps' proposal whose tool is outside the actor's
+%% `allowed_tools' allowlist reaches terminal `rejected' and emits
+%% `proposal.rejected'. The repaired form re-enters the full pipeline -- the policy
+%% gate runs on the repaired proposal, so repair does not bypass it. The malformed
+%% proposal's `llm' map stages, under `repair_output', a valid `(run-steps ...)'
+%% whose single step's tool (`file_write') is NOT in the actor's allowlist (`echo'
+%% only). The repair call returns it, it re-parses and normalizes to a `run_steps'
+%% proposal, soma_policy:check/2 rejects it, and the task lands `rejected' with a
+%% `proposal.rejected' event read back through soma_event_store:by_correlation/2.
+repaired_run_steps_outside_allowlist_is_rejected(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-lisp-repair-3">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+
+    %% Malformed (unterminated) run-steps form; its repair returns a valid
+    %% run-steps proposal whose tool `file_write' is outside the `[echo]' allowlist.
+    BadProposal = <<"(run-steps (step (id s1) (tool file_write) (args (value \"a\"">>,
+    RepairedProposal =
+        <<"(run-steps (step (id s1) (tool file_write) (args (value \"a\"))))">>,
+    RepairLlm = #{directive => proposal,
+                  output => BadProposal,
+                  repair_output => RepairedProposal},
+    TaskId = <<"task-lisp-repair-rejected">>,
+    CorrelationId = <<"corr-lisp-repair-rejected">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"do a thing">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => RepairLlm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Rejected = [E || E <- Events,
+                     maps:get(event_type, E, undefined) =:= <<"proposal.rejected">>],
+    [_RejectedEvent] = Rejected,
     true = is_process_alive(ActorPid),
     ok.
 
