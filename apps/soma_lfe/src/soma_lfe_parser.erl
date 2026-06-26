@@ -12,7 +12,12 @@ parse_msg([msg | SubForms]) ->
     parse_msg_fields(SubForms, #{}).
 
 parse_msg_fields([], Acc) ->
-    {ok, Acc};
+    case validate_msg_required(Acc) of
+        [] ->
+            {ok, Acc};
+        Diags ->
+            {error, Diags}
+    end;
 parse_msg_fields([[type, Value] | Rest], Acc) ->
     parse_msg_fields(Rest, Acc#{type => Value});
 parse_msg_fields([[payload, Value] | Rest], Acc) ->
@@ -32,7 +37,25 @@ parse_msg_fields([[llm | LlmForms] | Rest], Acc) ->
             parse_msg_fields(Rest, Acc#{llm => LlmMap});
         {error, Diags} ->
             {error, Diags}
-    end.
+    end;
+parse_msg_fields([[Head | _] | _], _Acc) when is_atom(Head) ->
+    {error, [#{code => unknown_form,
+               message => iolist_to_binary(
+                   io_lib:format("unknown msg sub-form: '~s'", [Head])),
+               line => 0}]};
+parse_msg_fields([Other | _], _Acc) ->
+    {error, [#{code => unknown_form,
+               message => iolist_to_binary(
+                   io_lib:format("unexpected form inside msg: ~p", [Other])),
+               line => 0}]}.
+
+%% type and payload are required; report a diagnostic for each missing one.
+validate_msg_required(Acc) ->
+    [#{code => missing_required_field,
+       message => iolist_to_binary(
+           io_lib:format("msg is missing required field: '~s'", [Field])),
+       line => 0}
+     || Field <- [type, payload], not maps:is_key(Field, Acc)].
 
 parse_msg_steps([], Acc) ->
     {ok, lists:reverse(Acc)};
