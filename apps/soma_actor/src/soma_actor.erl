@@ -822,12 +822,16 @@ start_owned_run(Steps, TaskId, CorrelationId, Data) ->
 %% (`#{provider => openai_compat, base_url, model}') becomes opts carrying
 %% `provider => openai_compat' together with that `base_url' and `model' -- the
 %% keys `soma_llm_call:perform_call/1' routes on to reach `soma_llm_openai'.
+%% The `messages' list is derived from the envelope payload: one user message
+%% holding the prompt the payload carries, so the provider has something to send.
 build_call_opts(#{provider := openai_compat,
                   base_url := BaseUrl,
-                  model := Model} = _ModelConfig, _Envelope) ->
+                  model := Model} = _ModelConfig, Envelope) ->
+    Prompt = maps:get(prompt, maps:get(payload, Envelope, #{}), <<>>),
     #{provider => openai_compat,
       base_url => BaseUrl,
-      model => Model}.
+      model => Model,
+      messages => [#{role => <<"user">>, content => Prompt}]}.
 
 maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
     case maps:get(llm, Envelope, undefined) of
