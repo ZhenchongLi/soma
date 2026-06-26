@@ -65,15 +65,71 @@ accept_loop(ListenSocket) ->
             ok
     end.
 
-%% Per-connection handler. For this cycle it simply holds the connection open
-%% until the client disconnects; the run handler is a later cycle.
+%% Per-connection handler, one process per accepted connection. It reads one
+%% framed `run' request, drives a supervised run it owns directly, frames the
+%% terminal result back, then closes. The socket is `{packet, 4}', so the driver
+%% strips the length prefix on recv and prepends it on send -- the payload here is
+%% the bare JSON.
 handle(Socket) ->
-    receive
-        {tcp_closed, Socket} -> ok;
-        {tcp_error, Socket, _} -> ok
-    after 60000 ->
-        gen_tcp:close(Socket)
+    case gen_tcp:recv(Socket, 0, 60000) of
+        {ok, Bytes} ->
+            Response = handle_request(json:decode(Bytes)),
+            _ = gen_tcp:send(Socket, iolist_to_binary(encode_response(Response))),
+            gen_tcp:close(Socket);
+        {error, _} ->
+            ok
     end.
+
+%% Decode a `run' request, start a `soma_run' the handler owns (session_pid =>
+%% self(), a minted correlation_id), wait for its terminal message, and shape the
+%% result into the response map. The JSON step list is converted into the
+%% atom-keyed step maps `soma_run' accepts (the tool name becomes an atom so the
+%% registry can resolve it).
+handle_request(#{<<"cmd">> := <<"run">>, <<"workflow">> := Workflow}) ->
+    TaskId = mint_id("task"),
+    CorrId = mint_id("corr"),
+    RunId = mint_id("run"),
+    Steps = [shape_step(Step) || Step <- Workflow],
+    {ok, _RunPid} = soma_run_sup:start_run(
+        #{run_id => RunId,
+          session_id => TaskId,
+          session_pid => self(),
+          steps => Steps,
+          correlation_id => CorrId}),
+    await_run(RunId, TaskId, CorrId).
+
+%% Wait for the owned run's terminal message and shape the response. On
+%% `run_completed' the recorded step outputs become the `outputs' object; on a
+%% failure the status is non-`completed' and the reason travels in `error'.
+await_run(RunId, TaskId, CorrId) ->
+    receive
+        {run_completed, RunId, Outputs} ->
+            #{status => completed,
+              task_id => TaskId,
+              correlation_id => CorrId,
+              outputs => Outputs};
+        {run_failed, RunId, Reason} ->
+            #{status => failed,
+              task_id => TaskId,
+              correlation_id => CorrId,
+              error => Reason};
+        {run_timeout, RunId} ->
+            #{status => timeout, task_id => TaskId, correlation_id => CorrId};
+        {run_cancelled, RunId} ->
+            #{status => cancelled, task_id => TaskId, correlation_id => CorrId}
+    end.
+
+%% Shape one JSON step object (binary keys) into the step map `soma_run' accepts.
+%% `tool' must be an atom for the registry to resolve it; `id' and `args' carry
+%% through as the decoded request terms.
+shape_step(Step) ->
+    #{id => maps:get(<<"id">>, Step),
+      tool => binary_to_existing_atom(maps:get(<<"tool">>, Step), utf8),
+      args => maps:get(<<"args">>, Step, #{})}.
+
+mint_id(Prefix) ->
+    list_to_binary(
+      Prefix ++ "-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
 
 %% Encode a Soma result term to JSON bytes. Returns an iolist (the `json'
 %% encoder's native output); callers that need a binary wrap with
