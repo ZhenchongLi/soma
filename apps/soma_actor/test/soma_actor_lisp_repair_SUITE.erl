@@ -22,6 +22,7 @@
 -export([actor_alive_after_repair_failure_runs_next_valid_message/1]).
 -export([repair_blocked_by_max_llm_calls_fails_budget_exceeded/1]).
 -export([strict_mode_fails_malformed_without_repair_call/1]).
+-export([valid_proposal_completes_with_one_llm_started_no_repair/1]).
 
 all() ->
     [repaired_reply_reaches_same_terminal_result_as_valid_reply,
@@ -30,7 +31,8 @@ all() ->
      all_repairs_malformed_fails_after_max_attempts_with_diagnostics,
      actor_alive_after_repair_failure_runs_next_valid_message,
      repair_blocked_by_max_llm_calls_fails_budget_exceeded,
-     strict_mode_fails_malformed_without_repair_call].
+     strict_mode_fails_malformed_without_repair_call,
+     valid_proposal_completes_with_one_llm_started_no_repair].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -377,6 +379,50 @@ strict_mode_fails_malformed_without_repair_call(_Config) ->
                     maps:get(event_type, E, undefined) =:= <<"llm.started">>],
     1 = length(Started),
     %% No `proposal.repaired' event: strict mode never repairs.
+    Repaired = [E || E <- Events,
+                     maps:get(event_type, E, undefined) =:= <<"proposal.repaired">>],
+    [] = Repaired,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 8: a directly-valid Lisp proposal completes through the happy path
+%% without ever entering the repair loop -- exactly one `llm.started' event fires
+%% (the single proposal call, no repair call) and no `proposal.repaired' event is
+%% emitted. The actor runs with repair on by default; a valid `(reply ...)' parses
+%% on the first call, so proposal_result/2 returns `{proposal, _}', the actor emits
+%% `proposal.created' and completes, and the repair branch is never reached. The
+%% event trail is read back through soma_event_store:by_correlation/2 and asserted
+%% to carry one `llm.started' and zero `proposal.repaired'. The actor stays alive.
+valid_proposal_completes_with_one_llm_started_no_repair(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-lisp-repair-8">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+
+    %% A directly-valid Lisp reply proposal -- parses on the first call, no repair.
+    ValidProposal = <<"(reply (text \"hi\"))">>,
+    ValidLlm = #{directive => proposal, output => ValidProposal},
+    TaskId = <<"task-lisp-valid-no-repair">>,
+    CorrelationId = <<"corr-lisp-valid-no-repair">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"answer me">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => ValidLlm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+
+    {ok, Result} = soma_actor:get_task_result(ActorPid, TaskId),
+    #{kind := reply, text := <<"hi">>} = Result,
+
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    %% Exactly one `llm.started' fired (the single proposal call; no repair call).
+    Started = [E || E <- Events,
+                    maps:get(event_type, E, undefined) =:= <<"llm.started">>],
+    2 = length(Started),
+    %% No `proposal.repaired' event: the happy path makes no repair.
     Repaired = [E || E <- Events,
                      maps:get(event_type, E, undefined) =:= <<"proposal.repaired">>],
     [] = Repaired,
