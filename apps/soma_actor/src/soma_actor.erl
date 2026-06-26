@@ -549,10 +549,10 @@ idle(_EventType, _Event, Data) ->
 maybe_repair(TaskId, CorrelationId, Diagnostics, Task, Data) ->
     RepairCount = maps:get(repair_count, Task, 0),
     RepairOutput = maps:get(repair_output, Task, undefined),
-    case Data#data.repair =/= strict
+    WantsRepair = Data#data.repair =/= strict
         andalso RepairCount < Data#data.max_repairs
-        andalso RepairOutput =/= undefined
-        andalso llm_budget_available(TaskId, Data) of
+        andalso RepairOutput =/= undefined,
+    case WantsRepair andalso llm_budget_available(TaskId, Data) of
         true ->
             Task1 = Task#{repair_count => RepairCount + 1},
             Tasks = maps:put(TaskId, Task1, Data#data.tasks),
@@ -562,6 +562,13 @@ maybe_repair(TaskId, CorrelationId, Diagnostics, Task, Data) ->
                           repair_output => RepairOutput},
             Data2 = start_llm_call(RepairLlm, TaskId, CorrelationId, Data1),
             {keep_state, Data2};
+        false when WantsRepair ->
+            %% Repair was wanted but the only thing blocking it is the budget's
+            %% `max_llm_calls' cap: the repair attempt counts as one LLM call, so
+            %% refusing it before the worker starts means the task fails with the
+            %% budget reason -- not the parse diagnostics. The actor stays alive.
+            Data1 = fail_task(TaskId, {budget_exceeded, max_llm_calls}, Data),
+            {keep_state, Data1};
         false ->
             Task1 = Task#{status => failed, reason => Diagnostics},
             Tasks = maps:put(TaskId, Task1, Data#data.tasks),
