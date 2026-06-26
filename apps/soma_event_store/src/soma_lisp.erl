@@ -21,7 +21,12 @@ render(Map) when is_map(Map) ->
                     Pairs = [render_pair(K, V) || {K, V} <- maps:to_list(Map)],
                     ["(event ", lists:join(" ", Pairs), ")"];
                 false ->
-                    render_value(Map)
+                    case is_envelope_map(Map) of
+                        true ->
+                            render_envelope(Map);
+                        false ->
+                            render_value(Map)
+                    end
             end
     end;
 render(Atom) when is_atom(Atom) ->
@@ -58,6 +63,29 @@ render_value(Value) ->
 
 is_event_map(Map) ->
     maps:is_key(event_type, Map).
+
+%% A (msg ...) envelope parsed by soma_lfe carries a `type' key (with `payload'
+%% required alongside it). It renders back to a `(msg ...)' form so it re-parses
+%% to the same term.
+is_envelope_map(Map) ->
+    maps:is_key(type, Map).
+
+%% Render a parsed envelope as `(msg (k v) ...)'. The `steps' field is special:
+%% its value is a list of step maps, each of which must render with a `step'
+%% head so the result re-parses through soma_lfe.
+render_envelope(Map) ->
+    Pairs = [render_envelope_pair(K, V) || {K, V} <- maps:to_list(Map)],
+    ["(msg ", lists:join(" ", Pairs), ")"].
+
+render_envelope_pair(steps, Steps) when is_list(Steps) ->
+    ["(steps ", lists:join(" ", [render_step(S) || S <- Steps]), ")"];
+render_envelope_pair(Key, Value) ->
+    render_pair(Key, Value).
+
+%% A step map renders as `(step (id ...) (tool ...) (args ...))'.
+render_step(Step) when is_map(Step) ->
+    Pairs = [render_pair(K, V) || {K, V} <- maps:to_list(Step)],
+    ["(step ", lists:join(" ", Pairs), ")"].
 
 is_result_map(Map) ->
     lists:all(fun(K) -> maps:is_key(K, Map) end,
