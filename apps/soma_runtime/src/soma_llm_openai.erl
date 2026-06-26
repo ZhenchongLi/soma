@@ -6,7 +6,7 @@
 %% are later cycles.
 -module(soma_llm_openai).
 
--export([build_request/1, parse_response/1]).
+-export([build_request/1, parse_response/1, chat/1]).
 
 %% Build the pieces of the chat-completions POST from a config map. Pure: it
 %% opens no socket. The url is the configured `base_url' with `/chat/completions'
@@ -55,3 +55,26 @@ parse_response({200, Body}) ->
     end;
 parse_response({Status, _Body}) ->
     {error, {http_status, Status}}.
+
+%% The build-then-parse path the `soma_llm_call' seam routes to: it shapes the
+%% request from the config and parses the chat-completions response into a reply
+%% proposal (or a bounded error). The impure `httpc' call is isolated to one
+%% spot. When the config carries a fixed `response' ({Status, Body}), that
+%% response is parsed directly and no socket is opened -- this is the seam the
+%% gate test for criterion 9 drives, so the routing proof never reaches the
+%% network. Without a `response', `build_request/1' shapes the POST and
+%% `httpc:request/4' sends it (the live path, exercised only by the opt-in smoke
+%% test).
+chat(#{response := Response}) ->
+    parse_response(Response);
+chat(Config) ->
+    #{url := Url, headers := Headers, body := Body} = build_request(Config),
+    case httpc:request(post,
+                       {binary_to_list(Url), Headers,
+                        "application/json", Body},
+                       [], [{body_format, binary}]) of
+        {ok, {{_Version, Status, _Reason}, _RespHeaders, RespBody}} ->
+            parse_response({Status, RespBody});
+        {error, Reason} ->
+            {error, {http_request_failed, Reason}}
+    end.
