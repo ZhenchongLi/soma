@@ -10,6 +10,7 @@
 -export([test_run_echo_returns_completed_with_outputs/1]).
 -export([test_run_failed_returns_failed_with_error/1]).
 -export([test_server_serves_after_failed_run/1]).
+-export([test_run_lisp_echo_returns_completed_result/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -18,7 +19,8 @@ all() ->
      test_first_server_survives_failed_second_start_link,
      test_run_echo_returns_completed_with_outputs,
      test_run_failed_returns_failed_with_error,
-     test_server_serves_after_failed_run].
+     test_server_serves_after_failed_run,
+     test_run_lisp_echo_returns_completed_result].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -133,6 +135,26 @@ test_server_serves_after_failed_run(Config) ->
     {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
     <<"completed">> = maps:get(<<"status">>, json:decode(Reply)),
     ok = gen_tcp:close(C2).
+
+%% Criterion 1 (CLI.1b): a framed Lisp `(run (step ...))' request carrying a
+%% one-step `echo' workflow drives the real server -> soma_lfe:compile ->
+%% soma_run -> soma_tool_call (echo) -> soma_lisp:render path and replies a framed
+%% `(result ...)' s-expr whose status sub-form is `completed' and whose outputs
+%% sub-form carries step s1's echo value. No layer is bypassed: a real gen_tcp
+%% client over the local Unix socket sends the s-expr and reads the s-expr reply.
+test_run_lisp_echo_returns_completed_result(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = connect(Path),
+    Request = <<"(run (step s1 echo (args (value \"hi\"))))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The reply is an s-expr, not JSON. It must be a `(result ...)' form whose
+    %% status sub-form is `completed' and whose outputs carry s1's echo value.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(s1 \\(value \"hi\"\\)\\)", [{capture, none}]),
+    ok = gen_tcp:close(Client).
 
 %% A small defensive retry for the client connect: right after start_link the
 %% accept loop may not have reached gen_tcp:accept yet, so a connect can briefly
