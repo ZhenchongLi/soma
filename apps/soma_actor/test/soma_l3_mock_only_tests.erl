@@ -33,9 +33,8 @@ test_every_llm_directive_is_the_proposal_mock() ->
     DirectiveCount = count(Suite, <<"directive =>">>),
     ProposalCount = count(Suite, <<"directive => proposal">>),
     ?assert(DirectiveCount > 0),
-    %% STAGED RED: deliberately wrong expected value -- the suite has 6
-    %% `proposal' directives, not 0. Corrected to DirectiveCount in the green step.
-    ?assertEqual(0, ProposalCount).
+    %% Every LLM directive the suite drives the actor with is the `proposal' mock.
+    ?assertEqual(DirectiveCount, ProposalCount).
 
 %% Criterion 9 (part b): no L.3 test opt carries a real-provider config -- the
 %% suite source names no real OpenAI provider module, no API key / base URL opt,
