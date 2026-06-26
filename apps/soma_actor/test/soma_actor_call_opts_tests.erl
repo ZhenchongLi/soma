@@ -17,3 +17,21 @@ test_real_provider_model_config_builds_routing_opts() ->
 
 real_provider_model_config_builds_routing_opts_test() ->
     test_real_provider_model_config_builds_routing_opts().
+
+%% A real-provider model_config plus an envelope whose payload carries a prompt
+%% builds opts whose `messages' is a non-empty list holding that prompt as a
+%% user message -- so the real provider has something to send.
+test_real_provider_opts_carry_prompt_as_user_message() ->
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>},
+    Envelope = #{payload => #{prompt => <<"what is soma?">>}},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    Messages = maps:get(messages, Opts),
+    ?assert(is_list(Messages)),
+    ?assertNotEqual([], Messages),
+    ?assertEqual([#{role => <<"user">>, content => <<"what is soma?">>}],
+                 Messages).
+
+real_provider_opts_carry_prompt_as_user_message_test() ->
+    test_real_provider_opts_carry_prompt_as_user_message().
