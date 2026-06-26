@@ -7,12 +7,15 @@ the design in [../cli.md](../cli.md).
 ## What this slice builds
 
 The server side of the soma daemon: a Unix-domain (`{local, Path}`) listener with
-a length-prefixed JSON wire protocol and a `run` command handler that drives a
-supervised `soma_run` the handler owns directly (`session_pid => self()`), then
-frames the terminal result back to the client. `soma_cli_server` is in
-`apps/soma_runtime/src/`. Single-user / trusted-local — no cross-client auth (see
-[../cli.md](../cli.md)). Tested entirely in-BEAM: pure encode/frame as EUnit, the
-socket + run paths as Common Test with a real `gen_tcp` client over a temp socket.
+a length-prefixed s-expr wire protocol and a handler that reads a `(run …)`
+request s-expr, parses it with `soma_lfe`, drives a supervised `soma_run` the
+handler owns directly (`session_pid => self()`), and frames a rendered
+`(result …)` reply s-expr (`soma_lisp:render/1`) back to the client. There is no
+JSON on the wire — the same Lisp the workflows are written in is the wire format.
+`soma_cli_server` is in `apps/soma_runtime/src/`. Single-user / trusted-local — no
+cross-client auth (see [../cli.md](../cli.md)). Tested entirely in-BEAM: pure
+encode/frame as EUnit, the socket + run paths as Common Test with a real
+`gen_tcp` client over a temp socket.
 
 **Deferred to CLI.1.5:** cancel-on-disconnect (a handler that cancels its
 in-flight run when the client disconnects). Under the single-user scope an
@@ -29,14 +32,14 @@ binary and `soma daemon` boot command are CLI.1b.
 2. **`{packet, 4}` framing.** The listener and clients use a 4-byte big-endian
    length prefix; `frame/1` + `unframe/1` are the pure contract a non-Erlang
    client reproduces.
-3. **JSON → step shaping.** A request's JSON step list becomes the atom-keyed step
-   maps `soma_run` accepts; the tool name is resolved with
-   `binary_to_existing_atom/2` so an unknown tool cannot grow the atom table.
-4. **`jsonable/1` is total.** Every response term is made JSON-encodable before
-   `json:encode/1`: tuples (which the encoder rejects) — including a failure
-   `reason` nested under `error` — become `{"tag": First, "detail": [Rest...]}`,
-   maps and lists recurse, and pids/refs/funs are rendered to a string rather than
-   crashing the encoder.
+3. **Lisp `(run …)` → step shaping.** A request's `(run …)` s-expr is parsed by
+   `soma_lfe:compile/2` into the step-list maps `soma_run` accepts; the tool name
+   is resolved with `binary_to_existing_atom/2` so an unknown tool cannot grow the
+   atom table.
+4. **`(result …)` rendering is total.** Every terminal outcome is rendered to a
+   `(result …)` s-expr by `soma_lisp:render/1`: the terminal `status`, the
+   `outputs`, the `task_id` / `correlation_id`, and — on failure — the `reason`,
+   all as Lisp forms the client prints verbatim.
 5. **Stale-socket cleanup + single-winner bind.** A leftover socket file is
    unlinked before bind only when no live server answers a probe connect, so a
    restart after a crash binds while a second `start_link` on a live path fails
