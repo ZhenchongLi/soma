@@ -25,3 +25,26 @@ test_perform_call_directive_unchanged() ->
 
 perform_call_directive_unchanged_test() ->
     test_perform_call_directive_unchanged().
+
+%% Criterion 9: `perform_call/1' with a `#{provider => openai_compat, ...}' opts
+%% map routes into `soma_llm_openai' -- it builds the request from the provider
+%% config and parses a response into a `reply' proposal. This proves the routing
+%% clause exists and hands off to `soma_llm_openai'. To keep the gate off the
+%% socket (criterion 14), the opts carry a fixed `response' so the seam exercises
+%% build-then-parse over supplied data rather than a live `httpc' request.
+test_perform_call_routes_to_openai() ->
+    Body = iolist_to_binary(
+             json:encode(#{<<"choices">> =>
+                               [#{<<"message">> =>
+                                      #{<<"content">> => <<"routed reply">>}}]})),
+    Llm = #{provider => openai_compat,
+            base_url => <<"https://example.test/v1">>,
+            api_key => <<"k">>,
+            model => <<"a-model">>,
+            messages => [#{role => <<"user">>, content => <<"hi">>}],
+            response => {200, Body}},
+    ?assertEqual({ok, #{kind => reply, text => <<"routed reply">>}},
+                 soma_llm_call:perform_call(Llm)).
+
+perform_call_routes_to_openai_test() ->
+    test_perform_call_routes_to_openai().
