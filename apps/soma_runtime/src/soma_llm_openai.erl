@@ -6,7 +6,7 @@
 %% are later cycles.
 -module(soma_llm_openai).
 
--export([build_request/1]).
+-export([build_request/1, parse_response/1]).
 
 %% Build the pieces of the chat-completions POST from a config map. Pure: it
 %% opens no socket. The url is the configured `base_url' with `/chat/completions'
@@ -33,3 +33,13 @@ add_optional_opts(BodyMap, Config) ->
       end,
       BodyMap,
       [enable_thinking, max_tokens]).
+
+%% Map a raw HTTP response (status plus body) to a reply proposal. On a 200 it
+%% decodes the body and pulls `choices[0].message.content' as the reply text,
+%% returning `{ok, #{kind => reply, text => Content}}'. The bounded-error path
+%% (non-200, undecodable body, missing fields) is a later cycle.
+parse_response({200, Body}) ->
+    Decoded = json:decode(Body),
+    #{<<"choices">> := [#{<<"message">> := #{<<"content">> := Content}} | _]} =
+        Decoded,
+    {ok, #{kind => reply, text => Content}}.
