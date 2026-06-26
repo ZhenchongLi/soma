@@ -87,3 +87,26 @@ test_parse_response_success_to_reply() ->
 
 parse_response_success_to_reply_test() ->
     test_parse_response_success_to_reply().
+
+test_parse_response_bounded_errors() ->
+    %% A non-200 status maps to a bounded, named error -- not a crash.
+    NonOk = soma_llm_openai:parse_response({500, <<"boom">>}),
+    ?assertMatch({error, _}, NonOk),
+    {error, NonOkReason} = NonOk,
+    ?assert(is_atom(NonOkReason) orelse is_tuple(NonOkReason)),
+    %% A 200 whose body decodes but lacks the choices/message/content path is a
+    %% bounded error, not a pattern-match crash.
+    ErrBody = <<"{\"error\":{\"message\":\"bad request\",\"type\":\"invalid\"}}">>,
+    ErrResult = soma_llm_openai:parse_response({200, ErrBody}),
+    ?assertMatch({error, _}, ErrResult),
+    {error, ErrReason} = ErrResult,
+    ?assert(is_atom(ErrReason) orelse is_tuple(ErrReason)),
+    %% A 200 with a body that is not valid JSON must be caught and bounded, not
+    %% allowed to throw out of parse_response/1.
+    Malformed = soma_llm_openai:parse_response({200, <<"{not json">>}),
+    ?assertMatch({error, _}, Malformed),
+    {error, MalformedReason} = Malformed,
+    ?assert(is_atom(MalformedReason) orelse is_tuple(MalformedReason)).
+
+parse_response_bounded_errors_test() ->
+    test_parse_response_bounded_errors().
