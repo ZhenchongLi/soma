@@ -6,11 +6,13 @@
 -export([test_start_link_listens_and_accepts_connect/1]).
 -export([test_start_link_unlinks_stale_socket_file/1]).
 -export([test_second_start_link_on_live_path_errors/1]).
+-export([test_first_server_survives_failed_second_start_link/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
      test_start_link_unlinks_stale_socket_file,
-     test_second_start_link_on_live_path_errors].
+     test_second_start_link_on_live_path_errors,
+     test_first_server_survives_failed_second_start_link].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -48,6 +50,19 @@ test_second_start_link_on_live_path_errors(Config) ->
     {ok, ServerA} = soma_cli_server:start_link(#{socket => Path}),
     {error, _Reason} = soma_cli_server:start_link(#{socket => Path}),
     true = is_process_alive(ServerA),
+    {ok, Client} = gen_tcp:connect({local, Path}, 0,
+                                   [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:close(Client).
+
+%% Criterion 7: after a second start_link on server A's live path fails, server A
+%% keeps serving -- the failed second bind did not disturb A's listener, so a
+%% fresh client still connects to A.
+test_first_server_survives_failed_second_start_link(Config) ->
+    Path = socket_path(Config),
+    {ok, ServerA} = soma_cli_server:start_link(#{socket => Path}),
+    {error, _Reason} = soma_cli_server:start_link(#{socket => Path}),
+    %% staged red: deliberately wrong expectation -- A must still be alive.
+    false = is_process_alive(ServerA),
     {ok, Client} = gen_tcp:connect({local, Path}, 0,
                                    [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:close(Client).
