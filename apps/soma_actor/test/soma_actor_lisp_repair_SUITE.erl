@@ -19,12 +19,14 @@
 -export([successful_repair_emits_proposal_repaired_with_ids/1]).
 -export([repaired_run_steps_outside_allowlist_is_rejected/1]).
 -export([all_repairs_malformed_fails_after_max_attempts_with_diagnostics/1]).
+-export([actor_alive_after_repair_failure_runs_next_valid_message/1]).
 
 all() ->
     [repaired_reply_reaches_same_terminal_result_as_valid_reply,
      successful_repair_emits_proposal_repaired_with_ids,
      repaired_run_steps_outside_allowlist_is_rejected,
-     all_repairs_malformed_fails_after_max_attempts_with_diagnostics].
+     all_repairs_malformed_fails_after_max_attempts_with_diagnostics,
+     actor_alive_after_repair_failure_runs_next_valid_message].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -225,6 +227,53 @@ all_repairs_malformed_fails_after_max_attempts_with_diagnostics(_Config) ->
     Started = [E || E <- Events,
                     maps:get(event_type, E, undefined) =:= <<"llm.started">>],
     3 = length(Started),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 5: after a bounded repair failure (the Criterion 4 chain to terminal
+%% `failed'), the actor is still alive and accepts a following valid `(reply ...)'
+%% message that runs to a terminal result. The first task drives the all-malformed
+%% repair loop to `failed'; the second send -- a directly-valid Lisp reply proposal
+%% on the same live actor -- runs the full pipeline and reaches `completed' with the
+%% normalized reply as its result.
+actor_alive_after_repair_failure_runs_next_valid_message(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-lisp-repair-5">>,
+             model_config => #{},
+             tool_policy => #{allowed_tools => [echo]},
+             max_repairs => 2,
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+
+    %% First task: every repair call returns malformed source, so the loop fails.
+    BadProposal = <<"(reply (text \"hi\"">>,
+    StillBadProposal = <<"(reply (text \"hi\"">>,
+    RepairLlm = #{directive => proposal,
+                  output => BadProposal,
+                  repair_output => StillBadProposal},
+    FailTaskId = <<"task-lisp-repair-5-fail">>,
+    FailEnvelope = #{type => <<"chat">>,
+                     payload => #{text => <<"answer me">>},
+                     task_id => FailTaskId,
+                     correlation_id => <<"corr-lisp-repair-5-fail">>,
+                     llm => RepairLlm},
+    {ok, FailTaskId} = soma_actor:send(ActorPid, FailEnvelope),
+    ok = wait_for_status(ActorPid, FailTaskId, failed, 100),
+    true = is_process_alive(ActorPid),
+
+    %% Second task: a directly-valid Lisp reply proposal on the same live actor.
+    ValidProposal = <<"(reply (text \"hi\"))">>,
+    ValidLlm = #{directive => proposal, output => ValidProposal},
+    NextTaskId = <<"task-lisp-repair-5-next">>,
+    NextEnvelope = #{type => <<"chat">>,
+                     payload => #{text => <<"answer me">>},
+                     task_id => NextTaskId,
+                     correlation_id => <<"corr-lisp-repair-5-next">>,
+                     llm => ValidLlm},
+    {ok, NextTaskId} = soma_actor:send(ActorPid, NextEnvelope),
+    ok = wait_for_status(ActorPid, NextTaskId, rejected, 100),
+    {ok, NextResult} = soma_actor:get_task_result(ActorPid, NextTaskId),
+    #{kind := reply, text := <<"hi">>} = NextResult,
     true = is_process_alive(ActorPid),
     ok.
 
