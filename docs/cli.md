@@ -30,7 +30,7 @@ cancel, crash isolation) and a trace it can inspect afterward. Soma has both —
 and a daemon is where they pay off.
 
 **Not MCP.** The caller has a shell; `soma run …` / `soma ask …` is enough. A
-plain CLI over a local socket is leaner (no JSON-RPC surface to maintain) and
+plain CLI over a local socket is leaner (no RPC surface to maintain) and
 language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
 
 ## Architecture — a daemon + thin clients over a Unix socket
@@ -39,7 +39,7 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
   Claude Code ─┐
   Codex       ─┤  soma run / ask / trace   (thin client)
   your shell  ─┘            │
-                            ▼  length-prefixed JSON
+                            ▼  length-prefixed s-expr frames
             ┌──────────────────────────────────────┐
             │  $XDG_RUNTIME_DIR/soma.sock (AF_UNIX)  │  one rendezvous path,
             └──────────────────────────────────────┘  filesystem-perm guarded
@@ -64,8 +64,11 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
   path `$XDG_RUNTIME_DIR/soma.sock`, else `/tmp/soma-$UID.sock` (mind the AF_UNIX
   path-length limit, ~104 chars on macOS). **Not** `/run` (needs root; absent on
   macOS, the verified target).
-- **Framing**: length-prefixed JSON (request `{cmd, …}` → response `{status, …}`),
-  so any client speaks it, not just an Erlang one.
+- **Framing**: length-prefixed s-expr frames. The request frame carries the
+  workflow's Lisp s-expr — a `(run …)` form (the daemon parses it with
+  `soma_lfe`); the reply frame carries a rendered `(result …)` s-expr
+  (`soma_lisp:render/1`). No JSON on the wire — the same Lisp the workflows are
+  written in is the wire format.
 - **Access control**: filesystem permissions on the socket path (0600, owner-
   only). Single-user, so that is the whole boundary.
 
@@ -88,14 +91,16 @@ depends on node B (the real LLM provider).
 soma run WORKFLOW [--json] [--trace] [--root DIR] [--timeout-ms N]
 ```
 
-- **WORKFLOW**: a file (or `-` for stdin) — a **step list as JSON**
-  (`[{"id":"s1","tool":"echo","args":{"value":"hi"}}, …]`) or an **LFE workflow**
-  (`.lfe`, compiled via `soma_lfe:compile/2`).
-- Sends a `run` request; the daemon owns a supervised run, waits for the terminal
-  state, returns it. `--root` is your sandbox root for file tools (your own FS).
-- `--json` → a machine object: `{"status":"completed","outputs":{…},
-  "task_id":"…","correlation_id":"…"}` (the `trace` array is added only with
-  `--trace`). Exit `0` completed, non-zero otherwise.
+- **WORKFLOW**: a file (or `-` for stdin) — an **LFE workflow** (a `(run …)`
+  s-expr, compiled via `soma_lfe:compile/2`).
+- The client reads the file's s-expr and sends it as the **`(run …)` request**
+  frame; the daemon parses it with `soma_lfe`, owns a supervised run, waits for
+  the terminal state, and frames back a rendered **`(result …)` reply** s-expr
+  (`soma_lisp:render/1`) which the client prints. `--root` is your sandbox root
+  for file tools (your own FS).
+- The `(result …)` s-expr carries the terminal `status`, the `outputs`, and the
+  `task_id` / `correlation_id` (the trace is added only with `--trace`). Exit `0`
+  completed, non-zero otherwise.
 
 ## `soma ask` — the agent (client; needs node B)
 
@@ -168,8 +173,10 @@ documented now, fixed later, not v1 blockers:
 
 1. **CLI.1 — daemon + Unix socket + `soma run` client.** `soma daemon` (the node +
    a socket listener: accept loop, one handler process per connection, length-
-   prefixed JSON, the term→JSON mapping, cancel-on-disconnect) and a thin `soma
-   run` client. No LLM. *Foundational.* Daemon-lifecycle acceptance items: an
+   prefixed s-expr frames — the `(run …)` request parsed with `soma_lfe`, the
+   `(result …)` reply rendered with `soma_lisp:render/1` — and cancel-on-
+   disconnect) and a thin `soma run` client. No LLM. *Foundational.* Daemon-
+   lifecycle acceptance items: an
    **atomic single-winner socket bind** (concurrent first-calls / auto-start must
    not spawn duplicate daemons) and **stale-socket cleanup** (unlink a leftover
    socket file before bind, so a restart after a crash succeeds).
@@ -185,4 +192,5 @@ documented now, fixed later, not v1 blockers:
   `soma daemon`"? Lean: auto-start (single-user, low risk).
 - **`soma ask` config file** location/format (`~/.soma/config`), key strictly from
   the daemon's env. Lean: a small TOML at `~/.soma/config`.
-- **Input formats for `soma run`**: JSON steps + LFE both (lean) vs JSON first.
+- **Input formats for `soma run`**: an LFE workflow (a `(run …)` s-expr); the
+  same Lisp is the wire and the file format.
