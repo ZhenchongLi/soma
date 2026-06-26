@@ -7,7 +7,7 @@
 %% stringified keys -- exactly the shape this surface needs for plain terms.
 -module(soma_cli_server).
 
--export([encode_response/1]).
+-export([encode_response/1, frame/1, unframe/1]).
 
 %% Encode a Soma result term to JSON bytes. Returns an iolist (the `json'
 %% encoder's native output); callers that need a binary wrap with
@@ -22,3 +22,16 @@ encode_response(Term) when is_tuple(Term), tuple_size(Term) >= 1 ->
     json:encode(#{tag => Tag, detail => Detail});
 encode_response(Term) ->
     json:encode(Term).
+
+%% Prepend a 4-byte big-endian length prefix to a JSON payload, the wire frame
+%% a client reads. `{packet, 4}' produces the same shape in the driver; this is
+%% the pure, documented contract a non-Erlang client reproduces.
+-spec frame(iodata()) -> iolist().
+frame(Payload) ->
+    Bin = iolist_to_binary(Payload),
+    [<<(byte_size(Bin)):32/big>>, Bin].
+
+%% Split the 4-byte big-endian length prefix off a frame, returning the payload.
+-spec unframe(binary()) -> binary().
+unframe(<<Len:32/big, Payload:Len/binary>>) ->
+    Payload.
