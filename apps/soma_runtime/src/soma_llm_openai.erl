@@ -13,8 +13,23 @@
 %% appended; the body is `json:encode/1' of a map carrying `model' and
 %% `messages'.
 build_request(#{base_url := BaseUrl, api_key := ApiKey,
-                model := Model, messages := Messages}) ->
+                model := Model, messages := Messages} = Config) ->
     Url = <<BaseUrl/binary, "/chat/completions">>,
     Headers = [{"Authorization", "Bearer " ++ binary_to_list(ApiKey)}],
-    Body = iolist_to_binary(json:encode(#{model => Model, messages => Messages})),
+    BodyMap0 = #{model => Model, messages => Messages},
+    BodyMap = add_optional_opts(BodyMap0, Config),
+    Body = iolist_to_binary(json:encode(BodyMap)),
     #{url => Url, headers => Headers, body => Body}.
+
+%% Copy `enable_thinking' and `max_tokens' into the body map only when the
+%% caller supplied them, leaving the body without those keys otherwise.
+add_optional_opts(BodyMap, Config) ->
+    lists:foldl(
+      fun(Key, Acc) ->
+              case maps:find(Key, Config) of
+                  {ok, Value} -> Acc#{Key => Value};
+                  error -> Acc
+              end
+      end,
+      BodyMap,
+      [enable_thinking, max_tokens]).
