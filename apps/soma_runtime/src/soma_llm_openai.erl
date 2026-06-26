@@ -36,10 +36,22 @@ add_optional_opts(BodyMap, Config) ->
 
 %% Map a raw HTTP response (status plus body) to a reply proposal. On a 200 it
 %% decodes the body and pulls `choices[0].message.content' as the reply text,
-%% returning `{ok, #{kind => reply, text => Content}}'. The bounded-error path
-%% (non-200, undecodable body, missing fields) is a later cycle.
+%% returning `{ok, #{kind => reply, text => Content}}'. Every other case maps to
+%% a bounded, named `{error, Reason}' -- a non-200 status, a body that is not
+%% valid JSON (`json:decode/1' can throw), and a 200 body that decodes but lacks
+%% the `choices[0].message.content' path all stay inside the function rather than
+%% escaping as a crash. The provider blob is never returned raw.
 parse_response({200, Body}) ->
-    Decoded = json:decode(Body),
-    #{<<"choices">> := [#{<<"message">> := #{<<"content">> := Content}} | _]} =
-        Decoded,
-    {ok, #{kind => reply, text => Content}}.
+    try
+        Decoded = json:decode(Body),
+        #{<<"choices">> :=
+              [#{<<"message">> := #{<<"content">> := Content}} | _]} = Decoded,
+        {ok, #{kind => reply, text => Content}}
+    catch
+        error:{badmatch, _} ->
+            {error, {unexpected_response_shape, missing_content}};
+        _:_ ->
+            {error, {malformed_response_body, undecodable}}
+    end;
+parse_response({Status, _Body}) ->
+    {error, {http_status, Status}}.
