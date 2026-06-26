@@ -113,7 +113,7 @@ mock_model_config_completes_llm_task_same_result_and_events(_Config) ->
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
     %% Same task result as v0.5: the normalized reply proposal.
     {ok, Result} = soma_actor:get_task_result(ActorPid, TaskId),
-    #{kind := reply, text := <<"WRONG EXPECTED REPLY">>} = Result,
+    #{kind := reply, text := <<"here is your answer">>} = Result,
     %% Same events as v0.5: the mock proposal trail, no run started.
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
