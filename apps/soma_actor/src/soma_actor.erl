@@ -12,6 +12,7 @@
 -export([get_task_status/2]).
 -export([get_task_result/2]).
 -export([cancel/2]).
+-export([build_call_opts/2]).
 -export([callback_mode/0, init/1]).
 -export([idle/3]).
 
@@ -816,6 +817,18 @@ start_owned_run(Steps, TaskId, CorrelationId, Data) ->
 %% The actor mints an `llm_call_id', monitors the worker, tracks llm_call_id =>
 %% task_id, records the task running, and emits `llm.started' carrying the worker
 %% pid. With no `llm' field this is a no-op.
+%% @doc Pure builder: turn the actor's `model_config' plus the incoming envelope
+%% into the `llm' opts the worker runs. A real-provider config
+%% (`#{provider => openai_compat, base_url, model}') becomes opts carrying
+%% `provider => openai_compat' together with that `base_url' and `model' -- the
+%% keys `soma_llm_call:perform_call/1' routes on to reach `soma_llm_openai'.
+build_call_opts(#{provider := openai_compat,
+                  base_url := BaseUrl,
+                  model := Model} = _ModelConfig, _Envelope) ->
+    #{provider => openai_compat,
+      base_url => BaseUrl,
+      model => Model}.
+
 maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
     case maps:get(llm, Envelope, undefined) of
         Llm when is_map(Llm) ->
