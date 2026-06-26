@@ -318,7 +318,7 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
             %% raw output) becomes the task result so get_task_result/2 returns it.
             %% Output that is not a proposal candidate is stored verbatim, keeping
             %% the v0.5.1 opaque-output contract.
-            case proposal_result(Output) of
+            case proposal_result(Output, maps:get(llm_directive, Task, undefined)) of
                 {proposal, Proposal} ->
                     Tasks0 = maps:put(TaskId, Task#{result => Proposal},
                                       Data0#data.tasks),
@@ -831,7 +831,8 @@ start_llm_call(Llm, TaskId, CorrelationId, Data) ->
     Task = maps:get(TaskId, Data#data.tasks),
     Task1 = Task#{status => running, llm_call_id => LlmCallId,
                   llm_call_pid => WorkerPid, llm_call_mref => MRef,
-                  llm_timer_ref => TimerRef},
+                  llm_timer_ref => TimerRef,
+                  llm_directive => maps:get(directive, Llm, undefined)},
     Tasks = maps:put(TaskId, Task1, Data#data.tasks),
     %% The count increments only when a call actually starts, so it tracks the
     %% task's started-call total against the max_llm_calls cap.
@@ -850,7 +851,7 @@ start_llm_call(Llm, TaskId, CorrelationId, Data) ->
 %% caller emits `proposal.created'. Any other output is opaque (the v0.5.1
 %% contract: a `success' directive's output is stored verbatim) and tagged
 %% `{opaque, _}' so no proposal event fires.
-proposal_result(Output) when is_map(Output) ->
+proposal_result(Output, _Directive) when is_map(Output) ->
     case maps:is_key(kind, Output) of
         true ->
             case soma_proposal:normalize(Output) of
@@ -860,7 +861,24 @@ proposal_result(Output) when is_map(Output) ->
         false ->
             {opaque, Output}
     end;
-proposal_result(Output) ->
+%% A `proposal' directive's output that is a binary/string is a Lisp s-expr
+%% proposal: parse it at the actor edge through soma_lfe:compile/2 into the same
+%% `#{kind => ...}' map the raw-map path feeds to soma_proposal:normalize/1, then
+%% run it through the same normalize path. A parse error tags
+%% `{invalid_proposal, _}', reusing the failed-normalize handling. Gated on the
+%% `proposal' directive because the v0.5 `success' directive also returns a
+%% binary `output' that must stay opaque -- only a proposal is parsed as Lisp.
+proposal_result(Output, proposal) when is_binary(Output); is_list(Output) ->
+    case soma_lfe:compile(Output, #{}) of
+        {ok, ProposalMap} ->
+            case soma_proposal:normalize(ProposalMap) of
+                {ok, Proposal} -> {proposal, Proposal};
+                {error, Diagnostics} -> {invalid_proposal, Diagnostics}
+            end;
+        {error, Diagnostics} ->
+            {invalid_proposal, Diagnostics}
+    end;
+proposal_result(Output, _Directive) ->
     {opaque, Output}.
 
 %% On a normal terminal message (run_completed | run_failed | run_timeout |
