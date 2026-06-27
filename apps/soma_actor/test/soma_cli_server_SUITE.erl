@@ -515,7 +515,7 @@ test_status_unknown_id_reports_unknown_and_server_survives(Config) ->
     %% The reply is a single `(status ...)' s-expr whose `(state ...)' sub-form is
     %% `unknown' -- the empty chain maps to the unknown state, not a crash.
     match = re:run(StatusReply, "^\\(status ", [{capture, none}]),
-    match = re:run(StatusReply, "\\(state completed\\)", [{capture, none}]),
+    match = re:run(StatusReply, "\\(state unknown\\)", [{capture, none}]),
     %% The server stayed up: a fresh connection still gets a completed echo result.
     {ok, C2} = connect(Path),
     Echo = <<"(run (step s1 echo (args (value \"ok\"))))">>,
