@@ -24,6 +24,7 @@
 -export([test_status_unknown_id_reports_unknown_and_server_survives/1]).
 -export([test_detached_run_replies_accepted_before_sleep_terminal/1]).
 -export([test_detached_run_completes_after_client_close_registry_completed/1]).
+-export([test_status_running_detached_task_reads_registry/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -46,7 +47,8 @@ all() ->
      test_status_after_run_reports_state_completed,
      test_status_unknown_id_reports_unknown_and_server_survives,
      test_detached_run_completes_after_client_close_registry_completed,
-     test_detached_run_replies_accepted_before_sleep_terminal].
+     test_detached_run_replies_accepted_before_sleep_terminal,
+     test_status_running_detached_task_reads_registry].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -576,6 +578,37 @@ test_detached_run_completes_after_client_close_registry_completed(Config) ->
     completed = wait_for_registry_status(TaskId, completed, 100),
     {ok, Task} = soma_cli_task_registry:lookup(TaskId),
     completed = maps:get(status, Task),
+    ok.
+
+%% Criterion #8 (CLI.4): while a detached run is still executing, `(status
+%% "<task-id>")' must report `(state running)' from the daemon live-task registry.
+%% The event store has no terminal event for the task yet, so the older
+%% event-store-only status path would honestly derive `unknown'. The proof drives
+%% a real detached sleep over the socket, reads the accepted task id, confirms the
+%% registry entry is running and terminal events are absent, then asks status on a
+%% fresh connection.
+test_status_running_detached_task_reads_registry(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+    {ok, C1} = connect(Path),
+    Request = <<"(run (detach) (step s1 sleep (args (ms 1000))))">>,
+    ok = gen_tcp:send(C1, Request),
+    {ok, Reply} = gen_tcp:recv(C1, 0, 1000),
+    ok = gen_tcp:close(C1),
+    match = re:run(Reply, "^\\(accepted ", [{capture, none}]),
+    {match, [TaskId]} =
+        re:run(Reply, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    running = wait_for_registry_status(TaskId, running, 100),
+    [] = terminal_events_for_task(StorePid, TaskId),
+    {ok, C2} = connect(Path),
+    StatusReq = <<"(status \"", TaskId/binary, "\")">>,
+    ok = gen_tcp:send(C2, StatusReq),
+    {ok, StatusReply} = gen_tcp:recv(C2, 0, 1000),
+    ok = gen_tcp:close(C2),
+    match = re:run(StatusReply, "^\\(status ", [{capture, none}]),
+    match = re:run(StatusReply, "\\(state running\\)", [{capture, none}]),
     ok.
 
 daemon_task_registry_pid() ->
