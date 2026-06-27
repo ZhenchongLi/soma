@@ -43,7 +43,7 @@ init(Opts) ->
                  event_store = maps:get(event_store, Opts, undefined),
                  steps = maps:get(steps, Opts, []),
                  pending = maps:get(steps, Opts, [])},
-    emit(Data, <<"run.started">>, #{}),
+    emit(Data, <<"run.started">>, #{payload => #{steps => Data#data.steps}}),
     {ok, executing, Data, [{next_event, internal, next_step}]}.
 
 %% Drive the next step, or finish the run when none remain.
