@@ -6,11 +6,13 @@
 -export([test_dispatch_run_file_completed_exit_zero/1]).
 -export([test_dispatch_run_dash_reads_stdin/1]).
 -export([test_dispatch_ask_completed_exit_zero/1]).
+-export([test_dispatch_status_read_exit_zero/1]).
 
 all() ->
     [test_dispatch_run_file_completed_exit_zero,
      test_dispatch_run_dash_reads_stdin,
-     test_dispatch_ask_completed_exit_zero].
+     test_dispatch_ask_completed_exit_zero,
+     test_dispatch_status_read_exit_zero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -162,6 +164,54 @@ test_dispatch_ask_completed_exit_zero(Config) ->
     match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Printed, "the answer", [{capture, none}]),
     %% A completed ask returns exit code 0 (mirroring `soma_cli:ask/1').
+    0 = Exit,
+
+    %% Process survival: the server still serves a subsequent request after the
+    %% dispatch returned.
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(run (step s2 echo (args (value \"again\"))))">>),
+    {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
+
+%% Criterion 4 (CLI.5): `soma_cli_main:dispatch(["status", TaskId])' drives
+%% `soma_cli:status/1' on the resolved socket and returns 0 on a successful read.
+%% The test seeds a real task first by dispatching a one-step echo `run' through
+%% the daemon and reading its task id off the printed `(result ...)' reply's
+%% `(task-id ...)' sub-form; it then dispatches `["status", TaskId]' against the
+%% same server. The dispatcher resolves the socket itself (no `--socket'
+%% override). The printed reply is the `(status ...)' s-expr carrying a
+%% `(state ...)', and the exit code mirrors `soma_cli:status/1' (0 for a
+%% successful read, not gated on `(status completed)'). Process survival is
+%% asserted: the same server still serves a fresh request after dispatch returns.
+test_dispatch_status_read_exit_zero(Config) ->
+    Path = ?config(socket_path, Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    %% Seed a real task: dispatch a one-step echo run and read its task id off the
+    %% `(result ...)' reply the dispatcher printed.
+    File = filename:join(?config(priv_dir, Config), "status_dispatch_seed.lfe"),
+    ok = file:write_file(File, <<"(run (step s1 echo (args (value \"hi\"))))">>),
+    ct:capture_start(),
+    0 = soma_cli_main:dispatch(["run", File]),
+    ct:capture_stop(),
+    RunPrinted = iolist_to_binary(ct:capture_get()),
+    {match, [TaskId]} =
+        re:run(RunPrinted, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, list}]),
+
+    %% Now dispatch the status of that task id against the same server.
+    ct:capture_start(),
+    Exit = soma_cli_main:dispatch(["status", TaskId]),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+
+    %% The printed reply must be the `(status ...)' s-expr carrying a `(state ...)',
+    %% proving the dispatcher resolved the socket and drove the read through the
+    %% daemon.
+    match = re:run(Printed, "^\\(status ", [{capture, none}]),
+    match = re:run(Printed, "\\(state ", [{capture, none}]),
+    %% A successful read returns exit code 0 (mirroring `soma_cli:status/1').
     0 = Exit,
 
     %% Process survival: the server still serves a subsequent request after the
