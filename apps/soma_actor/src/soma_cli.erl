@@ -1,7 +1,7 @@
 %% @doc CLI.1b thin client. `run/1' resolves a workflow source, sends it to a
 %% `soma_cli_server' over a local Unix socket, prints the `(result ...)' reply,
-%% and returns an exit code. The client does not parse Lisp -- it ships the
-%% workflow source through unchanged; the daemon is the parser.
+%% and returns an exit code. The client does not parse Lisp; only the CLI.4
+%% detach flag mutates the request text to carry a `(detach)' marker.
 -module(soma_cli).
 
 -export([run/1, ask/1, trace/1, status/1, cancel/1, daemon/1]).
@@ -11,8 +11,8 @@
 %% bytes, read the framed `(result ...)' reply, print it to stdout, and return an
 %% exit code: 0 when the reply's status sub-form is `completed', non-zero otherwise.
 -spec run(map()) -> non_neg_integer().
-run(#{file := File, socket := Path}) ->
-    Source = read_source(File),
+run(#{file := File, socket := Path} = Args) ->
+    Source = run_source(read_source(File), Args),
     {ok, Sock} = gen_tcp:connect({local, Path}, 0,
                                  [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:send(Sock, Source),
@@ -28,8 +28,8 @@ run(#{file := File, socket := Path}) ->
 %% (or a real provider) lives at the daemon's `model_config'; the client never
 %% sends a model.
 -spec ask(map()) -> non_neg_integer().
-ask(#{intent := Intent, socket := Path}) ->
-    Source = ask_source(Intent),
+ask(#{intent := Intent, socket := Path} = Args) ->
+    Source = ask_source(Intent, Args),
     {ok, Sock} = gen_tcp:connect({local, Path}, 0,
                                  [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:send(Sock, Source),
@@ -42,6 +42,11 @@ ask(#{intent := Intent, socket := Path}) ->
 %% quoted Lisp string, so it is the literal bytes between the quotes.
 ask_source(Intent) ->
     iolist_to_binary(["(ask (intent \"", Intent, "\"))"]).
+
+ask_source(Intent, #{detach := true}) ->
+    iolist_to_binary(["(ask (intent \"", Intent, "\") (detach))"]);
+ask_source(Intent, _Args) ->
+    ask_source(Intent).
 
 %% Build the `(trace "<corr>")' read request client-side -- the daemon is the only
 %% parser -- then drive the same connect / frame+send / read / print path as
@@ -130,13 +135,28 @@ socket_path(_Args) ->
     end.
 
 %% Resolve the workflow bytes from the path arg: `-' reads stdin (the process
-%% group leader) to EOF, any other value reads that file. The bytes are shipped to
-%% the daemon unchanged -- the client does not parse the workflow.
+%% group leader) to EOF, any other value reads that file. Detach handling is the
+%% only client-side source rewrite; parsing and validation remain in the daemon.
 read_source("-") ->
     read_stdin([]);
 read_source(File) ->
     {ok, Source} = file:read_file(File),
     Source.
+
+run_source(Source, #{detach := true}) ->
+    add_run_detach(Source);
+run_source(Source, _Args) ->
+    Source.
+
+add_run_detach(Source) ->
+    case re:run(Source, "^(\\s*\\(run)(\\s|\\))", [{capture, [1], index}]) of
+        {match, [{Start, Len}]} ->
+            Split = Start + Len,
+            <<Prefix:Split/binary, Rest/binary>> = Source,
+            <<Prefix/binary, " (detach)", Rest/binary>>;
+        nomatch ->
+            Source
+    end.
 
 %% Read stdin to EOF via the IO protocol on the group leader, accumulating each
 %% chunk; return the concatenated bytes as a binary.
