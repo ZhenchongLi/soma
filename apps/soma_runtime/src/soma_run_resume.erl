@@ -7,9 +7,11 @@ reconstruct(StorePid, RunId) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     case journaled_run(Events) of
         {ok, Steps, RunOptions} ->
+            Outputs = committed_outputs(Events),
             {ok, #{steps => Steps,
                    run_options => RunOptions,
-                   outputs => committed_outputs(Events)}};
+                   outputs => Outputs,
+                   next_step => first_uncommitted_step(Steps, Outputs)}};
         error ->
             {error, no_run_started_journal}
     end.
@@ -33,3 +35,11 @@ committed_output(#{event_type := <<"step.succeeded">>,
     Acc#{StepId => Output};
 committed_output(_Event, Acc) ->
     Acc.
+
+first_uncommitted_step([Step = #{id := StepId} | Rest], Outputs) ->
+    case maps:is_key(StepId, Outputs) of
+        true -> first_uncommitted_step(Rest, Outputs);
+        false -> Step
+    end;
+first_uncommitted_step([], _Outputs) ->
+    undefined.
