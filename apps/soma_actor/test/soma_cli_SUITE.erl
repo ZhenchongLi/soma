@@ -8,13 +8,15 @@
 -export([test_run_reads_workflow_from_stdin_dash/1]).
 -export([test_daemon_boots_listener_client_connects/1]).
 -export([test_ask_prints_reply_result_exit_zero/1]).
+-export([test_trace_prints_reply_exit_zero/1]).
 
 all() ->
     [test_run_echo_file_prints_result_exit_zero,
      test_run_failed_workflow_exit_nonzero,
      test_run_reads_workflow_from_stdin_dash,
      test_daemon_boots_listener_client_connects,
-     test_ask_prints_reply_result_exit_zero].
+     test_ask_prints_reply_result_exit_zero,
+     test_trace_prints_reply_exit_zero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -155,6 +157,39 @@ test_ask_prints_reply_result_exit_zero(Config) ->
     match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Printed, "the answer", [{capture, none}]),
     %% A completed ask returns exit code 0.
+    0 = Exit.
+
+%% Criterion 7 (CLI.3): `soma_cli:trace/1', pointed at a `soma_cli_server' on a temp
+%% socket, prints the `(trace ...)' reply and returns exit code 0. The test seeds a
+%% correlation chain first by running a one-step echo `(run ...)' through
+%% `soma_cli:run/1' and reading its correlation id off the printed `(result ...)'
+%% reply; it then calls `soma_cli:trace/1' with that correlation id against the same
+%% server. The client builds `(trace "<corr>")' source-side, connects to the temp
+%% socket, frames + sends the bytes, reads the framed `(trace ...)' reply, prints it,
+%% and returns exit 0 -- a successful read is not gated on `(status completed)'.
+test_trace_prints_reply_exit_zero(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    %% Seed a real correlation chain: run a one-step echo and read its correlation
+    %% id off the `(result ...)' reply `run/1' printed.
+    File = filename:join(?config(priv_dir, Config), "trace_seed.lfe"),
+    ok = file:write_file(File, <<"(run (step s1 echo (args (value \"hi\"))))">>),
+    ct:capture_start(),
+    0 = soma_cli:run(#{file => File, socket => Path}),
+    ct:capture_stop(),
+    RunPrinted = iolist_to_binary(ct:capture_get()),
+    {match, [Corr]} =
+        re:run(RunPrinted, "\\(correlation-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    %% Now trace that correlation id against the same server.
+    ct:capture_start(),
+    Exit = soma_cli:trace(#{correlation_id => Corr, socket => Path}),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+    %% The printed reply must be the `(trace ...)' s-expr carrying event sub-forms.
+    match = re:run(Printed, "^\\(trace ", [{capture, none}]),
+    match = re:run(Printed, "\\(event ", [{capture, none}]),
+    %% A successful read returns exit code 0.
     0 = Exit.
 
 %% A minimal IO server usable as a group leader: it answers `get_chars' / `get_line'
