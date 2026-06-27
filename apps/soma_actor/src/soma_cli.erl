@@ -4,7 +4,7 @@
 %% workflow source through unchanged; the daemon is the parser.
 -module(soma_cli).
 
--export([run/1, ask/1, trace/1, status/1, daemon/1]).
+-export([run/1, ask/1, trace/1, status/1, cancel/1, daemon/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -84,6 +84,25 @@ status(#{task_id := TaskId, socket := Path}) ->
 %% quotes.
 status_source(TaskId) ->
     iolist_to_binary(["(status \"", TaskId, "\")"]).
+
+%% Build the `(cancel "<task>")' request client-side -- the daemon is the only
+%% parser -- then drive the same connect / frame+send / read / print path as the
+%% other CLI commands. A successful daemon reply returns exit 0.
+-spec cancel(map()) -> non_neg_integer().
+cancel(#{task_id := TaskId, socket := Path}) ->
+    Source = cancel_source(TaskId),
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, Source),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    io:format("~s~n", [Reply]),
+    0.
+
+%% Wrap the task id in a `(cancel "...")' s-expr -- the literal bytes between the
+%% quotes.
+cancel_source(TaskId) ->
+    iolist_to_binary(["(cancel \"", TaskId, "\")"]).
 
 %% Boot the daemon: start the runtime, then a `soma_cli_server' listener on a
 %% resolved socket path. A test-supplied `socket' override points both ends at a
