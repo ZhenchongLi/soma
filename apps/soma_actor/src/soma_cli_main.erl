@@ -17,10 +17,17 @@
 %% the socket and drives `soma_cli:trace/1', returning its exit code (0 on a
 %% successful read -- not gated on `(status completed)'). `cancel TaskId' resolves
 %% the socket and drives `soma_cli:cancel/1', returning its exit code (0 on a
-%% successful cancel).
+%% successful cancel). A trailing `--detach' after `run File' or `ask Intent'
+%% sets `detach => true' in the dispatched args, so the emitted request carries the
+%% `(detach)' marker.
 -spec dispatch([string()]) -> integer().
+dispatch(["run", File, "--detach"]) ->
+    soma_cli:run(#{file => File, socket => resolve_socket(), detach => true});
 dispatch(["run", File]) ->
     soma_cli:run(#{file => File, socket => resolve_socket()});
+dispatch(["ask", Intent, "--detach"]) ->
+    soma_cli:ask(#{intent => Intent, socket => resolve_socket(),
+                   detach => true});
 dispatch(["ask", Intent]) ->
     soma_cli:ask(#{intent => Intent, socket => resolve_socket()});
 dispatch(["status", TaskId]) ->
