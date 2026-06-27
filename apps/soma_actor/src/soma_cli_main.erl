@@ -21,21 +21,45 @@
 %% sets `detach => true' in the dispatched args, so the emitted request carries the
 %% `(detach)' marker.
 -spec dispatch([string()]) -> integer().
-dispatch(["run", File, "--detach"]) ->
-    soma_cli:run(#{file => File, socket => resolve_socket(), detach => true});
-dispatch(["run", File]) ->
-    soma_cli:run(#{file => File, socket => resolve_socket()});
-dispatch(["ask", Intent, "--detach"]) ->
-    soma_cli:ask(#{intent => Intent, socket => resolve_socket(),
-                   detach => true});
-dispatch(["ask", Intent]) ->
-    soma_cli:ask(#{intent => Intent, socket => resolve_socket()});
-dispatch(["status", TaskId]) ->
-    soma_cli:status(#{task_id => TaskId, socket => resolve_socket()});
-dispatch(["trace", CorrId]) ->
-    soma_cli:trace(#{correlation_id => CorrId, socket => resolve_socket()});
-dispatch(["cancel", TaskId]) ->
-    soma_cli:cancel(#{task_id => TaskId, socket => resolve_socket()}).
+dispatch(["run", File | Flags]) ->
+    Opts = parse_flags(Flags),
+    soma_cli:run(maps:merge(#{file => File, socket => socket(Opts)},
+                            detach_opt(Opts)));
+dispatch(["ask", Intent | Flags]) ->
+    Opts = parse_flags(Flags),
+    soma_cli:ask(maps:merge(#{intent => Intent, socket => socket(Opts)},
+                            detach_opt(Opts)));
+dispatch(["status", TaskId | Flags]) ->
+    Opts = parse_flags(Flags),
+    soma_cli:status(#{task_id => TaskId, socket => socket(Opts)});
+dispatch(["trace", CorrId | Flags]) ->
+    Opts = parse_flags(Flags),
+    soma_cli:trace(#{correlation_id => CorrId, socket => socket(Opts)});
+dispatch(["cancel", TaskId | Flags]) ->
+    Opts = parse_flags(Flags),
+    soma_cli:cancel(#{task_id => TaskId, socket => socket(Opts)}).
+
+%% Parse the trailing flags after a subcommand's positional: `--detach' (a marker)
+%% and `--socket <path>' (the resolver override). Returns an options map.
+parse_flags([]) ->
+    #{};
+parse_flags(["--detach" | Rest]) ->
+    (parse_flags(Rest))#{detach => true};
+parse_flags(["--socket", Path | Rest]) ->
+    (parse_flags(Rest))#{socket => Path}.
+
+%% The socket the subcommand connects to: a `--socket' override wins, else the
+%% resolved path.
+socket(#{socket := Path}) ->
+    Path;
+socket(_Opts) ->
+    resolve_socket().
+
+%% The `detach => true' fragment to merge in when `--detach' was given, else empty.
+detach_opt(#{detach := true}) ->
+    #{detach => true};
+detach_opt(_Opts) ->
+    #{}.
 
 %% Resolve the listener socket path: `$XDG_RUNTIME_DIR/soma.sock' when set. The
 %% full per-user fallback and the `--socket' override land in later criteria.
