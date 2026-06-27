@@ -11,14 +11,17 @@ built on `main`:
 - `apps/soma_tools`: tool behaviour, built-in tools, manifests, registry, and
   the one-shot CLI adapter support files.
 - `apps/soma_runtime`: session, run, supervision, tool-call worker, timeout,
-  cancellation, failure isolation, and event emission.
-- `apps/soma_lfe`: compile-only Lisp-flavored DSL layer.
+  cancellation, failure isolation, event emission, LLM-call worker, and
+  OpenAI-compatible provider support.
+- `apps/soma_actor`: actor entity, proposal/policy/budget logic, actor-to-actor
+  messages, and the local CLI server/client modules.
+- `apps/soma_lfe`: compile-only Lisp-flavored DSL and edge-form parser.
 
 `README.md` is the authoritative high-level spec. Read it before changing
 runtime behaviour. The docs under `docs/contracts/` map each behavioural
 guarantee to the tests that prove it.
 
-Current README status: EUnit 95 and Common Test 70 green on Erlang/OTP 29. A
+Current README status: EUnit 226 and Common Test 263 green on Erlang/OTP 29. A
 self-contained macOS arm64 release is built and verified. Linux x86_64 and
 Linux arm64 release artifacts remain the main packaging task.
 
@@ -165,10 +168,17 @@ include:
 - session can start another run afterward
 
 v0.2 extends that contract for manifests and CLI tools. v0.3 extends it for the
-compile-only LFE DSL boundary. Keep docs and tests aligned:
+compile-only LFE DSL boundary. v0.4-v0.6 cover actor, decision, trace, and
+persistence layers; the L.* and CLI contracts cover Lisp edge forms and the local
+Unix-socket client/server. Keep docs and tests aligned:
 
 - `docs/contracts/v0.2-test-contract.md`
 - `docs/contracts/v0.3-test-contract.md`
+- `docs/contracts/v0.4-test-contract.md`
+- `docs/contracts/v0.5-test-contract.md`
+- `docs/contracts/v0.6-test-contract.md`
+- `docs/contracts/L.1-test-contract.md` through `docs/contracts/L.5-test-contract.md`
+- `docs/contracts/cli-1b-test-contract.md` through `docs/contracts/cli-3-test-contract.md`
 
 ## Build Commands
 
@@ -199,16 +209,23 @@ In scope for the current core:
 - normalized failures
 - in-memory event log
 - compile-only LFE DSL
+- `soma_actor` message/task layer
+- mock-gated LLM decision layer
+- OpenAI-compatible provider path
+- Lisp message/proposal/trace/repair edge forms
+- local Unix-socket CLI server/client modules
 - self-contained releases
 
 Out of scope for the current core unless explicitly requested:
 
 - MCP
-- real LLM providers
-- LLM planner
+- structured real-model planner that emits tool-running proposals
+- effect-aware policy gate
 - DAG parallelism
 - distributed Erlang
 - persistent run resume
+- packaged external `soma run` / `soma ask` command separate from the relx node
+  control script
 
 Future layers should compile down to the canonical step-list contract instead of
 changing the runtime's execution semantics.

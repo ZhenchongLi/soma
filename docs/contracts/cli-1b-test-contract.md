@@ -17,7 +17,7 @@ malformed request replies a defined `(result (status error) (error ...))` rather
 than crashing the handler; the server survives both failed runs and malformed
 requests and answers the next connection. `soma_cli:run/1` reads a `.lfe` file or
 stdin (`-`); `soma_cli:daemon/1` boots the runtime and the listener on a resolved
-socket path. See [../../design-110.md](../../design-110.md).
+socket path.
 
 ## Proving suites and modules
 

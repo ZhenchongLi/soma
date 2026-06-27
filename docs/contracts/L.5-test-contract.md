@@ -26,8 +26,7 @@ against `max_llm_calls`, so it is gated by both `max_repairs` and the existing
 budget. A repaired form that re-parses successfully emits `proposal.repaired`
 carrying the task's `task_id` and `correlation_id`. The mock supplies the
 repaired s-expr through a `repair_output` field on the malformed directive's
-`llm` map; the slice is mock-only — no real provider, no network socket. See
-[../../design-117.md](../../design-117.md) for the full design.
+`llm` map; the slice is mock-only — no real provider, no network socket.
 
 ## Proving suites
 
@@ -78,7 +77,6 @@ or network socket.
 
 ## References
 
-- [../../design-117.md](../../design-117.md) — L.5 design: acceptance criteria → tests
 - [L.3-test-contract.md](L.3-test-contract.md) — the Lisp-proposal slice the
   repair loop extends
 - [v0.5-test-contract.md](v0.5-test-contract.md) — the decision loop a repaired

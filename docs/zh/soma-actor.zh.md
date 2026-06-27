@@ -1,12 +1,16 @@
 # `soma_actor` 设计
 
-> **构建状态（v0.4）：** 本文末尾"最小切片"那一段已经**实现并验证**——`soma_actor`
-> 作为 `gen_statem` 起来、收信封（`send`/`ask`）、建任务、按固定规则跑 `soma_run`、
-> 出结果或在失败/超时/取消时存活，`by_correlation/2` 串起整条链。测试契约里 P1–P11
-> 和 P15 已绿（见 [`../contracts/v0.4-test-contract.md`](../contracts/v0.4-test-contract.md)）。
-> 本文其余部分——LLM call、decision frame、policy gate、budget、actor 间通信、
-> P12–P14——是 v0.5 及以后的设计蓝图，**尚未实现**。可运行示例见
-> `examples/soma_actor_demo.erl`，API 见 [`../usage.md`](../usage.md)。
+> **构建状态：** v0.4 的 actor 最小切片已经实现并验证：`soma_actor` 作为
+> `gen_statem` 起来、收信封（`send`/`ask`）、建任务、跑自己拥有的 `soma_run`、
+> 出结果或在失败/超时/取消时存活，`by_correlation/2` 串起整条链。v0.5 又实现了
+> LLM call worker、proposal schema、policy gate、budget 和 actor-to-actor message；
+> v0.6 让事件流可读并可选持久化。测试契约见
+> [`../contracts/v0.4-test-contract.md`](../contracts/v0.4-test-contract.md)、
+> [`../contracts/v0.5-test-contract.md`](../contracts/v0.5-test-contract.md) 和
+> [`../contracts/v0.6-test-contract.md`](../contracts/v0.6-test-contract.md)。当前测试门禁
+> 使用 mock LLM；真实 OpenAI-compatible provider 已经通过 `model_config` 接入，live 调用
+> 是 opt-in。可运行示例见 `examples/soma_actor_demo.erl`，API 见
+> [`../usage.md`](../usage.md)。
 
 本文是 `soma_actor` 的完整设计说明。它不替代已经实现的执行内核（session、run、tool call、manifest、CLI adapter、LFE DSL），而是说明这个执行内核在最终 agent runtime 里的位置，以及 `soma_actor` 这一层如何在它之上构建。
 
@@ -535,7 +539,9 @@ soma_actor:get_task_result(ActorPid, TaskId) ->
 11. support cancel task -> cancel active run
 ```
 
-初期用 deterministic mock proposal worker 证明 actor loop，再加 `soma_llm_call`、structured proposal schema、policy gate。
+历史上先用 deterministic mock proposal worker 证明 actor loop；现在
+`soma_llm_call`、structured proposal schema、policy gate、budget 和 actor-to-actor
+message 都已经落地。mock 仍是测试门禁默认路径，真实 provider 是配置开启的 opt-in 路径。
 
 ## Test Contract
 

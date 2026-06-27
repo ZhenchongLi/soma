@@ -20,6 +20,13 @@ The release boots the runtime core — `soma_runtime` and its supervision tree.
 `soma_actor` (the v0.4 agent-entity layer) is bundled too: it ships in the
 release and the embedding application starts actors on top of the runtime.
 
+The generated `bin/soma` script is relx's OTP release control script. Commands
+such as `console`, `foreground`, `daemon`, `status`, and `stop` manage the BEAM
+node itself. They are distinct from the task-client API described in
+[`cli.md`](cli.md), which currently exists as Erlang modules (`soma_cli` /
+`soma_cli_server`) and is not yet packaged as an external `soma run` or
+`soma ask` command.
+
 The release is built per host architecture: building on macOS arm64 yields a
 macOS arm64 artifact, building on Linux x86_64 yields a Linux x86_64 artifact,
 and so on. The `prod` profile in `rebar.config` (`dev_mode=false`,

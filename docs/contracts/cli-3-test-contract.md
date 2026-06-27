@@ -27,8 +27,7 @@ unknown)` without crashing the handler. The renderer also gains a `(task-id …)
 sub-form in `(result …)` (`soma_lisp:result_pairs/1`) so a `soma run` reply
 carries the task id a client feeds back into `soma status`. Both read handlers
 are read-only against the event store — no `soma_run`, no actor. The gate uses
-mock directives only — no real provider, no non-local socket. See
-[../../design-124.md](../../design-124.md).
+mock directives only — no real provider, no non-local socket.
 
 ## Proving suites and modules
 

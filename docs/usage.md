@@ -312,11 +312,12 @@ actor-to-actor messages — is documented in "Agent decision layer (v0.5)" below
 
 `event_store` is the pid the actor — and every run it starts — emits into; pass
 a store you can query. With no `event_store` the actor still runs but emits
-nothing. (`soma_run_sup` must be alive, so start `soma_runtime` too.)
+nothing. `application:ensure_all_started(soma_actor)` starts the runtime
+dependencies (`soma_runtime`, `soma_run_sup`, and the event store) first.
 
 ### The message envelope
 
-Work enters only through the mailbox, as an envelope map:
+Work enters only through the mailbox. The native form is an envelope map:
 
 ```erlang
 #{
@@ -336,6 +337,11 @@ with `{error, Reason}` before any run starts) and then starts a `soma_run`;
 absent → the task is accepted
 (`status` stays `accepted`) but no run starts. `StepMap` is exactly the step
 format documented above.
+
+`send/2` and `ask/3` also accept a Lisp string or binary. The wrapper compiles it
+with `soma_lfe:compile/2`; a `(msg ...)` form becomes the same envelope map above,
+and malformed Lisp returns `{error, Diagnostics}` without touching the actor
+mailbox. Map envelopes keep the original path unchanged.
 
 ### send/2 — fire and get a task id
 
@@ -464,9 +470,11 @@ v0.5 adds the agent's decision step in front of execution: instead of an envelop
 that already names `steps`, you send an envelope that carries an `llm` directive;
 the actor runs a call, gets back a **proposal**, runs the proposal through a
 **policy** gate, and only then executes — all under one `correlation_id`, all
-recorded as events. Everything here is driven by a **mock LLM**: there is no real
-provider yet. The mock is directive-driven, so a test (or a shell session) decides
-exactly what the "model" returns.
+recorded as events. The test gate drives this path with a directive-based mock
+LLM, so tests decide exactly what the "model" returns and never open a provider
+socket. The same worker seam also supports an opt-in real provider when the actor
+is started with `model_config => #{provider => openai_compat, ...}`; see
+"Configuring a real LLM provider" below.
 
 The whole layer is data-then-execute, mirroring the rest of the runtime: an `llm`
 call returns opaque output or a raw proposal; `soma_proposal:normalize/1` turns a
@@ -495,8 +503,9 @@ The `llm` field is a directive map read by the mock worker `soma_llm_call`:
 }
 ```
 
-The `directive` selects mock behaviour (this is the single seam
-`soma_llm_call:perform_call/1` where a real provider will later slot in):
+The `directive` selects mock behaviour. The same
+`soma_llm_call:perform_call/1` function routes real-provider opts when the actor
+model config selects `openai_compat`:
 
 | `directive` | What the mock does |
 |---|---|
@@ -877,6 +886,29 @@ SOMA_LLM_API_KEY=sk-... rebar3 shell
 1> soma_llm_smoke:run().
 %% reply proposal: {ok, #{kind => reply, text => <<"Hello!">>}}
 ```
+
+## Local CLI server/client modules
+
+The task CLI path is implemented as Erlang modules today:
+
+```erlang
+{ok, SocketPath} = soma_cli:daemon(#{socket => "/tmp/soma-doc.sock"}).
+soma_cli:run(#{file => "/path/to/flow.lfe", socket => SocketPath}).
+soma_cli:ask(#{intent => "summarize this", socket => SocketPath}).
+soma_cli:status(#{task_id => <<"task-1">>, socket => SocketPath}).
+soma_cli:trace(#{correlation_id => <<"corr-1">>, socket => SocketPath}).
+soma_cli:cancel(#{task_id => <<"task-1">>, socket => SocketPath}).
+```
+
+The wire is length-prefixed Lisp s-expressions: `(run ...)`, `(ask ...)`,
+`(status ...)`, `(trace ...)`, and `(cancel ...)` requests, with `(result ...)`,
+`(accepted ...)`, `(status ...)`, or `(trace ...)` replies rendered by
+`soma_lisp`. Detached run support is a `(detach)` marker inside `(run ...)`;
+detached tasks live in `soma_cli_task_registry` and can be managed by id.
+
+This is not yet a packaged external `soma run` command. The release's `bin/soma`
+script is relx's node-control script (`console`, `foreground`, `daemon`, `stop`,
+`status`, and related commands).
 
 ## Failure reasons
 

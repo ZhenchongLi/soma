@@ -14,9 +14,9 @@ and design live in **[docs/design.md](docs/design.md)**, the project's north sta
 The Lisp-flavored DSL is Soma's first **agent intent language**: a constrained
 syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
-`DSL -> validated step list -> OTP execution`.
+`Lisp at the edge -> validated data -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 154, Common Test 198, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 226, Common Test 263, Erlang/OTP 29).
 The runtime executes sequential runs, isolates failures, and runs both in-BEAM
 Erlang tools and external one-shot CLI tools — each proven under test, asserting
 *process survival*, not just return values. An LFE DSL compile-only layer
@@ -27,13 +27,21 @@ of that, the **agent decision layer** (v0.5) is built: a supervised LLM-call
 worker, a validated proposal schema, a policy gate, decision-loop execution,
 per-task budgets, and actor-to-actor messages — so an envelope can carry a model
 call that produces a proposal, which is gated and then executed, all under one
-auditable `correlation_id`. v0.5 runs on a **mock LLM only — there is no real
-provider yet** (the call seam is the one point a real one slots into). The
+auditable `correlation_id`. The mock LLM remains the hermetic test-gate default,
+and a real OpenAI-compatible provider now exists behind the same call seam
+(`soma_llm_openai`, wired through actor `model_config` for opt-in live use). The
 **durability + observability layer** (v0.6) then makes the event stream both
 readable and durable: `soma_trace` renders one `correlation_id` as a
 timestamp-ordered timeline, and the event store gains an **opt-in `disk_log`
 backend** (turned on with one app env) whose events survive a BEAM restart —
-behind the same query API, with the in-memory store still the default. A
+behind the same query API, with the in-memory store still the default. On top of
+that, the Lisp edge language has grown beyond `(run ...)`: actors accept Lisp
+messages, mock LLM outputs can be Lisp proposals, traces render as Lisp, and a
+bounded repair loop can fix malformed Lisp proposals without bypassing policy or
+budget. The local daemon/client modules (`soma_cli`, `soma_cli_server`) expose a
+single-user Unix-socket Lisp wire for `run`, `ask`, `status`, `trace`, `cancel`,
+and detached runs; these are Erlang APIs today, while the relx `bin/soma` script
+is still the standard OTP release control script. A
 self-contained macOS arm64 release is built and verified; the Linux x86_64 / arm64
 artifacts are the one remaining packaging task.
 
@@ -89,7 +97,7 @@ Prerequisites: Erlang/OTP 29 and rebar3.
 
 ```bash
 rebar3 compile
-rebar3 eunit && rebar3 ct      # 154 EUnit + 198 Common Test, all green
+rebar3 eunit && rebar3 ct      # 226 EUnit + 263 Common Test, all green
 ```
 
 Drive a run in the shell:
@@ -194,9 +202,9 @@ in [docs/usage.md](docs/usage.md).
   and only an **approved** `run_steps` proposal starts a `soma_run`. A per-task
   `budget` fails the task (not the actor) on exhaustion, and an approved
   `actor_message` delivers to another actor under the sender's `correlation_id`.
-  It emits `llm.*` and `proposal.*` events on the same chain. This whole layer is
-  driven by a **mock LLM** — the call seam `soma_llm_call:perform_call/1` is the
-  one point a real provider slots into; there is no real provider yet.
+  It emits `llm.*` and `proposal.*` events on the same chain. The test gate still
+  drives this layer with the mock LLM, but `soma_llm_call:perform_call/1` now also
+  routes `#{provider => openai_compat}` calls to `soma_llm_openai`.
 - **A mandatory event log** (in-memory by default) records the whole run, each
   event carrying 8 fields (`event_id, timestamp, session_id, run_id, step_id,
   tool_call_id, event_type, payload`): `session.started -> run.accepted ->
@@ -259,12 +267,16 @@ tools, real timeout/cancellation, normalized failures, the event log (in-memory,
 with an opt-in durable `disk_log` backend) and a read-only trace view
 (`soma_trace`), a compile-only LFE DSL layer (`soma_lfe`), the `soma_actor`
 agent-entity skeleton, the agent decision layer (`soma_llm_call` + proposal schema
-+ policy gate + decision-loop execution + budgets + actor-to-actor, **mock LLM
-only**), and a self-contained release.
++ policy gate + decision-loop execution + budgets + actor-to-actor), the
+OpenAI-compatible real-provider path, the Lisp message/proposal/trace/repair
+edge forms, local Unix-socket CLI server/client modules, and a self-contained
+release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**): a
-real LLM provider behind the mock call seam, an effect-aware policy gate, MCP, DAG
-parallelism, distributed Erlang, and persistent run resume.
+structured real-model planner that emits tool-running proposals, an effect-aware
+policy gate, MCP, DAG parallelism, distributed Erlang, persistent run resume, and
+a packaged external `soma run` / `soma ask` command distinct from the relx node
+control script.
 
 ## Docs
 
@@ -275,17 +287,18 @@ parallelism, distributed Erlang, and persistent run resume.
   (e.g. step iteration lives inside `soma_run`, not a separate `soma_step`
   process), this README and the code are authoritative.
 - **[docs/usage.md](docs/usage.md)** — API reference: starting the runtime,
-  registering tools, starting runs, reading events, cancellation.
+  registering tools, starting runs, reading events, cancellation, actor messages,
+  and provider configuration.
 - **[docs/tool-manifest.md](docs/tool-manifest.md)** — tool manifest contract:
   the shape of a tool entry, which adapter runs it, and the cli execution
   protocol.
 - **[docs/lfe-dsl.md](docs/lfe-dsl.md)** — LFE DSL: syntax reference,
-  step-list contract, `from_step` forms, diagnostic codes, and explicit
-  non-goals. The `soma_lfe` app is a compile-only layer with no runtime
-  dependency on `soma_runtime`.
+  run step-list contract, Lisp edge forms, `from_step` forms, diagnostic codes,
+  and explicit non-goals. The `soma_lfe` app is a compile-only layer with no
+  runtime dependency on `soma_runtime`.
 - **[docs/release.md](docs/release.md)** — building and running the release.
 - **[docs/roadmap.md](docs/roadmap.md)** — future layers beyond the current
-  build.
+  build and status for the parallel node B / CLI / Lisp tracks.
 
 **Test contracts**
 
@@ -306,13 +319,22 @@ parallelism, distributed Erlang, and persistent run resume.
   (distinct pid, timeout / cancel / crash become task data, the actor stays
   responsive), proposal normalization, the policy gate, decision-loop execution,
   budget exhaustion, and actor-to-actor `correlation_id` propagation — each
-  mapped to its suite and case. Mock-LLM only.
+  mapped to its suite and case. Mock-LLM on the gate.
 - **[docs/contracts/v0.6-test-contract.md](docs/contracts/v0.6-test-contract.md)**
   — persistence proofs for the durable `disk_log` event store: an appended event
   reads back from the log as its normalized form, a restart at the same path
   replays the log so `all/1` / `by_run/2` / `by_correlation/2` return the events
   in append order, and a truncated tail boots and still serves the intact events
   — while the in-memory default writes no file and queries unchanged.
+- **[docs/contracts/L.1-test-contract.md](docs/contracts/L.1-test-contract.md)**
+  through **[docs/contracts/L.5-test-contract.md](docs/contracts/L.5-test-contract.md)**
+  — Lisp edge-language proofs: message envelopes, actor-to-actor Lisp delivery,
+  Lisp proposals, Lisp trace/rendering, and bounded proposal repair.
+- **[docs/contracts/cli-1b-test-contract.md](docs/contracts/cli-1b-test-contract.md)**,
+  **[docs/contracts/cli-2-test-contract.md](docs/contracts/cli-2-test-contract.md)**,
+  and **[docs/contracts/cli-3-test-contract.md](docs/contracts/cli-3-test-contract.md)**
+  — local Unix-socket Lisp-wire proofs for `soma_cli` / `soma_cli_server` run,
+  ask, status, trace, cancel, and detach behavior.
 
 **Chinese docs**
 
@@ -322,7 +344,9 @@ parallelism, distributed Erlang, and persistent run resume.
   design: actor entity, message-driven trigger, actor loop, decision frame,
   policy gate, LLM call, result model, event contract, memory model, and
   minimum scope. The v0.4 build implemented the minimal fixed-rule slice; v0.5
-  added the LLM call, proposal schema, and policy gate (mock LLM only).
+  added the LLM call, proposal schema, policy gate, budgets, and actor-to-actor
+  messaging, and the current provider path can call an OpenAI-compatible endpoint
+  when configured.
 - **[docs/zh/erlang-otp-primer.zh.md](docs/zh/erlang-otp-primer.zh.md)** —
   Erlang/OTP primer (BEAM, process, mailbox, gen_server, gen_statem, supervisor,
   port, release) for readers unfamiliar with Erlang.

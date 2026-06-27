@@ -1,6 +1,9 @@
-# Soma Lisp message language — design (draft, for review)
+# Soma Lisp message language
 
-> Status: **design draft**, not yet implemented. Guides the Lisp (`L.*`) slices.
+> Status: L.1-L.5 are implemented and covered by contract tests. The language is
+> still intentionally constrained: Lisp is accepted at the system edges and parsed
+> into existing Erlang maps; it is not the runtime's internal representation and
+> not a general Lisp evaluator.
 
 ## Vision
 
@@ -68,21 +71,27 @@ can construct / inspect / transform / forward messages as data:
 
 JSON/maps can't give this; s-exprs can. That is the differentiator.
 
-## Grammar (sketch — extends `soma_lfe`)
+## Grammar (implemented subset — extends `soma_lfe`)
 
-`soma_lfe` already parses a constrained Lisp grammar into step-list maps. This
-adds top-level message forms; all parse into the existing internal maps:
+`soma_lfe` parses a constrained Lisp grammar into existing internal maps. The
+implemented top-level forms are:
 
 | s-expr form | parses into |
 |---|---|
 | `(msg (type T) (payload …) (steps …) (llm …) (correlation-id "…"))` | an envelope `#{type, payload, steps?, llm?, correlation_id?}` |
 | `(step (id s1) (tool echo) (args (value "hi")))`, `(from-step s1)` | a step map (the existing v0.3 grammar) |
-| `(reply (text "…"))` / `(run-steps (step …) …)` / `(reject (reason …))` / `(ask (question "…"))` / `(actor-message (to "…") (payload …))` | a proposal `#{kind, …}` |
-| `(send "actor-id" <msg-or-proposal>)` | deliver a message to another actor |
+| `(reply (text "…"))` / `(run-steps (step …) …)` | a proposal `#{kind, …}` accepted by `soma_proposal:normalize/1` |
+| `(ask (intent "…") (allow echo) (budget-llm 1) (budget-steps 3))` | a CLI ask command map |
+| `(trace "corr")`, `(status "task")`, `(cancel "task")` | CLI read/manage command maps |
 
 Lexical mapping: symbols/keywords → atoms, strings → binaries, nested forms →
 maps/lists. `soma_lfe:compile/2` returns `{ok, Map} | {error, [Diagnostic]}` as
 today — the diagnostics are what the repair loop (below) feeds back to the LLM.
+
+Actor-to-actor Lisp delivery is implemented through the existing `actor_message`
+proposal path: the delivered body can be a Lisp `(msg ...)` string that the
+receiving actor parses at its own boundary. A standalone top-level `(send ...)`
+command and Lisp forms for every proposal kind remain future language surface.
 
 ## Self-repair (`L.5`) — the LLM fixes malformed Lisp
 
@@ -120,18 +129,19 @@ Safety constraints — without these it is dangerous:
 
 ## Slices
 
-- **L.1** — Lisp envelope: extend `soma_lfe` to parse `(msg …)` → the internal
+- **L.1** — Lisp envelope [done]: extend `soma_lfe` to parse `(msg …)` → the internal
   envelope map; `soma_actor:send/2` & `ask/3` accept a Lisp string (additive —
   map envelopes still work). Proof: a Lisp message runs identically to the
   equivalent map.
-- **L.2** — actor-to-actor Lisp: an `(actor-message …)` / `(send …)` carries a
-  Lisp s-expr; the receiving actor parses it (correlation_id preserved, per v0.5.6).
-- **L.3** — Lisp proposals: the decision loop / a real provider emits a Lisp
-  proposal; `soma_lfe` parses it into `#{kind, …}`. (This is where "the LLM speaks
-  Lisp" becomes coherent — the whole system speaks Lisp.)
-- **L.4** — Lisp audit: the event store can record the s-expr form; `soma_trace`
+- **L.2** — actor-to-actor Lisp [done]: an existing `actor_message` proposal can
+  carry a Lisp `(msg ...)` body; the receiving actor parses it (correlation_id
+  preserved, per v0.5.6).
+- **L.3** — Lisp proposals [done]: the mock LLM can emit a Lisp `reply` or
+  `run-steps` proposal; `soma_lfe` parses it into `#{kind, …}` before the normal
+  proposal normalization and policy path.
+- **L.4** — Lisp audit/rendering [done]: the event store can record the s-expr form; `soma_trace`
   can render a correlation chain as readable, replayable Lisp.
-- **L.5** — self-repair: the parse-failure repair loop above, reusing the v0.5.5
+- **L.5** — self-repair [done]: the parse-failure repair loop above, reusing the v0.5.5
   budget and node B for the repair call.
 
 ## Relationship to existing pieces
@@ -140,8 +150,9 @@ Safety constraints — without these it is dangerous:
   | send}"; the existing step grammar is reused, not broken.
 - **`soma_actor`** gains a Lisp message boundary (`send`/`ask` accept Lisp); the
   internal task/run model is unchanged.
-- **node B** (the real provider) is what makes L.3 (Lisp proposals) and L.5
-  (repair) real; the mock covers them on the gate.
+- **node B** (the real provider) provides the opt-in real call path. L.3 and L.5
+  stay mock/fixed-response on the gate so `rebar3 eunit && rebar3 ct` opens no
+  real provider socket.
 - **The CLI** naturally sends Lisp messages (`soma run` / `soma ask` can take an
   s-expr), tying the [cli.md](cli.md) daemon to this language.
 

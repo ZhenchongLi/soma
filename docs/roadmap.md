@@ -4,12 +4,13 @@ v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), v0.3 (LFE DSL
 compile-only layer), v0.4 (the `soma_actor` agent-entity skeleton), v0.5 (the
 agent decision layer — LLM-call worker, proposal schema, policy gate,
 decision-loop execution, budget, and actor-to-actor messages), and v0.6 (trace
-tooling + a durable, opt-in `disk_log` event store) are built and merged. v0.5 ran on a **mock LLM only**, but the real provider has
-since landed as **node B.1** (`soma_llm_openai`, smoke-proven against SophNet).
-Three tracks now build alongside the v0.X layers: **node B** (the real LLM
-provider), the **CLI / daemon** (a single-user `soma` daemon + CLI clients — see
-[cli.md](cli.md)), and a **Lisp s-expr message language** for actors/agents (see
-[lisp-messages.md](lisp-messages.md)). The sequence below is what comes next.
+tooling + a durable, opt-in `disk_log` event store) are built and merged. The
+parallel tracks have also moved: **node B.1/B.2** landed the OpenAI-compatible
+provider and actor `model_config` wiring; the **CLI / daemon** modules now expose
+a single-user Unix-socket Lisp wire for run/ask/status/trace/cancel/detach; and
+the **Lisp s-expr message language** has L.1-L.5 tests for envelopes,
+actor-to-actor delivery, proposals, audit rendering, and bounded repair. The
+sequence below is what comes next.
 
 The important sequencing rule is unchanged: do not add a layer until the layer
 below it has test coverage for its failure semantics. With the actor contract
@@ -31,9 +32,9 @@ v0.7    persistent resume
 v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
-node B  real LLM provider behind the perform_call seam   [B.1 done; B.2 next]
-CLI     single-user soma daemon + CLI clients            [CLI.1 in progress]
-Lisp    s-expr actor/agent message language (soma_lfe)   [design]
+node B  real LLM provider behind the perform_call seam   [B.1/B.2 done; structured planning next]
+CLI     single-user soma daemon + CLI clients            [module/server path done; packaged command UX next]
+Lisp    s-expr actor/agent message language (soma_lfe)   [L.1-L.5 done]
 ```
 
 ## v0.4 — soma_actor skeleton [done]
@@ -104,9 +105,9 @@ alive and accepts the next message.
 
 The first planning layer, added without changing `soma_run` into a dynamic
 workflow engine. A (mock) LLM produces proposals; `soma_actor` validates them,
-gates them, and executes the approved ones. This is **mock-LLM only** — the call
-seam (`soma_llm_call:perform_call/1`) is the single point a real provider grows
-into later; there is no provider yet.
+gates them, and executes the approved ones. This layer was built against the
+mock LLM; the mock remains the hermetic gate default, while node B adds the real
+provider path behind the same seam.
 
 Slices (all done):
 
@@ -143,15 +144,15 @@ Required process proofs — all green:
 - budget exhaustion fails the task, not the actor;
 - `correlation_id` propagates across actor, LLM, run, and actor-to-actor events.
 
-Outcome — the agent decision layer is built and merged, mock-LLM only. The full
-proof→test map is in
+Outcome — the agent decision layer is built and merged, mock-LLM on the gate. The
+full proof→test map is in
 [contracts/v0.5-test-contract.md](contracts/v0.5-test-contract.md); the v0.4
 contract's P12 and P13 are now delivered. The **one remaining deferred proof is
 P14** (the policy proactively asks a human before executing) — there is no
 human-in-the-loop ask path yet.
 
-Real-provider planning (a real `node B` behind the `perform_call/1` seam) and an
-effect-aware policy gate remain future work beyond this layer.
+Structured real-provider planning (`run_steps` / tool-use proposals from a real
+model) and an effect-aware policy gate remain future work beyond this layer.
 
 ## v0.6 — trace tooling + persistent event store [done]
 
@@ -236,9 +237,11 @@ the gate default; real calls are opt-in and **off the test gate** (no network in
   real-provider opts. Pure request-build / response-parse tests on the gate; an
   opt-in `soma_llm_smoke:run/0` (key from `SOMA_LLM_API_KEY`) proves it live
   against SophNet (validated: DeepSeek-V4, Qwen3.6 + the `enable_thinking` toggle).
-- `node B.2` — actor wiring [next]: select the real provider from the actor's
-  `model_config` so a task runs end to end against a real model. The brain
-  `soma ask` needs this.
+- `node B.2` — actor wiring [done] (#119): an actor's `model_config` can select
+  `provider => openai_compat`; `soma_actor:build_call_opts/2` derives provider
+  call opts from the envelope payload, routes through `soma_llm_call`, and keeps
+  the API key out of emitted events. Gate tests use a fixed-response seam, not a
+  real socket.
 - Later: structured proposals from the model (`run_steps` / tool-use planning, not
   just `reply`) and an effect-aware policy gate.
 
@@ -253,14 +256,18 @@ Architecture: a long-lived **daemon** (runtime + actors + the durable event stor
 with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
 (no cross-client auth). Not MCP. Full design: [cli.md](cli.md).
 
-- `CLI.1` — daemon socket server [in progress] (#102): the Unix-socket listener +
-  length-prefixed JSON protocol + the `run` handler (supervised run → result), with
-  stale-socket cleanup, atomic single-winner bind, and cancel-on-disconnect.
-- `CLI.1b` — the `soma daemon` boot command + the thin `soma run` client binary.
-- `CLI.2` — `soma ask` (intent → real LLM → proposal → policy → execute); needs
-  node B.2.
-- `CLI.3` — `soma status` / `soma cancel` / `soma trace` clients, `--detach`,
-  auto-start.
+- `CLI.1` / `CLI.1b` — daemon socket server + Lisp `run` wire [done]: Unix-domain
+  listener, length-prefixed s-expr frames, stale-socket cleanup, single-winner
+  bind, cancel-on-disconnect, `soma_cli:daemon/1`, and `soma_cli:run/1`.
+- `CLI.2` — `soma ask` [done on the module/server path]: intent → LLM proposal →
+  policy → result over the same Lisp wire, mock on the gate and real-provider by
+  daemon/actor config.
+- `CLI.3` / follow-up — read/manage commands [done on the module/server path]:
+  `soma_cli:status/1`, `trace/1`, `cancel/1`, plus detached run support and
+  cancel-by-id through `soma_cli_task_registry`.
+- Remaining CLI product work: expose a packaged external task command without
+  colliding with relx's `bin/soma` node-control script, add auto-start if wanted,
+  and settle config-file UX for real-provider daemon settings.
 
 ## Lisp — s-expr actor/agent message language
 
@@ -270,15 +277,15 @@ BEAM message-passing stay Erlang/OTP). Turns the v0.3 `soma_lfe` parser from an
 orphan into the message parser. A Lisp message is homoiconic — data or an
 executable plan in one language. Full design: [lisp-messages.md](lisp-messages.md).
 
-- `L.1` — Lisp envelope: `soma_lfe` parses `(msg …)` → the internal envelope;
+- `L.1` — Lisp envelope [done]: `soma_lfe` parses `(msg …)` → the internal envelope;
   `soma_actor:send` / `ask` accept a Lisp string (additive — map envelopes still
   work).
-- `L.2` — actor-to-actor Lisp messages (correlation_id preserved, per v0.5.6).
-- `L.3` — Lisp proposals: the LLM emits Lisp, parsed into a proposal — coherent
+- `L.2` — actor-to-actor Lisp messages [done] (correlation_id preserved, per v0.5.6).
+- `L.3` — Lisp proposals [done]: the LLM emits Lisp, parsed into a proposal — coherent
   once the whole system speaks Lisp.
-- `L.4` — Lisp audit: the event store records the s-expr form; `soma_trace`
+- `L.4` — Lisp audit/rendering [done]: the event store records the s-expr form; `soma_trace`
   renders a correlation chain as readable, replayable Lisp.
-- `L.5` — self-repair: a parse-failure → LLM-repair(source, diagnostics) →
+- `L.5` — self-repair [done]: a parse-failure → LLM-repair(source, diagnostics) →
   re-parse loop, bounded by the v0.5.5 budget. The repaired message re-enters the
   full normalize + policy + budget pipeline — a second chance, **never a bypass**.
 

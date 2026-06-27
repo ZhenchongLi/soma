@@ -59,8 +59,6 @@ Pure protocol shaping — `apps/soma_actor/test/soma_cli_server_tests.erl` (EUni
 
 | # | Proof | Case |
 |---|---|---|
-| 1 | a map of atom/binary/number/list values encodes to the matching JSON object | `encode_map_atoms_binaries_numbers_lists_test` |
-| 2 | the reason tuple `{budget_exceeded, max_steps}` encodes to `{"tag":"budget_exceeded","detail":["max_steps"]}` | `encode_reason_tuple_to_tag_detail_test` |
 | 3 | the 4-byte length prefix round-trips (`frame`/`unframe`) | `frame_unframe_round_trips_test` |
 
 Listener, lifecycle, and run paths — `apps/soma_actor/test/soma_cli_server_SUITE.erl` (CT, real `gen_tcp` client over a temp Unix socket):
@@ -71,9 +69,10 @@ Listener, lifecycle, and run paths — `apps/soma_actor/test/soma_cli_server_SUI
 | 5 | a leftover file at the path is unlinked before bind | `test_start_link_unlinks_stale_socket_file` |
 | 6 | a second `start_link` on a live path errors (no duplicate listener) | `test_second_start_link_on_live_path_errors` |
 | 7 | the first server keeps serving after the failed second `start_link` | `test_first_server_survives_failed_second_start_link` |
-| 8 | a one-step `echo` run returns `completed` + `task_id` + `correlation_id` + `outputs` | `test_run_echo_returns_completed_with_outputs` |
-| 9 | a run whose step fails returns a non-`completed` status with an `error` | `test_run_failed_returns_failed_with_error` |
-| 10 | the server serves a later request after a failed run | `test_server_serves_after_failed_run` |
+
+The original CLI.1 JSON encode cases and run-path cases are intentionally not
+listed here anymore: CLI.1b replaced them with Lisp-wire run proofs in
+[cli-1b-test-contract.md](cli-1b-test-contract.md).
 
 > Environment note: AF_UNIX socket operations on macOS can intermittently return
 > `eopnotsupp`/timeouts under heavy concurrent load; the CT cases above are

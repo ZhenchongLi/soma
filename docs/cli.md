@@ -1,6 +1,11 @@
-# Soma CLI & daemon — design (draft, for review)
+# Soma CLI & daemon
 
-> Status: **design draft**, not yet implemented. This spec guides the CLI slices.
+> Status: the local daemon/server path is implemented as Erlang modules
+> (`soma_cli`, `soma_cli_server`, `soma_cli_task_registry`) and proven through the
+> test gate. The external shell command UX shown below is the intended product
+> shape; today's relx `bin/soma` is still the OTP release control script
+> (`console`, `foreground`, `daemon`, `status`, `stop`, and so on), not yet a
+> task-client command parser.
 
 ## Scope: single-user, trusted, local
 
@@ -74,21 +79,22 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
 
 ## Commands
 
-| Command | Needs LLM? | Role |
+| Target command | Current module API | Needs LLM? | Role |
 |---|---|---|
-| `soma daemon` | no | Boot the service: runtime + persistent store, listen on the socket. |
-| `soma run <workflow>` | no | client → run an LFE workflow under supervision; return result + trace. |
-| `soma ask "<intent>"` | yes (node B) | client → the agent loop: intent → LLM → proposal → policy → execute. |
-| `soma status <task-id>` / `soma cancel <task-id>` | no | client → poll / cancel a task by id (tasks outlive the caller). |
-| `soma trace <correlation_id>` | no | client → render a stored correlation chain as a timeline. |
+| `soma daemon` | `soma_cli:daemon/1` | no | Boot runtime + listener on the socket. |
+| `soma run <workflow>` | `soma_cli:run/1` | no | Run an LFE workflow under supervision; return result. |
+| `soma ask "<intent>"` | `soma_cli:ask/1` | yes | Intent → LLM → proposal → policy → result. |
+| `soma status <task-id>` / `soma cancel <task-id>` | `soma_cli:status/1`, `cancel/1` | no | Poll / cancel a task by id. |
+| `soma trace <correlation_id>` | `soma_cli:trace/1` | no | Render a stored correlation chain as Lisp events. |
 
-`soma run` + the daemon are the **fastest deliverable** (no LLM). `soma ask`
-depends on node B (the real LLM provider).
+The module APIs above are what exists today. Product work remains to expose them
+as a packaged external task command without colliding with relx's existing
+`bin/soma` control script.
 
 ## `soma run` — deterministic supervised execution (client)
 
 ```
-soma run WORKFLOW [--detach] [--trace] [--root DIR] [--timeout-ms N]
+soma run WORKFLOW [--detach]
 ```
 
 - **WORKFLOW**: a file (or `-` for stdin) — an **LFE workflow** (a `(run …)`
@@ -96,11 +102,9 @@ soma run WORKFLOW [--detach] [--trace] [--root DIR] [--timeout-ms N]
 - The client reads the file's s-expr and sends it as the **`(run …)` request**
   frame; the daemon parses it with `soma_lfe`, owns a supervised run, waits for
   the terminal state, and frames back a rendered **`(result …)` reply** s-expr
-  (`soma_lisp:render/1`) which the client prints. `--root` is your sandbox root
-  for file tools (your own FS).
+  (`soma_lisp:render/1`) which the client prints.
 - The `(result …)` s-expr carries the terminal `status`, the `outputs`, and the
-  `task_id` / `correlation_id` (the trace is added only with `--trace`). Exit `0`
-  completed, non-zero otherwise.
+  `task_id` / `correlation_id`. Exit `0` completed, non-zero otherwise.
 - With `--detach`, the client sends the same `(run …)` request with a `(detach)`
   marker. The daemon starts the run under the live-task registry and immediately
   replies with an accepted task handle:
@@ -126,9 +130,9 @@ turns the intent into an `(ask …)` request s-expr, the daemon parses it with
 `(result …)` reply s-expr (`soma_lisp:render/1`) that the client prints. Exit `0`
 on `(status completed)`, non-zero otherwise.
 
-With `--detach`, the client appends `(detach)` to the `(ask …)` request and the
-daemon returns the same `(accepted (task-id "…") (correlation-id "…"))` shape used
-by detached runs.
+Detached execution is implemented for `(run ...)` requests. `soma_cli:ask/1` can
+construct a detach marker for future command UX, but daemon-side detached ask
+execution is not yet a live path.
 
 ### The `(ask …)` request
 
@@ -277,8 +281,8 @@ An unknown id is answered as data, not as a daemon crash:
 
 `soma run` prints one **`(result …)` s-expr** on stdout — `(result (status …)
 (task-id …) (correlation-id …) (outputs …))`, with an `(error …)` sub-form on
-failure and a `(trace …)` sub-form only under `--trace` — plus a meaningful exit
-code (`0` on `(status completed)`, non-zero otherwise). Diagnostics go to stderr
+failure — plus a meaningful exit code (`0` on `(status completed)`, non-zero otherwise).
+Diagnostics go to stderr
 so stdout stays a clean s-expr. **Identifiers**: `soma status` / `soma cancel`
 take the `task-id`, `soma trace` takes the `correlation-id`.
 
@@ -290,8 +294,8 @@ what comes back — no JSON anywhere.
 
 ## Connection / cancellation semantics
 
-- **Synchronous `run` / `ask`**: if the client disconnects (Ctrl-C, the agent's
-  own timeout, a dropped socket) the daemon **cancels** the in-flight run — no
+- **Synchronous `run`**: if the client disconnects (Ctrl-C, the agent's own
+  timeout, a dropped socket) the daemon **cancels** the in-flight run — no
   orphaned work piling up on the shared daemon.
 - **Fire-and-forget** (`--detach`): the task keeps running after the client
   leaves; reattach/manage via `soma status <task-id>` / `soma cancel <task-id>`.
@@ -319,22 +323,29 @@ documented now, fixed later, not v1 blockers:
   the `disk_log` write) serializes through it. Fine for a few concurrent tasks;
   a throughput ceiling only under heavy concurrency — not a single-user concern.
 
-## Proposed slices
+## Implemented Slices And Remaining Work
 
-1. **CLI.1 — daemon + Unix socket + `soma run` client.** `soma daemon` (the node +
+1. **CLI.1 / CLI.1b — daemon + Unix socket + run client.** `soma_cli:daemon/1`
+   and `soma_cli:run/1` (the node +
    a socket listener: accept loop, one handler process per connection, length-
    prefixed s-expr frames — the `(run …)` request parsed with `soma_lfe`, the
    `(result …)` reply rendered with `soma_lisp:render/1` — and cancel-on-
-   disconnect) and a thin `soma run` client. No LLM. *Foundational.* Daemon-
+   disconnect) and a thin run client. No LLM. *Foundational.* Daemon-
    lifecycle acceptance items: an
    **atomic single-winner socket bind** (concurrent first-calls / auto-start must
    not spawn duplicate daemons) and **stale-socket cleanup** (unlink a leftover
    socket file before bind, so a restart after a crash succeeds).
-2. **node B.2 — actor uses the real provider** (separate track): wire the actor's
-   `model_config` to the real `soma_llm_openai`. The brain `soma ask` needs.
-3. **CLI.2 — `soma ask`** client on node B.2.
-4. **CLI.3 — `soma status` / `soma cancel` / `soma trace`** clients + daemon
-   niceties (`--detach`, auto-start, `soma stop`).
+2. **node B.2 — actor uses the real provider** (done): the actor's
+   `model_config` can route to `soma_llm_openai`, with gate tests using a fixed
+   response seam.
+3. **CLI.2 — ask client** (done on the module/server path): `soma_cli:ask/1`
+   drives intent through the actor decision loop.
+4. **CLI.3 / follow-up — status, cancel, trace, detach** (done on the
+   module/server path): `soma_cli:status/1`, `cancel/1`, `trace/1`, detached run
+   ownership, and cancel-by-id are implemented and tested.
+5. **Remaining product work:** external command parser / install surface,
+   auto-start, a daemon config file, and any `soma stop` task-daemon command
+   separate from relx's node-control `stop`.
 
 ## Open decisions (remaining)
 

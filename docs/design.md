@@ -18,8 +18,11 @@ tool calls.
 The execution core — sessions, runs, tool calls — is built and proven
 (v0.1–v0.3). The `soma_actor` agent-entity layer is built on top of it (v0.4):
 a long-lived OTP process that uses that execution core to carry out intentions.
-The v0.4 build is the minimal slice — fixed-rule decisions, no real LLM; the LLM
-planner and policy gate land in v0.5.
+The decision layer (v0.5) adds a supervised LLM-call worker, proposal validation,
+policy, budgets, and actor-to-actor messages. The observability/durability layer
+(v0.6) adds readable traces and an opt-in durable `disk_log` event store. The
+mock LLM remains the test-gate default, while the OpenAI-compatible provider path
+now exists behind the same call seam for opt-in real calls.
 
 ## Thesis
 
@@ -72,13 +75,15 @@ soma_run_sup
 ```
 
 The execution core (v0.1–v0.3) proves the bottom two layers; `soma_actor` (v0.4)
-is built above them as its own supervised app. `soma_llm_call` is the one piece
-not yet built — when v0.5 adds it, `soma_actor` spawns and monitors it directly
-(mirroring `soma_run → soma_tool_call`), so there is no `soma_llm_call_sup`.
+is built above them as its own supervised app. `soma_llm_call` is built as a
+disposable worker that `soma_actor` spawns and monitors directly (mirroring
+`soma_run → soma_tool_call`), so there is no `soma_llm_call_sup`.
 
 ## Scope
 
-**Built (v0.1–v0.4):** the execution core and the agent-entity skeleton.
+**Built (v0.1–v0.6 plus active edge tracks):** the execution core, actor layer,
+decision layer, durable traceable event stream, real-provider seam, Lisp edge
+language, and local CLI server/client modules.
 
 - session process (`soma_agent_session`);
 - run process (`soma_run`, `gen_statem`);
@@ -88,23 +93,32 @@ not yet built — when v0.5 adds it, `soma_actor` spawns and monitors it directl
 - a tool registry over normalized manifests;
 - in-BEAM tools and a one-shot CLI/port adapter;
 - normalized cli failures (bounded, named errors);
-- event emission and in-memory event store;
-- a compile-only LFE DSL layer (`soma_lfe`);
+- event emission, in-memory event store, and opt-in durable `disk_log` backend;
+- readable trace views (`soma_trace`, including Lisp rendering);
+- a compile-only LFE DSL layer (`soma_lfe`) that now parses run, message,
+  proposal, ask, trace, status, and cancel edge forms;
 - the `soma_actor` agent entity (`gen_statem`, its own app): `send`/`ask`, a task
   table, `task_id` / `correlation_id`, and `actor.*` events;
 - fixed-rule run integration — a steps envelope starts a `soma_run` the actor
   owns, with run failure / timeout / cancel handled as data, the actor surviving;
 - the result model (`ask` reply, `get_task_status` / `get_task_result` polling)
   and `soma_event_store:by_correlation/2` for full-chain event lookup;
+- `soma_llm_call`, proposal normalization, name-based policy, budgets, and
+  actor-to-actor messages under one `correlation_id`;
+- an OpenAI-compatible provider path (`soma_llm_openai`) routed by
+  `#{provider => openai_compat}`, opt-in and off the hermetic test gate;
+- Lisp message/proposal/trace/repair edge forms, with repaired proposals
+  re-entering the normal policy and budget path;
+- local single-user Unix-socket CLI server/client modules (`soma_cli_server`,
+  `soma_cli`) using a Lisp wire for run/ask/status/trace/cancel/detach;
 - end-to-end tests around process behavior;
 - a self-contained release.
 
-**Next (v0.5):** the LLM planner and policy gate — `soma_llm_call` (a supervised
-disposable model-call worker), a structured proposal schema, and the policy gate
-that validates LLM/rule output before `soma_actor` executes it.
+**Next:** persistent run resume (v0.7), plus productizing the external task CLI
+entrypoint and, later, structured real-model planning that emits tool-running
+proposals.
 
-**Later:** DAG parallelism, distributed Erlang, persistent resume. See
-[roadmap.md](roadmap.md).
+**Later:** DAG parallelism and distributed Erlang. See [roadmap.md](roadmap.md).
 
 ## Done Means
 
@@ -233,10 +247,12 @@ gate, not a while loop that executes LLM output directly.
 `correlation_id` must propagate across all child operations (LLM call, run,
 actor-to-actor message) so the full task chain is traceable in the event log.
 
-The minimal `soma_actor` slice — fixed-rule decisions, no real LLM — is **built
-and green** (v0.4): it proves the actor loop and its integration with `soma_run`.
-The LLM planner and full policy gate layer on top in v0.5, now that the skeleton
-is green under test.
+The minimal `soma_actor` slice is **built and green** (v0.4), and the v0.5
+decision layer is built above it: LLM calls cross a monitored worker boundary,
+proposals are normalized as data, policy gates execution, budgets fail tasks
+without killing actors, and actor-to-actor messages preserve `correlation_id`.
+The real-provider path is now wired behind `model_config`, while the test gate
+keeps using mock/fixed-response seams.
 
 The full specification — actor loop, decision frame, policy gate, LLM call,
 result model, event contract, memory model, budget and backpressure,
@@ -409,8 +425,9 @@ added. Tests assert **process survival**, not only return values.
 Proof-to-test maps: [contracts/v0.2-test-contract.md](contracts/v0.2-test-contract.md)
 and [contracts/v0.3-test-contract.md](contracts/v0.3-test-contract.md).
 
-**Agent entity (soma_actor).** Proofs 1–11 and 15 are **built and green** (v0.4);
-proofs 12–14 are deferred to v0.5 (they need the LLM-call / proposal machinery).
+**Agent entity (soma_actor).** Proofs 1–15 are covered across v0.4 and v0.5.
+P14 is implemented as deterministic rejection; a human-in-the-loop "ask before
+execution" path remains a future policy surface.
 Proof-to-test map: [contracts/v0.4-test-contract.md](contracts/v0.4-test-contract.md).
 
 1. actor starts and emits `actor.started`; *(v0.4)*
@@ -426,7 +443,7 @@ Proof-to-test map: [contracts/v0.4-test-contract.md](contracts/v0.4-test-contrac
 11. actor accepts another message after failure, cancel, or timeout; *(v0.4)*
 12. actor-to-actor message preserves `correlation_id`; *(v0.5)*
 13. budget exhaustion fails the task, not the actor; *(v0.5)*
-14. policy rejection fails or asks, not the actor; *(v0.5)*
+14. policy rejection fails the task, not the actor; *(v0.5; human ask deferred)*
 15. actor stays responsive while a child LLM call or run is active. *(v0.4)*
 
 ## Design Principles

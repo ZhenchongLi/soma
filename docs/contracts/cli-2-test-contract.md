@@ -23,8 +23,7 @@ yields a non-`completed` result carrying `{budget_exceeded, max_llm_calls}`. The
 CLI modules (`soma_cli`, `soma_cli_server`) and their tests move up from
 `apps/soma_runtime/` into `apps/soma_actor/` so the server can see both the run
 path and the actor without inverting the one-way dependency. The gate uses mock
-directives only — no real provider, no non-local socket. See
-[../../design-122.md](../../design-122.md).
+directives only — no real provider, no non-local socket.
 
 ## Proving suites and modules
 
