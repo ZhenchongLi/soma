@@ -19,6 +19,7 @@
 -export([test_ask_reply_returns_completed_result_with_text/1]).
 -export([test_ask_reject_returns_rejected_result_with_reason/1]).
 -export([test_ask_budget_llm_zero_returns_budget_exceeded/1]).
+-export([test_trace_after_run_returns_ordered_chain_ending_completed/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -36,7 +37,8 @@ all() ->
      test_server_serves_after_client_disconnect,
      test_ask_reply_returns_completed_result_with_text,
      test_ask_reject_returns_rejected_result_with_reason,
-     test_ask_budget_llm_zero_returns_budget_exceeded].
+     test_ask_budget_llm_zero_returns_budget_exceeded,
+     test_trace_after_run_returns_ordered_chain_ending_completed].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -412,6 +414,47 @@ test_ask_budget_llm_zero_returns_budget_exceeded(Config) ->
     match = re:run(Reply, "budget_exceeded", [{capture, none}]),
     match = re:run(Reply, "max_llm_calls", [{capture, none}]),
     ok = gen_tcp:close(Client).
+
+%% Criterion 4 (CLI.3): after a `(run ...)' completes against the server, a framed
+%% `(trace "<that run's correlation-id>")' request drives the real server ->
+%% soma_lfe:compile -> soma_trace:render_lisp -> by_correlation -> soma_lisp:render
+%% per event path and replies a single framed `(trace ...)' s-expr whose sub-forms
+%% are that run's events in timestamp order, ending with the `run.completed' event.
+%% Two connections, no layer bypassed: the run runs first (a real echo run), the
+%% client reads the run's correlation id off the `(result ...)' reply, then a fresh
+%% connection sends `(trace "<corr>")' and reads back the real correlation chain.
+test_trace_after_run_returns_ordered_chain_ending_completed(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    %% Run a one-step echo so a completed run with a correlation chain exists.
+    {ok, C1} = connect(Path),
+    Run = <<"(run (step s1 echo (args (value \"hi\"))))">>,
+    ok = gen_tcp:send(C1, Run),
+    {ok, RunReply} = gen_tcp:recv(C1, 0, 5000),
+    ok = gen_tcp:close(C1),
+    %% Read the run's correlation id off the `(result ...)' reply.
+    {match, [Corr]} =
+        re:run(RunReply, "\\(correlation-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    %% Send `(trace "<corr>")' on a fresh connection and read the chain back.
+    {ok, C2} = connect(Path),
+    TraceReq = <<"(trace \"", Corr/binary, "\")">>,
+    ok = gen_tcp:send(C2, TraceReq),
+    {ok, TraceReply} = gen_tcp:recv(C2, 0, 5000),
+    ok = gen_tcp:close(C2),
+    %% The reply is a single `(trace ...)' s-expr whose sub-forms are the chain's
+    %% events: it starts with `(trace ' and carries event sub-forms.
+    match = re:run(TraceReply, "^\\(trace ", [{capture, none}]),
+    match = re:run(TraceReply, "\\(event ", [{capture, none}]),
+    %% The chain ends with the run's `run.completed' event: it is present, and it
+    %% is the last event in the reply (no event sub-form follows it).
+    match = re:run(TraceReply, "run\\.completed", [{capture, none}]),
+    {match, [{CompletedAt, _}]} =
+        re:run(TraceReply, "run\\.completed", [{capture, first}]),
+    Tail = binary:part(TraceReply, CompletedAt,
+                       byte_size(TraceReply) - CompletedAt),
+    nomatch = re:run(Tail, "\\(event ", [{capture, none}]),
+    ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
