@@ -390,6 +390,9 @@ await_run(RunId, TaskId, CorrId, RunPid, Socket) ->
             #{status => timeout, task_id => TaskId, correlation_id => CorrId};
         {run_cancelled, RunId} ->
             #{status => cancelled, task_id => TaskId, correlation_id => CorrId};
+        {tcp, Socket, _Ignored} ->
+            ok = inet:setopts(Socket, [{active, once}]),
+            await_run(RunId, TaskId, CorrId, RunPid, Socket);
         {tcp_closed, Socket} ->
             %% The client dropped mid-run. Cancel the in-flight run the same way
             %% the session does -- a bare `cancel' to the live run pid -- and
