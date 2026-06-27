@@ -194,7 +194,8 @@ parse_cancel(_Other) ->
                line => 0}]}.
 
 -spec parse_run([term()]) ->
-    {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
+    {ok, #{run => #{steps := [map()], detach => true}}}
+    | {error, [diagnostic()]}.
 parse_run([]) ->
     {error, [#{code => missing_run_form,
                message => <<"expected exactly one top-level form, got none">>,
@@ -204,11 +205,12 @@ parse_run([_Form1, _Form2 | _]) ->
                message => <<"expected exactly one top-level form, got multiple">>,
                line => 0}]};
 parse_run([[run | ChildForms]]) ->
-    case parse_steps(ChildForms, [], []) of
+    {StepForms, Detached} = extract_run_detach(ChildForms, [], false),
+    case parse_steps(StepForms, [], []) of
         {ok, Steps} ->
             case validate_steps(Steps) of
                 [] ->
-                    {ok, #{run => #{steps => Steps}}};
+                    {ok, #{run => maybe_detached_run(#{steps => Steps}, Detached)}};
                 Diags ->
                     {error, Diags}
             end;
@@ -228,6 +230,18 @@ parse_run([_Form]) ->
     {error, [#{code => invalid_top_level_form,
                message => <<"top-level form must be a list headed by 'run'">>,
                line => 0}]}.
+
+extract_run_detach([], Acc, Detached) ->
+    {lists:reverse(Acc), Detached};
+extract_run_detach([[detach] | Rest], Acc, _Detached) ->
+    extract_run_detach(Rest, Acc, true);
+extract_run_detach([Form | Rest], Acc, Detached) ->
+    extract_run_detach(Rest, [Form | Acc], Detached).
+
+maybe_detached_run(Run, true) ->
+    Run#{detach => true};
+maybe_detached_run(Run, false) ->
+    Run.
 
 %% Accumulate errors across all steps rather than stopping at the first bad one.
 parse_steps([], Acc, []) ->
