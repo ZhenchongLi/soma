@@ -2,9 +2,9 @@
 %% subcommand to the matching `soma_cli:*' thin client, and returns an integer
 %% exit code. It parses argv into the same map shape the `soma_cli' functions
 %% already take, resolves the socket path, and calls them -- the wire and Lisp
-%% rendering stay in `soma_cli'. This slice implements only `run File'
-%% (criterion 1); the other subcommands, flags, the shared resolver, and the
-%% intent escaper arrive in later cycles.
+%% rendering stay in `soma_cli'. The `ask' intent is run through
+%% `soma_cli_intent:escape/1' so an intent containing `"' or `\\' still emits a
+%% valid s-expr the daemon parses, reaching it intact.
 -module(soma_cli_main).
 
 -export([dispatch/1, socket/1]).
@@ -27,7 +27,11 @@ dispatch(["run", File | Flags]) ->
                             detach_opt(Opts)));
 dispatch(["ask", Intent | Flags]) ->
     Opts = parse_flags(Flags),
-    soma_cli:ask(maps:merge(#{intent => Intent, socket => socket(Opts)},
+    %% Escape `"' / `\\' in the user intent so the `(ask (intent "..."))' request
+    %% `soma_cli:ask/1' renders is a valid s-expr the daemon parses, and the
+    %% original string reaches the daemon intact.
+    soma_cli:ask(maps:merge(#{intent => soma_cli_intent:escape(Intent),
+                              socket => socket(Opts)},
                             detach_opt(Opts)));
 dispatch(["status", TaskId | Flags]) ->
     Opts = parse_flags(Flags),
