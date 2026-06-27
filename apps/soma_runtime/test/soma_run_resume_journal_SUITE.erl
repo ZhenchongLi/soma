@@ -280,9 +280,8 @@ test_reconstruct_does_not_append_events(_Config) ->
     {ok, _Reconstructed} = soma_run_resume:reconstruct(StorePid, RunId),
     EventsAfter = soma_event_store:all(StorePid),
 
-    %% STAGED RED: reconstruct is read-only, so the store is unchanged. Assert
-    %% inequality first to observe the assertion fire, then correct below.
-    ?assertNotEqual(EventsBefore, EventsAfter).
+    %% reconstruct is read-only, so the event store is byte-for-byte unchanged.
+    ?assertEqual(EventsBefore, EventsAfter).
 
 terminal_status_of(StorePid, RunId, Steps, TerminalEventType) ->
     ok = soma_event_store:append(StorePid,
