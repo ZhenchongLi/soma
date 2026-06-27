@@ -20,6 +20,7 @@
 -export([test_ask_reject_returns_rejected_result_with_reason/1]).
 -export([test_ask_budget_llm_zero_returns_budget_exceeded/1]).
 -export([test_trace_after_run_returns_ordered_chain_ending_completed/1]).
+-export([test_status_after_run_reports_state_completed/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -38,7 +39,8 @@ all() ->
      test_ask_reply_returns_completed_result_with_text,
      test_ask_reject_returns_rejected_result_with_reason,
      test_ask_budget_llm_zero_returns_budget_exceeded,
-     test_trace_after_run_returns_ordered_chain_ending_completed].
+     test_trace_after_run_returns_ordered_chain_ending_completed,
+     test_status_after_run_reports_state_completed].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -454,6 +456,41 @@ test_trace_after_run_returns_ordered_chain_ending_completed(Config) ->
     Tail = binary:part(TraceReply, CompletedAt,
                        byte_size(TraceReply) - CompletedAt),
     nomatch = re:run(Tail, "\\(event ", [{capture, none}]),
+    ok.
+
+%% Criterion 5 (CLI.3): after a `(run ...)' completes against the server, a framed
+%% `(status "<that run's task-id>")' request drives the real server ->
+%% soma_lfe:compile -> by_session(Store, TaskId) -> state derived from events ->
+%% soma_lisp:render path and replies a single framed `(status ...)' s-expr whose
+%% `(state ...)' sub-form is `completed'. Two connections, no layer bypassed: the
+%% run runs first (a real echo run), the client reads the run's task id off the
+%% `(result ...)' reply (the task id is the run's session id, so its events are
+%% reachable via by_session/2), then a fresh connection sends `(status "<task>")'
+%% and reads back the derived terminal state.
+test_status_after_run_reports_state_completed(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    %% Run a one-step echo so a completed run with a task id exists.
+    {ok, C1} = connect(Path),
+    Run = <<"(run (step s1 echo (args (value \"hi\"))))">>,
+    ok = gen_tcp:send(C1, Run),
+    {ok, RunReply} = gen_tcp:recv(C1, 0, 5000),
+    ok = gen_tcp:close(C1),
+    %% Read the run's task id off the `(result ...)' reply.
+    {match, [Task]} =
+        re:run(RunReply, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    %% Send `(status "<task>")' on a fresh connection and read the state back.
+    {ok, C2} = connect(Path),
+    StatusReq = <<"(status \"", Task/binary, "\")">>,
+    ok = gen_tcp:send(C2, StatusReq),
+    {ok, StatusReply} = gen_tcp:recv(C2, 0, 5000),
+    ok = gen_tcp:close(C2),
+    %% The reply is a single `(status ...)' s-expr whose `(state ...)' sub-form is
+    %% `completed' -- the run's terminal state derived from its `run.completed'
+    %% event.
+    match = re:run(StatusReply, "^\\(status ", [{capture, none}]),
+    match = re:run(StatusReply, "\\(state completed\\)", [{capture, none}]),
     ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
