@@ -8,7 +8,8 @@ reconstruct(StorePid, RunId) ->
     case journaled_run(Events) of
         {ok, Steps, RunOptions} ->
             {ok, #{steps => Steps,
-                   run_options => RunOptions}};
+                   run_options => RunOptions,
+                   outputs => committed_outputs(Events)}};
         error ->
             {error, no_run_started_journal}
     end.
@@ -22,3 +23,13 @@ journaled_run([_Event | Rest]) ->
     journaled_run(Rest);
 journaled_run([]) ->
     error.
+
+committed_outputs(Events) ->
+    lists:foldl(fun committed_output/2, #{}, Events).
+
+committed_output(#{event_type := <<"step.succeeded">>,
+                   step_id := StepId,
+                   payload := #{output := Output}}, Acc) ->
+    Acc#{StepId => Output};
+committed_output(_Event, Acc) ->
+    Acc.
