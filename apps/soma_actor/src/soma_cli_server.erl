@@ -123,6 +123,8 @@ handle_lisp_request(Bytes, Socket, ModelConfig) ->
             handle_ask(Ask, ModelConfig);
         {ok, #{trace := #{correlation_id := CorrId}}} ->
             handle_trace(CorrId);
+        {ok, #{status := #{task_id := TaskId}}} ->
+            handle_status(TaskId);
         {error, Diagnostics} ->
             soma_lisp:render(#{status => error, error => Diagnostics})
     end.
@@ -208,6 +210,39 @@ handle_ask(Ask, ModelConfig) ->
 handle_trace(CorrId) ->
     Events = soma_trace:render_lisp(event_store_pid(), CorrId),
     ["(trace ", Events, ")"].
+
+%% Render a `(status "<task>")' read request. The run path sets the run's
+%% `session_id' to the task id, so a task's events are reachable by `by_session/2'
+%% even though the store has no `by_task' query. The reported `(state ...)' is
+%% derived from those events: a `run.completed' event maps to `completed', a
+%% `run.failed' / `run.timeout' / `run.cancelled' event to that terminal state,
+%% and an empty chain (no events for that id) to `unknown' -- an unknown id does
+%% not crash the handler, so the server stays up for the next connection.
+handle_status(TaskId) ->
+    Events = soma_event_store:by_session(event_store_pid(), TaskId),
+    State = derive_state(Events),
+    ["(status (state ", atom_to_list(State), "))"].
+
+%% Map a task's event chain to a terminal state. A run records exactly one of the
+%% terminal `run.*' events, so the first match wins; an empty chain is `unknown'.
+derive_state(Events) ->
+    Types = [maps:get(event_type, E) || E <- Events],
+    case lists:member(<<"run.completed">>, Types) of
+        true -> completed;
+        false ->
+            case lists:member(<<"run.failed">>, Types) of
+                true -> failed;
+                false ->
+                    case lists:member(<<"run.timeout">>, Types) of
+                        true -> timeout;
+                        false ->
+                            case lists:member(<<"run.cancelled">>, Types) of
+                                true -> cancelled;
+                                false -> unknown
+                            end
+                    end
+            end
+    end.
 
 %% The mock directive opts the actor drives `soma_llm_call' with. A mock
 %% `model_config' (carrying a `directive', no `provider') is the envelope's `llm'
