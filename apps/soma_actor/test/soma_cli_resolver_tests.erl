@@ -48,6 +48,35 @@ test_resolver_per_user_path_stable_across_processes() ->
 resolver_per_user_path_stable_across_processes_test() ->
     test_resolver_per_user_path_stable_across_processes().
 
+%% Criterion #11: the resolved per-user socket path is not derived from
+%% `os:getpid()'. Two halves: (1) a runtime check -- the resolved per-user
+%% path does not contain this process's OS pid; (2) a source scan -- the
+%% per-user branch of `soma_cli.erl' no longer calls `os:getpid()'.
+test_resolver_per_user_path_not_from_getpid() ->
+    Saved = os:getenv("XDG_RUNTIME_DIR"),
+    try
+        true = os:unsetenv("XDG_RUNTIME_DIR"),
+        Path = soma_cli:resolve_socket(#{}),
+        Pid = os:getpid(),
+        ?assertNotEqual(nomatch, string:find(Path, Pid)),
+        Src = read_soma_cli_src(),
+        ?assertNotEqual(nomatch, string:find(Src, "os:getpid()"))
+    after
+        restore_env("XDG_RUNTIME_DIR", Saved)
+    end.
+
+resolver_per_user_path_not_from_getpid_test() ->
+    test_resolver_per_user_path_not_from_getpid().
+
+%% Read the `soma_cli.erl' source for the source-scan half. Resolve it relative
+%% to the loaded module's beam so the test is location-independent.
+read_soma_cli_src() ->
+    Ebin = filename:dirname(code:which(soma_cli)),
+    AppDir = filename:dirname(Ebin),
+    SrcPath = filename:join([AppDir, "src", "soma_cli.erl"]),
+    {ok, Bin} = file:read_file(SrcPath),
+    Bin.
+
 restore_env(Var, false) ->
     os:unsetenv(Var);
 restore_env(Var, Value) ->
