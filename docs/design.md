@@ -114,9 +114,12 @@ language, and local CLI server/client modules.
 - end-to-end tests around process behavior;
 - a self-contained release.
 
-**Next:** persistent run resume (v0.7), plus productizing the external task CLI
-entrypoint and, later, structured real-model planning that emits tool-running
-proposals.
+**Next:** the persistent-resume executor. v0.7.1 landed the run journal and
+read-only progress reconstruction (`soma_run_resume:reconstruct/2` rebuilds
+steps, durable options, committed outputs, next step, and terminal status from
+the event trail), so the remaining work is replaying a run from that snapshot.
+Plus productizing the external task CLI entrypoint and, later, structured
+real-model planning that emits tool-running proposals.
 
 **Later:** DAG parallelism and distributed Erlang. See [roadmap.md](roadmap.md).
 

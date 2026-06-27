@@ -28,7 +28,7 @@ v0.4    soma_actor -- agent entity skeleton            [done]
 v0.4.1  actor hardening + release/docs alignment       [done]
 v0.5    LLM worker + proposal + policy + budget        [done]
 v0.6    trace tooling + persistent event store         [done]
-v0.7    persistent resume
+v0.7    persistent resume                              [v0.7.1 done; executor next]
 v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
@@ -200,15 +200,28 @@ truth, while `ask` and polling are convenience views.
 
 ## v0.7 — persistent resume
 
-Add a run journal that survives BEAM restarts. A resumed run replays the event
-trail to the last committed step and continues from there.
+Add a run journal that survives BEAM restarts, then let a resumed run replay the
+event trail to the last committed step and continue from there.
 
-Open design points:
+- `v0.7.1` — resume journal + read-only reconstruction [done] (#129): `soma_run`
+  journals each run into `run.started` as `#{steps, run_options}`, where
+  `run_options` is an allowlist of resume-safe metadata (`run_id`, optional
+  `session_id`, optional `correlation_id`) and never process-local values or
+  secrets. `soma_run_resume:reconstruct/2` reads the durable trail through
+  `soma_event_store:by_run/2` and rebuilds run progress — journaled steps,
+  durable options, committed outputs by step id, the first uncommitted step, and
+  terminal status — strictly read-only (no event append, no run child started).
+  It rejects a trail with no usable `run.started` journal, or one whose committed
+  step id is absent from the journal. Proofs in
+  [contracts/v0.7-test-contract.md](contracts/v0.7-test-contract.md).
+
+Still open (the resume executor):
 
 - idempotency rules for re-running or skipping completed steps;
 - what resume means for external CLI tools and stateful tools;
 - how actor task state is reconstructed from the event stream;
-- how cancellation and timeout are represented during resume.
+- how cancellation and timeout are represented during resume;
+- starting a resumed run from a reconstructed snapshot, and auto-resume on boot.
 
 ## v0.8 — DAG / parallel execution
 

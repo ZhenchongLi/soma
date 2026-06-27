@@ -9,7 +9,7 @@ are built. `README.md` remains the authoritative high-level spec; read it before
 changing runtime behaviour. The docs under `docs/contracts/` map behavioural
 guarantees to the tests that prove them.
 
-Current local gate observed in this checkout: EUnit 226 and Common Test 301
+Current local gate observed in this checkout: EUnit 227 and Common Test 313
 green on Erlang/OTP 29. A self-contained macOS arm64 release is built and
 verified. Linux x86_64 and Linux arm64 release artifacts remain packaging/CI
 work, not runtime logic.
@@ -63,10 +63,14 @@ Layer status:
   not complete: relx `bin/soma` is still the OTP release control script, not the
   final `soma run` / `soma ask` task-client parser.
 
-Next major runtime layer: v0.7 persistent run resume. Other open tracks:
-external CLI productization, structured real-model planning that emits
-tool-running proposals, effect-aware policy, log/index compaction, and Linux
-release artifacts.
+Latest runtime layer: the first **v0.7.1 persistent-resume slice** (#129) is in —
+a run journals its steps and durable options into `run.started`, and
+`soma_run_resume:reconstruct/2` rebuilds run progress (steps, durable options,
+committed outputs, next uncommitted step, terminal status) read-only from the
+durable event trail. The resume *executor* (replaying a run from that snapshot)
+is the next slice. Other open tracks: external CLI productization, structured
+real-model planning that emits tool-running proposals, effect-aware policy,
+log/index compaction, and Linux release artifacts.
 
 ## What Soma Is
 
