@@ -235,7 +235,7 @@ test_reconstruct_rejects_missing_run_started_journal(_Config) ->
                                    event_type => <<"step.succeeded">>,
                                    payload => #{output => #{value => <<"orphan">>}}}),
 
-    ?assertMatch({ok, _},
+    ?assertEqual({error, no_run_started_journal},
                  soma_run_resume:reconstruct(StorePid, RunId)).
 
 terminal_status_of(StorePid, RunId, Steps, TerminalEventType) ->
