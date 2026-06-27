@@ -121,6 +121,8 @@ handle_lisp_request(Bytes, Socket, ModelConfig) ->
             run_steps(Steps, Socket);
         {ok, #{ask := Ask}} ->
             handle_ask(Ask, ModelConfig);
+        {ok, #{trace := #{correlation_id := CorrId}}} ->
+            handle_trace(CorrId);
         {error, Diagnostics} ->
             soma_lisp:render(#{status => error, error => Diagnostics})
     end.
@@ -197,6 +199,15 @@ handle_ask(Ask, ModelConfig) ->
                        correlation_id => CorrId}
              end,
     soma_lisp:render(Result).
+
+%% Render a `(trace "<corr>")' read request. `soma_trace:render_lisp/2' fetches
+%% the correlation chain from the event store, sorts it by timestamp ascending,
+%% and renders one event s-expr per event in that order; this wraps those ordered
+%% event sub-forms in a single `(trace ...)' head. For a completed run the last
+%% sub-form by timestamp is the `run.completed' event.
+handle_trace(CorrId) ->
+    Events = soma_trace:render_lisp(event_store_pid(), CorrId),
+    ["(trace ", Events, ")"].
 
 %% The mock directive opts the actor drives `soma_llm_call' with. A mock
 %% `model_config' (carrying a `directive', no `provider') is the envelope's `llm'
