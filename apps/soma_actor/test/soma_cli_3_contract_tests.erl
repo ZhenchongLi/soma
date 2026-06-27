@@ -3,6 +3,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(DOC_PATH, "docs/contracts/cli-3-test-contract.md").
+-define(DIALYZER_REPORT_PATH, "docs/contracts/cli-3-dialyzer-pr-report.md").
 
 %% Issue #124 criterion 10: `docs/contracts/cli-3-test-contract.md' exists, is
 %% non-empty, and names a proving suite or module and each of its case names for
@@ -12,9 +13,12 @@
 %% together with each of its case names.
 
 read_doc() ->
-    case file:read_file(?DOC_PATH) of
+    read_doc(?DOC_PATH).
+
+read_doc(Path) ->
+    case file:read_file(Path) of
         {ok, Bin} -> Bin;
-        {error, Reason} -> erlang:error({cannot_read, ?DOC_PATH, Reason})
+        {error, Reason} -> erlang:error({cannot_read, Path, Reason})
     end.
 
 contains(Haystack, Needle) ->
@@ -54,3 +58,20 @@ test_doc_names_cli_3_suites_and_cases() ->
 
 doc_names_cli_3_suites_and_cases_test() ->
     test_doc_names_cli_3_suites_and_cases().
+
+%% Criterion 12: the branch carries the PR-ready Dialyzer report locally, so the
+%% no-PR GitHub state does not leave the acceptance evidence without a carrier.
+test_cli_3_dialyzer_pr_report_is_carried_locally() ->
+    Contract = read_doc(),
+    Report = read_doc(?DIALYZER_REPORT_PATH),
+    ?assert(byte_size(Report) > 0),
+    ?assert(contains(Contract, <<"cli-3-dialyzer-pr-report.md">>)),
+    ?assert(contains(Report, <<"rebar3 dialyzer">>)),
+    ?assert(contains(Report, <<"4 warnings">>)),
+    ?assert(contains(Report, <<"apps/soma_lfe/src/soma_lfe_reader.erl">>)),
+    ?assert(contains(Report, <<"apps/soma_runtime/src/soma_tool_call.erl">>)),
+    ?assert(contains(Report, <<"git diff origin/main...HEAD">>)),
+    ?assert(contains(Report, <<"PR body">>)).
+
+cli_3_dialyzer_pr_report_is_carried_locally_test() ->
+    test_cli_3_dialyzer_pr_report_is_carried_locally().
