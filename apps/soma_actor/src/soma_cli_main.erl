@@ -7,7 +7,7 @@
 %% intent escaper arrive in later cycles.
 -module(soma_cli_main).
 
--export([dispatch/1]).
+-export([dispatch/1, socket/1]).
 
 %% `run File' resolves the socket and drives `soma_cli:run/1', returning its exit
 %% code (0 only when the reply carries `(status completed)'). `ask Intent' resolves
