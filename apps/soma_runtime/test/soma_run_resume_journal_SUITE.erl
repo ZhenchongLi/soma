@@ -10,6 +10,7 @@
 -export([test_reconstruct_returns_journaled_steps/1]).
 -export([test_reconstruct_returns_journaled_durable_options/1]).
 -export([test_reconstruct_returns_committed_outputs_by_step_id/1]).
+-export([test_reconstruct_returns_first_uncommitted_step/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
@@ -17,7 +18,8 @@ all() ->
      test_restarted_disk_log_by_run_exposes_run_started_journal,
      test_reconstruct_returns_journaled_steps,
      test_reconstruct_returns_journaled_durable_options,
-     test_reconstruct_returns_committed_outputs_by_step_id].
+     test_reconstruct_returns_committed_outputs_by_step_id,
+     test_reconstruct_returns_first_uncommitted_step].
 
 init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
                   Config) ->
@@ -159,6 +161,33 @@ test_reconstruct_returns_committed_outputs_by_step_id(_Config) ->
     {ok, Reconstructed} = soma_run_resume:reconstruct(StorePid, RunId),
 
     ?assertEqual(CommittedOutputs, maps:get(outputs, Reconstructed, missing)).
+
+test_reconstruct_returns_first_uncommitted_step(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-reconstruct-next-step-1">>,
+    SessionId = <<"sess-reconstruct-next-step-1">>,
+    S1 = #{id => s1, tool => echo,
+           args => #{value => <<"committed">>}},
+    S2 = #{id => s2, tool => echo,
+           args => #{value => <<"uncommitted">>}},
+    Steps = [S1, S2],
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => #{run_id => RunId,
+                                                                 session_id => SessionId}}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+
+    {ok, Reconstructed} = soma_run_resume:reconstruct(StorePid, RunId),
+
+    ?assertEqual(S2, maps:get(next_step, Reconstructed, missing)).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
