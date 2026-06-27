@@ -22,26 +22,31 @@
 %% `(detach)' marker.
 -spec dispatch([string()]) -> integer().
 dispatch(["run", File | Flags]) ->
-    Opts = parse_flags(Flags),
-    soma_cli:run(maps:merge(#{file => File, socket => socket(Opts)},
-                            detach_opt(Opts)));
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:run(maps:merge(#{file => File, socket => socket(Opts)},
+                                detach_opt(Opts)))
+    end);
 dispatch(["ask", Intent | Flags]) ->
-    Opts = parse_flags(Flags),
     %% Escape `"' / `\\' in the user intent so the `(ask (intent "..."))' request
     %% `soma_cli:ask/1' renders is a valid s-expr the daemon parses, and the
     %% original string reaches the daemon intact.
-    soma_cli:ask(maps:merge(#{intent => soma_cli_intent:escape(Intent),
-                              socket => socket(Opts)},
-                            detach_opt(Opts)));
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:ask(maps:merge(#{intent => soma_cli_intent:escape(Intent),
+                                  socket => socket(Opts)},
+                                detach_opt(Opts)))
+    end);
 dispatch(["status", TaskId | Flags]) ->
-    Opts = parse_flags(Flags),
-    soma_cli:status(#{task_id => TaskId, socket => socket(Opts)});
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:status(#{task_id => TaskId, socket => socket(Opts)})
+    end);
 dispatch(["trace", CorrId | Flags]) ->
-    Opts = parse_flags(Flags),
-    soma_cli:trace(#{correlation_id => CorrId, socket => socket(Opts)});
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:trace(#{correlation_id => CorrId, socket => socket(Opts)})
+    end);
 dispatch(["cancel", TaskId | Flags]) ->
-    Opts = parse_flags(Flags),
-    soma_cli:cancel(#{task_id => TaskId, socket => socket(Opts)});
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:cancel(#{task_id => TaskId, socket => socket(Opts)})
+    end);
 %% Malformed argv -- no subcommand at all, an unknown subcommand, or a known
 %% subcommand missing its required positional -- has no matching clause above.
 %% Print a usage message to stderr (stdout stays clean for the well-formed
@@ -57,14 +62,36 @@ usage() ->
                  "usage: soma <run|ask|status|trace|cancel> ...\n"),
     2.
 
+%% Parse the trailing flags, then run `Run(Opts)' for a well-formed flag list.
+%% A malformed flag list -- an unknown flag, or `--socket' with no following
+%% value -- has no valid parse, so it routes to the usage path instead of letting
+%% `parse_flags/1' raise a `function_clause' (which would make `dispatch/1' crash
+%% rather than return an integer). Returns whatever `Run/1' or `usage/0' returns.
+with_flags(Flags, Run) ->
+    case parse_flags(Flags) of
+        {ok, Opts} -> Run(Opts);
+        error -> usage()
+    end.
+
 %% Parse the trailing flags after a subcommand's positional: `--detach' (a marker)
-%% and `--socket <path>' (the resolver override). Returns an options map.
+%% and `--socket <path>' (the resolver override). Returns `{ok, OptsMap}' for a
+%% well-formed flag list, or `error' for an unknown flag or a `--socket' with no
+%% following value.
 parse_flags([]) ->
-    #{};
+    {ok, #{}};
 parse_flags(["--detach" | Rest]) ->
-    (parse_flags(Rest))#{detach => true};
+    add_flag(parse_flags(Rest), detach, true);
 parse_flags(["--socket", Path | Rest]) ->
-    (parse_flags(Rest))#{socket => Path}.
+    add_flag(parse_flags(Rest), socket, Path);
+parse_flags(_Other) ->
+    error.
+
+%% Fold a key/value into a `{ok, Map}' parse result, propagating an earlier
+%% `error' unchanged.
+add_flag({ok, Opts}, Key, Value) ->
+    {ok, Opts#{Key => Value}};
+add_flag(error, _Key, _Value) ->
+    error.
 
 %% The socket the subcommand connects to. Both override and fallback go through
 %% the shared `soma_cli:resolve_socket/1' so a separately-launched client lands
