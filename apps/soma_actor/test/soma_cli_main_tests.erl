@@ -51,6 +51,55 @@ test_dispatch_malformed_returns_integer() ->
 dispatch_malformed_returns_integer_test() ->
     test_dispatch_malformed_returns_integer().
 
+%% Criterion #16: `soma_cli_main:main(Argv)' halts the OS process with the
+%% `dispatch/1' integer as the exit status, and routes any diagnostics to
+%% stderr. A real `halt/1' would kill the test runner, so this is a
+%% source-structure assertion over `soma_cli_main.erl': `main/1' is exported,
+%% a `main/1' clause exists, it threads `dispatch/1''s result straight into
+%% `halt/1' (the whitespace-collapsed source contains `halt(dispatch('), and
+%% the source's only diagnostic write target is `standard_error' -- there is no
+%% `io:put_chars'/`io:format' to stdout or the bare group leader.
+test_main_halts_with_dispatch_code() ->
+    Src = read_main_source(),
+    Collapsed = collapse_ws(Src),
+    %% `main/1' is exported.
+    ?assertMatch({match, _},
+                 re:run(Collapsed, "-export\\(\\[[^\\]]*main/1", [{capture, first}])),
+    %% A `main/1' clause is defined.
+    ?assertMatch({match, _},
+                 re:run(Collapsed, "main\\(", [{capture, first}])),
+    %% `dispatch/1''s result is threaded straight into `halt/1'.
+    ?assertMatch({match, _},
+                 re:run(Collapsed, "halt\\(dispatch\\(", [{capture, first}])),
+    %% Every diagnostic write goes to `standard_error': every `io:put_chars(' and
+    %% every `io:format(' names `standard_error' as its first argument. (Count of
+    %% bare put_chars/format calls must equal the count of standard_error ones.)
+    AllPutChars = count_src(Src, <<"io:put_chars(">>),
+    ErrPutChars = count_src(Src, <<"io:put_chars(standard_error">>),
+    ?assertEqual({put_chars, AllPutChars}, {put_chars, ErrPutChars}),
+    AllFormat = count_src(Src, <<"io:format(">>),
+    ErrFormat = count_src(Src, <<"io:format(standard_error">>),
+    ?assertEqual({format, AllFormat}, {format, ErrFormat}).
+
+main_halts_with_dispatch_code_test() ->
+    test_main_halts_with_dispatch_code().
+
+%% Read the `soma_cli_main.erl' source under the app's `src/' directory. Under
+%% EUnit `code:lib_dir(soma_actor)' points at `_build/test/lib/soma_actor',
+%% whose `src/' subdir holds the copied module source.
+read_main_source() ->
+    Path = filename:join([code:lib_dir(soma_actor), "src", "soma_cli_main.erl"]),
+    {ok, Src} = file:read_file(Path),
+    Src.
+
+%% Collapse every run of whitespace to nothing, so a structural match like
+%% `halt(dispatch(' tolerates any inter-token spacing/newlines in the source.
+collapse_ws(Src) ->
+    re:replace(Src, "\\s+", "", [global, {return, binary}]).
+
+count_src(Src, Needle) ->
+    length(binary:matches(Src, Needle)).
+
 %% Run `soma_cli_main:dispatch(Argv)' with stdout and stderr each routed to a
 %% recording IO server, returning `{Exit, StdoutBin, StderrBin}'. The group
 %% leader stands in for stdout; the `standard_error' registered process is
