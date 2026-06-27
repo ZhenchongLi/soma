@@ -143,7 +143,16 @@ parse_ask_fields([], Acc) ->
                        line => 0}]}
     end;
 parse_ask_fields([[intent, Value] | Rest], Acc) when is_binary(Value) ->
-    parse_ask_fields(Rest, Acc#{intent => Value}).
+    parse_ask_fields(Rest, Acc#{intent => Value});
+parse_ask_fields([[allow | Tools] | Rest], Acc) ->
+    ToolPolicy = #{allowed_tools => Tools},
+    parse_ask_fields(Rest, Acc#{tool_policy => ToolPolicy});
+parse_ask_fields([['budget-llm', N] | Rest], Acc) when is_integer(N) ->
+    Budget = maps:get(budget, Acc, #{}),
+    parse_ask_fields(Rest, Acc#{budget => Budget#{max_llm_calls => N}});
+parse_ask_fields([['budget-steps', N] | Rest], Acc) when is_integer(N) ->
+    Budget = maps:get(budget, Acc, #{}),
+    parse_ask_fields(Rest, Acc#{budget => Budget#{max_steps => N}}).
 
 -spec parse_run([term()]) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
