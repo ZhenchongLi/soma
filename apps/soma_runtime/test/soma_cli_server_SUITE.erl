@@ -306,7 +306,7 @@ test_server_serves_after_client_disconnect(Config) ->
     {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
     %% The second reply must be a completed `(result ...)' carrying s1's echo value.
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
-    match = re:run(Reply, "\\(status failed\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "\\(s1 \\(value \"ok\"\\)\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
 
