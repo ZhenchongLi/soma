@@ -55,7 +55,7 @@ thin `soma run` client binary and `soma daemon` boot command are CLI.1b.
 
 ## Proving suite
 
-Pure protocol shaping — `apps/soma_runtime/test/soma_cli_server_tests.erl` (EUnit):
+Pure protocol shaping — `apps/soma_actor/test/soma_cli_server_tests.erl` (EUnit):
 
 | # | Proof | Case |
 |---|---|---|
@@ -63,7 +63,7 @@ Pure protocol shaping — `apps/soma_runtime/test/soma_cli_server_tests.erl` (EU
 | 2 | the reason tuple `{budget_exceeded, max_steps}` encodes to `{"tag":"budget_exceeded","detail":["max_steps"]}` | `encode_reason_tuple_to_tag_detail_test` |
 | 3 | the 4-byte length prefix round-trips (`frame`/`unframe`) | `frame_unframe_round_trips_test` |
 
-Listener, lifecycle, and run paths — `apps/soma_runtime/test/soma_cli_server_SUITE.erl` (CT, real `gen_tcp` client over a temp Unix socket):
+Listener, lifecycle, and run paths — `apps/soma_actor/test/soma_cli_server_SUITE.erl` (CT, real `gen_tcp` client over a temp Unix socket):
 
 | # | Proof | Case |
 |---|---|---|
@@ -92,7 +92,7 @@ connection handler is independent, so cancelling one run does not disturb the
 listener or other connections.
 
 The three proofs live in
-`apps/soma_runtime/test/soma_cli_server_SUITE.erl` (CT, real `gen_tcp` client over
+`apps/soma_actor/test/soma_cli_server_SUITE.erl` (CT, real `gen_tcp` client over
 a temp Unix socket). Each drives a slow `sleep` step, waits for the run's
 `tool.started` event in the store so the disconnect lands while a worker is live,
 then closes the socket:

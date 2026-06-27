@@ -34,7 +34,7 @@ cli_server_source_is_json_free_test() ->
     test_cli_server_source_is_json_free().
 
 cli_server_source() ->
-    Path = filename:join([code:lib_dir(soma_runtime), "src",
+    Path = filename:join([code:lib_dir(soma_actor), "src",
                           "soma_cli_server.erl"]),
     {ok, Src} = file:read_file(Path),
     Src.

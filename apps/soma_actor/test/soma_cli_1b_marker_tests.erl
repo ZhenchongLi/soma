@@ -66,10 +66,11 @@ count(Src, Needle) ->
     length(binary:matches(Src, Needle)).
 
 %% Resolve a CLI.1b test source under the test app's `test/' directory. Under
-%% EUnit `code:lib_dir(soma_runtime)' points at `_build/test/lib/soma_runtime',
-%% whose `test/' subdir holds the copied test sources.
+%% EUnit `code:lib_dir(soma_actor)' points at `_build/test/lib/soma_actor',
+%% whose `test/' subdir holds the copied test sources (the CLI server modules
+%% live in soma_actor now, so the ask path can call soma_actor:ask/3).
 read_test_source(File) ->
-    Path = filename:join([code:lib_dir(soma_runtime), "test",
+    Path = filename:join([code:lib_dir(soma_actor), "test",
                           binary_to_list(File)]),
     {ok, Src} = file:read_file(Path),
     Src.
