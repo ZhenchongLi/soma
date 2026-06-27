@@ -30,6 +30,7 @@
 -export([test_cancel_detached_run_kills_tool_worker/1]).
 -export([test_cancel_detached_run_replies_cancelled/1]).
 -export([test_cancel_terminal_task_reports_already_terminal_no_new_run/1]).
+-export([test_non_detached_run_still_terminal_and_disconnect_cancels/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -58,7 +59,8 @@ all() ->
      test_cancel_detached_run_records_run_cancelled,
      test_cancel_detached_run_kills_tool_worker,
      test_cancel_detached_run_replies_cancelled,
-     test_cancel_terminal_task_reports_already_terminal_no_new_run].
+     test_cancel_terminal_task_reports_already_terminal_no_new_run,
+     test_non_detached_run_still_terminal_and_disconnect_cancels].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -776,6 +778,40 @@ test_cancel_terminal_task_reports_already_terminal_no_new_run(Config) ->
 
     <<"(result (status completed) (note already-terminal))">> = CancelReply,
     BeforeRunIds = run_ids(StorePid).
+
+%% Criterion #14 (CLI.4): without a `(detach)' marker, `(run ...)' remains the
+%% synchronous path. A slow run must not reply `(accepted ...)' while it is still
+%% executing; it waits for the terminal `(result ...)' instead. A separate
+%% non-detached slow run whose client disconnects mid-flight must still be owned
+%% by that connection handler, so the disconnect cancels the live run even if an
+%% ignored extra packet reaches the one-request socket before the close.
+test_non_detached_run_still_terminal_and_disconnect_cancels(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+
+    {ok, C1} = connect(Path),
+    TerminalReq = <<"(run (step s1 sleep (args (ms 200))))">>,
+    ok = gen_tcp:send(C1, TerminalReq),
+    {error, timeout} = gen_tcp:recv(C1, 0, 50),
+    {ok, TerminalReply} = gen_tcp:recv(C1, 0, 5000),
+    ok = gen_tcp:close(C1),
+    match = re:run(TerminalReply, "^\\(result ", [{capture, none}]),
+    nomatch = re:run(TerminalReply, "^\\(accepted ", [{capture, none}]),
+    match = re:run(TerminalReply, "\\(status completed\\)",
+                   [{capture, none}]),
+
+    Before = tool_started_runs(StorePid),
+    {ok, C2} = connect(Path),
+    CancelReq = <<"(run (step s1 sleep (args (ms 5000))))">>,
+    ok = gen_tcp:send(C2, CancelReq),
+    RunId = wait_for_new_tool_started_run(StorePid, Before, 100),
+    ok = gen_tcp:send(C2, <<"(status \"ignored\")">>),
+    ok = gen_tcp:close(C2),
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, Event) || Event <- Events],
+    true = lists:member(<<"run.cancelled">>, Types).
 
 daemon_task_registry_pid() ->
     Pid = whereis(soma_cli_task_registry),
