@@ -9,13 +9,15 @@
 -export([test_restarted_disk_log_by_run_exposes_run_started_journal/1]).
 -export([test_reconstruct_returns_journaled_steps/1]).
 -export([test_reconstruct_returns_journaled_durable_options/1]).
+-export([test_reconstruct_returns_committed_outputs_by_step_id/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
      test_direct_run_journals_durable_options_with_correlation_id,
      test_restarted_disk_log_by_run_exposes_run_started_journal,
      test_reconstruct_returns_journaled_steps,
-     test_reconstruct_returns_journaled_durable_options].
+     test_reconstruct_returns_journaled_durable_options,
+     test_reconstruct_returns_committed_outputs_by_step_id].
 
 init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
                   Config) ->
@@ -139,11 +141,36 @@ test_reconstruct_returns_journaled_durable_options(_Config) ->
                                          correlation_id := CorrId}}},
                  soma_run_resume:reconstruct(StorePid, RunId)).
 
+test_reconstruct_returns_committed_outputs_by_step_id(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo,
+               args => #{value => <<"first committed">>}},
+             #{id => s2, tool => echo,
+               args => #{value => <<"second committed">>}}],
+
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    CommittedOutputs = committed_outputs_by_step_id(Events),
+    ?assertEqual(#{s1 => #{value => <<"first committed">>},
+                   s2 => #{value => <<"second committed">>}},
+                 CommittedOutputs),
+    {ok, Reconstructed} = soma_run_resume:reconstruct(StorePid, RunId),
+
+    ?assertEqual(CommittedOutputs, maps:get(outputs, Reconstructed, missing)).
+
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
     {soma_event_store, Pid, _Type, _Mods} =
         lists:keyfind(soma_event_store, 1, Children),
     Pid.
+
+committed_outputs_by_step_id(Events) ->
+    maps:from_list(
+      [{maps:get(step_id, Event), maps:get(output, maps:get(payload, Event))}
+       || Event <- Events,
+          maps:get(event_type, Event, undefined) =:= <<"step.succeeded">>]).
 
 wait_for_run_completed(_StorePid, _RunId, 0) ->
     {error, timeout};
