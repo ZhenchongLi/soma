@@ -234,10 +234,56 @@ handle_status(TaskId) ->
 
 %% Fire a cancellation request for a live detached task. The registry only sends
 %% the existing `cancel' message to the run; `soma_run' owns worker teardown and
-%% `run.cancelled' emission.
+%% `run.cancelled' emission. The handler then waits briefly for the registry to
+%% observe the run's terminal message and reports that state to the client.
 handle_cancel(TaskId) ->
-    _ = soma_cli_task_registry:cancel(TaskId),
-    noreply.
+    case soma_cli_task_registry:cancel(TaskId) of
+        ok ->
+            Task = wait_for_cancel_terminal(TaskId, 100),
+            render_cancel_result(TaskId, Task);
+        {error, {not_running, _Status}} ->
+            render_cancel_result(TaskId, lookup_cancel_task(TaskId));
+        {error, not_found} ->
+            render_cancel_result(TaskId, #{status => unknown,
+                                           error => not_found})
+    end.
+
+wait_for_cancel_terminal(TaskId, 0) ->
+    lookup_cancel_task(TaskId);
+wait_for_cancel_terminal(TaskId, N) ->
+    case soma_cli_task_registry:lookup(TaskId) of
+        {ok, #{status := running}} ->
+            timer:sleep(20),
+            wait_for_cancel_terminal(TaskId, N - 1);
+        {ok, Task} ->
+            Task;
+        {error, not_found} ->
+            #{status => unknown, error => not_found}
+    end.
+
+lookup_cancel_task(TaskId) ->
+    case soma_cli_task_registry:lookup(TaskId) of
+        {ok, Task} -> Task;
+        {error, not_found} -> #{status => unknown, error => not_found}
+    end.
+
+render_cancel_result(TaskId, Task) ->
+    Status = maps:get(status, Task, unknown),
+    ["(result (status ", atom_to_list(Status), ") "
+     "(task-id ", soma_lisp:render(TaskId), ")",
+     render_cancel_error(Task),
+     render_cancel_correlation(Task),
+     ")"].
+
+render_cancel_error(#{error := Reason}) ->
+    [" (error ", soma_lisp:render(Reason), ")"];
+render_cancel_error(_Task) ->
+    [].
+
+render_cancel_correlation(#{correlation_id := CorrId}) ->
+    [" (correlation-id ", soma_lisp:render(CorrId), ")"];
+render_cancel_correlation(_Task) ->
+    [].
 
 %% Map a task's event chain to a terminal state. A run records exactly one of the
 %% terminal `run.*' events, so the first match wins; an empty chain is `unknown'.
