@@ -2,7 +2,7 @@
 %% run representation, or a list of structured diagnostics.
 -module(soma_lfe_parser).
 
--export([parse_run/1, parse_msg/1, parse_proposal/1]).
+-export([parse_run/1, parse_msg/1, parse_proposal/1, parse_ask/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -125,6 +125,18 @@ parse_proposal(Other) ->
                message => iolist_to_binary(
                    io_lib:format("malformed proposal form: ~p", [Other])),
                line => 0}]}.
+
+%% @doc Parse a single (ask ...) form into an ask command map.
+%% This slice handles the bare-intent case: a required (intent "...")
+%% sub-form holding a string produces #{ask => #{intent => <<"...">>}}.
+-spec parse_ask([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_ask([ask | SubForms]) ->
+    parse_ask_fields(SubForms, #{}).
+
+parse_ask_fields([], Acc) ->
+    {ok, #{ask => Acc}};
+parse_ask_fields([[intent, Value] | Rest], Acc) when is_binary(Value) ->
+    parse_ask_fields(Rest, Acc#{intent => Value}).
 
 -spec parse_run([term()]) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
