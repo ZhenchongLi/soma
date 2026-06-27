@@ -43,7 +43,9 @@ init(Opts) ->
                  event_store = maps:get(event_store, Opts, undefined),
                  steps = maps:get(steps, Opts, []),
                  pending = maps:get(steps, Opts, [])},
-    emit(Data, <<"run.started">>, #{payload => #{steps => Data#data.steps}}),
+    emit(Data, <<"run.started">>,
+         #{payload => #{steps => Data#data.steps,
+                        run_options => durable_run_options(Data)}}),
     {ok, executing, Data, [{next_event, internal, next_step}]}.
 
 %% Drive the next step, or finish the run when none remain.
@@ -229,6 +231,17 @@ adapter_opts(#{adapter := erlang_module, module := Module}) ->
     #{module => Module};
 adapter_opts(#{adapter := cli, executable := Executable, argv := Argv}) ->
     #{executable => Executable, argv => Argv}.
+
+durable_run_options(#data{run_id = RunId,
+                          session_id = SessionId,
+                          correlation_id = CorrelationId}) ->
+    add_optional(correlation_id, CorrelationId,
+                 add_optional(session_id, SessionId, #{run_id => RunId})).
+
+add_optional(_Key, undefined, Acc) ->
+    Acc;
+add_optional(Key, Value, Acc) ->
+    Acc#{Key => Value}.
 
 %% Record the failure trail (`tool.failed', `step.failed', `run.failed'), tell
 %% the session, and move to the `failed' state. Shared by the `{error, _}'
