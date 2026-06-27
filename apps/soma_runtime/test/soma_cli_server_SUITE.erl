@@ -274,7 +274,7 @@ test_worker_dead_after_client_disconnect(Config) ->
     %% The disconnect drives the run to `cancelled'.
     ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
     %% The cancel stopped the live worker -- it is no longer alive.
-    true = is_process_alive(WorkerPid).
+    false = is_process_alive(WorkerPid).
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
