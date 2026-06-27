@@ -8,12 +8,14 @@
 -export([test_direct_run_journals_durable_options_with_correlation_id/1]).
 -export([test_restarted_disk_log_by_run_exposes_run_started_journal/1]).
 -export([test_reconstruct_returns_journaled_steps/1]).
+-export([test_reconstruct_returns_journaled_durable_options/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
      test_direct_run_journals_durable_options_with_correlation_id,
      test_restarted_disk_log_by_run_exposes_run_started_journal,
-     test_reconstruct_returns_journaled_steps].
+     test_reconstruct_returns_journaled_steps,
+     test_reconstruct_returns_journaled_durable_options].
 
 init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
                   Config) ->
@@ -115,6 +117,26 @@ test_reconstruct_returns_journaled_steps(_Config) ->
     {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
 
     ?assertMatch({ok, #{steps := Steps}},
+                 soma_run_resume:reconstruct(StorePid, RunId)).
+
+test_reconstruct_returns_journaled_durable_options(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-reconstruct-options-1">>,
+    SessionId = <<"sess-reconstruct-options-1">>,
+    CorrId = <<"corr-reconstruct-options-1">>,
+    Steps = [#{id => s1, tool => echo,
+               args => #{value => <<"reconstruct durable options">>}}],
+
+    {ok, _RunPid} = soma_run_sup:start_run(#{run_id => RunId,
+                                             session_id => SessionId,
+                                             session_pid => self(),
+                                             event_store => StorePid,
+                                             correlation_id => CorrId,
+                                             steps => Steps}),
+
+    ?assertMatch({ok, #{run_options := #{run_id := RunId,
+                                         session_id := SessionId,
+                                         correlation_id := CorrId}}},
                  soma_run_resume:reconstruct(StorePid, RunId)).
 
 event_store_pid() ->
