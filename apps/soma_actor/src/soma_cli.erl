@@ -4,7 +4,7 @@
 %% workflow source through unchanged; the daemon is the parser.
 -module(soma_cli).
 
--export([run/1, daemon/1]).
+-export([run/1, ask/1, daemon/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -20,6 +20,28 @@ run(#{file := File, socket := Path}) ->
     ok = gen_tcp:close(Sock),
     io:format("~s~n", [Reply]),
     exit_code(Reply).
+
+%% Build the `(ask (intent "..."))' source from the intent string client-side --
+%% the daemon is the only parser -- then drive the same connect / frame+send /
+%% read / print / exit-code path as `run/1'. The reply is the framed
+%% `(result ...)' s-expr; exit 0 when its status sub-form is `completed'. The mock
+%% (or a real provider) lives at the daemon's `model_config'; the client never
+%% sends a model.
+-spec ask(map()) -> non_neg_integer().
+ask(#{intent := Intent, socket := Path}) ->
+    Source = ask_source(Intent),
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, Source),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    io:format("~s~n", [Reply]),
+    exit_code(Reply).
+
+%% Wrap the intent string in an `(ask (intent "..."))' s-expr. The intent is a
+%% quoted Lisp string, so it is the literal bytes between the quotes.
+ask_source(Intent) ->
+    iolist_to_binary(["(ask (intent \"", Intent, "\"))"]).
 
 %% Boot the daemon: start the runtime, then a `soma_cli_server' listener on a
 %% resolved socket path. A test-supplied `socket' override points both ends at a
