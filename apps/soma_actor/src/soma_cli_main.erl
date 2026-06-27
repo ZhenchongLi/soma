@@ -7,7 +7,16 @@
 %% valid s-expr the daemon parses, reaching it intact.
 -module(soma_cli_main).
 
--export([dispatch/1, socket/1]).
+-export([main/1, dispatch/1, socket/1]).
+
+%% Process entry point. Dispatch the argv to its subcommand and halt the OS
+%% process with the resulting integer exit code, so the shell sees the right
+%% status. `dispatch/1' already routes every diagnostic (the usage message) to
+%% `standard_error', leaving stdout for a subcommand's reply -- `main/1' adds no
+%% output of its own.
+-spec main([string()]) -> no_return().
+main(Argv) ->
+    halt(dispatch(Argv)).
 
 %% `run File' resolves the socket and drives `soma_cli:run/1', returning its exit
 %% code (0 only when the reply carries `(status completed)'). `ask Intent' resolves
