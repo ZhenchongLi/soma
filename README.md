@@ -17,39 +17,10 @@ runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `Lisp at the edge -> validated data -> OTP execution`.
 
 **Status — built and green on `main`** (EUnit 227, Common Test 313, Erlang/OTP 29).
-The runtime executes sequential runs, isolates failures, and runs both in-BEAM
-Erlang tools and external one-shot CLI tools — each proven under test, asserting
-*process survival*, not just return values. An LFE DSL compile-only layer
-(v0.3) is built and proven. The **`soma_actor` agent-entity layer** (v0.4) is
-built on top of the execution core: a long-lived `gen_statem` that takes
-messages, creates tasks, runs them through `soma_run`, and returns results. On top
-of that, the **agent decision layer** (v0.5) is built: a supervised LLM-call
-worker, a validated proposal schema, a policy gate, decision-loop execution,
-per-task budgets, and actor-to-actor messages — so an envelope can carry a model
-call that produces a proposal, which is gated and then executed, all under one
-auditable `correlation_id`. The mock LLM remains the hermetic test-gate default,
-and a real OpenAI-compatible provider now exists behind the same call seam
-(`soma_llm_openai`, wired through actor `model_config` for opt-in live use). The
-**durability + observability layer** (v0.6) then makes the event stream both
-readable and durable: `soma_trace` renders one `correlation_id` as a
-timestamp-ordered timeline, and the event store gains an **opt-in `disk_log`
-backend** (turned on with one app env) whose events survive a BEAM restart —
-behind the same query API, with the in-memory store still the default. Building on
-that durable trail, the **first persistent-resume slice** (v0.7.1) reads it back:
-a run journals its steps and durable options into `run.started`, and
-`soma_run_resume:reconstruct/2` rebuilds run progress — steps, durable options,
-committed step outputs by id, the next uncommitted step, and terminal status —
-read-only from the event stream, with resuming a run's *execution* from that
-snapshot left to the next slice. On top of
-that, the Lisp edge language has grown beyond `(run ...)`: actors accept Lisp
-messages, mock LLM outputs can be Lisp proposals, traces render as Lisp, and a
-bounded repair loop can fix malformed Lisp proposals without bypassing policy or
-budget. The local daemon/client modules (`soma_cli`, `soma_cli_server`) expose a
-single-user Unix-socket Lisp wire for `run`, `ask`, `status`, `trace`, `cancel`,
-and detached runs; these are Erlang APIs today, while the relx `bin/soma` script
-is still the standard OTP release control script. A
-self-contained macOS arm64 release is built and verified; the Linux x86_64 / arm64
-artifacts are the one remaining packaging task.
+Every layer is proven under test, asserting *process survival*, not just return
+values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
+
+![Soma status — six built runtime layers stacked from the v0.1–v0.2 runtime core up to the v0.7.1 resume journal, all green; alongside, two in-build tracks (a real OpenAI-compatible LLM provider and the soma_cli Lisp wire) and two not-yet-built items, the resume executor and the Linux x86_64 / arm64 release.](docs/diagrams/status-layers.svg)
 
 ## The idea
 
