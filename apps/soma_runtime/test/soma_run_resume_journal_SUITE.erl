@@ -12,6 +12,7 @@
 -export([test_reconstruct_returns_committed_outputs_by_step_id/1]).
 -export([test_reconstruct_returns_first_uncommitted_step/1]).
 -export([test_reconstruct_returns_terminal_status/1]).
+-export([test_reconstruct_rejects_missing_run_started_journal/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
@@ -21,7 +22,8 @@ all() ->
      test_reconstruct_returns_journaled_durable_options,
      test_reconstruct_returns_committed_outputs_by_step_id,
      test_reconstruct_returns_first_uncommitted_step,
-     test_reconstruct_returns_terminal_status].
+     test_reconstruct_returns_terminal_status,
+     test_reconstruct_rejects_missing_run_started_journal].
 
 init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
                   Config) ->
@@ -212,6 +214,29 @@ test_reconstruct_returns_terminal_status(_Config) ->
     ?assertEqual(undefined,
                  terminal_status_of(StorePid, <<"run-terminal-none">>,
                                     Steps, undefined)).
+
+test_reconstruct_rejects_missing_run_started_journal(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-reconstruct-no-journal-1">>,
+    SessionId = <<"sess-reconstruct-no-journal-1">>,
+    %% A trail with run events but no usable `run.started' journal: a
+    %% malformed `run.started' payload (no list-valued steps / map-valued
+    %% run_options) plus a `step.succeeded', which must not satisfy the
+    %% reconstruct precondition.
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"orphan">>}}}),
+
+    ?assertMatch({ok, _},
+                 soma_run_resume:reconstruct(StorePid, RunId)).
 
 terminal_status_of(StorePid, RunId, Steps, TerminalEventType) ->
     ok = soma_event_store:append(StorePid,
