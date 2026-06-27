@@ -170,8 +170,8 @@ api_key_appears_in_no_emitted_event(_Config) ->
     %% Scan the WHOLE event map -- every key and value, not just `payload' (actor
     %% events nest nothing under `payload', so the old payload-only scan was inert).
     %% The actor emits ids only -- never the api_key -- so the sentinel appears in
-    %% no event field. (Staged red: asserted `true' to make the guard fire.)
-    true = lists:any(fun(E) -> term_contains(E, Sentinel) end, Events),
+    %% no event field.
+    false = lists:any(fun(E) -> term_contains(E, Sentinel) end, Events),
     true = is_process_alive(ActorPid),
     ok.
 
