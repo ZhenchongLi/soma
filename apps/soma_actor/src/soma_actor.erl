@@ -838,7 +838,8 @@ build_call_opts(#{provider := openai_compat,
     %% soma_llm_openai:chat/1 to parse a {Status, Body} pair directly and open no
     %% socket (the same no-socket seam node B.1 exposed). Each is copied only when
     %% present, so a config without one leaves that key off the opts.
-    copy_optional([api_key, response], ModelConfig, Opts);
+    copy_optional([api_key, response, enable_thinking, max_tokens],
+                  ModelConfig, Opts);
 %% A non-real-provider `model_config' -- empty or carrying a `directive' (the
 %% v0.5 mock default) -- is not routed: the builder returns the envelope's
 %% `llm' map unchanged, the mock directive opts the actor passes to
@@ -848,8 +849,8 @@ build_call_opts(_ModelConfig, Envelope) ->
 
 %% Copy the given keys from Src into Dst, each only when Src carries it. Used by
 %% build_call_opts/2 to thread the model_config's optional provider-side fields
-%% (api_key, response) into the worker opts without overwriting anything when a
-%% field is absent.
+%% (api_key, response, enable_thinking, max_tokens) into the worker opts without
+%% overwriting anything when a field is absent.
 copy_optional(Keys, Src, Dst) ->
     lists:foldl(
       fun(Key, Acc) ->
