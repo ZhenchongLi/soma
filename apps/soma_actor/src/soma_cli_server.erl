@@ -319,7 +319,7 @@ derive_state(Events) ->
 -spec ask_envelope(binary(), binary(), binary(), map()) -> map().
 ask_envelope(Intent, TaskId, CorrId, Llm) ->
     #{type => <<"ask">>,
-      payload => #{text => Intent},
+      payload => #{prompt => Intent},
       task_id => TaskId,
       correlation_id => CorrId,
       llm => Llm}.
