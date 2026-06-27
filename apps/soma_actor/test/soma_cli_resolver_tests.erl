@@ -58,9 +58,9 @@ test_resolver_per_user_path_not_from_getpid() ->
         true = os:unsetenv("XDG_RUNTIME_DIR"),
         Path = soma_cli:resolve_socket(#{}),
         Pid = os:getpid(),
-        ?assertNotEqual(nomatch, string:find(Path, Pid)),
-        Src = read_soma_cli_src(),
-        ?assertNotEqual(nomatch, string:find(Src, "os:getpid()"))
+        ?assertEqual(nomatch, string:find(Path, Pid)),
+        Code = read_soma_cli_code(),
+        ?assertEqual(nomatch, string:find(Code, "os:getpid()"))
     after
         restore_env("XDG_RUNTIME_DIR", Saved)
     end.
@@ -68,14 +68,20 @@ test_resolver_per_user_path_not_from_getpid() ->
 resolver_per_user_path_not_from_getpid_test() ->
     test_resolver_per_user_path_not_from_getpid().
 
-%% Read the `soma_cli.erl' source for the source-scan half. Resolve it relative
-%% to the loaded module's beam so the test is location-independent.
-read_soma_cli_src() ->
+%% Read the `soma_cli.erl' source with comment lines stripped, for the
+%% source-scan half: a doc comment may legitimately mention `os:getpid()' in
+%% prose, so the scan must see only code -- an actual call, not the warning
+%% against it. Resolve the path from the loaded module's beam so the test is
+%% location-independent.
+read_soma_cli_code() ->
     Ebin = filename:dirname(code:which(soma_cli)),
     AppDir = filename:dirname(Ebin),
     SrcPath = filename:join([AppDir, "src", "soma_cli.erl"]),
     {ok, Bin} = file:read_file(SrcPath),
-    Bin.
+    Lines = string:split(Bin, "\n", all),
+    Code = [L || L <- Lines,
+                 nomatch =:= re:run(L, "^\\s*%", [{capture, none}])],
+    iolist_to_binary(lists:join("\n", Code)).
 
 restore_env(Var, false) ->
     os:unsetenv(Var);
