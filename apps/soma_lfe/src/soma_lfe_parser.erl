@@ -2,7 +2,8 @@
 %% run representation, or a list of structured diagnostics.
 -module(soma_lfe_parser).
 
--export([parse_run/1, parse_msg/1, parse_proposal/1, parse_ask/1, parse_trace/1]).
+-export([parse_run/1, parse_msg/1, parse_proposal/1, parse_ask/1, parse_trace/1,
+         parse_status/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -174,6 +175,14 @@ parse_trace([trace, CorrId]) when is_binary(CorrId) ->
 parse_trace(_Other) ->
     {error, [#{code => malformed_form,
                message => <<"trace requires a single string argument: (trace \"<correlation-id>\")">>,
+               line => 0}]}.
+
+-spec parse_status([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_status([status, TaskId]) when is_binary(TaskId) ->
+    {ok, #{status => #{task_id => TaskId}}};
+parse_status(_Other) ->
+    {error, [#{code => malformed_form,
+               message => <<"status requires a single string argument: (status \"<task-id>\")">>,
                line => 0}]}.
 
 -spec parse_run([term()]) ->
