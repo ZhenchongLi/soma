@@ -35,6 +35,7 @@ listen(Parent, Path, ModelConfig) ->
                             {packet, 4}, binary,
                             {active, false}, {reuseaddr, true}]) of
         {ok, ListenSocket} ->
+            ok = ensure_task_registry(),
             Parent ! {self(), listening},
             accept_loop(ListenSocket, ModelConfig);
         {error, Reason} ->
