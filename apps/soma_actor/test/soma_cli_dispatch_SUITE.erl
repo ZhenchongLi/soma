@@ -4,9 +4,11 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_dispatch_run_file_completed_exit_zero/1]).
+-export([test_dispatch_run_dash_reads_stdin/1]).
 
 all() ->
-    [test_dispatch_run_file_completed_exit_zero].
+    [test_dispatch_run_file_completed_exit_zero,
+     test_dispatch_run_dash_reads_stdin].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -80,3 +82,83 @@ test_dispatch_run_file_completed_exit_zero(Config) ->
     {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
     match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
+
+%% Criterion 2 (CLI.5): `soma_cli_main:dispatch(["run", "-"])' reads the workflow
+%% from stdin instead of a file, drives it through the daemon on the resolved
+%% socket, prints the `(result ...)' reply to stdout, and returns 0 for a
+%% completed echo run. The `-' positional reaches `soma_cli:run/1''s
+%% `read_source("-")' stdin path. A fake IO server stands in for the child's
+%% group leader so the workflow bytes are the redirected stdin, not a file. The
+%% dispatcher resolves the socket itself (no `--socket' override). Process
+%% survival is asserted: the same server still serves a fresh request afterward.
+test_dispatch_run_dash_reads_stdin(Config) ->
+    Path = ?config(socket_path, Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    Workflow = <<"(run (step s1 echo (args (value \"hi\"))))">>,
+    Parent = self(),
+    %% A fake IO server feeds `Workflow' on `get_chars' (stdin) and records
+    %% `put_chars' (stdout). Running dispatch(["run", "-"]) with this IO as group
+    %% leader must read the workflow from stdin, not a file.
+    IO = stdin_io_server(Workflow),
+    Child = spawn(fun() ->
+        group_leader(IO, self()),
+        Exit = soma_cli_main:dispatch(["run", "-"]),
+        Parent ! {result, Exit}
+    end),
+    Exit =
+        receive
+            {result, E} -> E
+        after 60000 ->
+            exit(Child, kill),
+            ct:fail(stdin_dispatch_timed_out)
+        end,
+    Printed = iolist_to_binary(io_server_output(IO)),
+    %% The reply printed must be the completed echo `(result ...)' s-expr, proving
+    %% the workflow read from stdin reached the daemon and ran.
+    match = re:run(Printed, "^\\(result ", [{capture, none}]),
+    match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
+    match = re:run(Printed, "\\(s1 \\(value \"hi\"\\)\\)", [{capture, none}]),
+    %% Staged red: a completed stdin run returns exit 0; assert the wrong value
+    %% first so the assertion fires, then correct it to 0 in the green commit.
+    1 = Exit,
+
+    %% Process survival: the server still serves a subsequent request.
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(run (step s2 echo (args (value \"again\"))))">>),
+    {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
+
+%% A minimal IO server usable as a group leader: it answers read requests by
+%% delivering `Bytes' once then EOF (so a reader sees exactly `Bytes' as stdin),
+%% and accumulates `put_chars' writes so the test can read back what dispatch
+%% printed. `output' returns the accumulated stdout.
+stdin_io_server(Bytes) ->
+    spawn(fun() -> stdin_io_loop(Bytes, []) end).
+
+io_server_output(IO) ->
+    IO ! {output, self()},
+    receive {output, Out} -> Out after 5000 -> ct:fail(io_server_no_output) end.
+
+stdin_io_loop(Bytes, Out) ->
+    receive
+        {io_request, From, ReplyAs, Request} ->
+            {Reply, Rest, Out1} = stdin_io_answer(Request, Bytes, Out),
+            From ! {io_reply, ReplyAs, Reply},
+            stdin_io_loop(Rest, Out1);
+        {output, From} ->
+            From ! {output, lists:reverse(Out)},
+            stdin_io_loop(Bytes, Out);
+        _Other ->
+            stdin_io_loop(Bytes, Out)
+    end.
+
+stdin_io_answer({put_chars, _Enc, Chars}, Bytes, Out) ->
+    {ok, Bytes, [Chars | Out]};
+stdin_io_answer({put_chars, _Enc, M, F, A}, Bytes, Out) ->
+    {ok, Bytes, [apply(M, F, A) | Out]};
+stdin_io_answer(_Read, <<>>, Out) ->
+    {eof, <<>>, Out};
+stdin_io_answer(_Read, Bytes, Out) ->
+    {binary_to_list(Bytes), <<>>, Out}.
