@@ -406,10 +406,8 @@ test_ask_budget_llm_zero_returns_budget_exceeded(Config) ->
     {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
     %% The reply must be a `(result ...)' s-expr whose status sub-form is NOT
     %% `completed' and whose `error' sub-form carries the budget_exceeded tuple.
-    %% Staged red: the budget path already works, so this expects the WRONG status
-    %% (`completed') first to make the assertion fire; the green commit corrects it.
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
-    match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+    nomatch = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "\\(error ", [{capture, none}]),
     match = re:run(Reply, "budget_exceeded", [{capture, none}]),
     match = re:run(Reply, "max_llm_calls", [{capture, none}]),
