@@ -13,6 +13,7 @@
 -export([test_reconstruct_returns_first_uncommitted_step/1]).
 -export([test_reconstruct_returns_terminal_status/1]).
 -export([test_reconstruct_rejects_missing_run_started_journal/1]).
+-export([test_reconstruct_rejects_unknown_committed_step/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
@@ -23,7 +24,8 @@ all() ->
      test_reconstruct_returns_committed_outputs_by_step_id,
      test_reconstruct_returns_first_uncommitted_step,
      test_reconstruct_returns_terminal_status,
-     test_reconstruct_rejects_missing_run_started_journal].
+     test_reconstruct_rejects_missing_run_started_journal,
+     test_reconstruct_rejects_unknown_committed_step].
 
 init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
                   Config) ->
@@ -236,6 +238,31 @@ test_reconstruct_rejects_missing_run_started_journal(_Config) ->
                                    payload => #{output => #{value => <<"orphan">>}}}),
 
     ?assertEqual({error, no_run_started_journal},
+                 soma_run_resume:reconstruct(StorePid, RunId)).
+
+test_reconstruct_rejects_unknown_committed_step(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-reconstruct-unknown-step-1">>,
+    SessionId = <<"sess-reconstruct-unknown-step-1">>,
+    %% The journal commits to a single step `s1', but the trail then commits
+    %% output for `s2', which the journal never declared. Such a trail cannot be
+    %% reconciled with its own journal and must be rejected.
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"journaled">>}}],
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => #{run_id => RunId,
+                                                                 session_id => SessionId}}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s2,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"unknown">>}}}),
+
+    ?assertEqual({error, {unknown_committed_step, s2}},
                  soma_run_resume:reconstruct(StorePid, RunId)).
 
 terminal_status_of(StorePid, RunId, Steps, TerminalEventType) ->
