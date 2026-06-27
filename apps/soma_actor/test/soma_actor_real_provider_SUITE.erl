@@ -222,9 +222,7 @@ test_rendered_reply_carries_no_api_key(_Config) ->
                correlation_id => CorrelationId,
                outputs => #{reply => Text}},
     Rendered = iolist_to_binary(soma_lisp:render(Result)),
-    %% Staged red: deliberately wrong expectation -- assert the sentinel IS
-    %% present, observe the assertion fire, then correct to `nomatch'.
-    {_, _} = binary:match(Rendered, Sentinel),
+    nomatch = binary:match(Rendered, Sentinel),
     true = is_process_alive(ActorPid),
     ok.
 
