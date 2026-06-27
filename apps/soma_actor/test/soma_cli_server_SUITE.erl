@@ -23,6 +23,7 @@
 -export([test_status_after_run_reports_state_completed/1]).
 -export([test_status_unknown_id_reports_unknown_and_server_survives/1]).
 -export([test_detached_run_replies_accepted_before_sleep_terminal/1]).
+-export([test_detached_run_completes_after_client_close_registry_completed/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -44,6 +45,7 @@ all() ->
      test_trace_after_run_returns_ordered_chain_ending_completed,
      test_status_after_run_reports_state_completed,
      test_status_unknown_id_reports_unknown_and_server_survives,
+     test_detached_run_completes_after_client_close_registry_completed,
      test_detached_run_replies_accepted_before_sleep_terminal].
 
 init_per_testcase(_Case, Config) ->
@@ -552,6 +554,35 @@ test_detached_run_replies_accepted_before_sleep_terminal(Config) ->
     [] = terminal_events_for_task(StorePid, TaskId),
     ok.
 
+%% Criterion #7 (CLI.4): after a detached run replies `(accepted ...)' and the
+%% client connection is closed, the daemon-owned registry still owns the run. The
+%% run must complete inside the daemon and the registry entry for the accepted
+%% task id must move from `running' to `completed'. This uses the real socket
+%% server and real `soma_run' sleep step; the assertion reads the registry entry,
+%% not a terminal reply from the closed client.
+test_detached_run_completes_after_client_close_registry_completed(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    true = is_process_alive(daemon_task_registry_pid()),
+    {ok, Client} = connect(Path),
+    Request = <<"(run (detach) (step s1 sleep (args (ms 80))))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 1000),
+    match = re:run(Reply, "^\\(accepted ", [{capture, none}]),
+    {match, [TaskId]} =
+        re:run(Reply, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    ok = gen_tcp:close(Client),
+    completed = wait_for_registry_status(TaskId, completed, 100),
+    {ok, Task} = soma_cli_task_registry:lookup(TaskId),
+    completed = maps:get(status, Task),
+    ok.
+
+daemon_task_registry_pid() ->
+    Pid = whereis(soma_cli_task_registry),
+    true = is_pid(Pid),
+    Pid.
+
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
     Events = soma_event_store:by_run(StorePid, RunId),
@@ -595,6 +626,21 @@ terminal_events_for_task(StorePid, TaskId) ->
                 <<"run.timeout">>, <<"run.cancelled">>],
     [E || E <- soma_event_store:by_session(StorePid, TaskId),
           lists:member(maps:get(event_type, E), Terminal)].
+
+wait_for_registry_status(TaskId, _Expected, 0) ->
+    {ok, Task} = soma_cli_task_registry:lookup(TaskId),
+    maps:get(status, Task);
+wait_for_registry_status(TaskId, Expected, N) ->
+    case soma_cli_task_registry:lookup(TaskId) of
+        {ok, #{status := Expected}} ->
+            Expected;
+        {ok, _Task} ->
+            timer:sleep(20),
+            wait_for_registry_status(TaskId, Expected, N - 1);
+        {error, not_found} ->
+            timer:sleep(20),
+            wait_for_registry_status(TaskId, Expected, N - 1)
+    end.
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
