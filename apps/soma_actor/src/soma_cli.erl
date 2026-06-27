@@ -131,9 +131,27 @@ resolve_socket(#{socket := Path}) ->
 resolve_socket(_Args) ->
     case os:getenv("XDG_RUNTIME_DIR") of
         false ->
-            "/tmp/soma-" ++ os:getpid() ++ ".sock";
+            "/tmp/soma-" ++ per_user_id() ++ ".sock";
         Dir ->
             filename:join(Dir, "soma.sock")
+    end.
+
+%% The per-user segment of the fallback socket path. It must be reproducible
+%% from the real user identity so a separately-launched daemon and client land
+%% on the same path -- never from `os:getpid()', which differs per OS process.
+%% Prefer `$USER'/`$LOGNAME'; fall back to the numeric uid from a shell-free
+%% `id -u'.
+per_user_id() ->
+    case os:getenv("USER") of
+        [_ | _] = User ->
+            User;
+        _ ->
+            case os:getenv("LOGNAME") of
+                [_ | _] = Logname ->
+                    Logname;
+                _ ->
+                    string:trim(os:cmd("id -u"))
+            end
     end.
 
 %% Resolve the workflow bytes from the path arg: `-' reads stdin (the process
