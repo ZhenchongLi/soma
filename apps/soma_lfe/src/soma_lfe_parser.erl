@@ -134,7 +134,14 @@ parse_ask([ask | SubForms]) ->
     parse_ask_fields(SubForms, #{}).
 
 parse_ask_fields([], Acc) ->
-    {ok, #{ask => Acc}};
+    case maps:is_key(intent, Acc) of
+        true ->
+            {ok, #{ask => Acc}};
+        false ->
+            {error, [#{code => missing_required_field,
+                       message => <<"ask is missing required field: 'intent'">>,
+                       line => 0}]}
+    end;
 parse_ask_fields([[intent, Value] | Rest], Acc) when is_binary(Value) ->
     parse_ask_fields(Rest, Acc#{intent => Value}).
 
