@@ -11,6 +11,7 @@
 -export([test_dispatch_cancel_running_task_exit_zero/1]).
 -export([test_dispatch_run_detach_marks_request/1]).
 -export([test_dispatch_ask_detach_marks_request/1]).
+-export([test_dispatch_socket_override_wins/1]).
 
 all() ->
     [test_dispatch_run_file_completed_exit_zero,
@@ -20,7 +21,8 @@ all() ->
      test_dispatch_trace_read_exit_zero,
      test_dispatch_cancel_running_task_exit_zero,
      test_dispatch_run_detach_marks_request,
-     test_dispatch_ask_detach_marks_request].
+     test_dispatch_ask_detach_marks_request,
+     test_dispatch_socket_override_wins].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -382,6 +384,59 @@ test_dispatch_ask_detach_marks_request(Config) ->
                    [{capture, none}]),
     match = re:run(Request, "\\(detach\\)", [{capture, none}]),
     0 = Exit.
+
+%% Criterion 8 (CLI.5): `--socket <path>' overrides the resolved socket path for any
+%% subcommand. The server is booted on `OverridePath' -- a second unique per-run
+%% socket -- while `XDG_RUNTIME_DIR' (set in `init_per_testcase') still points the
+%% resolver at a *different* directory whose `soma.sock' has no listener. A
+%% `["status", TaskId, "--socket", OverridePath]' dispatch reads a real seeded task
+%% successfully, which can only happen if the override path won over the resolver:
+%% had the dispatcher used the resolved `XDG_RUNTIME_DIR/soma.sock', the connect would
+%% have failed (no server there). Process survival is asserted on the override server.
+test_dispatch_socket_override_wins(Config) ->
+    %% A second per-run socket, distinct from the resolver's `XDG_RUNTIME_DIR'
+    %% `soma.sock', so reaching it proves the `--socket' override beat the resolver.
+    XdgDir = ?config(xdg_dir, Config),
+    OverridePath = filename:join(XdgDir, "override.sock"),
+    _ = file:delete(OverridePath),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => OverridePath}),
+
+    %% The resolver's path (XDG/soma.sock) deliberately has no listener; if the
+    %% override is ignored the status connect lands here and fails.
+    ResolvedPath = ?config(socket_path, Config),
+    false = (OverridePath =:= ResolvedPath),
+
+    %% Seed a real task on the override server and read its task id.
+    File = filename:join(?config(priv_dir, Config), "override_seed.lfe"),
+    ok = file:write_file(File, <<"(run (step s1 echo (args (value \"hi\"))))">>),
+    ct:capture_start(),
+    0 = soma_cli_main:dispatch(["run", File, "--socket", OverridePath]),
+    ct:capture_stop(),
+    RunPrinted = iolist_to_binary(ct:capture_get()),
+    {match, [TaskId]} =
+        re:run(RunPrinted, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, list}]),
+
+    %% Status of that task, with `--socket' overriding the resolver.
+    ct:capture_start(),
+    Exit = soma_cli_main:dispatch(["status", TaskId, "--socket", OverridePath]),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+
+    %% A successful `(status (state ...))' read proves the override path was used --
+    %% the resolved path has no server, so this read could only land via `--socket'.
+    match = re:run(Printed, "^\\(status ", [{capture, none}]),
+    match = re:run(Printed, "\\(state ", [{capture, none}]),
+    0 = Exit,
+
+    %% Process survival: the override server still serves a subsequent request.
+    {ok, Sock} = gen_tcp:connect({local, OverridePath}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(run (step s2 echo (args (value \"again\"))))">>),
+    {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]),
+    _ = file:delete(OverridePath).
 
 %% Bounded poll: returns ok once an event of `Type' is recorded against `RunId' in
 %% the event store, retrying up to `N' times with a short sleep between tries.
