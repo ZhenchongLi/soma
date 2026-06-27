@@ -167,10 +167,11 @@ api_key_appears_in_no_emitted_event(_Config) ->
     ok = wait_for_status(ActorPid, TaskId, completed, 100),
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     true = length(Events) > 0,
-    Payloads = [maps:get(payload, E, #{}) || E <- Events],
-    %% The actor emits ids only -- never the api_key -- so the sentinel appears
-    %% in no event payload.
-    false = lists:any(fun(P) -> term_contains(P, Sentinel) end, Payloads),
+    %% Scan the WHOLE event map -- every key and value, not just `payload' (actor
+    %% events nest nothing under `payload', so the old payload-only scan was inert).
+    %% The actor emits ids only -- never the api_key -- so the sentinel appears in
+    %% no event field. (Staged red: asserted `true' to make the guard fire.)
+    true = lists:any(fun(E) -> term_contains(E, Sentinel) end, Events),
     true = is_process_alive(ActorPid),
     ok.
 
