@@ -9,6 +9,7 @@
 -export([test_daemon_boots_listener_client_connects/1]).
 -export([test_ask_prints_reply_result_exit_zero/1]).
 -export([test_trace_prints_reply_exit_zero/1]).
+-export([test_status_prints_reply_exit_zero/1]).
 
 all() ->
     [test_run_echo_file_prints_result_exit_zero,
@@ -16,7 +17,8 @@ all() ->
      test_run_reads_workflow_from_stdin_dash,
      test_daemon_boots_listener_client_connects,
      test_ask_prints_reply_result_exit_zero,
-     test_trace_prints_reply_exit_zero].
+     test_trace_prints_reply_exit_zero,
+     test_status_prints_reply_exit_zero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -189,6 +191,39 @@ test_trace_prints_reply_exit_zero(Config) ->
     %% The printed reply must be the `(trace ...)' s-expr carrying event sub-forms.
     match = re:run(Printed, "^\\(trace ", [{capture, none}]),
     match = re:run(Printed, "\\(event ", [{capture, none}]),
+    %% A successful read returns exit code 0.
+    0 = Exit.
+
+%% Criterion 8 (CLI.3): `soma_cli:status/1', pointed at a `soma_cli_server' on a temp
+%% socket, prints the `(status ...)' reply and returns exit code 0. The test seeds a
+%% task first by running a one-step echo `(run ...)' through `soma_cli:run/1' and
+%% reading its task id off the printed `(result ...)' reply's `(task-id ...)'
+%% sub-form; it then calls `soma_cli:status/1' with that task id against the same
+%% server. The client builds `(status "<task>")' source-side, connects to the temp
+%% socket, frames + sends the bytes, reads the framed `(status ...)' reply, prints it,
+%% and returns exit 0 -- a successful read is not gated on `(status completed)'.
+test_status_prints_reply_exit_zero(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    %% Seed a real task: run a one-step echo and read its task id off the
+    %% `(result ...)' reply `run/1' printed.
+    File = filename:join(?config(priv_dir, Config), "status_seed.lfe"),
+    ok = file:write_file(File, <<"(run (step s1 echo (args (value \"hi\"))))">>),
+    ct:capture_start(),
+    0 = soma_cli:run(#{file => File, socket => Path}),
+    ct:capture_stop(),
+    RunPrinted = iolist_to_binary(ct:capture_get()),
+    {match, [TaskId]} =
+        re:run(RunPrinted, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    %% Now ask the status of that task id against the same server.
+    ct:capture_start(),
+    Exit = soma_cli:status(#{task_id => TaskId, socket => Path}),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+    %% The printed reply must be the `(status ...)' s-expr carrying a `(state ...)'.
+    match = re:run(Printed, "^\\(status ", [{capture, none}]),
+    match = re:run(Printed, "\\(state ", [{capture, none}]),
     %% A successful read returns exit code 0.
     0 = Exit.
 
