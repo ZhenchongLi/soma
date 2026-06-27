@@ -4,7 +4,7 @@
 %% workflow source through unchanged; the daemon is the parser.
 -module(soma_cli).
 
--export([run/1, ask/1, daemon/1]).
+-export([run/1, ask/1, trace/1, daemon/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -42,6 +42,27 @@ ask(#{intent := Intent, socket := Path}) ->
 %% quoted Lisp string, so it is the literal bytes between the quotes.
 ask_source(Intent) ->
     iolist_to_binary(["(ask (intent \"", Intent, "\"))"]).
+
+%% Build the `(trace "<corr>")' read request client-side -- the daemon is the only
+%% parser -- then drive the same connect / frame+send / read / print path as
+%% `run/1' and `ask/1'. The reply is the framed `(trace ...)' s-expr carrying the
+%% correlation chain's events. A read command always returns exit 0: a successful
+%% read is not gated on `(status completed)'.
+-spec trace(map()) -> non_neg_integer().
+trace(#{correlation_id := CorrId, socket := Path}) ->
+    Source = trace_source(CorrId),
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, Source),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    io:format("~s~n", [Reply]),
+    0.
+
+%% Wrap the correlation id in a `(trace "...")' s-expr -- the literal bytes between
+%% the quotes.
+trace_source(CorrId) ->
+    iolist_to_binary(["(trace \"", CorrId, "\")"]).
 
 %% Boot the daemon: start the runtime, then a `soma_cli_server' listener on a
 %% resolved socket path. A test-supplied `socket' override points both ends at a
