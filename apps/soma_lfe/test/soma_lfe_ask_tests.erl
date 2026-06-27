@@ -34,3 +34,23 @@ test_ask_allow_and_budget_parse() ->
 
 ask_allow_and_budget_parse_test() ->
     test_ask_allow_and_budget_parse().
+
+%% Regression — an (ask ...) with an unrecognized sub-form must return a
+%% diagnostic, not crash compile/2 with a function_clause.
+test_ask_unknown_subform_returns_error() ->
+    Source = <<"(ask (intent \"x\") (frobnicate 1))">>,
+    Result = soma_lfe:compile(Source, #{}),
+    ?assertMatch({error, [_ | _]}, Result).
+
+ask_unknown_subform_returns_error_test() ->
+    test_ask_unknown_subform_returns_error().
+
+%% Regression — a non-binary (intent ...) value must return a diagnostic,
+%% not crash compile/2 with a function_clause.
+test_ask_non_binary_intent_returns_error() ->
+    Source = <<"(ask (intent 5))">>,
+    Result = soma_lfe:compile(Source, #{}),
+    ?assertMatch({error, [_ | _]}, Result).
+
+ask_non_binary_intent_returns_error_test() ->
+    test_ask_non_binary_intent_returns_error().
