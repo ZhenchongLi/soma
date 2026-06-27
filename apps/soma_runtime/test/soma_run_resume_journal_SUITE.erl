@@ -11,6 +11,7 @@
 -export([test_reconstruct_returns_journaled_durable_options/1]).
 -export([test_reconstruct_returns_committed_outputs_by_step_id/1]).
 -export([test_reconstruct_returns_first_uncommitted_step/1]).
+-export([test_reconstruct_returns_terminal_status/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
@@ -19,7 +20,8 @@ all() ->
      test_reconstruct_returns_journaled_steps,
      test_reconstruct_returns_journaled_durable_options,
      test_reconstruct_returns_committed_outputs_by_step_id,
-     test_reconstruct_returns_first_uncommitted_step].
+     test_reconstruct_returns_first_uncommitted_step,
+     test_reconstruct_returns_terminal_status].
 
 init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
                   Config) ->
@@ -188,6 +190,47 @@ test_reconstruct_returns_first_uncommitted_step(_Config) ->
     {ok, Reconstructed} = soma_run_resume:reconstruct(StorePid, RunId),
 
     ?assertEqual(S2, maps:get(next_step, Reconstructed, missing)).
+
+test_reconstruct_returns_terminal_status(_Config) ->
+    StorePid = event_store_pid(),
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"terminal">>}}],
+
+    %% Each terminal event type maps to its terminal atom; a trail with no
+    %% terminal event reports `undefined'.
+    ?assertEqual(completed,
+                 terminal_status_of(StorePid, <<"run-terminal-completed">>,
+                                    Steps, <<"run.completed">>)),
+    ?assertEqual(failed,
+                 terminal_status_of(StorePid, <<"run-terminal-failed">>,
+                                    Steps, <<"run.failed">>)),
+    ?assertEqual(timeout,
+                 terminal_status_of(StorePid, <<"run-terminal-timeout">>,
+                                    Steps, <<"run.timeout">>)),
+    ?assertEqual(cancelled,
+                 terminal_status_of(StorePid, <<"run-terminal-cancelled">>,
+                                    Steps, <<"run.cancelled">>)),
+    ?assertEqual(undefined,
+                 terminal_status_of(StorePid, <<"run-terminal-none">>,
+                                    Steps, undefined)).
+
+terminal_status_of(StorePid, RunId, Steps, TerminalEventType) ->
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options =>
+                                                    #{run_id => RunId}}}),
+    case TerminalEventType of
+        undefined ->
+            ok;
+        _ ->
+            ok = soma_event_store:append(StorePid,
+                                         #{run_id => RunId,
+                                           event_type => TerminalEventType,
+                                           payload => #{}})
+    end,
+    {ok, Reconstructed} = soma_run_resume:reconstruct(StorePid, RunId),
+    maps:get(terminal_status, Reconstructed, missing).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
