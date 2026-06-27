@@ -14,6 +14,7 @@
 -export([test_malformed_request_returns_error_sexpr/1]).
 -export([test_server_serves_after_malformed_request/1]).
 -export([test_run_cancelled_on_client_disconnect/1]).
+-export([test_worker_dead_after_client_disconnect/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -26,7 +27,8 @@ all() ->
      test_server_serves_after_failed_lisp_run,
      test_malformed_request_returns_error_sexpr,
      test_server_serves_after_malformed_request,
-     test_run_cancelled_on_client_disconnect].
+     test_run_cancelled_on_client_disconnect,
+     test_worker_dead_after_client_disconnect].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -247,6 +249,38 @@ test_run_cancelled_on_client_disconnect(Config) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     Types = [maps:get(event_type, E) || E <- Events],
     true = lists:member(<<"run.cancelled">>, Types).
+
+%% Criterion 2 (CLI.1.5): after a client disconnects mid-run, the cancelled run's
+%% active tool-call worker process is no longer alive -- the cancel stopped the
+%% live worker, it was not a flag checked later. Same disconnect chain as the
+%% Criterion 1 case: a real gen_tcp client sends `(run (step s1 sleep (args (ms
+%% 5000))))', waits for the run's `tool.started' event (capturing the worker pid
+%% off it via `tool_call_pid', the same field soma_run_failure_SUITE reads to
+%% prove a killed worker is gone), closes the socket, waits for `run.cancelled',
+%% then asserts the worker pid is no longer alive. Worker liveness is read off the
+%% event store -- the worker pid is not on the reply path.
+test_worker_dead_after_client_disconnect(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+    Before = tool_started_runs(StorePid),
+    {ok, Client} = connect(Path),
+    Request = <<"(run (step s1 sleep (args (ms 5000))))">>,
+    ok = gen_tcp:send(Client, Request),
+    %% Wait for `tool.started' so a worker is live, then grab its pid.
+    RunId = wait_for_new_tool_started_run(StorePid, Before, 100),
+    WorkerPid = tool_call_pid_from(StorePid, RunId, <<"tool.started">>),
+    ok = gen_tcp:close(Client),
+    %% The disconnect drives the run to `cancelled'.
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    %% The cancel stopped the live worker -- it is no longer alive.
+    true = is_process_alive(WorkerPid).
+
+%% Read the `tool_call_pid' carried on the first event of Type for RunId.
+tool_call_pid_from(StorePid, RunId, Type) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    [Event | _] = [E || E <- Events, maps:get(event_type, E) =:= Type],
+    maps:get(tool_call_pid, Event).
 
 %% Run ids that have recorded `tool.started' in the store right now.
 tool_started_runs(StorePid) ->
