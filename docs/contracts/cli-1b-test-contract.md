@@ -21,20 +21,20 @@ socket path. See [../../design-110.md](../../design-110.md).
 
 ## Proving suites and modules
 
-- **`soma_cli_server_SUITE`** — CT suite in `apps/soma_runtime/test/`. Drives the
+- **`soma_cli_server_SUITE`** — CT suite in `apps/soma_actor/test/`. Drives the
   full chain through a real `gen_tcp` client over a temp Unix socket: accept loop
   → `handle/1` → `soma_lfe:compile/2` → `soma_run_sup:start_run` → `soma_run` →
   `soma_tool_call` → `await_run` → `soma_lisp:render/1` → framed reply. No layer
   bypassed.
-- **`soma_cli_server_tests`** — EUnit module in `apps/soma_runtime/test/`. A
+- **`soma_cli_server_tests`** — EUnit module in `apps/soma_actor/test/`. A
   source-text assertion over `soma_cli_server.erl`'s run path.
-- **`soma_cli_SUITE`** — CT suite in `apps/soma_runtime/test/`. Drives the
+- **`soma_cli_SUITE`** — CT suite in `apps/soma_actor/test/`. Drives the
   `soma_cli` client (`run/1`, `daemon/1`) against a real `soma_cli_server` on a
   temp socket.
-- **`soma_cli_1b_marker_tests`** — EUnit module in `apps/soma_runtime/test/`. A
+- **`soma_cli_1b_marker_tests`** — EUnit module in `apps/soma_actor/test/`. A
   source scan of the CLI.1b test files for real-provider / non-local-socket
   markers.
-- **`soma_cli_1b_contract_tests`** — EUnit module in `apps/soma_runtime/test/`.
+- **`soma_cli_1b_contract_tests`** — EUnit module in `apps/soma_actor/test/`.
   Pins this contract doc (`docs/contracts/cli-1b-test-contract.md`): asserts the
   file exists, is non-empty, and names every CLI.1b suite/module together with
   each of its case names.

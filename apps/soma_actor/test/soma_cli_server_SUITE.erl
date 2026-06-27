@@ -16,6 +16,7 @@
 -export([test_run_cancelled_on_client_disconnect/1]).
 -export([test_worker_dead_after_client_disconnect/1]).
 -export([test_server_serves_after_client_disconnect/1]).
+-export([test_ask_reply_returns_completed_result_with_text/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -30,11 +31,19 @@ all() ->
      test_server_serves_after_malformed_request,
      test_run_cancelled_on_client_disconnect,
      test_worker_dead_after_client_disconnect,
-     test_server_serves_after_client_disconnect].
+     test_server_serves_after_client_disconnect,
+     test_ask_reply_returns_completed_result_with_text].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
-    [{started_apps, Started} | Config].
+    %% The ask path drives the decision loop through an actor under
+    %% soma_actor_sup, so the sup must be up. Tolerate an already-running sup
+    %% (the soma_actor app may have started one) so each case is self-contained.
+    Sup = case soma_actor_sup:start_link() of
+              {ok, Pid} -> Pid;
+              {error, {already_started, Pid}} -> Pid
+          end,
+    [{started_apps, Started}, {actor_sup, Sup} | Config].
 
 end_per_testcase(_Case, Config) ->
     Config.
@@ -309,6 +318,35 @@ test_server_serves_after_client_disconnect(Config) ->
     match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "\\(s1 \\(value \"ok\"\\)\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
+
+%% Criterion 4 (CLI.2): a framed `(ask (intent "..."))' request drives the real
+%% server -> soma_lfe:compile -> soma_actor_sup:start_actor -> soma_actor:ask/3 ->
+%% mock soma_llm_call -> soma_proposal:normalize -> soma_policy:check ->
+%% soma_lisp:render path and replies a framed `(result ...)' s-expr whose status
+%% sub-form is `completed' and whose body carries the reply text. The mock is
+%% driven entirely by the server's `model_config' (a `proposal' directive yielding
+%% a `reply' proposal) -- no real provider, no non-local socket. A real gen_tcp
+%% client over a temp Unix socket sends the s-expr and reads the s-expr reply.
+test_ask_reply_returns_completed_result_with_text(Config) ->
+    Path = socket_path(Config),
+    %% Mock model_config: a `proposal' directive whose output is a `reply'
+    %% proposal carrying the answer text. build_call_opts/2 returns this map
+    %% unchanged (no `provider' key), so soma_llm_call runs the mock and opens
+    %% no socket.
+    ModelConfig = #{directive => proposal,
+                    output => #{kind => reply, text => <<"the answer">>}},
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                 model_config => ModelConfig}),
+    {ok, Client} = connect(Path),
+    Request = <<"(ask (intent \"what is the answer\"))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The reply must be a `(result ...)' s-expr whose status sub-form is
+    %% `completed' and whose body carries the reply text.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+    match = re:run(Reply, "the answer", [{capture, none}]),
+    ok = gen_tcp:close(Client).
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
