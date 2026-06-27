@@ -5,10 +5,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_dispatch_run_file_completed_exit_zero/1]).
 -export([test_dispatch_run_dash_reads_stdin/1]).
+-export([test_dispatch_ask_completed_exit_zero/1]).
 
 all() ->
     [test_dispatch_run_file_completed_exit_zero,
-     test_dispatch_run_dash_reads_stdin].
+     test_dispatch_run_dash_reads_stdin,
+     test_dispatch_ask_completed_exit_zero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -122,6 +124,48 @@ test_dispatch_run_dash_reads_stdin(Config) ->
     0 = Exit,
 
     %% Process survival: the server still serves a subsequent request.
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(run (step s2 echo (args (value \"again\"))))">>),
+    {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
+
+%% Criterion 3 (CLI.5): `soma_cli_main:dispatch(["ask", Intent])' drives
+%% `soma_cli:ask/1' on the resolved socket and returns its exit code. The server is
+%% booted with a mock `model_config' whose `proposal' directive yields a `reply'
+%% proposal, so the daemon's decision loop completes and replies with a `(result
+%% ...)' s-expr carrying `(status completed)'. The dispatcher resolves the socket
+%% itself (no `--socket' override). The printed reply proves the intent reached the
+%% daemon and ran, and the exit code mirrors `ask/1' (0 for a completed ask).
+%% Process survival is asserted: the same server still serves a fresh request after
+%% the dispatch returns.
+test_dispatch_ask_completed_exit_zero(Config) ->
+    Path = ?config(socket_path, Config),
+    %% Mock model_config: a `proposal' directive whose output is a `reply'
+    %% proposal carrying the answer text -- the server config shape the daemon ask
+    %% suites use so the decision loop completes without a real provider.
+    ModelConfig = #{directive => proposal,
+                    output => #{kind => reply, text => <<"the answer">>}},
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                 model_config => ModelConfig}),
+
+    ct:capture_start(),
+    Exit = soma_cli_main:dispatch(["ask", "what is the answer"]),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+
+    %% The printed reply is the completed `(result ...)' s-expr carrying the reply
+    %% text, proving the dispatcher resolved the socket and drove the full ask
+    %% through the daemon.
+    match = re:run(Printed, "^\\(result ", [{capture, none}]),
+    match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
+    match = re:run(Printed, "the answer", [{capture, none}]),
+    %% A completed ask returns exit code 0 (mirroring `soma_cli:ask/1').
+    0 = Exit,
+
+    %% Process survival: the server still serves a subsequent request after the
+    %% dispatch returned.
     {ok, Sock} = gen_tcp:connect({local, Path}, 0,
                                  [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:send(Sock, <<"(run (step s2 echo (args (value \"again\"))))">>),
