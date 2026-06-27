@@ -10,6 +10,7 @@
 -export([test_ask_prints_reply_result_exit_zero/1]).
 -export([test_trace_prints_reply_exit_zero/1]).
 -export([test_status_prints_reply_exit_zero/1]).
+-export([test_cancel_sends_cancel_request_prints_reply_exit_zero/1]).
 
 all() ->
     [test_run_echo_file_prints_result_exit_zero,
@@ -18,7 +19,8 @@ all() ->
      test_daemon_boots_listener_client_connects,
      test_ask_prints_reply_result_exit_zero,
      test_trace_prints_reply_exit_zero,
-     test_status_prints_reply_exit_zero].
+     test_status_prints_reply_exit_zero,
+     test_cancel_sends_cancel_request_prints_reply_exit_zero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -227,6 +229,45 @@ test_status_prints_reply_exit_zero(Config) ->
     %% A successful read returns exit code 0.
     0 = Exit.
 
+%% Criterion #15 (CLI.4): `soma_cli:cancel/1', pointed at a `soma_cli_server' on a
+%% temp socket, sends `(cancel "task-id")', prints the `(result ...)' reply, and
+%% returns exit code 0. The test first seeds a running detached sleep task through
+%% the real socket daemon, then invokes the thin client cancel path against that
+%% accepted task id. A cancelled result proves the client sent the cancel request
+%% to the daemon rather than handling it locally.
+test_cancel_sends_cancel_request_prints_reply_exit_zero(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+
+    {ok, Seed} = connect(Path),
+    Request = <<"(run (detach) (step s1 sleep (args (ms 5000))))">>,
+    ok = gen_tcp:send(Seed, Request),
+    {ok, Accepted} = gen_tcp:recv(Seed, 0, 1000),
+    ok = gen_tcp:close(Seed),
+    match = re:run(Accepted, "^\\(accepted ", [{capture, none}]),
+    {match, [TaskId]} =
+        re:run(Accepted, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    {match, [CorrId]} =
+        re:run(Accepted, "\\(correlation-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    {ok, #{run_id := RunId}} = soma_cli_task_registry:lookup(TaskId),
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 100),
+
+    ct:capture_start(),
+    Exit = try soma_cli:cancel(#{task_id => TaskId, socket => Path})
+           after ct:capture_stop()
+           end,
+    Printed = iolist_to_binary(ct:capture_get()),
+    match = re:run(Printed, "^\\(result ", [{capture, none}]),
+    match = re:run(Printed, "\\(status cancelled\\)", [{capture, none}]),
+    TaskPattern = <<"\\(task-id \"", TaskId/binary, "\"\\)">>,
+    CorrPattern = <<"\\(correlation-id \"", CorrId/binary, "\"\\)">>,
+    match = re:run(Printed, TaskPattern, [{capture, none}]),
+    match = re:run(Printed, CorrPattern, [{capture, none}]),
+    0 = Exit.
+
 %% A minimal IO server usable as a group leader: it answers `get_chars' / `get_line'
 %% / `get_until' read requests by delivering `Bytes' once then EOF (so a reader
 %% sees exactly `Bytes' as stdin), and accumulates `put_chars' writes so the test
@@ -261,6 +302,29 @@ stdin_io_answer(_Read, <<>>, Out) ->
     {eof, <<>>, Out};
 stdin_io_answer(_Read, Bytes, Out) ->
     {binary_to_list(Bytes), <<>>, Out}.
+
+wait_for_event(_StorePid, _RunId, _Type, 0) ->
+    {error, timeout};
+wait_for_event(StorePid, RunId, Type, N) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    case lists:member(Type, Types) of
+        true ->
+            ok;
+        false ->
+            timer:sleep(20),
+            wait_for_event(StorePid, RunId, Type, N - 1)
+    end.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
+
+connect(Path) ->
+    gen_tcp:connect({local, Path}, 0,
+                    [binary, {packet, 4}, {active, false}]).
 
 %% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS), so the long
 %% CT priv_dir cannot hold a bindable socket. Use a short unique path under the
