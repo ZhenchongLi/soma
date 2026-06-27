@@ -15,7 +15,9 @@
 %% resolves the socket and drives `soma_cli:status/1', returning its exit code (0 on
 %% a successful read -- not gated on `(status completed)'). `trace CorrId' resolves
 %% the socket and drives `soma_cli:trace/1', returning its exit code (0 on a
-%% successful read -- not gated on `(status completed)').
+%% successful read -- not gated on `(status completed)'). `cancel TaskId' resolves
+%% the socket and drives `soma_cli:cancel/1', returning its exit code (0 on a
+%% successful cancel).
 -spec dispatch([string()]) -> integer().
 dispatch(["run", File]) ->
     soma_cli:run(#{file => File, socket => resolve_socket()});
@@ -24,7 +26,9 @@ dispatch(["ask", Intent]) ->
 dispatch(["status", TaskId]) ->
     soma_cli:status(#{task_id => TaskId, socket => resolve_socket()});
 dispatch(["trace", CorrId]) ->
-    soma_cli:trace(#{correlation_id => CorrId, socket => resolve_socket()}).
+    soma_cli:trace(#{correlation_id => CorrId, socket => resolve_socket()});
+dispatch(["cancel", TaskId]) ->
+    soma_cli:cancel(#{task_id => TaskId, socket => resolve_socket()}).
 
 %% Resolve the listener socket path: `$XDG_RUNTIME_DIR/soma.sock' when set. The
 %% full per-user fallback and the `--socket' override land in later criteria.
