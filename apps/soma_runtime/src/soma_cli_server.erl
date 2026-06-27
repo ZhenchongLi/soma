@@ -54,10 +54,23 @@ unlink_stale(Path) ->
 accept_loop(ListenSocket) ->
     case gen_tcp:accept(ListenSocket) of
         {ok, Socket} ->
-            spawn(fun() -> handle(Socket) end),
+            %% The accepted socket is owned by this accept-loop process. Hand it
+            %% to the handler so socket events under `{active, once}' (the
+            %% client-disconnect `{tcp_closed, Socket}') are delivered to the
+            %% handler's mailbox -- the process that waits in `await_run' -- and
+            %% not stranded here in the acceptor. The handler waits for `proceed'
+            %% so it only touches the socket once it owns it.
+            Handler = spawn(fun() -> wait_then_handle(Socket) end),
+            ok = gen_tcp:controlling_process(Socket, Handler),
+            Handler ! proceed,
             accept_loop(ListenSocket);
         {error, closed} ->
             ok
+    end.
+
+wait_then_handle(Socket) ->
+    receive
+        proceed -> handle(Socket)
     end.
 
 %% Per-connection handler, one process per accepted connection. It reads one
@@ -68,9 +81,13 @@ accept_loop(ListenSocket) ->
 handle(Socket) ->
     case gen_tcp:recv(Socket, 0, 60000) of
         {ok, Bytes} ->
-            Reply = handle_lisp_request(Bytes),
-            _ = gen_tcp:send(Socket, iolist_to_binary(Reply)),
-            gen_tcp:close(Socket);
+            case handle_lisp_request(Bytes, Socket) of
+                noreply ->
+                    gen_tcp:close(Socket);
+                Reply ->
+                    _ = gen_tcp:send(Socket, iolist_to_binary(Reply)),
+                    gen_tcp:close(Socket)
+            end;
         {error, _} ->
             ok
     end.
@@ -80,7 +97,7 @@ handle(Socket) ->
 %% `soma_lfe:compile/2' returning `{error, Diagnostics}', or the reader crashing
 %% on garbage bytes -- is not a handler crash: it renders a `(result ...)' with
 %% `status => error' and an `error' sub-form carrying the diagnostics.
-handle_lisp_request(Bytes) ->
+handle_lisp_request(Bytes, Socket) ->
     Compiled = try soma_lfe:compile(Bytes, #{})
                catch
                    Class:Reason ->
@@ -91,28 +108,38 @@ handle_lisp_request(Bytes) ->
                end,
     case Compiled of
         {ok, #{run := #{steps := Steps}}} ->
-            run_steps(Steps);
+            run_steps(Steps, Socket);
         {error, Diagnostics} ->
             soma_lisp:render(#{status => error, error => Diagnostics})
     end.
 
-run_steps(Steps) ->
+run_steps(Steps, Socket) ->
     TaskId = mint_id("task"),
     CorrId = mint_id("corr"),
     RunId = mint_id("run"),
-    {ok, _RunPid} = soma_run_sup:start_run(
+    {ok, RunPid} = soma_run_sup:start_run(
         #{run_id => RunId,
           session_id => TaskId,
           session_pid => self(),
+          event_store => event_store_pid(),
           steps => Steps,
           correlation_id => CorrId}),
-    Result = await_run(RunId, TaskId, CorrId),
-    soma_lisp:render(Result).
+    %% Watch the socket while waiting for the run. With `{active, once}' a client
+    %% disconnect is delivered to this handler's mailbox as `{tcp_closed, Socket}'
+    %% (invisible to a blocked `{active, false}' socket), so await_run can cancel
+    %% the in-flight run instead of waiting out the orphaned sleep step.
+    ok = inet:setopts(Socket, [{active, once}]),
+    case await_run(RunId, TaskId, CorrId, RunPid, Socket) of
+        noreply ->
+            noreply;
+        Result ->
+            soma_lisp:render(Result)
+    end.
 
 %% Wait for the owned run's terminal message and shape the result map. On
 %% `run_completed' the recorded step outputs become the `outputs' sub-form; on a
 %% failure the status is non-`completed' and the reason travels in `error'.
-await_run(RunId, TaskId, CorrId) ->
+await_run(RunId, TaskId, CorrId, RunPid, Socket) ->
     receive
         {run_completed, RunId, Outputs} ->
             #{status => completed,
@@ -127,8 +154,24 @@ await_run(RunId, TaskId, CorrId) ->
         {run_timeout, RunId} ->
             #{status => timeout, task_id => TaskId, correlation_id => CorrId};
         {run_cancelled, RunId} ->
-            #{status => cancelled, task_id => TaskId, correlation_id => CorrId}
+            #{status => cancelled, task_id => TaskId, correlation_id => CorrId};
+        {tcp_closed, Socket} ->
+            %% The client dropped mid-run. Cancel the in-flight run the same way
+            %% the session does -- a bare `cancel' to the live run pid -- and
+            %% return without a reply: the client that would read it is already
+            %% gone.
+            RunPid ! cancel,
+            noreply
     end.
+
+%% Locate the running event store pid from the booted supervision tree, the same
+%% way `soma_agent_session' does, so the run the handler owns emits its event
+%% trail (the test seam this slice asserts on reads `run.cancelled' from there).
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
 
 mint_id(Prefix) ->
     list_to_binary(
