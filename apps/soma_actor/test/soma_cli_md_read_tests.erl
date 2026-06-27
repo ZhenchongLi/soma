@@ -4,8 +4,7 @@
 
 %% Issue #124 (CLI.3) criterion 9: `docs/cli.md' documents `soma status' and
 %% `soma trace' over the Lisp wire — the `(trace ...)' and `(status ...)'
-%% requests and their replies — and records that `soma cancel <id>' and
-%% `--detach' are deferred. This test reads the doc and asserts that prose is
+%% requests and their replies. This test reads the doc and asserts that prose is
 %% present.
 
 -define(CLI_DOC, "docs/cli.md").
@@ -19,8 +18,7 @@ read_doc(Path) ->
 contains(Haystack, Needle) ->
     nomatch =/= binary:match(Haystack, Needle).
 
-%% Criterion 9: `docs/cli.md' documents status + trace over the wire and the
-%% cancel / --detach deferral.
+%% Criterion 9: `docs/cli.md' documents status + trace over the wire.
 test_cli_md_documents_status_trace_and_defers_cancel_detach() ->
     Cli = read_doc(?CLI_DOC),
     ?assert(byte_size(Cli) > 0),
@@ -29,11 +27,7 @@ test_cli_md_documents_status_trace_and_defers_cancel_detach() ->
     ?assert(contains(Cli, <<"(event ">>)),
     %% The `(status ...)' request and its `(status (state ...))' reply.
     ?assert(contains(Cli, <<"(status \"">>)),
-    ?assert(contains(Cli, <<"(state ">>)),
-    %% The deferral of `soma cancel <id>' and `--detach'.
-    ?assert(contains(Cli, <<"deferred">>)),
-    ?assert(contains(Cli, <<"soma cancel">>)),
-    ?assert(contains(Cli, <<"--detach">>)).
+    ?assert(contains(Cli, <<"(state ">>)).
 
 cli_md_documents_status_trace_and_defers_cancel_detach_test() ->
     test_cli_md_documents_status_trace_and_defers_cancel_detach().

@@ -79,7 +79,7 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
 | `soma daemon` | no | Boot the service: runtime + persistent store, listen on the socket. |
 | `soma run <workflow>` | no | client → run an LFE workflow under supervision; return result + trace. |
 | `soma ask "<intent>"` | yes (node B) | client → the agent loop: intent → LLM → proposal → policy → execute. |
-| `soma status <id>` / `soma cancel <id>` | no | client → poll / cancel a task by id (tasks outlive the caller). |
+| `soma status <task-id>` / `soma cancel <task-id>` | no | client → poll / cancel a task by id (tasks outlive the caller). |
 | `soma trace <correlation_id>` | no | client → render a stored correlation chain as a timeline. |
 
 `soma run` + the daemon are the **fastest deliverable** (no LLM). `soma ask`
@@ -88,7 +88,7 @@ depends on node B (the real LLM provider).
 ## `soma run` — deterministic supervised execution (client)
 
 ```
-soma run WORKFLOW [--trace] [--root DIR] [--timeout-ms N]
+soma run WORKFLOW [--detach] [--trace] [--root DIR] [--timeout-ms N]
 ```
 
 - **WORKFLOW**: a file (or `-` for stdin) — an **LFE workflow** (a `(run …)`
@@ -101,11 +101,22 @@ soma run WORKFLOW [--trace] [--root DIR] [--timeout-ms N]
 - The `(result …)` s-expr carries the terminal `status`, the `outputs`, and the
   `task_id` / `correlation_id` (the trace is added only with `--trace`). Exit `0`
   completed, non-zero otherwise.
+- With `--detach`, the client sends the same `(run …)` request with a `(detach)`
+  marker. The daemon starts the run under the live-task registry and immediately
+  replies with an accepted task handle:
+
+```
+(accepted (task-id "…") (correlation-id "…"))
+```
+
+  A detached accepted reply exits `0`; the task continues after the client
+  disconnects and can be managed with `soma status <task-id>`, `soma trace
+  <correlation-id>`, or `soma cancel <task-id>`.
 
 ## `soma ask` — the agent (client)
 
 ```
-soma ask "INTENT"
+soma ask "INTENT" [--detach]
 ```
 
 `soma ask` drives the v0.5 decision loop — intent → LLM → proposal → policy gate
@@ -114,6 +125,10 @@ turns the intent into an `(ask …)` request s-expr, the daemon parses it with
 `soma_lfe`, runs the loop on a `soma_actor`, and frames back a rendered
 `(result …)` reply s-expr (`soma_lisp:render/1`) that the client prints. Exit `0`
 on `(status completed)`, non-zero otherwise.
+
+With `--detach`, the client appends `(detach)` to the `(ask …)` request and the
+daemon returns the same `(accepted (task-id "…") (correlation-id "…"))` shape used
+by detached runs.
 
 ### The `(ask …)` request
 
@@ -182,19 +197,19 @@ the actor but inert for a `reply` — the one budget effect a reply can show is 
 (`run_steps`) proposals land (the real planner); until then they are accepted but
 inert for a `reply`.
 
-## `soma status` / `soma trace` — read commands over the Lisp wire (client)
+## `soma status` / `soma cancel` / `soma trace` — task commands over the Lisp wire
 
 ```
 soma status TASK_ID
+soma cancel TASK_ID
 soma trace  CORRELATION_ID
 ```
 
-Both are **read-only** clients (no LLM, no network beyond the local socket). Each
-builds a one-line Lisp request s-expr client-side, drives the same connect /
-frame+send / read / print path as `soma run`, and **always prints a reply and
-exits `0`** — a successful read is not gated on a terminal `(status completed)`,
-unlike `run` / `ask`. The daemon answers both read-only against the shared event
-store: neither starts a `soma_run` nor an actor.
+These clients use the same local socket framing as `soma run`: each builds a
+one-line Lisp request s-expr client-side, sends one frame, reads one reply, and
+prints stdout as clean Lisp. `status` and `trace` are read-only and always exit
+`0` on a successful read. `cancel` is a write command against a live task id; it
+does not start a new run or actor.
 
 ### `soma trace` — render a stored correlation chain
 
@@ -212,25 +227,51 @@ and frames them back wrapped in a single `(trace …)` head:
 
 The trace request takes the **`correlation-id`** off a prior `(result …)` reply.
 
-### `soma status` — a task's terminal state by id
+### `soma status` — a task's state by id
 
 `soma_cli:status/1` sends a `(status "<task-id>")` request frame. The daemon looks
 the task up by its id and frames back a `(status (state …))` reply:
 
 ```
+(status (state running))        ; a detached run still executing in the registry
 (status (state completed))      ; a run that recorded run.completed
 (status (state failed))         ; failed / timeout / cancelled map to that state
 (status (state unknown))        ; no events for that id (an unknown task)
 ```
 
-The state is derived from the task's events: a `run.completed` event → `completed`;
+The daemon checks the live-task registry first, so a detached task can report
+`running` before any terminal event exists. If the registry has no entry, the
+state is derived from the task's events: a `run.completed` event → `completed`;
 a `run.failed` / `run.timeout` / `run.cancelled` event → that terminal state; **no
 events for the id → `unknown`**. An unknown id is answered, not an error — the
-daemon stays up for the next connection. The lookup reaches a task's events through
-`by_session/2` because the run path aliases the run's `session_id` to its `task-id`;
-the store has no separate `by_task` query (status by id is only promised for `run`
-tasks, not `ask` tasks, whose events are stamped by correlation id). The status
-request takes the **`task-id`** off a prior `(result …)` reply.
+daemon stays up for the next connection. The fallback lookup reaches a task's
+events through `by_session/2` because the run path aliases the run's `session_id`
+to its `task-id`; the store has no separate `by_task` query. The status request
+takes the **`task-id`** off a prior `(result …)` or `(accepted …)` reply.
+
+### `soma cancel <task-id>` — cancel a live detached task
+
+`soma_cli:cancel/1` sends a `(cancel "<task-id>")` request frame. For a running
+detached task, the daemon asks the live-task registry to send `cancel` to the
+stored `soma_run` pid. The run remains responsible for stopping its active
+tool-call worker, tearing down any external OS child, emitting `run.cancelled`,
+and reporting its terminal state. A successful live cancellation replies:
+
+```
+(result (status cancelled) (task-id "…") (correlation-id "…"))
+```
+
+If the task is already terminal, cancel does not re-run or re-cancel it:
+
+```
+(result (status completed) (note already-terminal))
+```
+
+An unknown id is answered as data, not as a daemon crash:
+
+```
+(result (status unknown) (error not-found))
+```
 
 ## Output for agent consumption
 
@@ -252,20 +293,9 @@ what comes back — no JSON anywhere.
 - **Synchronous `run` / `ask`**: if the client disconnects (Ctrl-C, the agent's
   own timeout, a dropped socket) the daemon **cancels** the in-flight run — no
   orphaned work piling up on the shared daemon.
-- **Fire-and-forget** (a `--detach` flag): the task keeps running after the client
-  leaves; reattach/manage via `soma status` / `soma cancel <id>`.
+- **Fire-and-forget** (`--detach`): the task keeps running after the client
+  leaves; reattach/manage via `soma status <task-id>` / `soma cancel <task-id>`.
 - A task already in a terminal state is never cancelled or re-run.
-
-### Deferred in CLI.3: `soma cancel <id>` and `--detach`
-
-CLI.3 ships the two **read** commands (`soma status`, `soma trace`); `soma cancel
-<id>` and `--detach` are **deferred** to a later slice. The reason is structural: a
-synchronous `run` / `ask` task is already in a terminal state by the time the client
-holds its id, so there is no live task to cancel by id. A real `soma cancel <id>`
-needs the fire-and-forget (`--detach`) task model plus a live-task registry to cancel
-against — a larger change than this read slice. Until then, `soma status` reports a
-task's terminal state and `soma trace` renders its event chain, but neither
-`soma cancel <id>` nor `--detach` is implemented.
 
 ## What the daemon unlocks
 
