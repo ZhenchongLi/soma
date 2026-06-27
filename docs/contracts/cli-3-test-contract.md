@@ -74,7 +74,7 @@ mock directives only — no real provider, no non-local socket. See
 | 9 | `docs/cli.md` documents the `(trace …)`/`(status …)` requests and replies and records the `soma cancel <id>` / `--detach` deferral | `soma_cli_md_read_tests` | `test_cli_md_documents_status_trace_and_defers_cancel_detach` |
 | 10 | This contract (`docs/contracts/cli-3-test-contract.md`) names a suite/module + case for each CLI.3 proof | `soma_cli_3_contract_tests` | `test_doc_names_cli_3_suites_and_cases` (the mapping table above is the deliverable) |
 | 11 | CLI.3 test sources carry no real-provider marker and open no non-local socket | `soma_cli_3_marker_tests` | `test_cli_3_sources_have_no_real_provider_or_socket_marker` |
-| 12 | `rebar3 dialyzer` is run and its result reported | _build step_ | none (PR report; the project does not gate dialyzer, baseline 4 warnings) |
+| 12 | `rebar3 dialyzer` is run and its result reported | _build step_ | none (PR body text carried in [cli-3-dialyzer-pr-report.md](cli-3-dialyzer-pr-report.md); the project does not gate dialyzer, baseline 4 warnings) |
 
 ## Notes for the auditor
 
@@ -84,7 +84,10 @@ mock directives only — no real provider, no non-local socket. See
   if any suite/module or case name above goes missing. Criterion 9 is satisfied
   by the prose in `docs/cli.md` and additionally pinned by
   `soma_cli_md_read_tests`. Criterion 12 is a build step reported in the PR body,
-  not a test function.
+  not a test function; until GitHub has a PR for this branch, the PR-ready body
+  text is carried in
+  [cli-3-dialyzer-pr-report.md](cli-3-dialyzer-pr-report.md) and pinned by
+  `soma_cli_3_contract_tests:test_cli_3_dialyzer_pr_report_is_carried_locally`.
 - **Status leans on the run path aliasing `session_id` to the task id.** The
   status lookup uses `by_session/2` because the run path sets `session_id =>
   TaskId`; there is no `by_task` query in this slice. If a future change stops
