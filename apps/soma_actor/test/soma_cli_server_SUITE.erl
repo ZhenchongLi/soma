@@ -21,6 +21,7 @@
 -export([test_ask_budget_llm_zero_returns_budget_exceeded/1]).
 -export([test_trace_after_run_returns_ordered_chain_ending_completed/1]).
 -export([test_status_after_run_reports_state_completed/1]).
+-export([test_status_unknown_id_reports_unknown_and_server_survives/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -40,7 +41,8 @@ all() ->
      test_ask_reject_returns_rejected_result_with_reason,
      test_ask_budget_llm_zero_returns_budget_exceeded,
      test_trace_after_run_returns_ordered_chain_ending_completed,
-     test_status_after_run_reports_state_completed].
+     test_status_after_run_reports_state_completed,
+     test_status_unknown_id_reports_unknown_and_server_survives].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -492,6 +494,36 @@ test_status_after_run_reports_state_completed(Config) ->
     match = re:run(StatusReply, "^\\(status ", [{capture, none}]),
     match = re:run(StatusReply, "\\(state completed\\)", [{capture, none}]),
     ok.
+
+%% Criterion 6 (CLI.3): a framed `(status "no-such-id")' request for an id with no
+%% events drives the real server -> soma_lfe:compile -> by_session(Store, "no-such-id")
+%% (returns []) -> derive_state([]) = unknown -> soma_lisp:render path and replies a
+%% single framed `(status (state unknown) ...)' s-expr -- an unknown id does not crash
+%% the handler. Then a fresh connection sends an echo `(run ...)' and reads a
+%% `(result ...)' whose status is `completed', proving the server process stayed up
+%% to serve the next request. A real gen_tcp client over a temp Unix socket, no layer
+%% bypassed.
+test_status_unknown_id_reports_unknown_and_server_survives(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    %% Ask for the status of an id no run ever used -- its event chain is empty.
+    {ok, C1} = connect(Path),
+    StatusReq = <<"(status \"no-such-id\")">>,
+    ok = gen_tcp:send(C1, StatusReq),
+    {ok, StatusReply} = gen_tcp:recv(C1, 0, 5000),
+    ok = gen_tcp:close(C1),
+    %% The reply is a single `(status ...)' s-expr whose `(state ...)' sub-form is
+    %% `unknown' -- the empty chain maps to the unknown state, not a crash.
+    match = re:run(StatusReply, "^\\(status ", [{capture, none}]),
+    match = re:run(StatusReply, "\\(state completed\\)", [{capture, none}]),
+    %% The server stayed up: a fresh connection still gets a completed echo result.
+    {ok, C2} = connect(Path),
+    Echo = <<"(run (step s1 echo (args (value \"ok\"))))">>,
+    ok = gen_tcp:send(C2, Echo),
+    {ok, EchoReply} = gen_tcp:recv(C2, 0, 5000),
+    match = re:run(EchoReply, "^\\(result ", [{capture, none}]),
+    match = re:run(EchoReply, "\\(status completed\\)", [{capture, none}]),
+    ok = gen_tcp:close(C2).
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
