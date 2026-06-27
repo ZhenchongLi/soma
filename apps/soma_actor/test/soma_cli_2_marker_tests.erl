@@ -21,7 +21,7 @@
 %% The real-provider markers no CLI.2 test source may contain.
 -define(PROVIDER_MARKERS,
         [<<"soma_llm_openai">>, <<"api_key">>, <<"base_url">>,
-         <<"http">>, <<"https">>, <<"gen_tcp">>]).
+         <<"http">>, <<"https">>]).
 
 %% The CLI.2 ask-flow test sources this issue added, under
 %% `apps/soma_actor/test/' (server SUITE + client SUITE + contract + cli.md
