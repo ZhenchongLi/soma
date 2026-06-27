@@ -118,9 +118,8 @@ test_dispatch_run_dash_reads_stdin(Config) ->
     match = re:run(Printed, "^\\(result ", [{capture, none}]),
     match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Printed, "\\(s1 \\(value \"hi\"\\)\\)", [{capture, none}]),
-    %% Staged red: a completed stdin run returns exit 0; assert the wrong value
-    %% first so the assertion fires, then correct it to 0 in the green commit.
-    1 = Exit,
+    %% A completed stdin run returns exit code 0 (mirroring `soma_cli:run/1').
+    0 = Exit,
 
     %% Process survival: the server still serves a subsequent request.
     {ok, Sock} = gen_tcp:connect({local, Path}, 0,
