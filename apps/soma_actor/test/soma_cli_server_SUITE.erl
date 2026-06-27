@@ -18,6 +18,7 @@
 -export([test_server_serves_after_client_disconnect/1]).
 -export([test_ask_reply_returns_completed_result_with_text/1]).
 -export([test_ask_reject_returns_rejected_result_with_reason/1]).
+-export([test_ask_budget_llm_zero_returns_budget_exceeded/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -34,7 +35,8 @@ all() ->
      test_worker_dead_after_client_disconnect,
      test_server_serves_after_client_disconnect,
      test_ask_reply_returns_completed_result_with_text,
-     test_ask_reject_returns_rejected_result_with_reason].
+     test_ask_reject_returns_rejected_result_with_reason,
+     test_ask_budget_llm_zero_returns_budget_exceeded].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -378,6 +380,39 @@ test_ask_reject_returns_rejected_result_with_reason(Config) ->
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     match = re:run(Reply, "\\(status rejected\\)", [{capture, none}]),
     match = re:run(Reply, "cannot help with that", [{capture, none}]),
+    ok = gen_tcp:close(Client).
+
+%% Criterion 6 (CLI.2): a framed `(ask (intent "...") (budget-llm 0))' request
+%% drives the real server -> soma_lfe:compile -> soma_actor_sup:start_actor ->
+%% soma_actor:ask/3 -> maybe_start_llm_call -> llm_budget_available (false) ->
+%% fail_task path and replies a framed `(result ...)' s-expr whose status sub-form
+%% is NOT `completed' and whose `error' sub-form carries the
+%% `{budget_exceeded, max_llm_calls}' tuple. No LLM call starts: the `max_llm_calls'
+%% cap of 0 refuses the call up front, so the mock `model_config' is never reached.
+%% A real gen_tcp client over a temp Unix socket sends the s-expr and reads the
+%% s-expr reply.
+test_ask_budget_llm_zero_returns_budget_exceeded(Config) ->
+    Path = socket_path(Config),
+    %% A `reply' mock model_config is configured, but the `(budget-llm 0)' cap
+    %% refuses the call before it is reached -- the terminal result must be the
+    %% budget failure, not the reply.
+    ModelConfig = #{directive => proposal,
+                    output => #{kind => reply, text => <<"the answer">>}},
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                 model_config => ModelConfig}),
+    {ok, Client} = connect(Path),
+    Request = <<"(ask (intent \"what is the answer\") (budget-llm 0))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The reply must be a `(result ...)' s-expr whose status sub-form is NOT
+    %% `completed' and whose `error' sub-form carries the budget_exceeded tuple.
+    %% Staged red: the budget path already works, so this expects the WRONG status
+    %% (`completed') first to make the assertion fire; the green commit corrects it.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(error ", [{capture, none}]),
+    match = re:run(Reply, "budget_exceeded", [{capture, none}]),
+    match = re:run(Reply, "max_llm_calls", [{capture, none}]),
     ok = gen_tcp:close(Client).
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
