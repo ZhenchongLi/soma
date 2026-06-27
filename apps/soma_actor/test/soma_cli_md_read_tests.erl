@@ -31,9 +31,7 @@ test_cli_md_documents_status_trace_and_defers_cancel_detach() ->
     ?assert(contains(Cli, <<"(status \"">>)),
     ?assert(contains(Cli, <<"(state ">>)),
     %% The deferral of `soma cancel <id>' and `--detach'.
-    %% STAGED-RED: deliberately-wrong sentinel so the assertion fires before the
-    %% doc is updated; corrected to the real deferral wording in the green commit.
-    ?assert(contains(Cli, <<"DELIBERATELY_WRONG_SENTINEL_124">>)),
+    ?assert(contains(Cli, <<"deferred">>)),
     ?assert(contains(Cli, <<"soma cancel">>)),
     ?assert(contains(Cli, <<"--detach">>)).
 
