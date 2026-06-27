@@ -13,6 +13,7 @@
 -export([test_server_serves_after_failed_lisp_run/1]).
 -export([test_malformed_request_returns_error_sexpr/1]).
 -export([test_server_serves_after_malformed_request/1]).
+-export([test_run_cancelled_on_client_disconnect/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -24,7 +25,8 @@ all() ->
      test_run_lisp_failed_returns_error_result,
      test_server_serves_after_failed_lisp_run,
      test_malformed_request_returns_error_sexpr,
-     test_server_serves_after_malformed_request].
+     test_server_serves_after_malformed_request,
+     test_run_cancelled_on_client_disconnect].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -215,6 +217,74 @@ test_server_serves_after_malformed_request(Config) ->
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
+
+%% Criterion 1 (CLI.1.5): a client that sends a `(run ...)' with a slow `sleep'
+%% step and then closes the socket mid-run drives that run to the `cancelled'
+%% terminal state. A real gen_tcp client sends the framed `(run (step s1 sleep
+%% (args (ms 5000))))', waits for the run's `tool.started' event in the store (so
+%% the cancel lands in `waiting_tool', the same guard soma_run_failure_SUITE's
+%% cancel cases use), then `gen_tcp:close's the socket. The handler's
+%% `{active, once}' socket delivers `{tcp_closed, Socket}', the cancel reaches the
+%% live run, and a `run.cancelled' event for that run appears in the store.
+test_run_cancelled_on_client_disconnect(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+    %% The store persists across cases in this suite, so an earlier case's
+    %% `tool.started' is already there. Snapshot those run ids first, then look
+    %% for the NEW one this request drives.
+    Before = tool_started_runs(StorePid),
+    {ok, Client} = connect(Path),
+    Request = <<"(run (step s1 sleep (args (ms 5000))))">>,
+    ok = gen_tcp:send(Client, Request),
+    %% Wait for the sleep run to reach `waiting_tool' -- its `tool.started' is in
+    %% the store -- so the disconnect lands while a worker is live, not before.
+    RunId = wait_for_new_tool_started_run(StorePid, Before, 100),
+    ok = gen_tcp:close(Client),
+    %% The disconnect must drive that run to `cancelled': a `run.cancelled' event
+    %% for that run appears in the store.
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.cancelled">>, Types).
+
+%% Run ids that have recorded `tool.started' in the store right now.
+tool_started_runs(StorePid) ->
+    Events = soma_event_store:all(StorePid),
+    lists:usort([maps:get(run_id, E)
+                 || E <- Events,
+                    maps:get(event_type, E) =:= <<"tool.started">>]).
+
+%% Poll the store for a run that records `tool.started' and is NOT in the Before
+%% snapshot -- the sleep run this request drove.
+wait_for_new_tool_started_run(_StorePid, _Before, 0) ->
+    {error, timeout};
+wait_for_new_tool_started_run(StorePid, Before, N) ->
+    case tool_started_runs(StorePid) -- Before of
+        [RunId | _] -> RunId;
+        [] ->
+            timer:sleep(20),
+            wait_for_new_tool_started_run(StorePid, Before, N - 1)
+    end.
+
+%% Poll the run-scoped trail until the given event type appears.
+wait_for_event(_StorePid, _RunId, _Type, 0) ->
+    {error, timeout};
+wait_for_event(StorePid, RunId, Type, N) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    case lists:member(Type, Types) of
+        true -> ok;
+        false ->
+            timer:sleep(20),
+            wait_for_event(StorePid, RunId, Type, N - 1)
+    end.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
 
 %% A small defensive retry for the client connect: right after start_link the
 %% accept loop may not have reached gen_tcp:accept yet, so a connect can briefly
