@@ -49,3 +49,24 @@ test_empty_or_directive_model_config_returns_mock_opts_unchanged() ->
 
 empty_or_directive_model_config_returns_mock_opts_unchanged_test() ->
     test_empty_or_directive_model_config_returns_mock_opts_unchanged().
+
+%% The payload key `soma_cli_server:ask_envelope/4' writes the intent under must
+%% be the same key `soma_actor:build_call_opts/2' reads the prompt from. Feeding
+%% the handler's own ask envelope through the real-provider builder pins the two
+%% sides together: the intent text must reach the user message, not the empty
+%% default -- so a one-sided rename of either key is caught.
+test_handle_ask_payload_key_matches_build_call_opts_reader() ->
+    Intent = <<"summarize the design">>,
+    Envelope = soma_cli_server:ask_envelope(Intent,
+                                            <<"task-1">>,
+                                            <<"corr-1">>,
+                                            #{}),
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    ?assertEqual([#{role => <<"user">>, content => Intent}],
+                 maps:get(messages, Opts)).
+
+handle_ask_payload_key_matches_build_call_opts_reader_test() ->
+    test_handle_ask_payload_key_matches_build_call_opts_reader().

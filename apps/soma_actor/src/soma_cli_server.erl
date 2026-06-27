@@ -10,6 +10,7 @@
 -module(soma_cli_server).
 
 -export([start_link/1, frame/1, unframe/1]).
+-export([ask_envelope/4]).
 
 %% Start the listener. `start_link(#{socket => Path})' opens an AF_UNIX
 %% (`{local, Path}') listening socket with `{packet, 4}' framing and runs an
@@ -160,11 +161,7 @@ handle_ask(Ask, ModelConfig) ->
             end,
     {ok, ActorPid} = soma_actor_sup:start_actor(Opts2),
     Llm = mock_llm_opts(ModelConfig),
-    Envelope = #{type => <<"ask">>,
-                 payload => #{text => Intent},
-                 task_id => TaskId,
-                 correlation_id => CorrId,
-                 llm => Llm},
+    Envelope = ask_envelope(Intent, TaskId, CorrId, Llm),
     Result = case soma_actor:ask(ActorPid, Envelope, 60000) of
                  {ok, #{kind := reply, text := Text}} ->
                      #{status => completed,
@@ -315,6 +312,17 @@ derive_state(Events) ->
                     end
             end
     end.
+
+%% Build the `ask' envelope the handler delivers to `soma_actor:ask/3'. Pure, so
+%% the payload key the intent lands under is unit-pinnable against the key
+%% `soma_actor:build_call_opts/2' reads it back from.
+-spec ask_envelope(binary(), binary(), binary(), map()) -> map().
+ask_envelope(Intent, TaskId, CorrId, Llm) ->
+    #{type => <<"ask">>,
+      payload => #{text => Intent},
+      task_id => TaskId,
+      correlation_id => CorrId,
+      llm => Llm}.
 
 %% The mock directive opts the actor drives `soma_llm_call' with. A mock
 %% `model_config' (carrying a `directive', no `provider') is the envelope's `llm'
