@@ -31,6 +31,26 @@ test_dispatch_malformed_prints_usage_nonzero() ->
 dispatch_malformed_prints_usage_nonzero_test() ->
     test_dispatch_malformed_prints_usage_nonzero().
 
+%% Criterion #15: `dispatch/1' returns an integer rather than crashing or
+%% badmatching on any malformed input -- the criterion-14 set (no subcommand,
+%% an unknown subcommand, a known subcommand missing its required positional)
+%% plus an unknown flag and a `--socket' with no following value. Each is
+%% dispatched with stdout/stderr captured so the usage write cannot leak into
+%% the runner; the return must be an integer for every case.
+test_dispatch_malformed_returns_integer() ->
+    Cases = [[],
+             ["bogus"],
+             ["run"],
+             ["run", "f", "--bogus"],
+             ["run", "f", "--socket"]],
+    lists:foreach(fun(Argv) ->
+        {Exit, _Stdout, _Stderr} = capture_dispatch(Argv),
+        ?assert(is_integer(Exit))
+    end, Cases).
+
+dispatch_malformed_returns_integer_test() ->
+    test_dispatch_malformed_returns_integer().
+
 %% Run `soma_cli_main:dispatch(Argv)' with stdout and stderr each routed to a
 %% recording IO server, returning `{Exit, StdoutBin, StderrBin}'. The group
 %% leader stands in for stdout; the `standard_error' registered process is
