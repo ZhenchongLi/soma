@@ -48,25 +48,16 @@ parse_flags(["--detach" | Rest]) ->
 parse_flags(["--socket", Path | Rest]) ->
     (parse_flags(Rest))#{socket => Path}.
 
-%% The socket the subcommand connects to: a `--socket' override wins, else the
-%% resolved path.
-socket(#{socket := Path}) ->
-    Path;
-socket(_Opts) ->
-    resolve_socket().
+%% The socket the subcommand connects to. Both override and fallback go through
+%% the shared `soma_cli:resolve_socket/1' so a separately-launched client lands
+%% on the exact path `soma_cli:daemon/1' resolves for the same user: a `--socket'
+%% override wins, else `$XDG_RUNTIME_DIR/soma.sock', else a per-user
+%% `/tmp/soma-<user>.sock'.
+socket(Opts) ->
+    soma_cli:resolve_socket(Opts).
 
 %% The `detach => true' fragment to merge in when `--detach' was given, else empty.
 detach_opt(#{detach := true}) ->
     #{detach => true};
 detach_opt(_Opts) ->
     #{}.
-
-%% Resolve the listener socket path: `$XDG_RUNTIME_DIR/soma.sock' when set. The
-%% full per-user fallback and the `--socket' override land in later criteria.
-resolve_socket() ->
-    case os:getenv("XDG_RUNTIME_DIR") of
-        false ->
-            "/tmp/soma.sock";
-        Dir ->
-            filename:join(Dir, "soma.sock")
-    end.
