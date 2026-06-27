@@ -41,7 +41,21 @@ dispatch(["trace", CorrId | Flags]) ->
     soma_cli:trace(#{correlation_id => CorrId, socket => socket(Opts)});
 dispatch(["cancel", TaskId | Flags]) ->
     Opts = parse_flags(Flags),
-    soma_cli:cancel(#{task_id => TaskId, socket => socket(Opts)}).
+    soma_cli:cancel(#{task_id => TaskId, socket => socket(Opts)});
+%% Malformed argv -- no subcommand at all, an unknown subcommand, or a known
+%% subcommand missing its required positional -- has no matching clause above.
+%% Print a usage message to stderr (stdout stays clean for the well-formed
+%% reply paths), and return a non-zero exit code.
+dispatch(_Argv) ->
+    usage().
+
+%% Write the usage message to standard_error and return the non-zero exit code
+%% for malformed invocation. stdout is left untouched so diagnostics never mix
+%% with a subcommand's reply.
+usage() ->
+    io:put_chars(standard_error,
+                 "usage: soma <run|ask|status|trace|cancel> ...\n"),
+    2.
 
 %% Parse the trailing flags after a subcommand's positional: `--detach' (a marker)
 %% and `--socket <path>' (the resolver override). Returns an options map.
