@@ -27,8 +27,7 @@ test_cli_md_documents_ask_flow() ->
     Cli = read_doc(?CLI_DOC),
     ?assert(byte_size(Cli) > 0),
     %% The `(ask ...)' request form and its sub-forms.
-    %% STAGED RED: deliberately-wrong expected form so the assertion fires.
-    ?assert(contains(Cli, <<"(ask-agent ">>)),
+    ?assert(contains(Cli, <<"(ask ">>)),
     ?assert(contains(Cli, <<"(intent ">>)),
     ?assert(contains(Cli, <<"(allow ">>)),
     ?assert(contains(Cli, <<"(budget-llm ">>)),
