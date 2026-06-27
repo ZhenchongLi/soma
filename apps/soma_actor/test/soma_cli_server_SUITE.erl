@@ -706,7 +706,7 @@ test_cancel_detached_run_kills_tool_worker(Config) ->
     ok = gen_tcp:send(C2, CancelReq),
     ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
     ok = gen_tcp:close(C2),
-    true = is_process_alive(WorkerPid).
+    false = is_process_alive(WorkerPid).
 
 daemon_task_registry_pid() ->
     Pid = whereis(soma_cli_task_registry),
