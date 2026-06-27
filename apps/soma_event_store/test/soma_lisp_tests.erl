@@ -15,6 +15,23 @@ test_render_result_map_produces_fixed_sexpr() ->
 render_result_map_produces_fixed_sexpr_test() ->
     test_render_result_map_produces_fixed_sexpr().
 
+test_render_result_map_with_task_id_emits_task_id_subform() ->
+    %% A result map carrying `task_id' renders a `(task-id ...)' sub-form inside
+    %% `(result ...)', placed after `status' and before `correlation-id'.
+    ResultMap = #{
+        status => completed,
+        outputs => #{s1 => #{value => <<"hi">>}},
+        task_id => <<"t-9">>,
+        correlation_id => <<"c-7">>
+    },
+    Rendered = iolist_to_binary(soma_lisp:render(ResultMap)),
+    Expected = <<"(result (status completed) (task-id \"t-9\") "
+                 "(outputs ((s1 (value \"hi\")))) (correlation-id \"c-7\"))">>,
+    ?assertEqual(Expected, Rendered).
+
+render_result_map_with_task_id_emits_task_id_subform_test() ->
+    test_render_result_map_with_task_id_emits_task_id_subform().
+
 test_render_event_map_carries_fields() ->
     EventMap = #{
         event_type => llm_started,
