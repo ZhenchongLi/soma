@@ -7,16 +7,25 @@
 -export([test_run_failed_workflow_exit_nonzero/1]).
 -export([test_run_reads_workflow_from_stdin_dash/1]).
 -export([test_daemon_boots_listener_client_connects/1]).
+-export([test_ask_prints_reply_result_exit_zero/1]).
 
 all() ->
     [test_run_echo_file_prints_result_exit_zero,
      test_run_failed_workflow_exit_nonzero,
      test_run_reads_workflow_from_stdin_dash,
-     test_daemon_boots_listener_client_connects].
+     test_daemon_boots_listener_client_connects,
+     test_ask_prints_reply_result_exit_zero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
-    [{started_apps, Started} | Config].
+    %% The ask path drives the decision loop through an actor under
+    %% soma_actor_sup, so the sup must be up. Tolerate an already-running sup so
+    %% each case is self-contained.
+    Sup = case soma_actor_sup:start_link() of
+              {ok, Pid} -> Pid;
+              {error, {already_started, Pid}} -> Pid
+          end,
+    [{started_apps, Started}, {actor_sup, Sup} | Config].
 
 end_per_testcase(_Case, _Config) ->
     ok.
@@ -119,6 +128,34 @@ test_daemon_boots_listener_client_connects(Config) ->
     {ok, Sock} = gen_tcp:connect({local, Resolved}, 0,
                                  [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:close(Sock).
+
+%% Criterion 7 (CLI.2): `soma_cli:ask/1', pointed at a `soma_cli_server' on a temp
+%% socket whose mock `model_config' yields a `reply' proposal, sends an intent,
+%% prints the `(result ...)' reply, and returns exit code 0. The client builds the
+%% `(ask (intent "..."))' source from the intent string, connects to the temp
+%% socket served by a real `soma_cli_server', frames + sends the bytes, reads the
+%% framed `(result ...)' reply, prints it, and returns 0 when the reply's status
+%% sub-form is `completed'. The mock is driven entirely by the server's
+%% `model_config' -- no real provider, no non-local socket.
+test_ask_prints_reply_result_exit_zero(Config) ->
+    Path = socket_path(Config),
+    %% Mock model_config: a `proposal' directive whose output is a `reply'
+    %% proposal carrying the answer text -- the criterion-4 server config shape.
+    ModelConfig = #{directive => proposal,
+                    output => #{kind => reply, text => <<"the answer">>}},
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                 model_config => ModelConfig}),
+    ct:capture_start(),
+    Exit = soma_cli:ask(#{intent => "what is the answer", socket => Path}),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+    %% The printed reply must be the `(result ...)' s-expr whose status sub-form is
+    %% `completed' and whose body carries the reply text.
+    match = re:run(Printed, "^\\(result ", [{capture, none}]),
+    match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
+    match = re:run(Printed, "the answer", [{capture, none}]),
+    %% A completed ask returns exit code 0.
+    0 = Exit.
 
 %% A minimal IO server usable as a group leader: it answers `get_chars' / `get_line'
 %% / `get_until' read requests by delivering `Bytes' once then EOF (so a reader
