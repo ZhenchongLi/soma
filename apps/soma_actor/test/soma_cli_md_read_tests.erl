@@ -37,3 +37,19 @@ test_cli_md_documents_status_trace_and_defers_cancel_detach() ->
 
 cli_md_documents_status_trace_and_defers_cancel_detach_test() ->
     test_cli_md_documents_status_trace_and_defers_cancel_detach().
+
+%% Criterion #17 (CLI.4): `docs/cli.md' documents detached runs and cancel-by-id
+%% as implemented behavior, not as CLI.3-deferred work.
+test_cli_md_documents_detach_and_cancel_not_deferred() ->
+    Cli = read_doc(?CLI_DOC),
+    ?assert(byte_size(Cli) > 0),
+    ?assert(contains(Cli, <<"--detach">>)),
+    ?assert(contains(Cli, <<"soma cancel <task-id>">>)),
+    ?assert(contains(Cli, <<"(accepted ">>)),
+    ?assert(contains(Cli, <<"(cancel \"">>)),
+    ?assertEqual(false, contains(Cli, <<"### Deferred in CLI.3">>)),
+    ?assertEqual(false, contains(Cli, <<"are **deferred**">>)),
+    ?assertEqual(false, contains(Cli, <<"nor `--detach` is implemented">>)).
+
+cli_md_documents_detach_and_cancel_not_deferred_test() ->
+    test_cli_md_documents_detach_and_cancel_not_deferred().
