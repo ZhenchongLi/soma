@@ -9,6 +9,8 @@
 -export([test_dispatch_status_read_exit_zero/1]).
 -export([test_dispatch_trace_read_exit_zero/1]).
 -export([test_dispatch_cancel_running_task_exit_zero/1]).
+-export([test_dispatch_run_detach_marks_request/1]).
+-export([test_dispatch_ask_detach_marks_request/1]).
 
 all() ->
     [test_dispatch_run_file_completed_exit_zero,
@@ -16,7 +18,9 @@ all() ->
      test_dispatch_ask_completed_exit_zero,
      test_dispatch_status_read_exit_zero,
      test_dispatch_trace_read_exit_zero,
-     test_dispatch_cancel_running_task_exit_zero].
+     test_dispatch_cancel_running_task_exit_zero,
+     test_dispatch_run_detach_marks_request,
+     test_dispatch_ask_detach_marks_request].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -329,6 +333,55 @@ test_dispatch_cancel_running_task_exit_zero(Config) ->
     {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
     match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
+
+%% Criterion 7 (CLI.5): `--detach' after `run File' sets `detach => true' in the
+%% dispatched args, so the request the client emits carries the literal `(detach)'
+%% marker. A `soma_cli_request_capture' stands in for the server on the resolved
+%% socket (the same capture pattern `soma_cli_SUITE' uses), so the test reads the
+%% actual wire bytes the dispatcher's client sent. The dispatcher resolves the
+%% socket itself (no `--socket' override) and lands on the capture's path.
+test_dispatch_run_detach_marks_request(Config) ->
+    Path = ?config(socket_path, Config),
+    File = filename:join(?config(priv_dir, Config), "detach_dispatch_run.lfe"),
+    ok = file:write_file(File, <<"(run (step s1 echo (args (value \"hi\"))))">>),
+    Capture = soma_cli_request_capture:start(
+                Path, <<"(result (status completed))">>),
+
+    ct:capture_start(),
+    Exit = soma_cli_main:dispatch(["run", File, "--detach"]),
+    ct:capture_stop(),
+    _ = ct:capture_get(),
+    Request = soma_cli_request_capture:request(Capture),
+
+    %% The emitted request is a `(run ...)' that carries the `(detach)' marker,
+    %% proving `--detach' set `detach => true' in the dispatched args.
+    match = re:run(Request, "^\\(run ", [{capture, none}]),
+    match = re:run(Request, "\\(detach\\)", [{capture, none}]),
+    0 = Exit.
+
+%% Criterion 7 (CLI.5): `--detach' after `ask Intent' sets `detach => true' in the
+%% dispatched args, so the request the client emits carries the literal `(detach)'
+%% marker. A `soma_cli_request_capture' stands in for the server on the resolved
+%% socket so the test reads the actual wire bytes. The dispatcher resolves the
+%% socket itself (no `--socket' override).
+test_dispatch_ask_detach_marks_request(Config) ->
+    Path = ?config(socket_path, Config),
+    Capture = soma_cli_request_capture:start(
+                Path, <<"(result (status completed))">>),
+
+    ct:capture_start(),
+    Exit = soma_cli_main:dispatch(["ask", "what is the answer", "--detach"]),
+    ct:capture_stop(),
+    _ = ct:capture_get(),
+    Request = soma_cli_request_capture:request(Capture),
+
+    %% The emitted request is an `(ask ...)' carrying the intent and the `(detach)'
+    %% marker, proving `--detach' set `detach => true' in the dispatched args.
+    match = re:run(Request, "^\\(ask ", [{capture, none}]),
+    match = re:run(Request, "\\(intent \"what is the answer\"\\)",
+                   [{capture, none}]),
+    match = re:run(Request, "\\(detach\\)", [{capture, none}]),
+    0 = Exit.
 
 %% Bounded poll: returns ok once an event of `Type' is recorded against `RunId' in
 %% the event store, retrying up to `N' times with a short sleep between tries.
