@@ -29,6 +29,7 @@
 -export([test_cancel_detached_run_records_run_cancelled/1]).
 -export([test_cancel_detached_run_kills_tool_worker/1]).
 -export([test_cancel_detached_run_replies_cancelled/1]).
+-export([test_cancel_terminal_task_reports_already_terminal_no_new_run/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -56,7 +57,8 @@ all() ->
      test_status_completed_detached_task_reads_completed,
      test_cancel_detached_run_records_run_cancelled,
      test_cancel_detached_run_kills_tool_worker,
-     test_cancel_detached_run_replies_cancelled].
+     test_cancel_detached_run_replies_cancelled,
+     test_cancel_terminal_task_reports_already_terminal_no_new_run].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -747,6 +749,34 @@ test_cancel_detached_run_replies_cancelled(Config) ->
     match = re:run(CancelReply, TaskPattern, [{capture, none}]),
     match = re:run(CancelReply, CorrPattern, [{capture, none}]).
 
+%% Criterion #13 (CLI.4): cancelling a task that is already terminal must not
+%% start another run. The reply is a narrow already-terminal result carrying only
+%% the terminal status and note.
+test_cancel_terminal_task_reports_already_terminal_no_new_run(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+    {ok, C1} = connect(Path),
+    Request = <<"(run (detach) (step s1 sleep (args (ms 80))))">>,
+    ok = gen_tcp:send(C1, Request),
+    {ok, Reply} = gen_tcp:recv(C1, 0, 1000),
+    ok = gen_tcp:close(C1),
+    match = re:run(Reply, "^\\(accepted ", [{capture, none}]),
+    {match, [TaskId]} =
+        re:run(Reply, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    completed = wait_for_registry_status(TaskId, completed, 100),
+    BeforeRunIds = run_ids(StorePid),
+
+    {ok, C2} = connect(Path),
+    CancelReq = <<"(cancel \"", TaskId/binary, "\")">>,
+    ok = gen_tcp:send(C2, CancelReq),
+    {ok, CancelReply} = gen_tcp:recv(C2, 0, 1000),
+    ok = gen_tcp:close(C2),
+
+    <<"(result (status completed) (note already-terminal))">> = CancelReply,
+    BeforeRunIds = run_ids(StorePid).
+
 daemon_task_registry_pid() ->
     Pid = whereis(soma_cli_task_registry),
     true = is_pid(Pid),
@@ -764,6 +794,10 @@ tool_started_runs(StorePid) ->
     lists:usort([maps:get(run_id, E)
                  || E <- Events,
                     maps:get(event_type, E) =:= <<"tool.started">>]).
+
+run_ids(StorePid) ->
+    Events = soma_event_store:all(StorePid),
+    lists:usort([RunId || #{run_id := RunId} <- Events]).
 
 %% Poll the store for a run that records `tool.started' and is NOT in the Before
 %% snapshot -- the sleep run this request drove.
