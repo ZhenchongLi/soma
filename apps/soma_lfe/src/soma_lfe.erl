@@ -36,6 +36,8 @@ dispatch([[trace | _] = Form]) ->
     soma_lfe_parser:parse_trace(Form);
 dispatch([[status | _] = Form]) ->
     soma_lfe_parser:parse_status(Form);
+dispatch([[cancel | _] = Form]) ->
+    soma_lfe_parser:parse_cancel(Form);
 dispatch(Forms) ->
     soma_lfe_parser:parse_run(Forms).
 
