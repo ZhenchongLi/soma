@@ -2,10 +2,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
-%% DELIBERATELY WRONG path for the staged-red phase: the doc does not exist
-%% under this name, so the file read fails and the assertion fires for the
-%% right reason. Corrected to `cli-3-test-contract.md' in the green phase.
--define(DOC_PATH, "docs/contracts/cli-3-test-contract-WRONG.md").
+-define(DOC_PATH, "docs/contracts/cli-3-test-contract.md").
 
 %% Issue #124 criterion 10: `docs/contracts/cli-3-test-contract.md' exists, is
 %% non-empty, and names a proving suite or module and each of its case names for
