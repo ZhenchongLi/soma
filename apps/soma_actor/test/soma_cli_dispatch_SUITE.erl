@@ -7,12 +7,14 @@
 -export([test_dispatch_run_dash_reads_stdin/1]).
 -export([test_dispatch_ask_completed_exit_zero/1]).
 -export([test_dispatch_status_read_exit_zero/1]).
+-export([test_dispatch_trace_read_exit_zero/1]).
 
 all() ->
     [test_dispatch_run_file_completed_exit_zero,
      test_dispatch_run_dash_reads_stdin,
      test_dispatch_ask_completed_exit_zero,
-     test_dispatch_status_read_exit_zero].
+     test_dispatch_status_read_exit_zero,
+     test_dispatch_trace_read_exit_zero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -212,6 +214,54 @@ test_dispatch_status_read_exit_zero(Config) ->
     match = re:run(Printed, "^\\(status ", [{capture, none}]),
     match = re:run(Printed, "\\(state ", [{capture, none}]),
     %% A successful read returns exit code 0 (mirroring `soma_cli:status/1').
+    0 = Exit,
+
+    %% Process survival: the server still serves a subsequent request after the
+    %% dispatch returned.
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(run (step s2 echo (args (value \"again\"))))">>),
+    {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
+
+%% Criterion 5 (CLI.5): `soma_cli_main:dispatch(["trace", CorrId])' drives
+%% `soma_cli:trace/1' on the resolved socket and returns 0 on a successful read.
+%% The test seeds a real correlation chain first by dispatching a one-step echo
+%% `run' through the daemon and reading its correlation id off the printed
+%% `(result ...)' reply's `(correlation-id ...)' sub-form; it then dispatches
+%% `["trace", CorrId]' against the same server. The dispatcher resolves the socket
+%% itself (no `--socket' override). The printed reply is the `(trace ...)' s-expr
+%% carrying the chain's event sub-forms, and the exit code mirrors
+%% `soma_cli:trace/1' (0 for a successful read, not gated on `(status
+%% completed)'). Process survival is asserted: the same server still serves a
+%% fresh request after dispatch returns.
+test_dispatch_trace_read_exit_zero(Config) ->
+    Path = ?config(socket_path, Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    %% Seed a real correlation chain: dispatch a one-step echo run and read its
+    %% correlation id off the `(result ...)' reply the dispatcher printed.
+    File = filename:join(?config(priv_dir, Config), "trace_dispatch_seed.lfe"),
+    ok = file:write_file(File, <<"(run (step s1 echo (args (value \"hi\"))))">>),
+    ct:capture_start(),
+    0 = soma_cli_main:dispatch(["run", File]),
+    ct:capture_stop(),
+    RunPrinted = iolist_to_binary(ct:capture_get()),
+    {match, [CorrId]} =
+        re:run(RunPrinted, "\\(correlation-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, list}]),
+
+    %% Now dispatch the trace of that correlation id against the same server.
+    ct:capture_start(),
+    Exit = soma_cli_main:dispatch(["trace", CorrId]),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+
+    %% The printed reply must be the `(trace ...)' s-expr carrying event
+    %% sub-forms, proving the dispatcher resolved the socket and drove the read
+    %% through the daemon.
+    match = re:run(Printed, "^\\(trace ", [{capture, none}]),
+    %% A successful read returns exit code 0 (mirroring `soma_cli:trace/1').
     0 = Exit,
 
     %% Process survival: the server still serves a subsequent request after the
