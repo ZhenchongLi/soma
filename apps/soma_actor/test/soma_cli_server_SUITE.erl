@@ -17,6 +17,7 @@
 -export([test_worker_dead_after_client_disconnect/1]).
 -export([test_server_serves_after_client_disconnect/1]).
 -export([test_ask_reply_returns_completed_result_with_text/1]).
+-export([test_ask_reject_returns_rejected_result_with_reason/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -32,7 +33,8 @@ all() ->
      test_run_cancelled_on_client_disconnect,
      test_worker_dead_after_client_disconnect,
      test_server_serves_after_client_disconnect,
-     test_ask_reply_returns_completed_result_with_text].
+     test_ask_reply_returns_completed_result_with_text,
+     test_ask_reject_returns_rejected_result_with_reason].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -346,6 +348,36 @@ test_ask_reply_returns_completed_result_with_text(Config) ->
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "the answer", [{capture, none}]),
+    ok = gen_tcp:close(Client).
+
+%% Criterion 5 (CLI.2): a framed `(ask (intent "..."))' request whose server is
+%% configured with a mock `model_config' yielding a `reject' proposal drives the
+%% real server -> soma_lfe:compile -> soma_actor_sup:start_actor ->
+%% soma_actor:ask/3 -> mock soma_llm_call -> soma_proposal:normalize ->
+%% soma_policy:check path and replies a framed `(result ...)' s-expr whose status
+%% sub-form is `rejected' and which carries the reject reason. The mock is driven
+%% entirely by the server's `model_config' (a `proposal' directive yielding a
+%% `reject' proposal) -- no real provider, no non-local socket. A real gen_tcp
+%% client over a temp Unix socket sends the s-expr and reads the s-expr reply.
+test_ask_reject_returns_rejected_result_with_reason(Config) ->
+    Path = socket_path(Config),
+    %% Mock model_config: a `proposal' directive whose output is a `reject'
+    %% proposal carrying the reason. build_call_opts/2 returns this map unchanged
+    %% (no `provider' key), so soma_llm_call runs the mock and opens no socket.
+    ModelConfig = #{directive => proposal,
+                    output => #{kind => reject,
+                                reason => <<"cannot help with that">>}},
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                 model_config => ModelConfig}),
+    {ok, Client} = connect(Path),
+    Request = <<"(ask (intent \"do something disallowed\"))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The reply must be a `(result ...)' s-expr whose status sub-form is
+    %% `rejected' and which carries the reject reason.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status rejected\\)", [{capture, none}]),
+    match = re:run(Reply, "cannot help with that", [{capture, none}]),
     ok = gen_tcp:close(Client).
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
