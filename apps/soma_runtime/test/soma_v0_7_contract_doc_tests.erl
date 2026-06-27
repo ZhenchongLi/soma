@@ -21,9 +21,6 @@ contains(Haystack, Needle) ->
 %% Criterion 13: the contract names the resume journal suite and each case.
 test_doc_names_resume_journal_suite_and_cases() ->
     Doc = read_doc(),
-    %% Staged red: assert the doc names a suite it must NOT name, so the
-    %% assertion genuinely fires before the doc exists / is corrected.
-    ?assert(contains(Doc, <<"soma_run_resume_journal_SUITE_WRONG_NAME">>)),
     ?assert(contains(Doc, <<"soma_run_resume_journal_SUITE">>)),
     ?assert(contains(Doc, <<"test_session_start_journals_steps_in_run_started">>)),
     ?assert(contains(Doc, <<"test_direct_run_journals_durable_options_with_correlation_id">>)),
