@@ -162,6 +162,25 @@ handle_ask(Ask, ModelConfig) ->
                        task_id => TaskId,
                        correlation_id => CorrId,
                        outputs => #{reply => Text}};
+                 {ok, #{kind := reject, reason := Reason}} ->
+                     %% The LLM declined: a `reject' proposal is approved by
+                     %% policy (it runs nothing) and comes back as the task
+                     %% result, but it is not a completed answer. Render it as a
+                     %% `rejected' result whose `error' sub-form carries the
+                     %% reject reason.
+                     #{status => rejected,
+                       task_id => TaskId,
+                       correlation_id => CorrId,
+                       error => Reason};
+                 {error, {rejected, Reason}} ->
+                     %% The policy gate rejected the proposal (e.g. a `run_steps'
+                     %% naming a tool outside the allowlist). Same terminal shape
+                     %% as a `reject' proposal: a `rejected' result carrying the
+                     %% reason.
+                     #{status => rejected,
+                       task_id => TaskId,
+                       correlation_id => CorrId,
+                       error => Reason};
                  {ok, Other} ->
                      #{status => completed,
                        task_id => TaskId,
