@@ -11,3 +11,13 @@ test_ask_intent_parses_to_ask_map() ->
 
 ask_intent_parses_to_ask_map_test() ->
     test_ask_intent_parses_to_ask_map().
+
+%% Criterion 2 — (ask ...) with no (intent ...) is a parse error, not a
+%% malformed ok map.
+test_ask_without_intent_returns_error() ->
+    Source = <<"(ask)">>,
+    Result = soma_lfe:compile(Source, #{}),
+    ?assertMatch({error, [_ | _]}, Result).
+
+ask_without_intent_returns_error_test() ->
+    test_ask_without_intent_returns_error().
