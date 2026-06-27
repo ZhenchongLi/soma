@@ -91,11 +91,13 @@ is_result_map(Map) ->
     maps:is_key(status, Map)
         andalso (maps:is_key(outputs, Map) orelse maps:is_key(error, Map)).
 
-%% The result sub-forms, in order: status, then outputs if present, then error if
-%% present, then correlation-id if present. The completed-result order
-%% (`status outputs correlation-id') is preserved.
+%% The result sub-forms, in order: status, then task-id if present, then outputs
+%% if present, then error if present, then correlation-id if present. `task-id'
+%% sits after status and before correlation-id so the existing completed-result
+%% order (`status outputs correlation-id') stays stable.
 result_pairs(Map) ->
     [render_pair(status, maps:get(status, Map))]
+        ++ [render_pair(task_id, V) || {ok, V} <- [maps:find(task_id, Map)]]
         ++ [render_pair(outputs, V) || {ok, V} <- [maps:find(outputs, Map)]]
         ++ [render_pair(error, V) || {ok, V} <- [maps:find(error, Map)]]
         ++ [render_pair(correlation_id, V)
