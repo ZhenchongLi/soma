@@ -4,7 +4,7 @@
 -behaviour(gen_server).
 -compile({no_auto_import, [register/2]}).
 
--export([start_link/0, register/2, lookup/1]).
+-export([start_link/0, register/2, lookup/1, start_detached_run/5]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -16,6 +16,10 @@ register(TaskId, Task) when is_map(Task) ->
 
 lookup(TaskId) ->
     gen_server:call(?MODULE, {lookup, TaskId}).
+
+start_detached_run(TaskId, CorrId, RunId, Steps, Store) ->
+    gen_server:call(?MODULE,
+                    {start_detached_run, TaskId, CorrId, RunId, Steps, Store}).
 
 init([]) ->
     {ok, #{tasks => #{}, runs => #{}}}.
@@ -32,7 +36,27 @@ handle_call({lookup, TaskId}, _From, #{tasks := Tasks} = State) ->
                 {ok, Task} -> {ok, Task};
                 error -> {error, not_found}
             end,
-    {reply, Reply, State}.
+    {reply, Reply, State};
+handle_call({start_detached_run, TaskId, CorrId, RunId, Steps, Store}, _From,
+            #{tasks := Tasks, runs := Runs} = State) ->
+    {ok, RunPid} = soma_run_sup:start_run(
+                     #{run_id => RunId,
+                       session_id => TaskId,
+                       session_pid => self(),
+                       event_store => Store,
+                       steps => Steps,
+                       correlation_id => CorrId}),
+    Task = #{pid => RunPid,
+             status => running,
+             correlation_id => CorrId,
+             run_id => RunId},
+    State1 = State#{tasks := Tasks#{TaskId => Task},
+                    runs := Runs#{RunId => TaskId}},
+    Reply = {ok, #{task_id => TaskId,
+                   correlation_id => CorrId,
+                   run_id => RunId,
+                   pid => RunPid}},
+    {reply, Reply, State1}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.

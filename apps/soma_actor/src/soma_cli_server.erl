@@ -117,6 +117,8 @@ handle_lisp_request(Bytes, Socket, ModelConfig) ->
                                                              [Class, Reason]))}]}
                end,
     case Compiled of
+        {ok, #{run := #{steps := Steps, detach := true}}} ->
+            run_steps_detached(Steps);
         {ok, #{run := #{steps := Steps}}} ->
             run_steps(Steps, Socket);
         {ok, #{ask := Ask}} ->
@@ -274,6 +276,30 @@ run_steps(Steps, Socket) ->
         Result ->
             soma_lisp:render(Result)
     end.
+
+run_steps_detached(Steps) ->
+    ok = ensure_task_registry(),
+    TaskId = mint_id("task"),
+    CorrId = mint_id("corr"),
+    RunId = mint_id("run"),
+    {ok, _Info} = soma_cli_task_registry:start_detached_run(
+                    TaskId, CorrId, RunId, Steps, event_store_pid()),
+    render_accepted(TaskId, CorrId).
+
+ensure_task_registry() ->
+    case whereis(soma_cli_task_registry) of
+        undefined ->
+            case soma_cli_task_registry:start_link() of
+                {ok, _Pid} -> ok;
+                {error, {already_started, _Pid}} -> ok
+            end;
+        _Pid ->
+            ok
+    end.
+
+render_accepted(TaskId, CorrId) ->
+    ["(accepted (task-id \"", TaskId, "\") "
+     "(correlation-id \"", CorrId, "\"))"].
 
 %% Wait for the owned run's terminal message and shape the result map. On
 %% `run_completed' the recorded step outputs become the `outputs' sub-form; on a
