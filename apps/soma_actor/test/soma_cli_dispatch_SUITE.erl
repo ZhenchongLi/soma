@@ -8,13 +8,15 @@
 -export([test_dispatch_ask_completed_exit_zero/1]).
 -export([test_dispatch_status_read_exit_zero/1]).
 -export([test_dispatch_trace_read_exit_zero/1]).
+-export([test_dispatch_cancel_running_task_exit_zero/1]).
 
 all() ->
     [test_dispatch_run_file_completed_exit_zero,
      test_dispatch_run_dash_reads_stdin,
      test_dispatch_ask_completed_exit_zero,
      test_dispatch_status_read_exit_zero,
-     test_dispatch_trace_read_exit_zero].
+     test_dispatch_trace_read_exit_zero,
+     test_dispatch_cancel_running_task_exit_zero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -272,6 +274,84 @@ test_dispatch_trace_read_exit_zero(Config) ->
     {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
     match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
+
+%% Criterion 6 (CLI.5): `soma_cli_main:dispatch(["cancel", TaskId])' drives
+%% `soma_cli:cancel/1' on the resolved socket and returns 0 on a successful cancel.
+%% The test seeds a real running task first by sending a detached long sleep run
+%% over the daemon socket, reading the accepted task id off the `(accepted ...)'
+%% reply, and waiting (bounded) for its `tool.started' event so the run is actually
+%% in flight; it then dispatches `["cancel", TaskId]' against the same server. The
+%% dispatcher resolves the socket itself (no `--socket' override). The printed reply
+%% is the `(result ...)' s-expr carrying `(status cancelled)', proving the cancel
+%% reached the daemon and stopped the run, and the exit code mirrors
+%% `soma_cli:cancel/1' (0 on a successful cancel). Process survival is asserted: the
+%% same server still serves a fresh request after dispatch returns.
+test_dispatch_cancel_running_task_exit_zero(Config) ->
+    Path = ?config(socket_path, Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+
+    %% Seed a real running task: a detached long sleep run accepted by the daemon.
+    {ok, Seed} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Seed, <<"(run (detach) (step s1 sleep (args (ms 5000))))">>),
+    {ok, Accepted} = gen_tcp:recv(Seed, 0, 60000),
+    ok = gen_tcp:close(Seed),
+    match = re:run(Accepted, "^\\(accepted ", [{capture, none}]),
+    {match, [TaskId]} =
+        re:run(Accepted, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    {ok, #{run_id := RunId}} = soma_cli_task_registry:lookup(TaskId),
+    %% Bounded poll until the run is actually in flight before we cancel.
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 100),
+
+    %% Now dispatch the cancel of that task id against the same server. The
+    %% dispatch argv is a list of strings, matching how a real CLI hands the
+    %% positional through.
+    ct:capture_start(),
+    Exit = soma_cli_main:dispatch(["cancel", binary_to_list(TaskId)]),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+
+    %% The printed reply must be the `(result ...)' s-expr carrying `(status
+    %% cancelled)', proving the dispatcher resolved the socket and drove the cancel
+    %% through the daemon.
+    match = re:run(Printed, "^\\(result ", [{capture, none}]),
+    match = re:run(Printed, "\\(status cancelled\\)", [{capture, none}]),
+    %% A successful cancel returns exit code 0 (mirroring `soma_cli:cancel/1').
+    0 = Exit,
+
+    %% Process survival: the server still serves a subsequent request after the
+    %% dispatch returned.
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(run (step s2 echo (args (value \"again\"))))">>),
+    {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
+
+%% Bounded poll: returns ok once an event of `Type' is recorded against `RunId' in
+%% the event store, retrying up to `N' times with a short sleep between tries.
+wait_for_event(_StorePid, _RunId, _Type, 0) ->
+    {error, timeout};
+wait_for_event(StorePid, RunId, Type, N) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    case lists:member(Type, Types) of
+        true ->
+            ok;
+        false ->
+            timer:sleep(20),
+            wait_for_event(StorePid, RunId, Type, N - 1)
+    end.
+
+%% The runtime's event store pid, dug out of `soma_sup''s children so the bounded
+%% poll can read run events directly.
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
 
 %% A minimal IO server usable as a group leader: it answers read requests by
 %% delivering `Bytes' once then EOF (so a reader sees exactly `Bytes' as stdin),
