@@ -4,7 +4,7 @@
 %% detach flag mutates the request text to carry a `(detach)' marker.
 -module(soma_cli).
 
--export([run/1, ask/1, trace/1, status/1, cancel/1, daemon/1]).
+-export([run/1, ask/1, trace/1, status/1, cancel/1, daemon/1, resolve_socket/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -117,16 +117,18 @@ cancel_source(TaskId) ->
 -spec daemon(map()) -> {ok, file:filename_all()}.
 daemon(Args) ->
     {ok, _Started} = application:ensure_all_started(soma_runtime),
-    Path = socket_path(Args),
+    Path = resolve_socket(Args),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
     {ok, Path}.
 
-%% Resolve the listener socket path: a `socket' override (a temp path a test
-%% points both ends at) wins; otherwise `$XDG_RUNTIME_DIR/soma.sock', else
-%% `/tmp/soma-$UID.sock'.
-socket_path(#{socket := Path}) ->
+%% Shared socket-path resolver. Both `daemon/1' and `soma_cli_main' call this so
+%% the daemon and a separately-launched client land on the same path. A `socket'
+%% override (a temp path a test points both ends at) wins; otherwise
+%% `$XDG_RUNTIME_DIR/soma.sock' when set, else a per-user `/tmp/soma-$UID.sock'.
+-spec resolve_socket(map()) -> file:filename_all().
+resolve_socket(#{socket := Path}) ->
     Path;
-socket_path(_Args) ->
+resolve_socket(_Args) ->
     case os:getenv("XDG_RUNTIME_DIR") of
         false ->
             "/tmp/soma-" ++ os:getpid() ++ ".sock";
