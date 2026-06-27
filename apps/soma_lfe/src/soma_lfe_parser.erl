@@ -152,7 +152,17 @@ parse_ask_fields([['budget-llm', N] | Rest], Acc) when is_integer(N) ->
     parse_ask_fields(Rest, Acc#{budget => Budget#{max_llm_calls => N}});
 parse_ask_fields([['budget-steps', N] | Rest], Acc) when is_integer(N) ->
     Budget = maps:get(budget, Acc, #{}),
-    parse_ask_fields(Rest, Acc#{budget => Budget#{max_steps => N}}).
+    parse_ask_fields(Rest, Acc#{budget => Budget#{max_steps => N}});
+parse_ask_fields([[intent, Value] | _Rest], _Acc) ->
+    {error, [#{code => malformed_form,
+               message => iolist_to_binary(
+                   io_lib:format("ask intent must be a string, got: ~p", [Value])),
+               line => 0}]};
+parse_ask_fields([Other | _Rest], _Acc) ->
+    {error, [#{code => unknown_form,
+               message => iolist_to_binary(
+                   io_lib:format("unknown ask sub-form: ~p", [Other])),
+               line => 0}]}.
 
 -spec parse_run([term()]) ->
     {ok, #{run => #{steps => [map()]}}} | {error, [diagnostic()]}.
