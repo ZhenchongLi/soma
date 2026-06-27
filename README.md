@@ -16,7 +16,7 @@ syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `Lisp at the edge -> validated data -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 226, Common Test 263, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 227, Common Test 313, Erlang/OTP 29).
 The runtime executes sequential runs, isolates failures, and runs both in-BEAM
 Erlang tools and external one-shot CLI tools — each proven under test, asserting
 *process survival*, not just return values. An LFE DSL compile-only layer
@@ -34,7 +34,13 @@ and a real OpenAI-compatible provider now exists behind the same call seam
 readable and durable: `soma_trace` renders one `correlation_id` as a
 timestamp-ordered timeline, and the event store gains an **opt-in `disk_log`
 backend** (turned on with one app env) whose events survive a BEAM restart —
-behind the same query API, with the in-memory store still the default. On top of
+behind the same query API, with the in-memory store still the default. Building on
+that durable trail, the **first persistent-resume slice** (v0.7.1) reads it back:
+a run journals its steps and durable options into `run.started`, and
+`soma_run_resume:reconstruct/2` rebuilds run progress — steps, durable options,
+committed step outputs by id, the next uncommitted step, and terminal status —
+read-only from the event stream, with resuming a run's *execution* from that
+snapshot left to the next slice. On top of
 that, the Lisp edge language has grown beyond `(run ...)`: actors accept Lisp
 messages, mock LLM outputs can be Lisp proposals, traces render as Lisp, and a
 bounded repair loop can fix malformed Lisp proposals without bypassing policy or
@@ -97,7 +103,7 @@ Prerequisites: Erlang/OTP 29 and rebar3.
 
 ```bash
 rebar3 compile
-rebar3 eunit && rebar3 ct      # 226 EUnit + 263 Common Test, all green
+rebar3 eunit && rebar3 ct      # 227 EUnit + 313 Common Test, all green
 ```
 
 Drive a run in the shell:
@@ -274,9 +280,10 @@ release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**): a
 structured real-model planner that emits tool-running proposals, an effect-aware
-policy gate, MCP, DAG parallelism, distributed Erlang, persistent run resume, and
-a packaged external `soma run` / `soma ask` command distinct from the relx node
-control script.
+policy gate, MCP, DAG parallelism, distributed Erlang, resuming a run's
+*execution* from its journal (v0.7.1's journal + read-only progress
+reconstruction are in; the resume executor is not), and a packaged external
+`soma run` / `soma ask` command distinct from the relx node control script.
 
 ## Docs
 
