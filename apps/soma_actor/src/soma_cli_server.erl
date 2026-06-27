@@ -241,11 +241,17 @@ handle_cancel(TaskId) ->
         ok ->
             Task = wait_for_cancel_terminal(TaskId, 100),
             render_cancel_result(TaskId, Task);
-        {error, {not_running, _Status}} ->
-            render_cancel_result(TaskId, lookup_cancel_task(TaskId));
+        {error, {not_running, Status}} ->
+            render_terminal_cancel_result(Status);
         {error, not_found} ->
-            render_cancel_result(TaskId, #{status => unknown,
-                                           error => not_found})
+            case derive_state(soma_event_store:by_session(event_store_pid(),
+                                                          TaskId)) of
+                unknown ->
+                    render_cancel_result(TaskId, #{status => unknown,
+                                                   error => not_found});
+                Status ->
+                    render_terminal_cancel_result(Status)
+            end
     end.
 
 wait_for_cancel_terminal(TaskId, 0) ->
@@ -274,6 +280,10 @@ render_cancel_result(TaskId, Task) ->
      render_cancel_error(Task),
      render_cancel_correlation(Task),
      ")"].
+
+render_terminal_cancel_result(Status) ->
+    ["(result (status ", atom_to_list(Status), ") "
+     "(note already-terminal))"].
 
 render_cancel_error(#{error := Reason}) ->
     [" (error ", soma_lisp:render(Reason), ")"];
