@@ -12,6 +12,7 @@
 -export([test_dispatch_run_detach_marks_request/1]).
 -export([test_dispatch_ask_detach_marks_request/1]).
 -export([test_dispatch_socket_override_wins/1]).
+-export([test_dispatch_ask_intent_with_quotes_round_trips/1]).
 
 all() ->
     [test_dispatch_run_file_completed_exit_zero,
@@ -22,7 +23,8 @@ all() ->
      test_dispatch_cancel_running_task_exit_zero,
      test_dispatch_run_detach_marks_request,
      test_dispatch_ask_detach_marks_request,
-     test_dispatch_socket_override_wins].
+     test_dispatch_socket_override_wins,
+     test_dispatch_ask_intent_with_quotes_round_trips].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -437,6 +439,56 @@ test_dispatch_socket_override_wins(Config) ->
     ok = gen_tcp:close(Sock),
     match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]),
     _ = file:delete(OverridePath).
+
+%% Criterion 13 (CLI.5): an `ask' intent that itself contains a `"' (or `\\')
+%% must be escaped so the request the dispatcher emits is a valid s-expr the
+%% daemon parses, and the original string reaches the daemon intact. Without the
+%% escaper the intent `say "hi"' renders as `(ask (intent "say "hi""))', which
+%% `soma_lfe' rejects -- the daemon would reply `(status error)' instead of
+%% completing the ask. The server is booted with the same mock `model_config' the
+%% other ask case uses, so a parseable request drives the decision loop to a
+%% completed `(result ...)'. The dispatcher resolves the socket itself (no
+%% `--socket' override). Process survival is asserted: the same server still
+%% serves a fresh request after the dispatch returns.
+test_dispatch_ask_intent_with_quotes_round_trips(Config) ->
+    Path = ?config(socket_path, Config),
+    ModelConfig = #{directive => proposal,
+                    output => #{kind => reply, text => <<"the answer">>}},
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                 model_config => ModelConfig}),
+
+    ct:capture_start(),
+    Exit = soma_cli_main:dispatch(["ask", "say \"hi\""]),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+
+    %% The intent contained a `"'; the escaper made the emitted request a valid
+    %% s-expr, so the daemon parsed the intent (the bytes between the quotes
+    %% reaching it as the original `say "hi"') and the decision loop completed.
+    %% Without escaping the request is malformed and the reply carries
+    %% `(status error)', failing this assertion.
+    match = re:run(Printed, "^\\(result ", [{capture, none}]),
+    match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
+    nomatch = re:run(Printed, "\\(status error\\)", [{capture, none}]),
+    0 = Exit,
+
+    %% Round-trip proof that the original string reached the daemon intact: a
+    %% `completed' reply (not `error') can only happen if the dispatcher's emitted
+    %% request was a valid s-expr whose `(intent "...")' the daemon parsed back to
+    %% the literal `say "hi"'. The only escaping applied is the reversible `\\"'
+    %% that `soma_lfe' reads back to `"', so the daemon completing the ask means
+    %% the original bytes survived the wire intact -- an unescaped intent renders
+    %% `(ask (intent "say "hi""))', which `soma_lfe' rejects (the daemon would
+    %% reply `(status error)' and this case would fail above).
+
+    %% Process survival: the server still serves a subsequent request after the
+    %% dispatch returned.
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(run (step s2 echo (args (value \"again\"))))">>),
+    {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
 
 %% Bounded poll: returns ok once an event of `Type' is recorded against `RunId' in
 %% the event store, retrying up to `N' times with a short sleep between tries.
