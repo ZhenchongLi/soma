@@ -16,11 +16,13 @@
 -export([real_provider_actor_completes_llm_task_through_openai_no_socket/1]).
 -export([mock_model_config_completes_llm_task_same_result_and_events/1]).
 -export([api_key_appears_in_no_emitted_event/1]).
+-export([test_rendered_reply_carries_no_api_key/1]).
 
 all() ->
     [real_provider_actor_completes_llm_task_through_openai_no_socket,
      mock_model_config_completes_llm_task_same_result_and_events,
-     api_key_appears_in_no_emitted_event].
+     api_key_appears_in_no_emitted_event,
+     test_rendered_reply_carries_no_api_key].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -172,6 +174,57 @@ api_key_appears_in_no_emitted_event(_Config) ->
     %% The actor emits ids only -- never the api_key -- so the sentinel appears in
     %% no event field.
     false = lists:any(fun(E) -> term_contains(E, Sentinel) end, Events),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 5 (the "no rendered reply" half): the `api_key' carried in a
+%% real-provider `model_config' appears nowhere in the CLI reply rendered from the
+%% task result. The actor is started with a real-provider `model_config' whose
+%% `api_key' is a known sentinel binary and an `llm' task is driven to completion
+%% through the fixed `response' seam (no socket). The task result is the parsed
+%% `reply' proposal (`#{kind => reply, text => Content}'); the CLI reply is built
+%% from that result the way `soma_cli_server:handle_ask/2' does
+%% (`#{status => completed, outputs => #{reply => Text}}') and rendered with
+%% `soma_lisp:render/1'. The result carries the reply text only -- never the
+%% api_key -- so the sentinel appears nowhere in the rendered s-expr.
+test_rendered_reply_carries_no_api_key(_Config) ->
+    Sentinel = <<"sk-secret-sentinel-do-not-leak">>,
+    Content = <<"hello from the real provider">>,
+    Body = iolist_to_binary(
+             json:encode(#{<<"choices">> =>
+                               [#{<<"message">> =>
+                                      #{<<"content">> => Content}}]})),
+    %% Scheme-less host literal -- never dialed (the `response' seam).
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    api_key => Sentinel,
+                    response => {200, Body}},
+    Opts = #{actor_id => <<"actor-rendered-reply">>,
+             model_config => ModelConfig,
+             tool_policy => #{allowed_tools => all},
+             event_store => event_store_pid()},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-rendered-reply">>,
+    CorrelationId = <<"corr-rendered-reply">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{prompt => <<"say hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => #{}},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    {ok, #{kind := reply, text := Text}} = soma_actor:get_task_result(ActorPid, TaskId),
+    %% Build the CLI reply the same way handle_ask/2 does for a `reply' result,
+    %% then render it -- the rendered s-expr is what the client receives.
+    Result = #{status => completed,
+               task_id => TaskId,
+               correlation_id => CorrelationId,
+               outputs => #{reply => Text}},
+    Rendered = iolist_to_binary(soma_lisp:render(Result)),
+    %% Staged red: deliberately wrong expectation -- assert the sentinel IS
+    %% present, observe the assertion fire, then correct to `nomatch'.
+    {_, _} = binary:match(Rendered, Sentinel),
     true = is_process_alive(ActorPid),
     ok.
 
