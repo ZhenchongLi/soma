@@ -70,3 +70,25 @@ test_handle_ask_payload_key_matches_build_call_opts_reader() ->
 
 handle_ask_payload_key_matches_build_call_opts_reader_test() ->
     test_handle_ask_payload_key_matches_build_call_opts_reader().
+
+%% `enable_thinking => true' in the model_config must thread through the builder
+%% into the worker opts, and from there into the provider request body that
+%% soma_llm_openai:build_request/1 shapes. The builder dropping the key is the
+%% bug: feeding a real-provider config carrying enable_thinking and asserting both
+%% that the opts carry it and that the decoded request body carries it pins the
+%% whole pure path (no socket -- build_request/1 is pure) end to end.
+test_enable_thinking_threads_through_to_request_body() ->
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    api_key => <<"sk-test">>,
+                    enable_thinking => true},
+    Envelope = #{payload => #{prompt => <<"hello">>}},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    ?assertEqual(true, maps:get(enable_thinking, Opts)),
+    #{body := Body} = soma_llm_openai:build_request(Opts),
+    Decoded = json:decode(Body),
+    ?assertEqual(true, maps:get(<<"enable_thinking">>, Decoded)).
+
+enable_thinking_threads_through_to_request_body_test() ->
+    test_enable_thinking_threads_through_to_request_body().
