@@ -21,12 +21,9 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %% The real-provider markers no CLI.3 test source may contain.
-%% STAGED RED: `gen_tcp' is deliberately listed here so the provider-marker
-%% assertion fires against the local-socket connects in the CLI SUITEs --
-%% corrected to current reality in the green commit.
 -define(PROVIDER_MARKERS,
         [<<"soma_llm_openai">>, <<"api_key">>, <<"base_url">>,
-         <<"http">>, <<"https">>, <<"gen_tcp">>]).
+         <<"http">>, <<"https">>]).
 
 %% The CLI.3 read-flow test sources this issue added, each paired with the app
 %% whose `test/' dir holds the copied source. Explicit include list -- not a
