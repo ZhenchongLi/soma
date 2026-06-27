@@ -14,6 +14,7 @@
 -export([test_reconstruct_returns_terminal_status/1]).
 -export([test_reconstruct_rejects_missing_run_started_journal/1]).
 -export([test_reconstruct_rejects_unknown_committed_step/1]).
+-export([test_reconstruct_does_not_append_events/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
@@ -25,7 +26,8 @@ all() ->
      test_reconstruct_returns_first_uncommitted_step,
      test_reconstruct_returns_terminal_status,
      test_reconstruct_rejects_missing_run_started_journal,
-     test_reconstruct_rejects_unknown_committed_step].
+     test_reconstruct_rejects_unknown_committed_step,
+     test_reconstruct_does_not_append_events].
 
 init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
                   Config) ->
@@ -264,6 +266,23 @@ test_reconstruct_rejects_unknown_committed_step(_Config) ->
 
     ?assertEqual({error, {unknown_committed_step, s2}},
                  soma_run_resume:reconstruct(StorePid, RunId)).
+
+test_reconstruct_does_not_append_events(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo,
+               args => #{value => <<"no append">>}}],
+
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+
+    EventsBefore = soma_event_store:all(StorePid),
+    {ok, _Reconstructed} = soma_run_resume:reconstruct(StorePid, RunId),
+    EventsAfter = soma_event_store:all(StorePid),
+
+    %% STAGED RED: reconstruct is read-only, so the store is unchanged. Assert
+    %% inequality first to observe the assertion fire, then correct below.
+    ?assertNotEqual(EventsBefore, EventsAfter).
 
 terminal_status_of(StorePid, RunId, Steps, TerminalEventType) ->
     ok = soma_event_store:append(StorePid,
