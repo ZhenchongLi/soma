@@ -107,10 +107,10 @@ test_max_tokens_threads_through_to_request_body() ->
                     max_tokens => 256},
     Envelope = #{payload => #{prompt => <<"hello">>}},
     Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
-    ?assertEqual(999, maps:get(max_tokens, Opts)),
+    ?assertEqual(256, maps:get(max_tokens, Opts)),
     #{body := Body} = soma_llm_openai:build_request(Opts),
     Decoded = json:decode(Body),
-    ?assertEqual(999, maps:get(<<"max_tokens">>, Decoded)).
+    ?assertEqual(256, maps:get(<<"max_tokens">>, Decoded)).
 
 max_tokens_threads_through_to_request_body_test() ->
     test_max_tokens_threads_through_to_request_body().
