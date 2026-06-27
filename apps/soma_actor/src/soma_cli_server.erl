@@ -214,16 +214,20 @@ handle_trace(CorrId) ->
     Events = soma_trace:render_lisp(event_store_pid(), CorrId),
     ["(trace ", Events, ")"].
 
-%% Render a `(status "<task>")' read request. The run path sets the run's
-%% `session_id' to the task id, so a task's events are reachable by `by_session/2'
-%% even though the store has no `by_task' query. The reported `(state ...)' is
-%% derived from those events: a `run.completed' event maps to `completed', a
-%% `run.failed' / `run.timeout' / `run.cancelled' event to that terminal state,
-%% and an empty chain (no events for that id) to `unknown' -- an unknown id does
-%% not crash the handler, so the server stays up for the next connection.
+%% Render a `(status "<task>")' read request. Live detached tasks are daemon-owned
+%% and live in `soma_cli_task_registry', so read that first; older synchronous
+%% tasks still derive terminal state from the event store. The run path sets the
+%% run's `session_id' to the task id, so a task's events are reachable by
+%% `by_session/2' even though the store has no `by_task' query.
 handle_status(TaskId) ->
-    Events = soma_event_store:by_session(event_store_pid(), TaskId),
-    State = derive_state(Events),
+    State = case soma_cli_task_registry:lookup(TaskId) of
+                {ok, #{status := RegistryState}} ->
+                    RegistryState;
+                {error, not_found} ->
+                    Events = soma_event_store:by_session(event_store_pid(),
+                                                         TaskId),
+                    derive_state(Events)
+            end,
     ["(status (state ", atom_to_list(State), "))"].
 
 %% Map a task's event chain to a terminal state. A run records exactly one of the
