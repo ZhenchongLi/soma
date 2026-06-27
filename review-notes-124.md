@@ -1,28 +1,40 @@
 ### Claude
 
 ## Verdict
-approve
+changes-requested
 
 ## Real issues
-None.
+- Criterion 12 is only half-satisfied in the current GitHub state. `rebar3 dialyzer` was run and reports the known 4 warnings, all in untouched files, but `gh pr view` and `gh pr list --head issue/124-cc-cli-3-soma-status-trace-read-commands-over-the-lisp-wire` both found no PR for this branch. The acceptance criterion explicitly says the Dialyzer result is reported in the PR; there is no PR body to verify or carry that report.
 
 ## Questions
-- Status by id only works for `run` tasks. The handler reaches a task's events with `by_session/2` because the run path aliases `session_id => TaskId`. An `ask` task is stamped by correlation id, so `(status "<ask-task-id>")` returns `(state unknown)`. The criteria only promise run tasks, and the contract doc records the limit — fine for this slice. Flag it loud the day someone wires `--detach` and expects status on a live actor task.
+- Status by id is intentionally run-task-only here. The handler uses `soma_event_store:by_session/2` because `soma_cli_server:run_steps/2` starts runs with `session_id => TaskId`; an `ask` task id will report `unknown`. The docs and contract call this out, and the criteria only require status after `(run ...)`.
 
 ## Nits
-- `derive_state/1` is a four-deep nested `case`. A `lists:member` lookup against an ordered `[{completed,<<"run.completed">>}, ...]` list reads flatter. Pure style; no consequence.
-- `trace/1` and `status/1` are near-identical copies of the connect/send/recv/print block from `run/1`/`ask/1`. Fourth copy now. A private `request_reply(Source, Path)` helper would collapse all four. Not blocking.
+- `derive_state/1` in `soma_cli_server` is a four-deep nested `case`. An ordered lookup over terminal event types would read cleaner, but the behavior is fine.
+- `soma_cli:run/1`, `ask/1`, `trace/1`, and `status/1` now duplicate the same connect/send/recv/print block. A private helper would keep the client less copy-pasted; not a blocker.
 
 ## Functional evidence
-- Criterion 1 — pass: `soma_lfe_read_tests:test_trace_compiles_to_trace_command` asserts `compile(<<"(trace \"c-1\")">>)` returns `{ok, #{trace => #{correlation_id => <<"c-1">>}}}` — top-level key `trace`, distinct from `run`/`ask`.
-- Criterion 2 — pass: `soma_lfe_read_tests:test_status_compiles_to_status_command` asserts `compile(<<"(status \"t-1\")">>)` returns `{ok, #{status => #{task_id => <<"t-1">>}}}` — top-level key `status`, distinct from `run`/`ask`.
-- Criterion 3 — pass: `soma_lisp_tests:test_render_result_map_with_task_id_emits_task_id_subform` pins the rendered bytes `(result (status completed) (task-id "t-9") (outputs ...) (correlation-id "c-7"))`; `task_id` slots after `status`, before `correlation-id`.
-- Criterion 4 — pass: `soma_cli_server_SUITE:test_trace_after_run_returns_ordered_chain_ending_completed` runs a real echo run over a temp socket, then a fresh-connection `(trace "<corr>")` reply matches `^\(trace `, carries `(event ` sub-forms, contains `run.completed`, and asserts no `(event ` follows the `run.completed` match (it is last). Append order + stable timestamp sort makes `run.completed` last.
-- Criterion 5 — pass: `soma_cli_server_SUITE:test_status_after_run_reports_state_completed` reads the task id off the run reply, sends `(status "<task>")` on a fresh connection, reply matches `^\(status ` and `\(state completed\)`.
-- Criterion 6 — pass: `soma_cli_server_SUITE:test_status_unknown_id_reports_unknown_and_server_survives` sends `(status "no-such-id")`, reply matches `\(state unknown\)`, then a second connection runs an echo and gets `(result ... (status completed))` — server stayed up.
-- Criterion 7 — pass: `soma_cli_SUITE:test_trace_prints_reply_exit_zero` captures `soma_cli:trace/1` stdout against a temp-socket server; printed reply matches `^\(trace ` and `\(event `, return value is `0`.
-- Criterion 8 — pass: `soma_cli_SUITE:test_status_prints_reply_exit_zero` captures `soma_cli:status/1` stdout; printed reply matches `^\(status ` and `\(state `, return value is `0`.
-- Criterion 9 — pass: `docs/cli.md` adds the "read commands over the Lisp wire" section with the `(trace "...")`/`(status "...")` requests, their `(trace ...)`/`(status (state ...))` replies, and a "Deferred in CLI.3" block on `soma cancel <id>` + `--detach`; pinned by `soma_cli_md_read_tests:test_cli_md_documents_status_trace_and_defers_cancel_detach`.
-- Criterion 10 — pass: `docs/contracts/cli-3-test-contract.md` maps all 12 proofs to suite/module + case; pinned by `soma_cli_3_contract_tests`. `soma_cli_3_marker_tests` scans the CLI.3 sources for real-provider/non-local-socket markers and finds none (all socket calls are `gen_tcp:connect({local, _})`, verified).
-- Criterion 11 — pass: `rebar3 eunit` = 220 tests, 0 failures; `rebar3 ct` = 251 tests, all passed. No real-provider or non-local-socket markers in CLI.3 sources.
-- Criterion 12 — pass: `rebar3 dialyzer` ran; 4 warnings, all in `soma_lfe_reader.erl` and `soma_tool_call.erl` — files this branch did not touch (`git diff --stat` empty for both). Same baseline-4 as `main`; no new warnings from CLI.3 code.
+- [x] `soma_lfe:compile/2` on `(trace "c-1")` returns `{ok, Cmd}` where `Cmd` is a trace command carrying the correlation id `<<"c-1">>`, in a shape distinct from the `run` and `ask` results.
+  Artifact: `apps/soma_lfe/test/soma_lfe_read_tests.erl:test_trace_compiles_to_trace_command/0` asserts `{ok, #{trace => #{correlation_id => <<"c-1">>}}}`. `rebar3 eunit` passed.
+- [x] `soma_lfe:compile/2` on `(status "t-1")` returns `{ok, Cmd}` where `Cmd` is a status command carrying the task id `<<"t-1">>`, in a shape distinct from the `run` and `ask` results.
+  Artifact: `apps/soma_lfe/test/soma_lfe_read_tests.erl:test_status_compiles_to_status_command/0` asserts `{ok, #{status => #{task_id => <<"t-1">>}}}`. `rebar3 eunit` passed.
+- [x] When a result map carries a `task_id`, `soma_lisp:render/1` emits a `(task-id …)` sub-form inside the `(result …)` output.
+  Artifact: `apps/soma_event_store/test/soma_lisp_tests.erl:test_render_result_map_with_task_id_emits_task_id_subform/0` pins `(result (status completed) (task-id "t-9") (outputs ((s1 (value "hi")))) (correlation-id "c-7"))`. `rebar3 eunit` passed.
+- [x] After a `(run …)` request completes against `soma_cli_server`, a framed `(trace "<that run's correlation-id>")` request gets a reply that is a single `(trace …)` s-expr whose sub-forms are that run's events in timestamp order, ending with the `run.completed` event.
+  Artifact: `apps/soma_actor/test/soma_cli_server_SUITE.erl:test_trace_after_run_returns_ordered_chain_ending_completed/1` runs a real echo request over a temp Unix socket, extracts the correlation id, sends `(trace "<corr>")` on a fresh connection, checks a single `(trace ...)` reply with `(event ...)` sub-forms, and verifies no later event follows `run.completed`. `rebar3 ct` passed.
+- [x] After a `(run …)` request completes against `soma_cli_server`, a framed `(status "<that run's task-id>")` request gets a reply that is a `(status …)` s-expr whose `(state …)` sub-form is `completed`.
+  Artifact: `apps/soma_actor/test/soma_cli_server_SUITE.erl:test_status_after_run_reports_state_completed/1` extracts the task id from the run reply, sends `(status "<task>")`, and matches `(state completed)`. `rebar3 ct` passed.
+- [x] A framed `(status "no-such-id")` request gets a reply that is a `(status (state unknown) …)` s-expr, and a following request on a fresh connection still gets a reply (the server process stayed up).
+  Artifact: `apps/soma_actor/test/soma_cli_server_SUITE.erl:test_status_unknown_id_reports_unknown_and_server_survives/1` matches `(state unknown)`, then uses a new connection for an echo run and gets `(result ... (status completed))`. `rebar3 ct` passed.
+- [x] `soma_cli:trace/1`, pointed at a `soma_cli_server` on a temp socket, prints the `(trace …)` reply and returns exit code 0.
+  Artifact: `apps/soma_actor/test/soma_cli_SUITE.erl:test_trace_prints_reply_exit_zero/1` captures `soma_cli:trace/1` output, matches `(trace ...)` and `(event ...)`, and asserts return value `0`. `rebar3 ct` passed.
+- [x] `soma_cli:status/1`, pointed at a `soma_cli_server` on a temp socket, prints the `(status …)` reply and returns exit code 0.
+  Artifact: `apps/soma_actor/test/soma_cli_SUITE.erl:test_status_prints_reply_exit_zero/1` captures `soma_cli:status/1` output, matches `(status ...)` and `(state ...)`, and asserts return value `0`. `rebar3 ct` passed.
+- [x] `docs/cli.md` documents `soma status` and `soma trace` over the Lisp wire and records that `soma cancel <id>` and `--detach` are deferred.
+  Artifact: `docs/cli.md` adds the read-command section for `(trace "...")` and `(status "...")` replies plus the CLI.3 deferral note. `apps/soma_actor/test/soma_cli_md_read_tests.erl:test_cli_md_documents_status_trace_and_defers_cancel_detach/0` pins the doc text. `rebar3 eunit` passed.
+- [x] `docs/contracts/` contains a CLI.3 test-contract entry mapping each proof above to its suite and case.
+  Artifact: `docs/contracts/cli-3-test-contract.md` maps each proof to suite/module and case. `apps/soma_actor/test/soma_cli_3_contract_tests.erl:test_doc_names_cli_3_suites_and_cases/0` pins the mapping. `rebar3 eunit` passed.
+- [x] `rebar3 eunit && rebar3 ct` is green and opens no real LLM or network socket.
+  Artifact: `rebar3 eunit && rebar3 ct` completed with `220 tests, 0 failures` and `All 251 tests passed.` The CLI.3 marker guard `apps/soma_actor/test/soma_cli_3_marker_tests.erl:test_cli_3_sources_have_no_real_provider_or_socket_marker/0` scans the CLI.3 sources for real-provider markers and non-local socket opens; it passed under EUnit.
+- [x] `rebar3 dialyzer` is run, and its result is reported in the PR.
+  Artifact: `rebar3 dialyzer` was run and exited non-zero with 4 warnings: three in `apps/soma_lfe/src/soma_lfe_reader.erl` and one in `apps/soma_runtime/src/soma_tool_call.erl`. `git diff origin/main...HEAD -- apps/soma_lfe/src/soma_lfe_reader.erl apps/soma_runtime/src/soma_tool_call.erl` is empty, so these are outside this branch diff. The PR-reporting part is not satisfied in current GitHub state: `gh pr view` returned `no pull requests found for branch "issue/124-cc-cli-3-soma-status-trace-read-commands-over-the-lisp-wire"` and `gh pr list --head issue/124-cc-cli-3-soma-status-trace-read-commands-over-the-lisp-wire` returned `[]`.
