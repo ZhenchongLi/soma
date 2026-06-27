@@ -102,24 +102,85 @@ soma run WORKFLOW [--trace] [--root DIR] [--timeout-ms N]
   `task_id` / `correlation_id` (the trace is added only with `--trace`). Exit `0`
   completed, non-zero otherwise.
 
-## `soma ask` — the agent (client; needs node B)
+## `soma ask` — the agent (client)
 
 ```
-soma ask "INTENT" [--model M] [--thinking] [--allow t1,t2] \
-                  [--budget-llm N] [--budget-steps N] [--json] [--trace]
+soma ask "INTENT"
 ```
 
-Builds an `llm` envelope from INTENT, drives the v0.5 decision loop against the
-**real provider** (node B): LLM → proposal → policy gate → (approved) execute.
-`--model`/`--thinking` pick the model + `enable_thinking`; `--allow` / `--budget-*`
-are the guardrails. Provider `base_url`/`model` from config; **API key only from
-the daemon's env** (set when `soma daemon` starts — clients never pass a key).
+`soma ask` drives the v0.5 decision loop — intent → LLM → proposal → policy gate
+→ result — through the daemon. Like `soma run`, the wire is all-Lisp: the client
+turns the intent into an `(ask …)` request s-expr, the daemon parses it with
+`soma_lfe`, runs the loop on a `soma_actor`, and frames back a rendered
+`(result …)` reply s-expr (`soma_lisp:render/1`) that the client prints. Exit `0`
+on `(status completed)`, non-zero otherwise.
+
+### The `(ask …)` request
+
+The request frame carries an `(ask …)` form. `soma_cli:ask/1` builds the minimal
+`(ask (intent "…"))` from the intent string today; the full form the daemon
+parses is:
+
+```
+(ask
+  (intent "summarize the build log")   ; required — the natural-language ask
+  (allow echo file_read)               ; optional — tool-name allowlist (policy gate)
+  (budget-llm 3)                        ; optional — max LLM calls
+  (budget-steps 5))                     ; optional — max run steps
+```
+
+`(intent "…")` is the only required sub-form; an `(ask …)` with no `(intent …)`
+is a parse error, not a malformed ok map. `(allow t1 t2 …)` collects bare tool
+symbols into the policy gate's allowlist; `(budget-llm N)` / `(budget-steps N)`
+set the two budget caps. The allowlist and budgets nest inside the `ask` form so
+one request frame is self-contained — the client never sends a model: the
+provider and its key live at the daemon, not on the wire.
+
+### The `(result …)` reply
+
+The reply is the same `(result …)` s-expr `soma run` returns. On a `reply`
+proposal the answer text rides under the existing `(outputs …)` sub-form:
+
+```
+(result
+  (status completed)
+  (task-id "…") (correlation-id "…")
+  (outputs "the build failed in the link step …"))
+```
+
+Reusing `(outputs …)` keeps the renderer unchanged — no new reply sub-form. Two
+non-`completed` outcomes carry their reason under the `(error …)` sub-form the
+renderer already emits:
+
+- **`rejected`** — the policy gate rejects the proposal: `(status rejected)` with
+  the reject reason under `(error …)`.
+- **`budget_exceeded`** — `(budget-llm 0)` refuses up front before any LLM call:
+  a non-`completed` status whose `(error …)` carries
+  `(budget_exceeded max_llm_calls)`.
+
+### Mock-on-gate vs real-provider-by-config
+
+The LLM provider is **server config, not a wire field** — the daemon's
+`model_config`, never the request. This is the security boundary (the key and
+provider live at the daemon) and it is what makes the test gate hermetic:
+
+- **mock-on-gate** — the gate's `model_config` is a mock directive map (no real
+  provider, no network), so the loop runs entirely in-BEAM. `soma ask`'s `reply`
+  / `rejected` / `budget_exceeded` cases are all proven against the mock; the
+  same bar CLI.1b held.
+- **real-provider-by-config** — the real `soma_llm_openai` provider is wired by
+  setting the daemon's `model_config` when `soma daemon` starts (`base_url` /
+  `model` from config, **API key only from the daemon's env** — clients never
+  pass a key). Swapping the config swaps the brain; the request form and the
+  `(result …)` reply are identical either way.
 
 **Near-term scope:** the real provider initially returns only `reply` proposals
-(a text answer), so `soma ask` answers in text and does **not** yet execute tools.
-The policy gate, `--allow`, and `--budget-steps` become load-bearing only once
-structured (`run_steps`) proposals land (the real planner); until then they are
-accepted but inert for a `reply`.
+(a text answer), so `soma ask` answers in text and does **not** yet execute
+tools. The policy gate, `(allow …)`, and `(budget-steps …)` are wired through to
+the actor but inert for a `reply` — the one budget effect a reply can show is the
+`(budget-llm 0)` up-front refusal. They become load-bearing once structured
+(`run_steps`) proposals land (the real planner); until then they are accepted but
+inert for a `reply`.
 
 ## Output for agent consumption
 
