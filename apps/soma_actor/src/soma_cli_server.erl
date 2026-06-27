@@ -128,6 +128,8 @@ handle_lisp_request(Bytes, Socket, ModelConfig) ->
             handle_trace(CorrId);
         {ok, #{status := #{task_id := TaskId}}} ->
             handle_status(TaskId);
+        {ok, #{cancel := #{task_id := TaskId}}} ->
+            handle_cancel(TaskId);
         {error, Diagnostics} ->
             soma_lisp:render(#{status => error, error => Diagnostics})
     end.
@@ -229,6 +231,13 @@ handle_status(TaskId) ->
                     derive_state(Events)
             end,
     ["(status (state ", atom_to_list(State), "))"].
+
+%% Fire a cancellation request for a live detached task. The registry only sends
+%% the existing `cancel' message to the run; `soma_run' owns worker teardown and
+%% `run.cancelled' emission.
+handle_cancel(TaskId) ->
+    _ = soma_cli_task_registry:cancel(TaskId),
+    noreply.
 
 %% Map a task's event chain to a terminal state. A run records exactly one of the
 %% terminal `run.*' events, so the first match wins; an empty chain is `unknown'.

@@ -4,7 +4,8 @@
 -behaviour(gen_server).
 -compile({no_auto_import, [register/2]}).
 
--export([start_link/0, register/2, lookup/1, start_detached_run/5]).
+-export([start_link/0, register/2, lookup/1, start_detached_run/5,
+         cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -21,6 +22,9 @@ start_detached_run(TaskId, CorrId, RunId, Steps, Store) ->
     gen_server:call(?MODULE,
                     {start_detached_run, TaskId, CorrId, RunId, Steps, Store}).
 
+cancel(TaskId) ->
+    gen_server:call(?MODULE, {cancel, TaskId}).
+
 init([]) ->
     {ok, #{tasks => #{}, runs => #{}}}.
 
@@ -35,6 +39,17 @@ handle_call({lookup, TaskId}, _From, #{tasks := Tasks} = State) ->
     Reply = case maps:find(TaskId, Tasks) of
                 {ok, Task} -> {ok, Task};
                 error -> {error, not_found}
+            end,
+    {reply, Reply, State};
+handle_call({cancel, TaskId}, _From, #{tasks := Tasks} = State) ->
+    Reply = case maps:find(TaskId, Tasks) of
+                {ok, #{status := running, pid := RunPid}} ->
+                    RunPid ! cancel,
+                    ok;
+                {ok, #{status := Status}} ->
+                    {error, {not_running, Status}};
+                error ->
+                    {error, not_found}
             end,
     {reply, Reply, State};
 handle_call({start_detached_run, TaskId, CorrId, RunId, Steps, Store}, _From,
