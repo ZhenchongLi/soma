@@ -8,11 +8,16 @@ reconstruct(StorePid, RunId) ->
     case journaled_run(Events) of
         {ok, Steps, RunOptions} ->
             Outputs = committed_outputs(Events),
-            {ok, #{steps => Steps,
-                   run_options => RunOptions,
-                   outputs => Outputs,
-                   next_step => first_uncommitted_step(Steps, Outputs),
-                   terminal_status => terminal_status(Events)}};
+            case unknown_committed_step(Steps, Outputs) of
+                {unknown, StepId} ->
+                    {error, {unknown_committed_step, StepId}};
+                none ->
+                    {ok, #{steps => Steps,
+                           run_options => RunOptions,
+                           outputs => Outputs,
+                           next_step => first_uncommitted_step(Steps, Outputs),
+                           terminal_status => terminal_status(Events)}}
+            end;
         error ->
             {error, no_run_started_journal}
     end.
@@ -36,6 +41,15 @@ committed_output(#{event_type := <<"step.succeeded">>,
     Acc#{StepId => Output};
 committed_output(_Event, Acc) ->
     Acc.
+
+unknown_committed_step(Steps, Outputs) ->
+    JournaledIds = [StepId || #{id := StepId} <- Steps],
+    Committed = maps:keys(Outputs),
+    case [StepId || StepId <- Committed,
+                    not lists:member(StepId, JournaledIds)] of
+        [StepId | _] -> {unknown, StepId};
+        [] -> none
+    end.
 
 first_uncommitted_step([Step = #{id := StepId} | Rest], Outputs) ->
     case maps:is_key(StepId, Outputs) of
