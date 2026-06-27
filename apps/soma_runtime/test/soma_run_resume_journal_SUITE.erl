@@ -15,6 +15,7 @@
 -export([test_reconstruct_rejects_missing_run_started_journal/1]).
 -export([test_reconstruct_rejects_unknown_committed_step/1]).
 -export([test_reconstruct_does_not_append_events/1]).
+-export([test_reconstruct_does_not_start_run_children/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
@@ -27,7 +28,8 @@ all() ->
      test_reconstruct_returns_terminal_status,
      test_reconstruct_rejects_missing_run_started_journal,
      test_reconstruct_rejects_unknown_committed_step,
-     test_reconstruct_does_not_append_events].
+     test_reconstruct_does_not_append_events,
+     test_reconstruct_does_not_start_run_children].
 
 init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
                   Config) ->
@@ -282,6 +284,24 @@ test_reconstruct_does_not_append_events(_Config) ->
 
     %% reconstruct is read-only, so the event store is byte-for-byte unchanged.
     ?assertEqual(EventsBefore, EventsAfter).
+
+test_reconstruct_does_not_start_run_children(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo,
+               args => #{value => <<"no run children">>}}],
+
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+
+    CountBefore = supervisor:count_children(soma_run_sup),
+    {ok, _Reconstructed} = soma_run_resume:reconstruct(StorePid, RunId),
+    CountAfter = supervisor:count_children(soma_run_sup),
+
+    %% reconstruct is read-only, so it starts no run children: the
+    %% `soma_run_sup' child tally is unchanged across the call.
+    ?assertEqual(child_count_changed, CountAfter),
+    ?assertEqual(CountBefore, CountAfter).
 
 terminal_status_of(StorePid, RunId, Steps, TerminalEventType) ->
     ok = soma_event_store:append(StorePid,
