@@ -2,7 +2,7 @@
 %% run representation, or a list of structured diagnostics.
 -module(soma_lfe_parser).
 
--export([parse_run/1, parse_msg/1, parse_proposal/1, parse_ask/1]).
+-export([parse_run/1, parse_msg/1, parse_proposal/1, parse_ask/1, parse_trace/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -162,6 +162,18 @@ parse_ask_fields([Other | _Rest], _Acc) ->
     {error, [#{code => unknown_form,
                message => iolist_to_binary(
                    io_lib:format("unknown ask sub-form: ~p", [Other])),
+               line => 0}]}.
+
+%% @doc Parse a single (trace "<corr>") form into a trace command map.
+%% The required argument is a quoted string holding the correlation id; the
+%% top-level key 'trace' is distinct from the run/ask write-path keys so the
+%% server can tell the results apart by key alone.
+-spec parse_trace([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_trace([trace, CorrId]) when is_binary(CorrId) ->
+    {ok, #{trace => #{correlation_id => CorrId}}};
+parse_trace(_Other) ->
+    {error, [#{code => malformed_form,
+               message => <<"trace requires a single string argument: (trace \"<correlation-id>\")">>,
                line => 0}]}.
 
 -spec parse_run([term()]) ->
