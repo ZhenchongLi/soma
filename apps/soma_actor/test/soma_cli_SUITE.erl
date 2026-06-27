@@ -11,6 +11,8 @@
 -export([test_trace_prints_reply_exit_zero/1]).
 -export([test_status_prints_reply_exit_zero/1]).
 -export([test_cancel_sends_cancel_request_prints_reply_exit_zero/1]).
+-export([test_run_detach_sends_detach_marker/1]).
+-export([test_ask_detach_sends_detach_marker/1]).
 
 all() ->
     [test_run_echo_file_prints_result_exit_zero,
@@ -20,7 +22,9 @@ all() ->
      test_ask_prints_reply_result_exit_zero,
      test_trace_prints_reply_exit_zero,
      test_status_prints_reply_exit_zero,
-     test_cancel_sends_cancel_request_prints_reply_exit_zero].
+     test_cancel_sends_cancel_request_prints_reply_exit_zero,
+     test_run_detach_sends_detach_marker,
+     test_ask_detach_sends_detach_marker].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -267,6 +271,51 @@ test_cancel_sends_cancel_request_prints_reply_exit_zero(Config) ->
     match = re:run(Printed, TaskPattern, [{capture, none}]),
     match = re:run(Printed, CorrPattern, [{capture, none}]),
     0 = Exit.
+
+%% Criterion #16 (CLI.4): `soma_cli:run/1' with `detach => true' sends a request
+%% carrying the literal `(detach)' marker. The capture helper records only the
+%% client wire payload so the proof stays scoped to request
+%% construction, not daemon-side detached execution.
+test_run_detach_sends_detach_marker(Config) ->
+    Path = socket_path(Config),
+    File = filename:join(?config(priv_dir, Config), "detach_flow.lfe"),
+    ok = file:write_file(File, <<"(run (step s1 echo (args (value \"hi\"))))">>),
+    Capture = soma_cli_request_capture:start(
+                Path, <<"(result (status completed))">>),
+
+    ct:capture_start(),
+    Exit = try soma_cli:run(#{file => File, socket => Path, detach => true})
+           after ct:capture_stop()
+           end,
+    _ = ct:capture_get(),
+    Request = soma_cli_request_capture:request(Capture),
+
+    0 = Exit,
+    match = re:run(Request, "^\\(run ", [{capture, none}]),
+    match = re:run(Request, "\\(detach\\)", [{capture, none}]).
+
+%% Criterion #16 (CLI.4): `soma_cli:ask/1' with `detach => true' sends a request
+%% carrying the literal `(detach)' marker. The capture helper records only the
+%% client wire payload and leaves request parsing / execution to the daemon.
+test_ask_detach_sends_detach_marker(Config) ->
+    Path = socket_path(Config),
+    Capture = soma_cli_request_capture:start(
+                Path, <<"(result (status completed))">>),
+
+    ct:capture_start(),
+    Exit = try soma_cli:ask(#{intent => "what is the answer",
+                              socket => Path,
+                              detach => true})
+           after ct:capture_stop()
+           end,
+    _ = ct:capture_get(),
+    Request = soma_cli_request_capture:request(Capture),
+
+    0 = Exit,
+    match = re:run(Request, "^\\(ask ", [{capture, none}]),
+    match = re:run(Request, "\\(intent \"what is the answer\"\\)",
+                   [{capture, none}]),
+    match = re:run(Request, "\\(detach\\)", [{capture, none}]).
 
 %% A minimal IO server usable as a group leader: it answers `get_chars' / `get_line'
 %% / `get_until' read requests by delivering `Bytes' once then EOF (so a reader
