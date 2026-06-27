@@ -26,6 +26,7 @@
 -export([test_detached_run_completes_after_client_close_registry_completed/1]).
 -export([test_status_running_detached_task_reads_registry/1]).
 -export([test_status_completed_detached_task_reads_completed/1]).
+-export([test_cancel_detached_run_records_run_cancelled/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -50,7 +51,8 @@ all() ->
      test_detached_run_completes_after_client_close_registry_completed,
      test_detached_run_replies_accepted_before_sleep_terminal,
      test_status_running_detached_task_reads_registry,
-     test_status_completed_detached_task_reads_completed].
+     test_status_completed_detached_task_reads_completed,
+     test_cancel_detached_run_records_run_cancelled].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -639,6 +641,38 @@ test_status_completed_detached_task_reads_completed(Config) ->
     match = re:run(StatusReply, "^\\(status ", [{capture, none}]),
     match = re:run(StatusReply, "\\(state completed\\)", [{capture, none}]),
     ok.
+
+%% Criterion #10 (CLI.4): sending `(cancel "<task-id>")' for a running detached
+%% slow sleep task must cancel the daemon-owned run. The proof stays on the real
+%% local socket path: start a detached sleep, read the accepted task id, wait
+%% until that task's run has recorded `tool.started' (so cancellation lands while
+%% the sleep worker is live), send the cancel request over a fresh connection, and
+%% assert the event store records `run.cancelled' for that same run.
+test_cancel_detached_run_records_run_cancelled(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+    {ok, C1} = connect(Path),
+    Request = <<"(run (detach) (step s1 sleep (args (ms 5000))))">>,
+    ok = gen_tcp:send(C1, Request),
+    {ok, Reply} = gen_tcp:recv(C1, 0, 1000),
+    ok = gen_tcp:close(C1),
+    match = re:run(Reply, "^\\(accepted ", [{capture, none}]),
+    {match, [TaskId]} =
+        re:run(Reply, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    running = wait_for_registry_status(TaskId, running, 100),
+    {ok, #{run_id := RunId}} = soma_cli_task_registry:lookup(TaskId),
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 100),
+
+    {ok, C2} = connect(Path),
+    CancelReq = <<"(cancel \"", TaskId/binary, "\")">>,
+    ok = gen_tcp:send(C2, CancelReq),
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    ok = gen_tcp:close(C2),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, Event) || Event <- Events],
+    true = lists:member(<<"run.cancelled">>, Types).
 
 daemon_task_registry_pid() ->
     Pid = whereis(soma_cli_task_registry),
