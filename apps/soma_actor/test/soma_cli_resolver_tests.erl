@@ -68,6 +68,27 @@ test_resolver_per_user_path_not_from_getpid() ->
 resolver_per_user_path_not_from_getpid_test() ->
     test_resolver_per_user_path_not_from_getpid().
 
+%% Criterion #12: with `XDG_RUNTIME_DIR' unset, `soma_cli_main''s no-override
+%% dispatch resolution lands on the same per-user path `daemon/1' resolves --
+%% both must go through the shared `soma_cli:resolve_socket/1'. `daemon/1'
+%% resolves via `soma_cli:resolve_socket(#{})'; the dispatch path resolves the
+%% no-`--socket' case via `soma_cli_main:socket(#{})'. The two paths are equal
+%% only when dispatch delegates to the shared resolver rather than its own
+%% XDG-only fallback (which would yield `/tmp/soma.sock', not the per-user path).
+test_daemon_and_dispatch_resolve_same_path() ->
+    Saved = os:getenv("XDG_RUNTIME_DIR"),
+    try
+        true = os:unsetenv("XDG_RUNTIME_DIR"),
+        DaemonPath = soma_cli:resolve_socket(#{}),
+        DispatchPath = soma_cli_main:socket(#{}),
+        ?assertEqual(DaemonPath, DispatchPath)
+    after
+        restore_env("XDG_RUNTIME_DIR", Saved)
+    end.
+
+daemon_and_dispatch_resolve_same_path_test() ->
+    test_daemon_and_dispatch_resolve_same_path().
+
 %% Read the `soma_cli.erl' source with comment lines stripped, for the
 %% source-scan half: a doc comment may legitimately mention `os:getpid()' in
 %% prose, so the scan must see only code -- an actual call, not the warning
