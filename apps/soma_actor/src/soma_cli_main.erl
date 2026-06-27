@@ -11,12 +11,16 @@
 
 %% `run File' resolves the socket and drives `soma_cli:run/1', returning its exit
 %% code (0 only when the reply carries `(status completed)'). `ask Intent' resolves
-%% the socket and drives `soma_cli:ask/1', returning its exit code.
+%% the socket and drives `soma_cli:ask/1', returning its exit code. `status TaskId'
+%% resolves the socket and drives `soma_cli:status/1', returning its exit code (0 on
+%% a successful read -- not gated on `(status completed)').
 -spec dispatch([string()]) -> integer().
 dispatch(["run", File]) ->
     soma_cli:run(#{file => File, socket => resolve_socket()});
 dispatch(["ask", Intent]) ->
-    soma_cli:ask(#{intent => Intent, socket => resolve_socket()}).
+    soma_cli:ask(#{intent => Intent, socket => resolve_socket()});
+dispatch(["status", TaskId]) ->
+    soma_cli:status(#{task_id => TaskId, socket => resolve_socket()}).
 
 %% Resolve the listener socket path: `$XDG_RUNTIME_DIR/soma.sock' when set. The
 %% full per-user fallback and the `--socket' override land in later criteria.
