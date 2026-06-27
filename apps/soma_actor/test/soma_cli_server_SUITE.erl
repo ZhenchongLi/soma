@@ -22,6 +22,7 @@
 -export([test_trace_after_run_returns_ordered_chain_ending_completed/1]).
 -export([test_status_after_run_reports_state_completed/1]).
 -export([test_status_unknown_id_reports_unknown_and_server_survives/1]).
+-export([test_detached_run_replies_accepted_before_sleep_terminal/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -42,7 +43,8 @@ all() ->
      test_ask_budget_llm_zero_returns_budget_exceeded,
      test_trace_after_run_returns_ordered_chain_ending_completed,
      test_status_after_run_reports_state_completed,
-     test_status_unknown_id_reports_unknown_and_server_survives].
+     test_status_unknown_id_reports_unknown_and_server_survives,
+     test_detached_run_replies_accepted_before_sleep_terminal].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -525,6 +527,31 @@ test_status_unknown_id_reports_unknown_and_server_survives(Config) ->
     match = re:run(EchoReply, "\\(status completed\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
 
+%% Criterion #6 (CLI.4): a detached `(run ...)' request replies an `(accepted ...)'
+%% s-expr before the slow `sleep' step reaches a terminal run state. The request
+%% still drives the real server -> soma_lfe:compile -> soma_run path over a real
+%% socket, but `(detach)' changes ownership to the daemon live-task registry so
+%% the connection handler can answer immediately instead of waiting for
+%% `run.completed'. The store is checked by task id at reply time to prove no
+%% terminal `run.*' event has landed yet.
+test_detached_run_replies_accepted_before_sleep_terminal(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+    {ok, Client} = connect(Path),
+    Request = <<"(run (detach) (step s1 sleep (args (ms 750))))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 150),
+    ok = gen_tcp:close(Client),
+    match = re:run(Reply, "^\\(accepted ", [{capture, none}]),
+    {match, [TaskId]} =
+        re:run(Reply, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    match = re:run(Reply, "\\(correlation-id \"[^\"]+\"\\)",
+                   [{capture, none}]),
+    [] = terminal_events_for_task(StorePid, TaskId),
+    ok.
+
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
     Events = soma_event_store:by_run(StorePid, RunId),
@@ -562,6 +589,12 @@ wait_for_event(StorePid, RunId, Type, N) ->
             timer:sleep(20),
             wait_for_event(StorePid, RunId, Type, N - 1)
     end.
+
+terminal_events_for_task(StorePid, TaskId) ->
+    Terminal = [<<"run.completed">>, <<"run.failed">>,
+                <<"run.timeout">>, <<"run.cancelled">>],
+    [E || E <- soma_event_store:by_session(StorePid, TaskId),
+          lists:member(maps:get(event_type, E), Terminal)].
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
