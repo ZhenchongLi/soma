@@ -15,6 +15,7 @@
 -export([test_server_serves_after_malformed_request/1]).
 -export([test_run_cancelled_on_client_disconnect/1]).
 -export([test_worker_dead_after_client_disconnect/1]).
+-export([test_server_serves_after_client_disconnect/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -28,7 +29,8 @@ all() ->
      test_malformed_request_returns_error_sexpr,
      test_server_serves_after_malformed_request,
      test_run_cancelled_on_client_disconnect,
-     test_worker_dead_after_client_disconnect].
+     test_worker_dead_after_client_disconnect,
+     test_server_serves_after_client_disconnect].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -275,6 +277,38 @@ test_worker_dead_after_client_disconnect(Config) ->
     ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
     %% The cancel stopped the live worker -- it is no longer alive.
     false = is_process_alive(WorkerPid).
+
+%% Criterion 3 (CLI.1.5): the server still serves a fresh connection after a
+%% client disconnects mid-run. The first connection sends `(run (step s1 sleep
+%% (args (ms 5000))))', waits for the run's `tool.started' event, then
+%% `gen_tcp:close's the socket mid-run (the Criterion 1 disconnect chain). A second
+%% fresh connection then sends an echo `(run (step ...))' (the Criterion 1 connected
+%% chain) and reads a framed `(result ...)' s-expr whose status sub-form is
+%% `completed' and whose outputs carry s1's echo value. The proof is that the same
+%% server process serves a second well-formed request after a mid-run disconnect --
+%% each connection handler is independent, so cancelling one run does not disturb
+%% the listener.
+test_server_serves_after_client_disconnect(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+    Before = tool_started_runs(StorePid),
+    {ok, C1} = connect(Path),
+    Sleep = <<"(run (step s1 sleep (args (ms 5000))))">>,
+    ok = gen_tcp:send(C1, Sleep),
+    %% Wait for `tool.started' so the disconnect lands while the worker is live.
+    _RunId = wait_for_new_tool_started_run(StorePid, Before, 100),
+    ok = gen_tcp:close(C1),
+    %% A fresh connection still gets a completed echo result.
+    {ok, C2} = connect(Path),
+    Echo = <<"(run (step s1 echo (args (value \"ok\"))))">>,
+    ok = gen_tcp:send(C2, Echo),
+    {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
+    %% The second reply must be a completed `(result ...)' carrying s1's echo value.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status failed\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(s1 \\(value \"ok\"\\)\\)", [{capture, none}]),
+    ok = gen_tcp:close(C2).
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
