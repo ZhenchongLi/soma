@@ -98,10 +98,8 @@ test_restarted_disk_log_by_run_exposes_run_started_journal(Config) ->
     [StartedEvent] = [E || E <- Events,
                            maps:get(event_type, E) =:= <<"run.started">>],
     Payload = maps:get(payload, StartedEvent, undefined),
-    WrongSteps = [#{id => s1, tool => echo,
-                    args => #{value => <<"wrong journal">>}}],
 
-    ?assertEqual(#{steps => WrongSteps,
+    ?assertEqual(#{steps => Steps,
                    run_options => #{run_id => RunId,
                                     session_id => SessionId}},
                  Payload).
