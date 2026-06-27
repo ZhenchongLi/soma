@@ -7,11 +7,13 @@
 -export([test_session_start_journals_steps_in_run_started/1]).
 -export([test_direct_run_journals_durable_options_with_correlation_id/1]).
 -export([test_restarted_disk_log_by_run_exposes_run_started_journal/1]).
+-export([test_reconstruct_returns_journaled_steps/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
      test_direct_run_journals_durable_options_with_correlation_id,
-     test_restarted_disk_log_by_run_exposes_run_started_journal].
+     test_restarted_disk_log_by_run_exposes_run_started_journal,
+     test_reconstruct_returns_journaled_steps].
 
 init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
                   Config) ->
@@ -103,6 +105,17 @@ test_restarted_disk_log_by_run_exposes_run_started_journal(Config) ->
                    run_options => #{run_id => RunId,
                                     session_id => SessionId}},
                  Payload).
+
+test_reconstruct_returns_journaled_steps(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo,
+               args => #{value => <<"reconstruct journal">>}}],
+
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+
+    ?assertMatch({ok, #{steps := Steps}},
+                 soma_run_resume:reconstruct(StorePid, RunId)).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
