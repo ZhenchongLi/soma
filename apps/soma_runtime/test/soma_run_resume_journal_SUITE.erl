@@ -300,7 +300,6 @@ test_reconstruct_does_not_start_run_children(_Config) ->
 
     %% reconstruct is read-only, so it starts no run children: the
     %% `soma_run_sup' child tally is unchanged across the call.
-    ?assertEqual(child_count_changed, CountAfter),
     ?assertEqual(CountBefore, CountAfter).
 
 terminal_status_of(StorePid, RunId, Steps, TerminalEventType) ->
