@@ -11,7 +11,8 @@ reconstruct(StorePid, RunId) ->
             {ok, #{steps => Steps,
                    run_options => RunOptions,
                    outputs => Outputs,
-                   next_step => first_uncommitted_step(Steps, Outputs)}};
+                   next_step => first_uncommitted_step(Steps, Outputs),
+                   terminal_status => terminal_status(Events)}};
         error ->
             {error, no_run_started_journal}
     end.
@@ -43,3 +44,12 @@ first_uncommitted_step([Step = #{id := StepId} | Rest], Outputs) ->
     end;
 first_uncommitted_step([], _Outputs) ->
     undefined.
+
+terminal_status(Events) ->
+    lists:foldl(fun terminal_status/2, undefined, Events).
+
+terminal_status(#{event_type := <<"run.completed">>}, _Acc) -> completed;
+terminal_status(#{event_type := <<"run.failed">>}, _Acc) -> failed;
+terminal_status(#{event_type := <<"run.timeout">>}, _Acc) -> timeout;
+terminal_status(#{event_type := <<"run.cancelled">>}, _Acc) -> cancelled;
+terminal_status(_Event, Acc) -> Acc.
