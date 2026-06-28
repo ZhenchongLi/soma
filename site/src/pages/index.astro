@@ -1,0 +1,120 @@
+---
+// English landing root, built to /index.html.
+// A standalone Astro page (not a Starlight docs page) so the layout is fully
+// custom. The <html lang="en"> attribute, the language toggle anchor, and the
+// nav are authored here by hand. The same custom.css that binds the soma-red
+// accent token and the fonts is imported so the bundled CSS keeps the accent.
+import { Code } from 'astro:components';
+import '../styles/custom.css';
+
+const quickStart = `# start the daemon, then run a step list
+soma daemon
+soma run ./pipeline.lfe
+soma status`;
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Soma — an Erlang/OTP-native agent runtime</title>
+    <meta
+      name="description"
+      content="An Erlang/OTP-native agent runtime: an agent run is a supervised OTP process tree, not a function calling tools in a loop."
+    />
+  </head>
+  <body>
+    <nav class="landing-nav">
+      <a class="brand" href="/">Soma</a>
+      <div class="nav-links">
+        <a href="/start/overview/">Docs</a>
+        <a href="https://github.com/ZhenchongLi/soma">GitHub</a>
+        <a class="lang-toggle" href="/zh/">中文</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <h1>An agent run is a supervised OTP process tree.</h1>
+      <p class="hero-tagline">
+        Soma is an Erlang/OTP-native agent runtime. Every session, run, and tool
+        call is a supervised OTP process — not a function calling tools in a loop.
+      </p>
+      <div class="hero-actions">
+        <a class="cta primary" href="/start/overview/">Get started</a>
+        <a class="cta" href="https://github.com/ZhenchongLi/soma">View on GitHub</a>
+      </div>
+    </header>
+
+    <section class="thesis">
+      <p>
+        The thesis is simple: <strong>agents fail in operational ways</strong> —
+        they time out, they hang, they crash, they get cancelled. OTP already has
+        the supervision, monitoring, and crash-isolation semantics for exactly
+        that, so Soma models a run as a process tree instead of an in-process
+        loop.
+      </p>
+    </section>
+
+    <section class="features">
+      <article class="card">
+        <h3>LFE DSL</h3>
+        <p>
+          A constrained Lisp-flavored grammar compiles to the exact step-list the
+          runtime executes — compile-only, no processes, one-way dependency.
+        </p>
+      </article>
+      <article class="card">
+        <h3>Decision layer</h3>
+        <p>
+          A pure proposal / policy boundary turns an LLM call into typed,
+          allowlist-checked data before any tool ever runs.
+        </p>
+      </article>
+      <article class="card">
+        <h3>Resume journal</h3>
+        <p>
+          A durable event log is the source of truth; the in-memory index is a
+          rebuildable cache that reconstructs run progress after a restart.
+        </p>
+      </article>
+    </section>
+
+    <section class="architecture">
+      <h2>Supervised, top to bottom</h2>
+      <p>
+        Every tool invocation crosses a process boundary. A tool crash is data
+        for the run, not a crash of the session.
+      </p>
+      <img src="/supervision-tree.svg" alt="Soma supervision tree" />
+    </section>
+
+    <section class="quickstart">
+      <h2>Quick start</h2>
+      <Code code={quickStart} lang="bash" />
+    </section>
+
+    <section class="why">
+      <h2>Why Erlang/OTP</h2>
+      <div class="why-grid">
+        <div>
+          <h4>Real cancellation</h4>
+          <p>A cancel is a message that stops the active tool process, not a flag checked at the end.</p>
+        </div>
+        <div>
+          <h4>Crash isolation</h4>
+          <p>Links, monitors, and supervision do the fault-tolerance work — not a pile of defensive try/catch.</p>
+        </div>
+        <div>
+          <h4>Mandatory events</h4>
+          <p>Every session, run, and tool call emits a durable, queryable event from day one.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer class="landing-footer">
+      <a href="https://github.com/ZhenchongLi/soma">github.com/ZhenchongLi/soma</a>
+      <a href="/zh/">中文</a>
+    </footer>
+  </body>
+</html>
