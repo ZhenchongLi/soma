@@ -38,7 +38,7 @@ listen(Parent, Path, ModelConfig) ->
         {ok, ListenSocket} ->
             ok = ensure_task_registry(),
             Parent ! {self(), listening},
-            accept_loop(ListenSocket, ModelConfig, self());
+            accept_loop(ListenSocket, Path, ModelConfig, self());
         {error, Reason} ->
             Parent ! {self(), {error, Reason}}
     end.
@@ -62,7 +62,7 @@ unlink_stale(Path) ->
             ok
     end.
 
-accept_loop(ListenSocket, ModelConfig, Listener) ->
+accept_loop(ListenSocket, Path, ModelConfig, Listener) ->
     %% Drain any pending teardown signal before each accept. A `(stop)' handler
     %% (which does not own the listen socket) sends `close_listen' to this
     %% listener -- the process that owns the listen socket -- and the listener
@@ -72,8 +72,12 @@ accept_loop(ListenSocket, ModelConfig, Listener) ->
     %% starve the signal.
     receive
         close_listen ->
+            %% Closing the listen socket frees the descriptor but leaves the
+            %% AF_UNIX path as a leftover file on disk, so unlink it here -- the
+            %% listener owns the path -- once the socket is closed.
             gen_tcp:close(ListenSocket),
-            accept_loop(ListenSocket, ModelConfig, Listener)
+            _ = file:delete(Path),
+            accept_loop(ListenSocket, Path, ModelConfig, Listener)
     after 0 ->
         %% A short accept timeout bounds the wait so the signal is observed even
         %% when no connection arrives.
@@ -94,9 +98,9 @@ accept_loop(ListenSocket, ModelConfig, Listener) ->
                             end),
                 ok = gen_tcp:controlling_process(Socket, Handler),
                 Handler ! proceed,
-                accept_loop(ListenSocket, ModelConfig, Listener);
+                accept_loop(ListenSocket, Path, ModelConfig, Listener);
             {error, timeout} ->
-                accept_loop(ListenSocket, ModelConfig, Listener);
+                accept_loop(ListenSocket, Path, ModelConfig, Listener);
             {error, closed} ->
                 ok
         end
@@ -234,8 +238,9 @@ handle_ask(Ask, ModelConfig) ->
 %% it sends a `close_listen' signal the listener acts on between accepts. Closing
 %% the listen socket ends the accept loop, so the daemon stops accepting new
 %% connections; it does not disturb this already-accepted connection, so the
-%% reply still flushes to the stopping client. Cancelling in-flight runs and
-%% unlinking the socket file land in the later CLI.9 criteria.
+%% reply still flushes to the stopping client. The listener also unlinks the
+%% socket file after closing the listen socket. Cancelling in-flight runs lands
+%% in the later CLI.9 criteria.
 handle_stop(Listener) ->
     Listener ! close_listen,
     ["(result (status stopped))"].
