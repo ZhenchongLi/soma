@@ -19,6 +19,7 @@
 -export([test_rendered_reply_carries_no_api_key/1]).
 -export([planning_mode_real_response_runs_plan_to_completion/1]).
 -export([planning_mode_malformed_plan_fails_task_actor_alive/1]).
+-export([planning_mode_off_yields_reply_proposal_unchanged/1]).
 
 all() ->
     [real_provider_actor_completes_llm_task_through_openai_no_socket,
@@ -26,7 +27,8 @@ all() ->
      api_key_appears_in_no_emitted_event,
      test_rendered_reply_carries_no_api_key,
      planning_mode_real_response_runs_plan_to_completion,
-     planning_mode_malformed_plan_fails_task_actor_alive].
+     planning_mode_malformed_plan_fails_task_actor_alive,
+     planning_mode_off_yields_reply_proposal_unchanged].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -352,6 +354,60 @@ planning_mode_malformed_plan_fails_task_actor_alive(_Config) ->
                                  args => #{value => <<"a">>}}]},
     {ok, GoodTaskId} = soma_actor:send(ActorPid, GoodEnvelope),
     ok = wait_for_status(ActorPid, GoodTaskId, completed, 100),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 4: with planning mode off, a fixed real-provider response still
+%% yields a `reply' proposal carrying the response text -- unchanged from the
+%% B.1/B.2 path. The actor is started with a real-provider `model_config' that
+%% has NO `plan' key (the planning branch is explicitly absent), carrying a fixed
+%% `response' whose choices[0].message.content is a string that WOULD parse as a
+%% `(run-steps ...)' plan if it were routed through the planning branch. Entering
+%% through the real soma_actor:send/2 with an `llm' envelope, the call returns the
+%% content as a reply; with planning off the actor normalizes the `#{kind => reply,
+%% text => Content}' map straight to a reply (the `is_map' clause) and never runs
+%% the content through soma_lfe:compile/2. The test waits for `completed', then
+%% asserts the task result is the parsed reply carrying the content verbatim (a
+%% `run_steps' proposal or executed plan would mean the off path changed).
+planning_mode_off_yields_reply_proposal_unchanged(_Config) ->
+    Store = event_store_pid(),
+    %% Content that looks like a plan -- if the off path routed it through the
+    %% planning branch it would compile and run, not come back as reply text.
+    Content = <<"(run-steps (step (id s1) (tool echo) (args (value \"a\"))))">>,
+    Body = iolist_to_binary(
+             json:encode(#{<<"choices">> =>
+                               [#{<<"message">> =>
+                                      #{<<"content">> => Content}}]})),
+    %% Planning mode off: the real-provider model_config carries NO `plan' key.
+    %% Scheme-less host literal -- never dialed (the `response' seam).
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    api_key => <<"sk-test-key">>,
+                    response => {200, Body}},
+    Opts = #{actor_id => <<"actor-planning-off">>,
+             model_config => ModelConfig,
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-planning-off">>,
+    CorrelationId = <<"corr-planning-off">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{prompt => <<"say hello">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => #{}},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+    %% The off path is unchanged: the result is a reply carrying the content
+    %% verbatim, not a run_steps proposal and not the plan's step outputs.
+    {ok, Result} = soma_actor:get_task_result(ActorPid, TaskId),
+    #{kind := reply, text := <<"this is deliberately the wrong text">>} = Result,
+    %% No plan ran: no `proposal.executed' / `run.completed' in the trail.
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
+    false = lists:member(<<"proposal.executed">>, Types),
+    false = lists:member(<<"run.completed">>, Types),
     true = is_process_alive(ActorPid),
     ok.
 
