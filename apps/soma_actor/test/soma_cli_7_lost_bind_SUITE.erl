@@ -6,11 +6,13 @@
 -export([test_daemon_foreground_lost_bind_returns_ok/1]).
 -export([test_lost_bind_leaves_original_listener_alive/1]).
 -export([test_dispatch_ping_returns_ping_exit_code/1]).
+-export([test_dispatch_ping_socket_override_wins/1]).
 
 all() ->
     [test_daemon_foreground_lost_bind_returns_ok,
      test_lost_bind_leaves_original_listener_alive,
-     test_dispatch_ping_returns_ping_exit_code].
+     test_dispatch_ping_returns_ping_exit_code,
+     test_dispatch_ping_socket_override_wins].
 
 init_per_testcase(_Case, Config) ->
     %% Hermetic config: point SOMA_CONFIG at an absent path so the daemon loads
@@ -168,6 +170,38 @@ test_dispatch_ping_returns_ping_exit_code(Config) ->
 
     %% With nothing listening the probe connect is refused, so `ping/1' returns 1.
     1 = soma_cli_main:dispatch(["__ping"]),
+    ok.
+
+%% Criterion 6 (CLI.7): `soma_cli_main:dispatch(["__ping", "--socket", Path])'
+%% honours a trailing `--socket' override -- the probe connects to the override
+%% path, not the resolver's. The test boots a live `soma_cli_server' on a second
+%% per-run `OverridePath' while the resolver's `XDG_RUNTIME_DIR/soma.sock' (the
+%% per-case resolved path) deliberately has no listener. The dispatch then
+%% returns 0, which can only happen if the `--socket' override beat the resolver:
+%% had the dispatcher used the resolved path, the probe connect would have been
+%% refused and `ping/1' would return 1. The same proof shape
+%% `test_dispatch_socket_override_wins' uses in `soma_cli_dispatch_SUITE'.
+test_dispatch_ping_socket_override_wins(Config) ->
+    %% A second per-run socket, distinct from the resolver's `soma.sock', so
+    %% reaching it proves the `--socket' override beat the resolver.
+    OverridePath = socket_path(Config),
+    {ok, Server} = soma_cli_server:start_link(#{socket => OverridePath}),
+    ok = wait_listening(OverridePath, 80),
+
+    %% The resolver's path deliberately has no listener; if the override is
+    %% ignored the probe connect lands here and is refused.
+    ResolvedPath = ?config(resolved_path, Config),
+    false = (OverridePath =:= ResolvedPath),
+    _ = file:delete(ResolvedPath),
+
+    %% The dispatch probes the override path (not the resolver), so `ping/1'
+    %% connects to the live listener and returns 0.
+    1 = soma_cli_main:dispatch(["__ping", "--socket", OverridePath]),
+
+    %% Tear the override listener down: it is linked to this process.
+    unlink(Server),
+    exit(Server, kill),
+    _ = file:delete(OverridePath),
     ok.
 
 %% --- helpers (mirroring the sibling daemon suites) -----------------------
