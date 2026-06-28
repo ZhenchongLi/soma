@@ -10,6 +10,7 @@
 -export([test_run_lisp_echo_returns_completed_result/1]).
 -export([test_run_lisp_result_carries_correlation_id/1]).
 -export([test_run_lisp_failed_returns_error_result/1]).
+-export([test_run_timeout_returns_result_with_status_timeout/1]).
 -export([test_server_serves_after_failed_lisp_run/1]).
 -export([test_malformed_request_returns_error_sexpr/1]).
 -export([test_server_serves_after_malformed_request/1]).
@@ -45,6 +46,7 @@ all() ->
      test_run_lisp_echo_returns_completed_result,
      test_run_lisp_result_carries_correlation_id,
      test_run_lisp_failed_returns_error_result,
+     test_run_timeout_returns_result_with_status_timeout,
      test_server_serves_after_failed_lisp_run,
      test_malformed_request_returns_error_sexpr,
      test_server_serves_after_malformed_request,
@@ -183,6 +185,27 @@ test_run_lisp_failed_returns_error_result(Config) ->
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     nomatch = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "\\(error ", [{capture, none}]),
+    ok = gen_tcp:close(Client).
+
+%% Criterion 1 (#179): a framed Lisp `(run (step ...))' request whose only step
+%% outlasts its `timeout_ms' drives the real server -> soma_lfe:compile ->
+%% soma_run (waiting_tool state_timeout fires step_timeout -> run.timeout ->
+%% {run_timeout, RunId}) -> await_run (timeout map) -> soma_lisp:render path and
+%% replies a framed `(result ...)' s-expr whose status sub-form is `timeout'. The
+%% timeout map carries neither outputs nor error, yet the reply must still be
+%% headed by `result' (not a headless pair list). A real gen_tcp client over the
+%% local Unix socket sends the s-expr and reads the s-expr reply.
+test_run_timeout_returns_result_with_status_timeout(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = connect(Path),
+    Request = <<"(run (step wait sleep (args (ms 3000)) (timeout_ms 500)))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The reply must be a `(result ...)' s-expr (headed by `result') whose status
+    %% sub-form is `timeout'.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status timeout\\)", [{capture, none}]),
     ok = gen_tcp:close(Client).
 
 %% Criterion 5 (CLI.1b): the server stays up after a failed Lisp run and answers
