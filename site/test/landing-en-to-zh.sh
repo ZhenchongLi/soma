@@ -30,7 +30,7 @@ if [ ! -f "${EN_ROOT}" ]; then
 fi
 
 # The exact anchor href the English root must carry to reach the Chinese locale.
-LANG_LINK='href="/zh-CN/"'
+LANG_LINK='href="/zh/"'
 
 if grep -qF -- "${LANG_LINK}" "${EN_ROOT}"; then
   echo "PASS: Criterion 5 — English root links to the Chinese locale (${LANG_LINK}) in ${EN_ROOT}"
