@@ -7,12 +7,14 @@
 -export([test_after_stop_fresh_connect_fails/1]).
 -export([test_after_stop_socket_file_gone/1]).
 -export([test_after_stop_start_link_rebinds_path/1]).
+-export([test_stop_cancels_active_detached_run/1]).
 
 all() ->
     [test_stop_returns_stopped_result,
      test_after_stop_fresh_connect_fails,
      test_after_stop_socket_file_gone,
-     test_after_stop_start_link_rebinds_path].
+     test_after_stop_start_link_rebinds_path,
+     test_stop_cancels_active_detached_run].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -95,7 +97,79 @@ test_after_stop_start_link_rebinds_path(Config) ->
     {ok, NewClient} = connect(Path),
     ok = gen_tcp:close(NewClient).
 
+%% Criterion 6 (CLI.9): a detached run that is still active when `(stop)' arrives
+%% must reach a terminal `cancelled' state. Stop cancels in-flight detached runs
+%% rather than refusing while busy. A real client starts a detached long `sleep'
+%% over the socket, reads the `(accepted ...)' task id, waits (bounded) for that
+%% run's `tool.started' so the run is live, then sends `(stop)' on a fresh
+%% connection. The stop handler asks the daemon-owned registry to cancel every
+%% running task, `soma_run' tears down and emits `run.cancelled'. We poll the
+%% event store (the same observation seam the cancel cases use) for
+%% `run.cancelled' on that run id.
+test_stop_cancels_active_detached_run(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+    {ok, C1} = connect(Path),
+    Request = <<"(run (detach) (step s1 sleep (args (ms 5000))))">>,
+    ok = gen_tcp:send(C1, Request),
+    {ok, Reply} = gen_tcp:recv(C1, 0, 1000),
+    ok = gen_tcp:close(C1),
+    match = re:run(Reply, "^\\(accepted ", [{capture, none}]),
+    {match, [TaskId]} =
+        re:run(Reply, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    running = wait_for_registry_status(TaskId, running, 100),
+    {ok, #{run_id := RunId}} = soma_cli_task_registry:lookup(TaskId),
+    %% Wait for `tool.started' so the stop lands while the sleep worker is live.
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 100),
+
+    {ok, C2} = connect(Path),
+    ok = gen_tcp:send(C2, <<"(stop)">>),
+    {ok, _StopReply} = gen_tcp:recv(C2, 0, 5000),
+    ok = gen_tcp:close(C2),
+    %% The active detached run must reach `cancelled' -- a `run.cancelled' event
+    %% for that run id must land in the store.
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, Event) || Event <- Events],
+    true = lists:member(<<"run.cancelled">>, Types).
+
 %% --- helpers (mirroring soma_cli_server_SUITE) ---------------------------
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
+
+%% Poll the run-scoped trail until the given event type appears.
+wait_for_event(_StorePid, _RunId, _Type, 0) ->
+    {error, timeout};
+wait_for_event(StorePid, RunId, Type, N) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    case lists:member(Type, Types) of
+        true -> ok;
+        false ->
+            timer:sleep(20),
+            wait_for_event(StorePid, RunId, Type, N - 1)
+    end.
+
+wait_for_registry_status(TaskId, _Expected, 0) ->
+    {ok, Task} = soma_cli_task_registry:lookup(TaskId),
+    maps:get(status, Task);
+wait_for_registry_status(TaskId, Expected, N) ->
+    case soma_cli_task_registry:lookup(TaskId) of
+        {ok, #{status := Expected}} ->
+            Expected;
+        {ok, _Task} ->
+            timer:sleep(20),
+            wait_for_registry_status(TaskId, Expected, N - 1);
+        {error, not_found} ->
+            timer:sleep(20),
+            wait_for_registry_status(TaskId, Expected, N - 1)
+    end.
 
 %% Poll for the path becoming rebindable. While the old listener has not yet torn
 %% down (raced against the reply read), a fresh `start_link/1' would land on a
