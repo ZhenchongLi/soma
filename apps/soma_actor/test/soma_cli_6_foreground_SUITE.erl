@@ -132,11 +132,10 @@ test_cold_boot_registers_actor_sup(Config) ->
     %% once the listener is accepting, which is after boot started soma_actor_sup.
     {ok, Client} = connect(Path),
 
-    %% RED (staged): deliberately wrong expectation -- the boot DOES register
-    %% soma_actor_sup, so whereis is a live pid, not undefined. This assertion
-    %% must fire to prove the test exercises the post-boot state. Corrected to
-    %% the real expectation (a live pid) in the green commit.
-    undefined = whereis(soma_actor_sup),
+    %% The cold boot registered soma_actor_sup: whereis returns a live pid.
+    Sup = whereis(soma_actor_sup),
+    true = is_pid(Sup),
+    true = is_process_alive(Sup),
 
     %% Tear the daemon down cleanly so the child returns and exits.
     ok = gen_tcp:send(Client, <<"(stop)">>),
