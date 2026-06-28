@@ -23,7 +23,7 @@ npm ci && npm run build || {
   exit 1
 }
 
-EN_DOCS="${SITE_DIR}/dist/start/overview.html"
+EN_DOCS="${SITE_DIR}/dist/start/overview/index.html"
 
 if [ -f "${EN_DOCS}" ]; then
   echo "PASS: Criterion 5 — English seed docs route built at ${EN_DOCS}"
