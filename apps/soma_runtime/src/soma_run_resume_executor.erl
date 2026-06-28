@@ -43,5 +43,10 @@ resume(RunId, Owner, Store) ->
         %% resume idempotent -- the trail remembers the terminal, so the second
         %% call classifies {terminal, _} before it ever looks at next_step.
         {terminal, Status} ->
-            {terminal, Status}
+            {terminal, Status};
+        %% Every journal step already committed step.succeeded, but no terminal
+        %% event landed: there is no pending suffix to continue. Start no run,
+        %% append no event, return nothing_to_do.
+        nothing_to_do ->
+            nothing_to_do
     end.
