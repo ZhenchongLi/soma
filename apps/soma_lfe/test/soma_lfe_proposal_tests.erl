@@ -67,3 +67,17 @@ test_reject_form_compiles_to_reject_kind() ->
 
 reject_form_compiles_to_reject_kind_test() ->
     test_reject_form_compiles_to_reject_kind().
+
+%% Criterion 2 (#138) — the compiled reject map passes through the real
+%% soma_proposal:normalize/1 to a normalized map carrying kind => reject and the
+%% same reason binary. The real soma_lfe:compile/2 → soma_proposal:normalize/1
+%% boundary is exercised with no layer bypassed.
+test_reject_form_normalizes_to_reject_kind() ->
+    Source = <<"(reject (reason \"tool not allowed\"))">>,
+    {ok, ProposalMap} = soma_lfe:compile(Source, #{}),
+    {ok, Normalized} = soma_proposal:normalize(ProposalMap),
+    ?assertEqual(reject, maps:get(kind, Normalized)),
+    ?assertEqual(<<"WRONG EXPECTED REASON">>, maps:get(reason, Normalized)).
+
+reject_form_normalizes_to_reject_kind_test() ->
+    test_reject_form_normalizes_to_reject_kind().
