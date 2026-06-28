@@ -6,9 +6,11 @@
 > `cancel` / `trace` / `stop` / `daemon` wrapper described below. To avoid
 > colliding with relx's generated node-control verbs, the OTP release is named
 > `somad`: `bin/somad` is the node-control script (`console`, `foreground`,
-> `daemon`, `stop`, …) and `bin/soma` is the task client. Both are proven through
-> the test gate and an end-to-end release smoke test (`soma daemon` → `soma run`
-> → `soma stop`).
+> `daemon`, `stop`, …) and `bin/soma` is the task client. A client command
+> **auto-starts** the daemon if none is up (no separate `soma daemon` ritual), and
+> a real model is wired by **`~/.soma/config`** (TOML), key only from the daemon's
+> env. Proven through the test gate and an end-to-end release smoke test
+> (`soma daemon` → `soma run` → `soma stop`, plus the auto-start path).
 
 ## Scope: single-user, trusted, local
 
@@ -346,15 +348,19 @@ documented now, fixed later, not v1 blockers:
 4. **CLI.3 / follow-up — status, cancel, trace, detach** (done on the
    module/server path): `soma_cli:status/1`, `cancel/1`, `trace/1`, detached run
    ownership, and cancel-by-id are implemented and tested.
-5. **Remaining product work:** external command parser / install surface,
-   auto-start, a daemon config file, and any `soma stop` task-daemon command
-   separate from relx's node-control `stop`.
+5. **CLI.8 / CLI.9 / CLI.6 / CLI.7** (done): `~/.soma/config` (TOML) → daemon
+   `model_config`; `soma stop` (in-band `(stop)` teardown, distinct from relx's
+   node-control `stop`); the packaged `soma` command (the `somad` rename + the
+   `bin/soma` wrapper over the bundled ERTS + `main_argv/0`); and auto-start of the
+   daemon when a client finds no listener. **The CLI track is complete.**
 
-## Open decisions (remaining)
+## Decisions (settled)
 
-- **Auto-start**: do clients auto-start the daemon if absent, or error with "run
-  `soma daemon`"? Lean: auto-start (single-user, low risk).
-- **`soma ask` config file** location/format (`~/.soma/config`), key strictly from
-  the daemon's env. Lean: a small TOML at `~/.soma/config`.
+- **Auto-start** (done): a client verb auto-starts the daemon if absent
+  (`soma_cli:ping/1` probe → `nohup soma daemon`), single-user low-risk, rather
+  than erroring with "run `soma daemon`".
+- **`soma ask` config file** (done): a small TOML at `~/.soma/config`
+  (`provider` / `base_url` / `model`), the API key strictly from the daemon's
+  `SOMA_LLM_API_KEY` env, never the file.
 - **Input formats for `soma run`**: an LFE workflow (a `(run …)` s-expr); the
   same Lisp is the wire and the file format.
