@@ -126,7 +126,7 @@ test_pending_from_step_resolves_from_seeded_outputs(_Config) ->
     false = lists:member(<<"run.failed">>, Types),
     %% the pending step's output reflects the seeded committed step's output
     S2Out = step_output(Events, s2),
-    #{value := <<"WRONG-staged-red">>} = S2Out,
+    Seeded = S2Out,
     ok.
 
 step_output(Events, StepId) ->
