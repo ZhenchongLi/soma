@@ -90,8 +90,7 @@ reject_form_normalizes_to_reject_kind_test() ->
 test_malformed_reject_form_returns_diagnostic() ->
     Source = <<"(reject (reason))">>,
     Result = soma_lfe:compile(Source, #{}),
-    %% red: deliberately wrong — a malformed reject is an error, not {ok, _}.
-    ?assertMatch({ok, _}, Result),
+    ?assertMatch({error, [_ | _]}, Result),
     {error, [Diag | _]} = Result,
     ?assert(maps:is_key(message, Diag)),
     ?assert(maps:is_key(line, Diag)),
