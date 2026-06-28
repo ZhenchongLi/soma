@@ -156,7 +156,31 @@ Linux arm64   (remaining)
 
 Supervision tree, as built:
 
-![Soma supervision tree, as built](diagrams/supervision-tree.svg)
+```mermaid
+flowchart TD
+    subgraph rt["apps/soma_runtime"]
+        sup["soma_sup<br/>supervisor"]
+        es["soma_event_store<br/>gen_server · audit log"]
+        tr["soma_tool_registry<br/>gen_server · descriptors"]
+        ssup["soma_session_sup<br/>supervisor"]
+        sess["soma_agent_session<br/>gen_server · long-lived"]
+        rsup["soma_run_sup<br/>supervisor"]
+        run["soma_run<br/>gen_statem · per-run"]
+        tc["soma_tool_call<br/>worker · one call, then dies"]
+        sup --> es
+        sup --> tr
+        sup --> ssup --> sess
+        sup --> rsup --> run --> tc
+    end
+    cli(["cli child<br/>external OS process · port"])
+    tc -.-> cli
+    subgraph ac["apps/soma_actor · separate app, one-way dep (v0.4)"]
+        asup["soma_actor_sup<br/>supervisor · simple_one_for_one"]
+        act["soma_actor<br/>gen_statem · agent entity"]
+        asup --> act
+    end
+    act -.->|"starts runs directly · session_pid = self"| rsup
+```
 
 The session process is long-lived. It owns session metadata and starts runs.
 
@@ -192,7 +216,20 @@ accepted
   -> completed | failed | cancelled | timeout
 ```
 
-![soma_run state machine](diagrams/run-states.svg)
+```mermaid
+stateDiagram-v2
+    [*] --> executing
+    executing --> waiting_tool: start tool call
+    waiting_tool --> executing: tool ok · next step
+    executing --> completed: no steps left
+    waiting_tool --> failed: error / crash
+    waiting_tool --> timeout: step timeout
+    waiting_tool --> cancelled: cancel
+    completed --> [*]
+    failed --> [*]
+    timeout --> [*]
+    cancelled --> [*]
+```
 
 Owned by the run:
 
