@@ -31,7 +31,7 @@ if [ ! -f "${EN_ROOT}" ]; then
 fi
 
 # The GitHub repository URL the landing's external link must point at.
-GITHUB_HREF='href="https://github.com/ZhenchongLi/soma-WRONG"'
+GITHUB_HREF='href="https://github.com/ZhenchongLi/soma"'
 
 if ! grep -qF -- "${GITHUB_HREF}" "${EN_ROOT}"; then
   echo "FAIL: Criterion 10 — English root missing GitHub anchor (${GITHUB_HREF}) in ${EN_ROOT}" >&2
