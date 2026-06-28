@@ -115,6 +115,35 @@ test_load_drops_api_key_from_file() ->
 load_drops_api_key_from_file_test() ->
     test_load_drops_api_key_from_file().
 
+%% Criterion 5: when the config selects a provider and SOMA_LLM_API_KEY is unset
+%% or empty, load/1 fails loudly with a named error ({missing_env, _}) and never
+%% returns a map carrying an empty api_key.
+test_load_no_api_key_raises() ->
+    Toml =
+        "[llm]\n"
+        "provider = \"openai_compat\"\n"
+        "base_url = \"api.example/v1\"\n"
+        "model = \"deepseek-v4\"\n",
+    Path = write_temp_config(Toml),
+    Prev = os:getenv("SOMA_LLM_API_KEY"),
+    try
+        os:unsetenv("SOMA_LLM_API_KEY"),
+        ?assertError({missing_env, _},
+                     soma_config:load(#{config_path => Path})),
+        os:putenv("SOMA_LLM_API_KEY", ""),
+        ?assertError({missing_env, _},
+                     soma_config:load(#{config_path => Path}))
+    after
+        case Prev of
+            false -> os:unsetenv("SOMA_LLM_API_KEY");
+            _ -> os:putenv("SOMA_LLM_API_KEY", Prev)
+        end,
+        file:delete(Path)
+    end.
+
+load_no_api_key_raises_test() ->
+    test_load_no_api_key_raises().
+
 write_temp_config(Contents) ->
     Dir = case os:getenv("TMPDIR") of
               false -> "/tmp";
