@@ -610,16 +610,16 @@ test_tool_crash_in_resumed_step_does_not_crash_owner(_Config) ->
     {ok, _RunPid} = soma_run_resume_executor:resume(RunId, Owner, StorePid),
 
     %% the crashing s2 worker drives the resumed run to run.failed
-    ok = wait_for_event(StorePid, RunId, <<"run.completed">>, 50),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
     Types = [maps:get(event_type, E)
              || E <- soma_event_store:by_run(StorePid, RunId)],
     ?assert(lists:member(<<"run.failed">>, Types)),
 
     %% Owner is the run's session_pid, so it receives the failure notification
     receive
-        {run_completed, RunId, _Reason} -> ok
+        {run_failed, RunId, _Reason} -> ok
     after 2000 ->
-        ct:fail("Owner did not receive run_completed")
+        ct:fail("Owner did not receive run_failed")
     end,
 
     %% the tool crash is run data, not an Owner crash
