@@ -523,9 +523,7 @@ test_cancelling_resumed_run_stops_worker(_Config) ->
     ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 50),
 
     %% the cancel killed the active worker; it must no longer be alive
-    %% STAGED RED: asserts the worker is still alive, which is the opposite of
-    %% the real contract -- cancel kills the worker.
-    ?assert(is_process_alive(WorkerPid)),
+    ?assertNot(is_process_alive(WorkerPid)),
     Types = [maps:get(event_type, E)
              || E <- soma_event_store:by_run(StorePid, RunId)],
     ?assert(lists:member(<<"run.cancelled">>, Types)).
@@ -564,9 +562,9 @@ test_timing_out_resumed_run_lands_terminal_event(_Config) ->
     ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 50),
     Types = [maps:get(event_type, E)
              || E <- soma_event_store:by_run(StorePid, RunId)],
-    %% STAGED RED: asserts the terminal event is run.completed, which is wrong --
-    %% an overrun lands run.timeout, not run.completed.
-    ?assert(lists:member(<<"run.completed">>, Types)),
+    %% an overrun lands run.timeout, never run.completed
+    ?assert(lists:member(<<"run.timeout">>, Types)),
+    ?assertNot(lists:member(<<"run.completed">>, Types)),
 
     %% Owner is the run's session_pid, so it receives the timeout notification
     receive
