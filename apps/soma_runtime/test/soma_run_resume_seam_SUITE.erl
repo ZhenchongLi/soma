@@ -6,11 +6,13 @@
 -export([test_resume_emits_no_start_events_for_committed_steps/1]).
 -export([test_each_pending_step_runs_in_own_worker/1]).
 -export([test_pending_from_step_resolves_from_seeded_outputs/1]).
+-export([test_resumed_run_completes_with_merged_outputs/1]).
 
 all() ->
     [test_resume_emits_no_start_events_for_committed_steps,
      test_each_pending_step_runs_in_own_worker,
-     test_pending_from_step_resolves_from_seeded_outputs].
+     test_pending_from_step_resolves_from_seeded_outputs,
+     test_resumed_run_completes_with_merged_outputs].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -127,6 +129,47 @@ test_pending_from_step_resolves_from_seeded_outputs(_Config) ->
     %% the pending step's output reflects the seeded committed step's output
     S2Out = step_output(Events, s2),
     Seeded = S2Out,
+    ok.
+
+%% Criterion 4: a resumed run reaches `completed' and sends a `run_completed'
+%% message to its `session_pid' whose outputs map carries BOTH the seeded
+%% committed outputs and the newly-run pending steps' outputs. The full list is
+%% [s1, s2, s3]; s1 is committed (seeded in `outputs', omitted from `pending')
+%% and s2, s3 are pending. The run is started directly through start_link/1 with
+%% the calling test process as `session_pid', so the test receives the terminal
+%% `run_completed' message. The merged outputs map must contain s1 (seeded), s2
+%% and s3 (newly run) keyed by step id.
+test_resumed_run_completes_with_merged_outputs(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-resume-merged-outputs-1">>,
+    FullSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+                 #{id => s2, tool => echo, args => #{value => <<"b">>}},
+                 #{id => s3, tool => echo, args => #{value => <<"c">>}}],
+    Pending = [#{id => s2, tool => echo, args => #{value => <<"b">>}},
+               #{id => s3, tool => echo, args => #{value => <<"c">>}}],
+    SeededS1 = #{value => <<"a">>},
+    Outputs = #{s1 => SeededS1},
+    {ok, _RunPid} = soma_run:start_link(#{run_id => RunId,
+                                          session_id => <<"sess-resume-merged-1">>,
+                                          session_pid => self(),
+                                          event_store => StorePid,
+                                          steps => FullSteps,
+                                          pending => Pending,
+                                          outputs => Outputs}),
+    MergedOutputs =
+        receive
+            {run_completed, RunId, Out} -> Out
+        after 2000 ->
+            ct:fail(no_run_completed_message)
+        end,
+    %% the seeded committed step's output is carried through
+    SeededS1 = maps:get(s1, MergedOutputs),
+    %% the newly-run pending steps' outputs are present too
+    #{value := <<"b">>} = maps:get(s2, MergedOutputs),
+    #{value := <<"c">>} = maps:get(s3, MergedOutputs),
+    %% the merged map carries exactly those three steps -- DELIBERATELY WRONG
+    %% (staged red): the real merged map has 3 keys.
+    2 = map_size(MergedOutputs),
     ok.
 
 step_output(Events, StepId) ->
