@@ -239,11 +239,22 @@ handle_ask(Ask, ModelConfig) ->
 %% the listen socket ends the accept loop, so the daemon stops accepting new
 %% connections; it does not disturb this already-accepted connection, so the
 %% reply still flushes to the stopping client. The listener also unlinks the
-%% socket file after closing the listen socket. Cancelling in-flight runs lands
-%% in the later CLI.9 criteria.
+%% socket file after closing the listen socket. Before signalling teardown the
+%% handler asks the daemon-owned registry to cancel every running detached run --
+%% stop cancels in-flight runs rather than refusing while busy -- so each
+%% `soma_run' tears down its worker and emits `run.cancelled' on the way out.
 handle_stop(Listener) ->
+    _ = cancel_inflight_runs(),
     Listener ! close_listen,
     ["(result (status stopped))"].
+
+%% Cancel every running detached run the registry owns. Absent a registry (no
+%% detached run was ever started) there is nothing in flight to cancel.
+cancel_inflight_runs() ->
+    case whereis(soma_cli_task_registry) of
+        undefined -> ok;
+        _Pid -> soma_cli_task_registry:cancel_all()
+    end.
 
 %% Render a `(trace "<corr>")' read request. `soma_trace:render_lisp/2' fetches
 %% the correlation chain from the event store, sorts it by timestamp ascending,
