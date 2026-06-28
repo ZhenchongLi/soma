@@ -38,7 +38,7 @@ listen(Parent, Path, ModelConfig) ->
         {ok, ListenSocket} ->
             ok = ensure_task_registry(),
             Parent ! {self(), listening},
-            accept_loop(ListenSocket, ModelConfig);
+            accept_loop(ListenSocket, ModelConfig, self());
         {error, Reason} ->
             Parent ! {self(), {error, Reason}}
     end.
@@ -62,27 +62,49 @@ unlink_stale(Path) ->
             ok
     end.
 
-accept_loop(ListenSocket, ModelConfig) ->
-    case gen_tcp:accept(ListenSocket) of
-        {ok, Socket} ->
-            %% The accepted socket is owned by this accept-loop process. Hand it
-            %% to the handler so socket events under `{active, once}' (the
-            %% client-disconnect `{tcp_closed, Socket}') are delivered to the
-            %% handler's mailbox -- the process that waits in `await_run' -- and
-            %% not stranded here in the acceptor. The handler waits for `proceed'
-            %% so it only touches the socket once it owns it. The handler carries
-            %% the daemon's `model_config' so an ask request can drive the actor.
-            Handler = spawn(fun() -> wait_then_handle(Socket, ModelConfig) end),
-            ok = gen_tcp:controlling_process(Socket, Handler),
-            Handler ! proceed,
-            accept_loop(ListenSocket, ModelConfig);
-        {error, closed} ->
-            ok
+accept_loop(ListenSocket, ModelConfig, Listener) ->
+    %% Drain any pending teardown signal before each accept. A `(stop)' handler
+    %% (which does not own the listen socket) sends `close_listen' to this
+    %% listener -- the process that owns the listen socket -- and the listener
+    %% closes it here, which ends this loop via the `{error, closed}' clause so
+    %% the daemon stops accepting. Checking before each accept (rather than only
+    %% on an accept timeout) means a steady stream of new connections cannot
+    %% starve the signal.
+    receive
+        close_listen ->
+            gen_tcp:close(ListenSocket),
+            accept_loop(ListenSocket, ModelConfig, Listener)
+    after 0 ->
+        %% A short accept timeout bounds the wait so the signal is observed even
+        %% when no connection arrives.
+        case gen_tcp:accept(ListenSocket, 200) of
+            {ok, Socket} ->
+                %% The accepted socket is owned by this accept-loop process. Hand
+                %% it to the handler so socket events under `{active, once}' (the
+                %% client-disconnect `{tcp_closed, Socket}') are delivered to the
+                %% handler's mailbox -- the process that waits in `await_run' --
+                %% and not stranded here in the acceptor. The handler waits for
+                %% `proceed' so it only touches the socket once it owns it. The
+                %% handler carries the daemon's `model_config' so an ask request
+                %% can drive the actor, and the listener pid so a `(stop)'
+                %% request can signal teardown.
+                Handler = spawn(
+                            fun() ->
+                                    wait_then_handle(Socket, ModelConfig, Listener)
+                            end),
+                ok = gen_tcp:controlling_process(Socket, Handler),
+                Handler ! proceed,
+                accept_loop(ListenSocket, ModelConfig, Listener);
+            {error, timeout} ->
+                accept_loop(ListenSocket, ModelConfig, Listener);
+            {error, closed} ->
+                ok
+        end
     end.
 
-wait_then_handle(Socket, ModelConfig) ->
+wait_then_handle(Socket, ModelConfig, Listener) ->
     receive
-        proceed -> handle(Socket, ModelConfig)
+        proceed -> handle(Socket, ModelConfig, Listener)
     end.
 
 %% Per-connection handler, one process per accepted connection. It reads one
@@ -90,10 +112,10 @@ wait_then_handle(Socket, ModelConfig) ->
 %% the terminal `(result ...)' s-expr back, then closes. The socket is
 %% `{packet, 4}', so the driver strips the length prefix on recv and prepends it
 %% on send -- the payload here is the bare s-expr.
-handle(Socket, ModelConfig) ->
+handle(Socket, ModelConfig, Listener) ->
     case gen_tcp:recv(Socket, 0, 60000) of
         {ok, Bytes} ->
-            case handle_lisp_request(Bytes, Socket, ModelConfig) of
+            case handle_lisp_request(Bytes, Socket, ModelConfig, Listener) of
                 noreply ->
                     gen_tcp:close(Socket);
                 Reply ->
@@ -109,7 +131,7 @@ handle(Socket, ModelConfig) ->
 %% `soma_lfe:compile/2' returning `{error, Diagnostics}', or the reader crashing
 %% on garbage bytes -- is not a handler crash: it renders a `(result ...)' with
 %% `status => error' and an `error' sub-form carrying the diagnostics.
-handle_lisp_request(Bytes, Socket, ModelConfig) ->
+handle_lisp_request(Bytes, Socket, ModelConfig, Listener) ->
     Compiled = try soma_lfe:compile(Bytes, #{})
                catch
                    Class:Reason ->
@@ -132,7 +154,7 @@ handle_lisp_request(Bytes, Socket, ModelConfig) ->
         {ok, #{cancel := #{task_id := TaskId}}} ->
             handle_cancel(TaskId);
         {ok, #{stop := _Stop}} ->
-            handle_stop();
+            handle_stop(Listener);
         {error, Diagnostics} ->
             soma_lisp:render(#{status => error, error => Diagnostics})
     end.
@@ -206,14 +228,16 @@ handle_ask(Ask, ModelConfig) ->
              end,
     soma_lisp:render(Result).
 
-%% Render a terminal reply for a `(stop)' request: a `(result (status stopped))'
-%% s-expr telling the client the daemon accepted the stop. The reply is framed
-%% back to the stopping client before any teardown so the client's one read is
-%% deterministic (the accepted connection survives the listen socket closing).
-%% Teardown -- signalling the listener to close the listen socket, cancelling
-%% in-flight runs, unlinking the socket file -- lands in the later CLI.9 criteria
-%% and slots in ahead of this reply without changing its shape.
-handle_stop() ->
+%% Handle a `(stop)' request: signal the listener to close the listen socket,
+%% then return the terminal `(result (status stopped))' reply. The handler does
+%% not own the listen socket -- the listener (the accept-loop process) does -- so
+%% it sends a `close_listen' signal the listener acts on between accepts. Closing
+%% the listen socket ends the accept loop, so the daemon stops accepting new
+%% connections; it does not disturb this already-accepted connection, so the
+%% reply still flushes to the stopping client. Cancelling in-flight runs and
+%% unlinking the socket file land in the later CLI.9 criteria.
+handle_stop(Listener) ->
+    Listener ! close_listen,
     ["(result (status stopped))"].
 
 %% Render a `(trace "<corr>")' read request. `soma_trace:render_lisp/2' fetches
