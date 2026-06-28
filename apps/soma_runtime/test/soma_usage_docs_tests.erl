@@ -15,6 +15,14 @@ read_usage_md() ->
     {ok, Bin} = file:read_file(usage_md_path()),
     Bin.
 
+readme_md_path() ->
+    filename:join([code:lib_dir(soma_runtime), "..", "..", "..", "..",
+                   "README.md"]).
+
+read_readme_md() ->
+    {ok, Bin} = file:read_file(readme_md_path()),
+    Bin.
+
 contains(Haystack, Needle) ->
     binary:match(Haystack, Needle) =/= nomatch.
 
@@ -32,3 +40,12 @@ test_usage_docs_real_provider_and_smoke_test() ->
 
 usage_docs_real_provider_and_smoke_test_test() ->
     test_usage_docs_real_provider_and_smoke_test().
+
+test_readme_run_events_list_run_resumed() ->
+    Readme = read_readme_md(),
+    %% The run-event vocabulary in README.md names `run.resumed' alongside the
+    %% other run events.
+    ?assert(contains(Readme, <<"run.resumed">>)).
+
+readme_run_events_list_run_resumed_test() ->
+    test_readme_run_events_list_run_resumed().
