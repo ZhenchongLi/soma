@@ -302,7 +302,7 @@ test_resume_payload_has_four_seam_fields(_Config) ->
     {resume, P} = soma_run_resume_plan:plan(StorePid, RunId),
 
     %% the payload carries exactly the four fields the seam consumes
-    ?assertEqual([next_step, outputs, pending, run_options, steps],
+    ?assertEqual([outputs, pending, run_options, steps],
                  lists:sort(maps:keys(P))),
 
     %% the seam consumes the payload straight: map its four fields plus
