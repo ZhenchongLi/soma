@@ -7,7 +7,7 @@
 %% valid s-expr the daemon parses, reaching it intact.
 -module(soma_cli_main).
 
--export([main/1, dispatch/1, socket/1]).
+-export([main/1, main_argv/0, dispatch/1, socket/1]).
 
 %% Process entry point. Dispatch the argv to its subcommand and halt the OS
 %% process with the resulting integer exit code, so the shell sees the right
@@ -17,6 +17,15 @@
 -spec main([string()]) -> no_return().
 main(Argv) ->
     halt(dispatch(Argv)).
+
+%% Entry point for the packaged `soma' wrapper. The wrapper passes the user's
+%% argv after `-extra' (so flag-shaped tokens like `--detach' reach the program
+%% instead of being parsed as `erl' flags), and this reads them back through
+%% `init:get_plain_arguments/0' before dispatching. Equivalent to `main/1' on
+%% that argv.
+-spec main_argv() -> no_return().
+main_argv() ->
+    main(init:get_plain_arguments()).
 
 %% `run File' resolves the socket and drives `soma_cli:run/1', returning its exit
 %% code (0 only when the reply carries `(status completed)'). `ask Intent' resolves
@@ -61,6 +70,15 @@ dispatch(["cancel", TaskId | Flags]) ->
 dispatch(["stop" | Flags]) ->
     with_flags(Flags, fun(Opts) ->
         soma_cli:stop(#{socket => socket(Opts)})
+    end);
+dispatch(["daemon" | Flags]) ->
+    %% Boot the daemon in this process and block until `soma stop' tears its
+    %% listener down. `--socket <path>' overrides the resolved socket; the
+    %% provider/model come from the daemon's config, never the argv. Returns 0
+    %% once the daemon has stopped cleanly.
+    with_flags(Flags, fun(Opts) ->
+        ok = soma_cli:daemon_foreground(Opts),
+        0
     end);
 %% Malformed argv -- no subcommand at all, an unknown subcommand, or a known
 %% subcommand missing its required positional -- has no matching clause above.
