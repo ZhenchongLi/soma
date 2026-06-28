@@ -1,0 +1,17 @@
+# Copy this to ~/.soma/config to enable `soma ask` (the LLM beat).
+#
+# Only base_url / model / provider live here. The API key is NEVER in this file
+# and never on the wire -- the daemon reads it from the SOMA_LLM_API_KEY env var:
+#
+#   export SOMA_LLM_API_KEY="sk-..."
+#
+# The daemon reads this file once, at boot. After editing it, restart the daemon
+# so the change takes effect:  soma stop   (the next client call auto-starts a
+# fresh daemon that loads this config).
+
+[llm]
+provider = "openai_compat"
+base_url = "https://www.sophnet.com/api/open-apis/v1"
+model = "DeepSeek-V3"
+# enable_thinking = false
+# max_tokens = 1024
