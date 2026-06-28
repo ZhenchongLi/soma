@@ -4,7 +4,7 @@
 %% detach flag mutates the request text to carry a `(detach)' marker.
 -module(soma_cli).
 
--export([run/1, ask/1, trace/1, status/1, cancel/1, stop/1, daemon/1,
+-export([run/1, ask/1, trace/1, status/1, cancel/1, stop/1, ping/1, daemon/1,
          daemon_foreground/1, resolve_socket/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
@@ -129,6 +129,22 @@ stop_exit_code(Reply) ->
     case re:run(Reply, "\\(status stopped\\)", [{capture, none}]) of
         match -> 0;
         nomatch -> 1
+    end.
+
+%% Liveness probe. Resolve the socket the same way the other client funcs do,
+%% then attempt a `{local, Path}' connect that sends no request and closes
+%% immediately. Exit 0 when a `soma_cli_server' is listening (the connect
+%% succeeds); a connect failure (no listener) falls through to exit 1.
+-spec ping(map()) -> non_neg_integer().
+ping(Args) ->
+    Path = resolve_socket(Args),
+    case gen_tcp:connect({local, Path}, 0,
+                         [binary, {packet, 4}, {active, false}]) of
+        {ok, Sock} ->
+            ok = gen_tcp:close(Sock),
+            0;
+        {error, _} ->
+            1
     end.
 
 %% Boot the daemon: start the runtime, then a `soma_cli_server' listener on a
