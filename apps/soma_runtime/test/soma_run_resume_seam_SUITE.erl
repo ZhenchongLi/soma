@@ -8,13 +8,15 @@
 -export([test_pending_from_step_resolves_from_seeded_outputs/1]).
 -export([test_resumed_run_completes_with_merged_outputs/1]).
 -export([test_resume_emits_run_resumed_with_first_pending_step/1]).
+-export([test_resume_emits_no_run_started/1]).
 
 all() ->
     [test_resume_emits_no_start_events_for_committed_steps,
      test_each_pending_step_runs_in_own_worker,
      test_pending_from_step_resolves_from_seeded_outputs,
      test_resumed_run_completes_with_merged_outputs,
-     test_resume_emits_run_resumed_with_first_pending_step].
+     test_resume_emits_run_resumed_with_first_pending_step,
+     test_resume_emits_no_run_started].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -204,6 +206,32 @@ test_resume_emits_run_resumed_with_first_pending_step(_Config) ->
     %% its payload names the first pending step
     Payload = maps:get(payload, ResumedEvent),
     s2 = maps:get(first_pending_step, Payload),
+    ok.
+
+%% Criterion 6: a resume start does not emit a `run.started' event. The original
+%% `run.started' journal stays the single source of truth that `reconstruct'
+%% reads, so a resume start opens the run with `run.resumed' and never re-emits
+%% `run.started'. The full list is [s1, s2]; s1 is committed (seeded in `outputs',
+%% omitted from `pending') and only s2 is pending. The recorded trail, read back
+%% through soma_event_store:by_run/2, must carry no `run.started' event for the run.
+test_resume_emits_no_run_started(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-resume-no-run-started-1">>,
+    FullSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+                 #{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    Pending = [#{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    Outputs = #{s1 => #{value => <<"a">>}},
+    {ok, _RunPid} = soma_run:start_link(#{run_id => RunId,
+                                          session_id => <<"sess-resume-no-rs-1">>,
+                                          event_store => StorePid,
+                                          steps => FullSteps,
+                                          pending => Pending,
+                                          outputs => Outputs}),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    %% a resume start does not emit run.started
+    true = lists:member(<<"run.started">>, Types),
     ok.
 
 step_output(Events, StepId) ->
