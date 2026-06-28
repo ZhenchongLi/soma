@@ -30,6 +30,8 @@ dispatch([[reply | _] = Form]) ->
     soma_lfe_parser:parse_proposal(Form);
 dispatch([['run-steps' | _] = Form]) ->
     soma_lfe_parser:parse_proposal(Form);
+dispatch([[reject | _] = Form]) ->
+    soma_lfe_parser:parse_proposal(Form);
 dispatch([[ask | _] = Form]) ->
     soma_lfe_parser:parse_ask(Form);
 dispatch([[trace | _] = Form]) ->
