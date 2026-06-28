@@ -33,7 +33,7 @@ v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
 node B  real LLM provider behind the perform_call seam   [B.1/B.2 done; structured planning next]
-CLI     single-user soma daemon + CLI clients            [packaged `soma` command done; auto-start next]
+CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    s-expr actor/agent message language (soma_lfe)   [L.1-L.5 done]
 ```
 
@@ -290,8 +290,13 @@ with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
   `soma_cli_main` over the bundled ERTS — no separate Erlang install, no name
   collision. `soma daemon` blocks until `soma stop`. Verified by an end-to-end
   release smoke test.
-- Remaining CLI product work: auto-start the daemon when the socket is absent
-  (`CLI.7`).
+- `CLI.7` — auto-start [done]: a client verb (`run` / `ask` / `status` / `cancel`
+  / `trace`) probes the socket with `soma_cli:ping/1` and, finding no daemon,
+  launches `soma daemon` detached and waits for it before running — so there is no
+  separate `soma daemon` ritual. A lost auto-start race is harmless: only one
+  daemon wins the kernel bind and `daemon_foreground/1` returns on the others.
+  The probe + graceful lost-bind went through relay; the wrapper auto-start is a
+  direct PR proven by a release smoke test. **The CLI track is complete.**
 
 ## Lisp — s-expr actor/agent message language
 
