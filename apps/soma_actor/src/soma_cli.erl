@@ -5,7 +5,7 @@
 -module(soma_cli).
 
 -export([run/1, ask/1, trace/1, status/1, cancel/1, stop/1, daemon/1,
-         resolve_socket/1]).
+         daemon_foreground/1, resolve_socket/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -144,6 +144,35 @@ daemon(Args) ->
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
                                                  model_config => ModelConfig}),
     {ok, Path}.
+
+%% Boot the daemon and block until the listener exits -- the blocking sibling of
+%% `daemon/1' for a standalone daemon BEAM. It does what `daemon/1' does (start
+%% the runtime, start `soma_actor_sup' so the `ask' path's `start_actor/1' has a
+%% live supervisor, resolve the socket, load the model config, start the linked
+%% listener), then monitors the listener pid and waits for its `DOWN'. When a
+%% `(stop)' closes the listen socket the listener ends its accept loop and exits,
+%% the monitor fires, and this call returns -- so the BEAM the wrapper launched
+%% reaches the end of its work and halts. The `start_link' link stays: a listener
+%% crash propagates over it and takes the daemon process down rather than being
+%% turned into a clean return. The monitor is the additional handle for the
+%% normal-stop case. `soma_actor_sup' is a named singleton, so a second
+%% `start_link' returns `{error, {already_started, Pid}}', which we tolerate.
+-spec daemon_foreground(map()) -> ok.
+daemon_foreground(Args) ->
+    {ok, _Started} = application:ensure_all_started(soma_runtime),
+    case soma_actor_sup:start_link() of
+        {ok, _Sup} -> ok;
+        {error, {already_started, _Sup}} -> ok
+    end,
+    Path = resolve_socket(Args),
+    ModelConfig = soma_config:load(Args),
+    {ok, Server} = soma_cli_server:start_link(#{socket => Path,
+                                                model_config => ModelConfig}),
+    Ref = monitor(process, Server),
+    receive
+        {'DOWN', Ref, process, Server, _Reason} ->
+            ok
+    end.
 
 %% Shared socket-path resolver. Both `daemon/1' and `soma_cli_main' call this so
 %% the daemon and a separately-launched client land on the same path. A `socket'
