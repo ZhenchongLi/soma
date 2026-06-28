@@ -31,7 +31,7 @@ if [ ! -d "${DIST_DIR}" ]; then
 fi
 
 # The two font families the built site must reference.
-SANS_FONT="Comic Sans MS"
+SANS_FONT="Inter"
 MONO_FONT="IBM Plex Mono"
 
 if ! grep -qr -- "${SANS_FONT}" "${DIST_DIR}"; then
