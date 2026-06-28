@@ -73,13 +73,21 @@ build_model_config(Llm) when map_size(Llm) =:= 0 ->
     undefined;
 build_model_config(Llm) ->
     Provider = provider_atom(maps:get("provider", Llm)),
-    Base = #{
+    Base0 = #{
         provider => Provider,
         base_url => maps:get("base_url", Llm),
         model => maps:get("model", Llm)
     },
+    Base = carry_api_key(Base0),
     lists:foldl(fun(Key, Acc) -> carry_optional(Key, Llm, Acc) end,
                 Base, ["enable_thinking", "max_tokens"]).
+
+carry_api_key(Acc) ->
+    case os:getenv("SOMA_LLM_API_KEY") of
+        false -> Acc;
+        "" -> Acc;
+        Value -> Acc#{api_key => list_to_binary(Value)}
+    end.
 
 carry_optional(Key, Llm, Acc) ->
     case maps:find(Key, Llm) of
