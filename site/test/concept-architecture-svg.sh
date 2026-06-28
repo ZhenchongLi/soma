@@ -26,7 +26,7 @@ npm ci && npm run build || {
 }
 
 ARCH_HTML="${SITE_DIR}/dist/concepts/architecture/index.html"
-EXPECTED_TOKEN="/supervision-tree-WRONG.svg"
+EXPECTED_TOKEN="/supervision-tree.svg"
 SVG_ASSET="${SITE_DIR}/dist/supervision-tree.svg"
 
 if [ ! -f "${ARCH_HTML}" ]; then
