@@ -23,9 +23,13 @@ resolve_path(Opts) ->
 %% Parse the file and return the key/value pairs found under the [llm] table,
 %% as a map of binary key => parsed value.
 read_llm_table(Path) ->
-    {ok, Bin} = file:read_file(Path),
-    Lines = string:split(unicode:characters_to_list(Bin), "\n", all),
-    collect_llm(Lines, outside, #{}).
+    case file:read_file(Path) of
+        {ok, Bin} ->
+            Lines = string:split(unicode:characters_to_list(Bin), "\n", all),
+            collect_llm(Lines, outside, #{});
+        {error, _} ->
+            #{}
+    end.
 
 collect_llm([], _Table, Acc) ->
     Acc;
