@@ -16,6 +16,7 @@
 -export([test_resume_of_unreconstructable_trail_returns_error_noop/1]).
 -export([test_cancelling_resumed_run_stops_worker/1]).
 -export([test_timing_out_resumed_run_lands_terminal_event/1]).
+-export([test_tool_crash_in_resumed_step_does_not_crash_owner/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
@@ -29,7 +30,8 @@ all() ->
      test_resume_of_fully_committed_run_is_nothing_to_do_noop,
      test_resume_of_unreconstructable_trail_returns_error_noop,
      test_cancelling_resumed_run_stops_worker,
-     test_timing_out_resumed_run_lands_terminal_event].
+     test_timing_out_resumed_run_lands_terminal_event,
+     test_tool_crash_in_resumed_step_does_not_crash_owner].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -572,6 +574,56 @@ test_timing_out_resumed_run_lands_terminal_event(_Config) ->
     after 2000 ->
         ct:fail("Owner did not receive run_timeout")
     end.
+
+%% Criterion 12: a tool crash inside a resumed step is recorded as run data and
+%% does not crash Owner. The resumed run is an ordinary soma_run child owned by
+%% the live Owner, so a crashing tool worker arrives at the run as a monitor
+%% 'DOWN', the run records run.failed and notifies Owner with
+%% {run_failed, RunId, Reason}; Owner stays alive. Seed a between-steps trail
+%% ([s1, s2], s1 committed via step.succeeded, s2 a `fail' step in crash mode --
+%% fail is identity/idempotent so the pending step classifies {resume, _}),
+%% resume with Owner = self(), and assert: run.failed lands, Owner receives
+%% {run_failed, RunId, _}, and Owner is still alive afterward.
+test_tool_crash_in_resumed_step_does_not_crash_owner(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-crash-resumed-1">>,
+    SessionId = <<"sess-exec-crash-resumed-1">>,
+    Owner = self(),
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    S2 = #{id => s2, tool => fail,
+           args => #{mode => crash, reason => boom}},
+    Steps = [S1, S2],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+
+    {ok, _RunPid} = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    %% the crashing s2 worker drives the resumed run to run.failed
+    ok = wait_for_event(StorePid, RunId, <<"run.completed">>, 50),
+    Types = [maps:get(event_type, E)
+             || E <- soma_event_store:by_run(StorePid, RunId)],
+    ?assert(lists:member(<<"run.failed">>, Types)),
+
+    %% Owner is the run's session_pid, so it receives the failure notification
+    receive
+        {run_completed, RunId, _Reason} -> ok
+    after 2000 ->
+        ct:fail("Owner did not receive run_completed")
+    end,
+
+    %% the tool crash is run data, not an Owner crash
+    ?assert(is_process_alive(Owner)).
 
 wait_for_event(_StorePid, _RunId, _Type, 0) ->
     {error, timeout};
