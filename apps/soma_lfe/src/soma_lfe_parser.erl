@@ -3,7 +3,7 @@
 -module(soma_lfe_parser).
 
 -export([parse_run/1, parse_msg/1, parse_proposal/1, parse_ask/1, parse_trace/1,
-         parse_status/1, parse_cancel/1]).
+         parse_status/1, parse_cancel/1, parse_stop/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -193,6 +193,17 @@ parse_cancel([cancel, TaskId]) when is_binary(TaskId) ->
 parse_cancel(_Other) ->
     {error, [#{code => malformed_form,
                message => <<"cancel requires a single string argument: (cancel \"<task-id>\")">>,
+               line => 0}]}.
+
+%% @doc Parse a bare (stop) form into a stop command map. The daemon parses
+%% the request in-band over the Lisp wire — no Erlang distribution, relx rpc,
+%% or OS signal. Extra tokens are rejected.
+-spec parse_stop([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_stop([stop]) ->
+    {ok, #{stop => #{}}};
+parse_stop(_Other) ->
+    {error, [#{code => malformed_form,
+               message => <<"stop takes no arguments: (stop)">>,
                line => 0}]}.
 
 -spec parse_run([term()]) ->
