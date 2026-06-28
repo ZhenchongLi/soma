@@ -11,6 +11,7 @@
 -export([test_all_committed_no_terminal_is_nothing_to_do/1]).
 -export([test_propagates_reconstruct_errors/1]).
 -export([test_plan_is_read_only/1]).
+-export([test_resume_payload_has_four_seam_fields/1]).
 
 all() ->
     [test_between_steps_resumes_with_pending_suffix_outputs_and_options,
@@ -19,7 +20,8 @@ all() ->
      test_terminal_trail_returns_terminal_status_over_next_step,
      test_all_committed_no_terminal_is_nothing_to_do,
      test_propagates_reconstruct_errors,
-     test_plan_is_read_only].
+     test_plan_is_read_only,
+     test_resume_payload_has_four_seam_fields].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -268,6 +270,54 @@ test_plan_is_read_only(_Config) ->
     %% starts no run child (the soma_run_sup child tally is unchanged).
     ?assertEqual(EventsBefore, EventsAfter),
     ?assertEqual(CountBefore, CountAfter).
+
+%% Criterion 8: the resume payload carries exactly the four fields the v0.7.2
+%% seam consumes -- steps, pending, outputs, run_options -- so the executor can
+%% hand it straight to soma_run:start_link/1 without re-deriving anything. Seed a
+%% between-steps trail ([s1, s2], s1 committed, s2 pending, no tool.started for
+%% s2), take the {resume, P} verdict, assert P's key set is exactly those four,
+%% then map the four payload fields plus run_id/event_store onto resume opts and
+%% start a run that must reach run.completed.
+test_resume_payload_has_four_seam_fields(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-plan-seam-payload-1">>,
+    SessionId = <<"sess-plan-seam-payload-1">>,
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    S2 = #{id => s2, tool => echo, args => #{value => <<"pending">>}},
+    Steps = [S1, S2],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+
+    {resume, P} = soma_run_resume_plan:plan(StorePid, RunId),
+
+    %% the payload carries exactly the four fields the seam consumes
+    ?assertEqual([next_step, outputs, pending, run_options, steps],
+                 lists:sort(maps:keys(P))),
+
+    %% the seam consumes the payload straight: map its four fields plus
+    %% run_id/event_store onto resume opts and the resumed run reaches completed.
+    {ok, _RunPid} =
+        soma_run:start_link(#{run_id => RunId,
+                              event_store => StorePid,
+                              steps => maps:get(steps, P),
+                              pending => maps:get(pending, P),
+                              outputs => maps:get(outputs, P)}),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Types = [maps:get(event_type, E)
+             || E <- soma_event_store:by_run(StorePid, RunId)],
+    ?assert(lists:member(<<"run.completed">>, Types)),
+    ?assertNot(lists:member(<<"run.failed">>, Types)).
 
 wait_for_run_completed(_StorePid, _RunId, 0) ->
     {error, timeout};
