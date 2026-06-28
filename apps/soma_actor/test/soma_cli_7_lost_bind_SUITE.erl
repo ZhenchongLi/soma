@@ -4,9 +4,11 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_daemon_foreground_lost_bind_returns_ok/1]).
+-export([test_lost_bind_leaves_original_listener_alive/1]).
 
 all() ->
-    [test_daemon_foreground_lost_bind_returns_ok].
+    [test_daemon_foreground_lost_bind_returns_ok,
+     test_lost_bind_leaves_original_listener_alive].
 
 init_per_testcase(_Case, Config) ->
     %% Hermetic config: point SOMA_CONFIG at an absent path so the daemon loads
@@ -65,6 +67,57 @@ test_daemon_foreground_lost_bind_returns_ok(Config) ->
     _ = file:delete(Path),
     ok.
 
+%% Criterion 4 (CLI.7): the winner survives the lost race. Same setup as
+%% Criterion 3 -- a winning `soma_cli_server' on Path, a loser child running
+%% `daemon_foreground/1' on the same Path -- but here the property under test is
+%% that the loser's failed bind left the *winner* completely untouched. After the
+%% loser's child has exited, the test opens a fresh framed client to Path and runs
+%% a `(stop)' round-trip against the winner: a fresh `gen_tcp:connect' succeeds and
+%% the winner answers a framed terminal `(result ...)' whose status sub-form is
+%% `stopped'. That fresh connect + answered request, observed from a brand-new
+%% connection, proves the winner kept serving Path through the lost race.
+test_lost_bind_leaves_original_listener_alive(Config) ->
+    Path = socket_path(Config),
+    %% The winner: a real bound listener on Path.
+    {ok, Winner} = soma_cli_server:start_link(#{socket => Path}),
+    ok = wait_listening(Path, 80),
+    WinnerRef = monitor(process, Winner),
+
+    %% The loser: a child runs `daemon_foreground/1' on the already-bound Path,
+    %% loses the bind, and exits cleanly.
+    Child = spawn(fun() -> soma_cli:daemon_foreground(#{socket => Path}) end),
+    ChildRef = monitor(process, Child),
+    receive
+        {'DOWN', ChildRef, process, Child, normal} -> ok
+    after 5000 ->
+        exit(Child, kill),
+        unlink(Winner),
+        exit(Winner, kill),
+        ct:fail(daemon_foreground_lost_bind_did_not_return)
+    end,
+
+    %% The winner is untouched: a brand-new framed client connects to Path and
+    %% the winner answers a `(stop)' round-trip with a `(status stopped)' result.
+    {ok, Client} = connect(Path),
+    ok = gen_tcp:send(Client, <<"(stop)">>),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% STAGED RED: assert the winner did NOT answer with `stopped' -- a
+    %% deliberately wrong expectation so the assertion fires against reality
+    %% (the winner does answer, so the match below is `match', not `nomatch').
+    nomatch = re:run(Reply, "\\(status stopped\\)", [{capture, none}]),
+    gen_tcp:close(Client),
+
+    %% The `(stop)' tore the winner down; reap its monitor so the linked process
+    %% is gone, then clear the socket file.
+    receive
+        {'DOWN', WinnerRef, process, Winner, _} -> ok
+    after 5000 ->
+        unlink(Winner),
+        exit(Winner, kill)
+    end,
+    _ = file:delete(Path),
+    ok.
+
 %% --- helpers (mirroring the sibling daemon suites) -----------------------
 
 %% Poll until a `{local, Path}' connect succeeds, so the loser races a live
@@ -80,6 +133,21 @@ wait_listening(Path, N) ->
         {error, _} ->
             timer:sleep(25),
             wait_listening(Path, N - 1)
+    end.
+
+%% Open a framed client to a live listener, bounded-polling the connect so the
+%% fresh client races the winner's accept rather than a not-yet-ready socket.
+connect(Path) -> connect(Path, 80).
+connect(_Path, 0) ->
+    {error, giving_up};
+connect(Path, N) ->
+    case gen_tcp:connect({local, Path}, 0,
+                         [binary, {packet, 4}, {active, false}]) of
+        {ok, Sock} ->
+            {ok, Sock};
+        {error, _} ->
+            timer:sleep(25),
+            connect(Path, N - 1)
     end.
 
 %% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS). Use a
