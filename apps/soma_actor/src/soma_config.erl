@@ -17,8 +17,23 @@ load(Opts) ->
     Llm = read_llm_table(Path),
     build_model_config(Llm).
 
-resolve_path(Opts) ->
-    maps:get(config_path, Opts).
+%% The path resolves from the `config_path' option when supplied (the
+%% hermetic-test seam), else the `SOMA_CONFIG' env var, else the `$HOME'-expanded
+%% `~/.soma/config' default.
+resolve_path(#{config_path := Path}) ->
+    Path;
+resolve_path(_Opts) ->
+    case os:getenv("SOMA_CONFIG") of
+        false -> default_config_path();
+        "" -> default_config_path();
+        Path -> Path
+    end.
+
+default_config_path() ->
+    case os:getenv("HOME") of
+        false -> "/.soma/config";
+        Home -> filename:join([Home, ".soma", "config"])
+    end.
 
 %% Parse the file and return the key/value pairs found under the [llm] table,
 %% as a map of binary key => parsed value.

@@ -834,7 +834,7 @@ test_daemon_threads_loaded_model_config(Config) ->
     Path = Resolved,
     %% The value the daemon resolved and threaded is `soma_config:load/1' on the
     %% same override -- by construction. An `[llm]'-less file loads to `undefined'.
-    {staged_red, will_be_undefined} = soma_config:load(DaemonOpts),
+    undefined = soma_config:load(DaemonOpts),
     %% The daemon booted a real listener: a `{local, _}' client connects.
     {ok, Sock} = gen_tcp:connect({local, Resolved}, 0,
                                  [binary, {packet, 4}, {active, false}]),
