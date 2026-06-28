@@ -33,7 +33,7 @@ ping_returns_zero_when_listening_test_() ->
 test_ping_returns_one_when_nothing_listening() ->
     Path = socket_path(),
     %% No listener was started; `socket_path/0' already pre-deleted the file.
-    ?assertEqual(0, soma_cli:ping(#{socket => Path})).
+    ?assertEqual(1, soma_cli:ping(#{socket => Path})).
 
 ping_returns_one_when_nothing_listening_test_() ->
     {timeout, 30, fun test_ping_returns_one_when_nothing_listening/0}.
