@@ -9,13 +9,15 @@
 -export([test_in_flight_unsafe_state_step_is_unsafe/1]).
 -export([test_terminal_trail_returns_terminal_status_over_next_step/1]).
 -export([test_all_committed_no_terminal_is_nothing_to_do/1]).
+-export([test_propagates_reconstruct_errors/1]).
 
 all() ->
     [test_between_steps_resumes_with_pending_suffix_outputs_and_options,
      test_in_flight_safe_step_resumes,
      test_in_flight_unsafe_state_step_is_unsafe,
      test_terminal_trail_returns_terminal_status_over_next_step,
-     test_all_committed_no_terminal_is_nothing_to_do].
+     test_all_committed_no_terminal_is_nothing_to_do,
+     test_propagates_reconstruct_errors].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -202,6 +204,48 @@ test_all_committed_no_terminal_is_nothing_to_do(_Config) ->
 
     ?assertEqual(nothing_to_do, Verdict),
     ?assertNotMatch({resume, _}, Verdict).
+
+test_propagates_reconstruct_errors(_Config) ->
+    StorePid = event_store_pid(),
+
+    %% A trail with no usable run.started journal: reconstruct's
+    %% {error, no_run_started_journal} comes straight back through plan.
+    NoJournalRunId = <<"run-plan-no-journal-1">>,
+    NoJournalSessionId = <<"sess-plan-no-journal-1">>,
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => NoJournalRunId,
+                                   session_id => NoJournalSessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"orphan">>}}}),
+
+    NoJournalVerdict = soma_run_resume_plan:plan(StorePid, NoJournalRunId),
+
+    ?assertEqual(nothing_to_do, NoJournalVerdict),
+
+    %% A trail that commits a step the journal never declared: reconstruct's
+    %% {error, {unknown_committed_step, StepId}} comes straight back.
+    UnknownRunId = <<"run-plan-unknown-committed-1">>,
+    UnknownSessionId = <<"sess-plan-unknown-committed-1">>,
+    S1 = #{id => s1, tool => echo, args => #{value => <<"declared">>}},
+    Steps = [S1],
+    RunOptions = #{run_id => UnknownRunId, session_id => UnknownSessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => UnknownRunId,
+                                   session_id => UnknownSessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => UnknownRunId,
+                                   session_id => UnknownSessionId,
+                                   step_id => s_undeclared,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"ghost">>}}}),
+
+    UnknownVerdict = soma_run_resume_plan:plan(StorePid, UnknownRunId),
+
+    ?assertEqual(nothing_to_do, UnknownVerdict).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
