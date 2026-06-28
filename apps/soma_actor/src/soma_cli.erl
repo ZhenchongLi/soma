@@ -5,7 +5,7 @@
 -module(soma_cli).
 
 -export([run/1, ask/1, trace/1, status/1, cancel/1, stop/1, ping/1, daemon/1,
-         daemon_foreground/1, resolve_socket/1]).
+         daemon_foreground/1, ensure_daemon/2, resolve_socket/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -145,6 +145,17 @@ ping(Args) ->
             0;
         {error, _} ->
             1
+    end.
+
+%% Decide-and-wait auto-start. Probe once with `ping/1': when a `soma_cli_server'
+%% is already listening on the resolved socket the probe returns `0', so the
+%% daemon is up -- return `ok' and never touch `LaunchFun'. (The launch-then-poll
+%% and bounded-error paths for the no-listener case are added in later cycles.)
+-spec ensure_daemon(map(), fun(() -> term())) -> ok | {error, term()}.
+ensure_daemon(Args, _LaunchFun) when is_function(_LaunchFun, 0) ->
+    case ping(Args) of
+        0 ->
+            ok
     end.
 
 %% Boot the daemon: start the runtime, then a `soma_cli_server' listener on a
