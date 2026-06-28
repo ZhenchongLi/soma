@@ -32,6 +32,7 @@
 -export([test_cancel_terminal_task_reports_already_terminal_no_new_run/1]).
 -export([test_non_detached_run_still_terminal_and_disconnect_cancels/1]).
 -export([test_daemon_threads_loaded_model_config/1]).
+-export([test_ask_no_config_runs_mock/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -62,7 +63,8 @@ all() ->
      test_cancel_detached_run_replies_cancelled,
      test_cancel_terminal_task_reports_already_terminal_no_new_run,
      test_non_detached_run_still_terminal_and_disconnect_cancels,
-     test_daemon_threads_loaded_model_config].
+     test_daemon_threads_loaded_model_config,
+     test_ask_no_config_runs_mock].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -839,6 +841,36 @@ test_daemon_threads_loaded_model_config(Config) ->
     {ok, Sock} = gen_tcp:connect({local, Resolved}, 0,
                                  [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:close(Sock).
+
+%% Criterion 8 (CLI.8b): with an absent / `[llm]'-less config, a `soma ask'
+%% against the daemon runs the mock path byte-for-byte. The daemon's `[llm]'-less
+%% default is a `model_config' carrying no `provider' key (a mock directive map),
+%% which `soma_cli_server' threads into `handle_ask/2'. `build_call_opts/2' takes
+%% its non-real-provider branch and returns the envelope's `llm' map unchanged, so
+%% `soma_llm_call' runs the mock and opens no socket. A real gen_tcp client over a
+%% temp Unix socket sends the `(ask ...)' s-expr and reads back a completed
+%% `(result ...)' carrying the mock's reply text -- no network, no real provider.
+test_ask_no_config_runs_mock(Config) ->
+    Path = socket_path(Config),
+    %% A mock model_config: a `proposal' directive yielding a `reply' proposal and
+    %% NO `provider' key -- the no-real-provider shape an `[llm]'-less config
+    %% resolves to. build_call_opts/2 returns the envelope's `llm' map unchanged,
+    %% so soma_llm_call runs the mock and opens no socket.
+    ModelConfig = #{directive => proposal,
+                    output => #{kind => reply, text => <<"mock answer">>}},
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                 model_config => ModelConfig}),
+    {ok, Client} = connect(Path),
+    Request = <<"(ask (intent \"what is the answer\"))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The mock path returns a completed `(result ...)' carrying the reply text.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    %% Staged red: deliberately wrong expectation -- the mock path DOES return
+    %% `(status completed)', so this assertion fires. Corrected in the green step.
+    nomatch = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+    match = re:run(Reply, "mock answer", [{capture, none}]),
+    ok = gen_tcp:close(Client).
 
 %% Write a temp config file with comments but no `[llm]' table, so
 %% `soma_config:load/1' returns `undefined'.
