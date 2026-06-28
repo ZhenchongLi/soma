@@ -32,7 +32,7 @@ if [ ! -f "${EN_ROOT}" ]; then
 fi
 
 # The exact thesis phrase the landing must carry.
-THESIS_PHRASE="agents collapse in functional ways"
+THESIS_PHRASE="agents fail in operational ways"
 
 if grep -qF -- "${THESIS_PHRASE}" "${EN_ROOT}"; then
   echo "PASS: Criterion 3 — English root carries the thesis phrase (${THESIS_PHRASE}) in ${EN_ROOT}"
