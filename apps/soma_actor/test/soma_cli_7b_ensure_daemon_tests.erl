@@ -28,6 +28,51 @@ test_ensure_daemon_already_listening_skips_launch() ->
 ensure_daemon_already_listening_skips_launch_test_() ->
     {timeout, 30, fun test_ensure_daemon_already_listening_skips_launch/0}.
 
+%% Issue #155 criterion 2 (CLI.7b): when nothing is listening at first,
+%% `soma_cli:ensure_daemon(#{socket => Path}, LaunchFun)' probes once
+%% (`soma_cli:ping/1' returns `1'), calls `LaunchFun' exactly once, then polls on
+%% a bound until the listener `LaunchFun' brought up answers (`ping/1' returns
+%% `0') -- and returns `ok'. The mock `LaunchFun' is the thing that brings the
+%% listener up: it starts a real `soma_cli_server' on `Path', hands the server
+%% pid back to the test process for teardown, and records the call. This test
+%% asserts `ensure_daemon' returns `ok' and the launcher was called exactly once,
+%% then tears down the started server (unlink, kill, delete the socket file).
+test_ensure_daemon_launches_then_succeeds() ->
+    Path = socket_path(),
+    Self = self(),
+    LaunchFun =
+        fun() ->
+            {ok, Server} = soma_cli_server:start_link(#{socket => Path}),
+            Self ! {launched, Server},
+            ok
+        end,
+    ?assertEqual(ok, soma_cli:ensure_daemon(#{socket => Path}, LaunchFun)),
+    {Launches, Servers} = drain_launches(),
+    try
+        ?assertEqual(1, Launches)
+    after
+        lists:foreach(fun(Server) ->
+                          unlink(Server),
+                          exit(Server, kill)
+                      end, Servers),
+        _ = file:delete(Path)
+    end.
+
+ensure_daemon_launches_then_succeeds_test_() ->
+    {timeout, 30, fun test_ensure_daemon_launches_then_succeeds/0}.
+
+%% Drain `{launched, Server}' messages the mock `LaunchFun' sent: count them and
+%% collect the server pids so the test can tear each one down.
+drain_launches() ->
+    drain_launches(0, []).
+
+drain_launches(N, Servers) ->
+    receive
+        {launched, Server} -> drain_launches(N + 1, [Server | Servers])
+    after 0 ->
+        {N, Servers}
+    end.
+
 %% Drain any `launched' messages the mock `LaunchFun' sent and count them.
 count_launches() ->
     receive
