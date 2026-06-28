@@ -17,7 +17,7 @@ cd "${REPO_ROOT}" || {
   exit 1
 }
 
-EXPECTED="site/package-lock-WRONG.json"
+EXPECTED="site/package-lock.json"
 
 tracked="$(git ls-files "${EXPECTED}")"
 
