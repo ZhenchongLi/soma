@@ -866,9 +866,7 @@ test_ask_no_config_runs_mock(Config) ->
     {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
     %% The mock path returns a completed `(result ...)' carrying the reply text.
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
-    %% Staged red: deliberately wrong expectation -- the mock path DOES return
-    %% `(status completed)', so this assertion fires. Corrected in the green step.
-    nomatch = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "mock answer", [{capture, none}]),
     ok = gen_tcp:close(Client).
 
