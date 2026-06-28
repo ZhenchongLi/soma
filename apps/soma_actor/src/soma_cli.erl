@@ -149,13 +149,34 @@ ping(Args) ->
 
 %% Decide-and-wait auto-start. Probe once with `ping/1': when a `soma_cli_server'
 %% is already listening on the resolved socket the probe returns `0', so the
-%% daemon is up -- return `ok' and never touch `LaunchFun'. (The launch-then-poll
-%% and bounded-error paths for the no-listener case are added in later cycles.)
+%% daemon is up -- return `ok' and never touch `LaunchFun'. When the probe returns
+%% `1' nothing is listening, so call `LaunchFun' exactly once (the seam a test
+%% mocks and production fills with the real detached spawn) and then poll `ping/1'
+%% on a bound -- the same ~80-attempt / 25ms range the ping tests poll with --
+%% returning `ok' the moment a probe returns `0'. (The bounded-error path when the
+%% launch never brings a listener up is added in a later cycle.)
 -spec ensure_daemon(map(), fun(() -> term())) -> ok | {error, term()}.
-ensure_daemon(Args, _LaunchFun) when is_function(_LaunchFun, 0) ->
+ensure_daemon(Args, LaunchFun) when is_function(LaunchFun, 0) ->
     case ping(Args) of
         0 ->
-            ok
+            ok;
+        1 ->
+            _ = LaunchFun(),
+            poll_until_listening(Args, 80)
+    end.
+
+%% Poll `ping/1' on a bound, sleeping 25ms between attempts, and return `ok' the
+%% moment a probe returns `0' (a listener is up). The bound caps the wait so a
+%% launch that never binds cannot loop forever.
+poll_until_listening(_Args, 0) ->
+    {error, daemon_not_listening};
+poll_until_listening(Args, N) ->
+    case ping(Args) of
+        0 ->
+            ok;
+        1 ->
+            timer:sleep(25),
+            poll_until_listening(Args, N - 1)
     end.
 
 %% Boot the daemon: start the runtime, then a `soma_cli_server' listener on a
