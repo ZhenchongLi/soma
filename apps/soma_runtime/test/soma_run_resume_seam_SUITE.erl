@@ -9,6 +9,7 @@
 -export([test_resumed_run_completes_with_merged_outputs/1]).
 -export([test_resume_emits_run_resumed_with_first_pending_step/1]).
 -export([test_resume_emits_no_run_started/1]).
+-export([test_normal_start_emits_run_started_and_no_run_resumed/1]).
 
 all() ->
     [test_resume_emits_no_start_events_for_committed_steps,
@@ -16,7 +17,8 @@ all() ->
      test_pending_from_step_resolves_from_seeded_outputs,
      test_resumed_run_completes_with_merged_outputs,
      test_resume_emits_run_resumed_with_first_pending_step,
-     test_resume_emits_no_run_started].
+     test_resume_emits_no_run_started,
+     test_normal_start_emits_run_started_and_no_run_resumed].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -232,6 +234,36 @@ test_resume_emits_no_run_started(_Config) ->
     Types = [maps:get(event_type, E) || E <- Events],
     %% a resume start does not emit run.started
     false = lists:member(<<"run.started">>, Types),
+    ok.
+
+%% Criterion 7: a normal start (no `pending' and no `outputs' opts) is unchanged.
+%% It runs the full step list from the first step, emits `run.started', and emits
+%% no `run.resumed' event. The full list is [s1, s2]; both steps run because no
+%% step is seeded as committed. The recorded trail must carry a `run.started'
+%% event, must NOT carry a `run.resumed' event, and must carry a `step.started'
+%% for every step in the full list (the run started from the first step).
+test_normal_start_emits_run_started_and_no_run_resumed(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-normal-start-1">>,
+    FullSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+                 #{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    {ok, _RunPid} = soma_run:start_link(#{run_id => RunId,
+                                          session_id => <<"sess-normal-1">>,
+                                          event_store => StorePid,
+                                          steps => FullSteps}),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    %% a normal start emits run.started ...
+    true = lists:member(<<"run.started">>, Types),
+    %% ... and emits no run.resumed event
+    true = lists:member(<<"run.resumed">>, Types),
+    %% the full list ran from the first step: every step started
+    StartedSteps = [maps:get(step_id, E, undefined)
+                    || E <- Events,
+                       maps:get(event_type, E) =:= <<"step.started">>],
+    true = lists:member(s1, StartedSteps),
+    true = lists:member(s2, StartedSteps),
     ok.
 
 step_output(Events, StepId) ->
