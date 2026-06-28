@@ -13,6 +13,7 @@
 -export([test_dispatch_ask_detach_marks_request/1]).
 -export([test_dispatch_socket_override_wins/1]).
 -export([test_dispatch_ask_intent_with_quotes_round_trips/1]).
+-export([test_dispatch_stop_running_daemon_exit_zero/1]).
 
 all() ->
     [test_dispatch_run_file_completed_exit_zero,
@@ -24,7 +25,8 @@ all() ->
      test_dispatch_run_detach_marks_request,
      test_dispatch_ask_detach_marks_request,
      test_dispatch_socket_override_wins,
-     test_dispatch_ask_intent_with_quotes_round_trips].
+     test_dispatch_ask_intent_with_quotes_round_trips,
+     test_dispatch_stop_running_daemon_exit_zero].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -489,6 +491,51 @@ test_dispatch_ask_intent_with_quotes_round_trips(Config) ->
     {ok, Reply2} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
     match = re:run(Reply2, "\\(status completed\\)", [{capture, none}]).
+
+%% Criterion 8 (CLI.9): `soma_cli_main:dispatch(["stop"])' resolves the socket and
+%% drives `soma_cli:stop/1' over it, returning exit code 0 on a successful stop. A
+%% real `soma_cli_server' is booted on the unique per-run socket; the dispatcher
+%% resolves that socket itself (no `--socket' override). The printed reply is the
+%% terminal `(result (status stopped))' s-expr, proving the stop reached the daemon
+%% over the resolved socket, and the exit code mirrors `soma_cli:stop/1' (0 on a
+%% successful stop). The stop is observed off-chain: after the dispatch returns, the
+%% listener has torn down, so the socket file is gone and a fresh connect to the
+%% same path fails -- the same teardown observations the sibling stop cases use.
+test_dispatch_stop_running_daemon_exit_zero(Config) ->
+    Path = ?config(socket_path, Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+
+    ct:capture_start(),
+    Exit = soma_cli_main:dispatch(["stop"]),
+    ct:capture_stop(),
+    Printed = iolist_to_binary(ct:capture_get()),
+
+    %% The printed reply is the terminal `(result (status stopped))' s-expr,
+    %% proving the dispatcher resolved the socket and drove the stop through the
+    %% daemon.
+    match = re:run(Printed, "^\\(result ", [{capture, none}]),
+    match = re:run(Printed, "\\(status stopped\\)", [{capture, none}]),
+    %% A successful stop returns exit code 0 (mirroring `soma_cli:stop/1').
+    0 = Exit,
+
+    %% Teardown observation: after the stop, the listener has closed the listen
+    %% socket and unlinked the file, so a fresh connect to the same path must fail.
+    ok = wait_for_connect_refused(Path, 100).
+
+%% Bounded poll: returns ok once a `{local, Path}' connect is refused (the listener
+%% has torn down), retrying up to `N' times with a short sleep between tries.
+wait_for_connect_refused(_Path, 0) ->
+    {error, still_listening};
+wait_for_connect_refused(Path, N) ->
+    case gen_tcp:connect({local, Path}, 0,
+                         [binary, {packet, 4}, {active, false}]) of
+        {ok, Sock} ->
+            ok = gen_tcp:close(Sock),
+            timer:sleep(20),
+            wait_for_connect_refused(Path, N - 1);
+        {error, _} ->
+            ok
+    end.
 
 %% Bounded poll: returns ok once an event of `Type' is recorded against `RunId' in
 %% the event store, retrying up to `N' times with a short sleep between tries.
