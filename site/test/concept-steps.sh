@@ -25,7 +25,7 @@ npm ci && npm run build || {
 }
 
 STEPS_HTML="${SITE_DIR}/dist/concepts/steps/index.html"
-EXPECTED_TOKEN="from_step_WRONG_TOKEN"
+EXPECTED_TOKEN="from_step"
 
 if [ ! -f "${STEPS_HTML}" ]; then
   echo "FAIL: Criterion 3 — steps page missing (expected ${STEPS_HTML})" >&2
