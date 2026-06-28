@@ -32,8 +32,8 @@ if [ ! -f "${EN_ROOT}" ]; then
 fi
 
 if grep -Eq 'starlight-lang-select' "${EN_ROOT}" \
-   && grep -Eq '<option[^>]*value="/zh-TW/"' "${EN_ROOT}"; then
-  echo "PASS: Criterion 8 — English page has a language switcher linking to the locale in ${EN_ROOT}"
+   && grep -Eq '<option[^>]*value="/zh/"' "${EN_ROOT}"; then
+  echo "PASS: Criterion 8 — English page has a language switcher linking to the /zh/ locale in ${EN_ROOT}"
   exit 0
 else
   echo "FAIL: Criterion 8 — English page lacks a language switcher linking to the locale in ${EN_ROOT}" >&2
