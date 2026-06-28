@@ -24,7 +24,7 @@ npm ci && npm run build || {
   exit 1
 }
 
-LANDING_HTML="${SITE_DIR}/dist/index-DOES-NOT-EXIST.html"
+LANDING_HTML="${SITE_DIR}/dist/index.html"
 
 if [ -f "${LANDING_HTML}" ]; then
   echo "PASS: Criterion 12 — landing route built at ${LANDING_HTML}"
