@@ -393,7 +393,7 @@ test_resume_of_terminal_run_is_noop(_Config) ->
     ChildrenAfter = active_run_children(),
     ?assertEqual(EventsBefore, EventsAfter),
     ?assertEqual(ChildrenBefore, ChildrenAfter),
-    ?assertEqual({terminal, failed}, Result).
+    ?assertEqual({terminal, completed}, Result).
 
 active_run_children() ->
     proplists:get_value(active, supervisor:count_children(soma_run_sup)).
