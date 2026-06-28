@@ -24,12 +24,17 @@
          <<"http">>, <<"https">>]).
 
 %% The CLI.2 ask-flow test sources this issue added, under
-%% `apps/soma_actor/test/' (server SUITE + client SUITE + contract + cli.md
-%% pin). Explicit include list -- not a glob -- so the scanner never scans
-%% itself.
+%% `apps/soma_actor/test/' (client SUITE + contract + cli.md pin). Explicit
+%% include list -- not a glob -- so the scanner never scans itself.
+%%
+%% `soma_cli_server_SUITE.erl' is deliberately NOT on this list: the CLI.8b
+%% daemon real-provider regression-guard test it now hosts
+%% (`test_real_provider_api_key_leaks_nowhere') legitimately names the secret
+%% token in its title, so the provider-marker literal scan no longer fits it.
+%% That suite stays hermetic by the fixed-`response' seam, asserted in the tests
+%% themselves, not by a source-literal scan (per design-137 criterion 11).
 cli_2_sources() ->
-    [<<"soma_cli_server_SUITE.erl">>,
-     <<"soma_cli_SUITE.erl">>,
+    [<<"soma_cli_SUITE.erl">>,
      <<"soma_cli_2_contract_tests.erl">>,
      <<"soma_cli_md_ask_tests.erl">>].
 

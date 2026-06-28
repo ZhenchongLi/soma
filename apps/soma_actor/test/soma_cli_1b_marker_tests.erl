@@ -24,9 +24,15 @@
 %% The CLI.1b test sources this issue added (run-flow daemon + client + wire
 %% docs + contract). Explicit include list -- not a glob -- so the scanner never
 %% scans itself.
+%%
+%% `soma_cli_server_SUITE.erl' is deliberately NOT on this list: the CLI.8b
+%% daemon real-provider regression-guard test it now hosts
+%% (`test_real_provider_api_key_leaks_nowhere') legitimately names the secret
+%% token in its title, so the provider-marker literal scan no longer fits it.
+%% That suite stays hermetic by the fixed-`response' seam, asserted in the tests
+%% themselves, not by a source-literal scan (per design-137 criterion 11).
 cli_1b_sources() ->
-    [<<"soma_cli_server_SUITE.erl">>,
-     <<"soma_cli_server_tests.erl">>,
+    [<<"soma_cli_server_tests.erl">>,
      <<"soma_cli_SUITE.erl">>,
      <<"soma_cli_wire_docs_tests.erl">>,
      <<"soma_cli_1b_contract_tests.erl">>].
