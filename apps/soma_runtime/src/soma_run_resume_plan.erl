@@ -20,6 +20,10 @@ plan(StorePid, RunId) ->
 classify(_StorePid, _RunId, #{terminal_status := Status})
   when Status =/= undefined ->
     {terminal, Status};
+%% Every journaled step is committed and no terminal event landed, so
+%% `reconstruct' found no uncommitted step: there is nothing left to resume.
+classify(_StorePid, _RunId, #{next_step := undefined}) ->
+    nothing_to_do;
 classify(StorePid, RunId,
          #{steps := Steps,
            run_options := RunOptions,
