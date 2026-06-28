@@ -164,9 +164,7 @@ test_in_flight_safe_step_reruns_in_own_worker_and_completes(_Config) ->
     ?assert(ToolStartedPids =/= []),
 
     %% the resumed run reaches run.completed and does not fail.
-    %% STAGED-RED: deliberately wrong expectation -- a safe in-flight resume DOES
-    %% reach run.completed, so asserting its absence fires. Corrected in green.
-    ?assertNot(lists:member(<<"run.completed">>, Types)),
+    ?assert(lists:member(<<"run.completed">>, Types)),
     ?assertNot(lists:member(<<"run.failed">>, Types)).
 
 wait_for_run_completed(_StorePid, _RunId, 0) ->
