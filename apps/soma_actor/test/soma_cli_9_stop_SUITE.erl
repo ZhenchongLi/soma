@@ -174,7 +174,7 @@ test_stop_kills_active_detached_tool_worker(Config) ->
     %% path has already killed the worker.
     ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
     %% The worker process of that detached run must be dead after the stop.
-    true = is_process_alive(WorkerPid).
+    false = is_process_alive(WorkerPid).
 
 %% --- helpers (mirroring soma_cli_server_SUITE) ---------------------------
 
