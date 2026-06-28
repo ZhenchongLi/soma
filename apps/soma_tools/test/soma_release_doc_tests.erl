@@ -58,11 +58,13 @@ release_doc_states_per_architecture_rule_test() ->
 
 %% Criterion 8: docs/release.md includes a smoke-test command that runs the
 %% packaged helper from an unpacked release (invoking the helper under
-%% `_build/prod/rel/soma/lib/soma_tools-<vsn>/priv/cli/soma_sample_upper`).
+%% `_build/prod/rel/somad/lib/soma_tools-<vsn>/priv/cli/soma_sample_upper`). The
+%% release is named `somad' (so `bin/somad' is node control and `bin/soma' is the
+%% task command), hence the `rel/somad/' path.
 test_release_doc_has_helper_smoke_command() ->
     Doc = read_doc(),
     %% the command must invoke the packaged helper from its unpacked-release path
-    ?assert(contains(Doc, <<"_build/prod/rel/soma/lib/soma_tools-">>)),
+    ?assert(contains(Doc, <<"_build/prod/rel/somad/lib/soma_tools-">>)),
     ?assert(contains(Doc, <<"/priv/cli/soma_sample_upper">>)).
 
 release_doc_has_helper_smoke_command_test() ->

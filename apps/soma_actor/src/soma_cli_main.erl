@@ -7,7 +7,7 @@
 %% valid s-expr the daemon parses, reaching it intact.
 -module(soma_cli_main).
 
--export([main/1, dispatch/1, socket/1]).
+-export([main/1, main_argv/0, dispatch/1, socket/1]).
 
 %% Process entry point. Dispatch the argv to its subcommand and halt the OS
 %% process with the resulting integer exit code, so the shell sees the right
@@ -17,6 +17,15 @@
 -spec main([string()]) -> no_return().
 main(Argv) ->
     halt(dispatch(Argv)).
+
+%% Entry point for the packaged `soma' wrapper. The wrapper passes the user's
+%% argv after `-extra' (so flag-shaped tokens like `--detach' reach the program
+%% instead of being parsed as `erl' flags), and this reads them back through
+%% `init:get_plain_arguments/0' before dispatching. Equivalent to `main/1' on
+%% that argv.
+-spec main_argv() -> no_return().
+main_argv() ->
+    main(init:get_plain_arguments()).
 
 %% `run File' resolves the socket and drives `soma_cli:run/1', returning its exit
 %% code (0 only when the reply carries `(status completed)'). `ask Intent' resolves
