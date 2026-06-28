@@ -48,5 +48,10 @@ resume(RunId, Owner, Store) ->
         %% event landed: there is no pending suffix to continue. Start no run,
         %% append no event, return nothing_to_do.
         nothing_to_do ->
-            nothing_to_do
+            nothing_to_do;
+        %% The trail has no usable journal (no run.started), or commits a step the
+        %% journal never declared: there is nothing to reconstruct from. Start no
+        %% run, append no event, propagate the error to the caller unchanged.
+        {error, Reason} ->
+            {error, Reason}
     end.
