@@ -16,7 +16,7 @@ syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `Lisp at the edge -> validated data -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 254, Common Test 349, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 256, Common Test 378, Erlang/OTP 29).
 Every layer is proven under test, asserting *process survival*, not just return
 values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 
@@ -27,7 +27,7 @@ values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 | **v0.4** · Agent entity | `soma_actor` (`gen_statem`): messages → tasks → runs |
 | **v0.5** · Decision layer | LLM-call worker · proposals · policy gate · budgets |
 | **v0.6** · Durability + observability | `soma_trace` timelines · `disk_log` store, survives restart |
-| **v0.7.1** · Resume journal | `run.started` journal + read-only reconstruct from the trail |
+| **v0.7** · Persistent resume | `run.started` journal · read-only reconstruct · resume executor (`resume/3`, fail-safe on non-idempotent in-flight steps) |
 
 Two tracks build in parallel: a real **OpenAI-compatible LLM provider** (opt-in, off the
 gate) and the **`soma` CLI / daemon** — `run` / `ask` / `status` / `cancel` / `trace` over a
@@ -86,7 +86,7 @@ Prerequisites: Erlang/OTP 29 and rebar3.
 
 ```bash
 rebar3 compile
-rebar3 eunit && rebar3 ct      # 254 EUnit + 349 Common Test, all green
+rebar3 eunit && rebar3 ct      # 256 EUnit + 378 Common Test, all green
 ```
 
 Drive a run in the shell:
