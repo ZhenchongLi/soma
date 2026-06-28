@@ -402,7 +402,7 @@ planning_mode_off_yields_reply_proposal_unchanged(_Config) ->
     %% The off path is unchanged: the result is a reply carrying the content
     %% verbatim, not a run_steps proposal and not the plan's step outputs.
     {ok, Result} = soma_actor:get_task_result(ActorPid, TaskId),
-    #{kind := reply, text := <<"this is deliberately the wrong text">>} = Result,
+    #{kind := reply, text := Content} = Result,
     %% No plan ran: no `proposal.executed' / `run.completed' in the trail.
     Events = soma_event_store:by_correlation(Store, CorrelationId),
     Types = [maps:get(event_type, E, undefined) || E <- Events],
