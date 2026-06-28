@@ -84,8 +84,8 @@ build_model_config(Llm) ->
 
 carry_api_key(Acc) ->
     case os:getenv("SOMA_LLM_API_KEY") of
-        false -> Acc;
-        "" -> Acc;
+        false -> error({missing_env, "SOMA_LLM_API_KEY"});
+        "" -> error({missing_env, "SOMA_LLM_API_KEY"});
         Value -> Acc#{api_key => list_to_binary(Value)}
     end.
 

@@ -14,12 +14,18 @@ test_load_llm_table_builds_provider_map() ->
         "base_url = \"api.example/v1\"\n"
         "model = \"deepseek-v4\"\n",
     Path = write_temp_config(Toml),
+    Prev = os:getenv("SOMA_LLM_API_KEY"),
+    os:putenv("SOMA_LLM_API_KEY", "sk-test-sentinel-137"),
     try
         Config = soma_config:load(#{config_path => Path}),
         ?assertEqual(openai_compat, maps:get(provider, Config)),
         ?assertEqual(<<"api.example/v1">>, maps:get(base_url, Config)),
         ?assertEqual(<<"deepseek-v4">>, maps:get(model, Config))
     after
+        case Prev of
+            false -> os:unsetenv("SOMA_LLM_API_KEY");
+            _ -> os:putenv("SOMA_LLM_API_KEY", Prev)
+        end,
         file:delete(Path)
     end.
 
@@ -44,6 +50,8 @@ test_load_carries_optional_keys_and_omits_absent() ->
         "model = \"deepseek-v4\"\n",
     PathBoth = write_temp_config(WithBoth),
     PathWithout = write_temp_config(Without),
+    Prev = os:getenv("SOMA_LLM_API_KEY"),
+    os:putenv("SOMA_LLM_API_KEY", "sk-test-sentinel-137"),
     try
         ConfigBoth = soma_config:load(#{config_path => PathBoth}),
         ?assertEqual(true, maps:get(enable_thinking, ConfigBoth)),
@@ -52,6 +60,10 @@ test_load_carries_optional_keys_and_omits_absent() ->
         ?assertEqual(false, maps:is_key(enable_thinking, ConfigWithout)),
         ?assertEqual(false, maps:is_key(max_tokens, ConfigWithout))
     after
+        case Prev of
+            false -> os:unsetenv("SOMA_LLM_API_KEY");
+            _ -> os:putenv("SOMA_LLM_API_KEY", Prev)
+        end,
         file:delete(PathBoth),
         file:delete(PathWithout)
     end.
