@@ -37,9 +37,12 @@ if [ ! -f "${ENTRY_HTML}" ]; then
   exit 1
 fi
 
-# The Start Here group label and its single overview route.
+# The Start Here group label and its overview route.
 GROUP_LABEL="Start Here"
 START_HREF="/start/overview/"
+# Criterion 4 (#178): the Start Here group also links the quick-start route,
+# alongside the existing overview link.
+QUICK_START_HREF="/start/quick-start/"
 
 missing=0
 
@@ -50,6 +53,11 @@ fi
 
 if ! grep -q "href=\"${START_HREF}\"" "${ENTRY_HTML}"; then
   echo "FAIL: Criterion 11 — sidebar link to ${START_HREF} absent from ${ENTRY_HTML}" >&2
+  missing=1
+fi
+
+if ! grep -q "href=\"${QUICK_START_HREF}\"" "${ENTRY_HTML}"; then
+  echo "FAIL: #178 Criterion 4 — sidebar Start Here link to ${QUICK_START_HREF} absent from ${ENTRY_HTML}" >&2
   missing=1
 fi
 
