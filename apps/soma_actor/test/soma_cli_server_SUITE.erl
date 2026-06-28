@@ -19,6 +19,7 @@
 -export([test_server_serves_after_client_disconnect/1]).
 -export([test_ask_reply_returns_completed_result_with_text/1]).
 -export([test_ask_no_model_returns_named_no_model_configured/1]).
+-export([test_server_serves_after_no_model_ask/1]).
 -export([test_ask_reject_returns_rejected_result_with_reason/1]).
 -export([test_ask_budget_llm_zero_returns_budget_exceeded/1]).
 -export([test_trace_after_run_returns_ordered_chain_ending_completed/1]).
@@ -56,6 +57,7 @@ all() ->
      test_server_serves_after_client_disconnect,
      test_ask_reply_returns_completed_result_with_text,
      test_ask_no_model_returns_named_no_model_configured,
+     test_server_serves_after_no_model_ask,
      test_ask_reject_returns_rejected_result_with_reason,
      test_ask_budget_llm_zero_returns_budget_exceeded,
      test_trace_after_run_returns_ordered_chain_ending_completed,
@@ -435,6 +437,35 @@ test_ask_no_model_returns_named_no_model_configured(Config) ->
     match = re:run(Reply, "\\(error no-model-configured\\)", [{capture, none}]),
     nomatch = re:run(Reply, "function_clause", [{capture, none}]),
     ok = gen_tcp:close(Client).
+
+%% Criterion 3 (#179): the server stays up after returning the `no_model_configured'
+%% failure and serves the next request on the same daemon. The first connection
+%% sends `(ask (intent "..."))' to a server started with NO `model_config' key (the
+%% `undefined' daemon default), which the no-model guard short-circuits to a failed
+%% result without starting any actor or LLM call (the Criterion 2 chain). The second
+%% connection (a fresh socket) sends an echo `(run (step ...))' (the Criterion 1
+%% chain) and reads a `(result ...)' s-expr whose status sub-form is `completed'. The
+%% proof is that the same server process serves a second well-formed request after the
+%% no-model failure -- the guard replied a defined failure and closed rather than
+%% crashing the listener.
+test_server_serves_after_no_model_ask(Config) ->
+    Path = socket_path(Config),
+    %% Started with no `model_config' key: the `undefined' daemon default.
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, C1} = connect(Path),
+    Ask = <<"(ask (intent \"what is the answer\"))">>,
+    ok = gen_tcp:send(C1, Ask),
+    {ok, _} = gen_tcp:recv(C1, 0, 5000),
+    ok = gen_tcp:close(C1),
+    {ok, C2} = connect(Path),
+    Echo = <<"(run (step s1 echo (args (value \"ok\"))))">>,
+    ok = gen_tcp:send(C2, Echo),
+    {ok, Reply} = gen_tcp:recv(C2, 0, 5000),
+    %% The second reply must be a completed `(result ...)' -- the server survived
+    %% the earlier no-model failure and served this fresh well-formed request.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status failed\\)", [{capture, none}]),
+    ok = gen_tcp:close(C2).
 
 %% Criterion 5 (CLI.2): a framed `(ask (intent "..."))' request whose server is
 %% configured with a mock `model_config' yielding a `reject' proposal drives the
