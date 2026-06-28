@@ -1,0 +1,45 @@
+---
+// English 404 page, built to /404.html.
+// A standalone Astro page (not a Starlight docs page) so it does not depend on
+// the docs layout — it matches how the landing is authored. The same custom.css
+// and landing.css are imported so the nav/footer chrome and the soma-red accent
+// stay consistent with the rest of the site. It carries a link whose href is
+// "/" so a bad URL always has a way back home.
+import '../styles/custom.css';
+import '../styles/landing.css';
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Page not found — Soma</title>
+    <meta name="robots" content="noindex" />
+  </head>
+  <body>
+    <nav class="landing-nav">
+      <a class="brand" href="/">Soma</a>
+      <div class="nav-links">
+        <a href="/start/overview/">Docs</a>
+        <a href="https://github.com/ZhenchongLi/soma">GitHub</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <h1>This page took an unsupervised path.</h1>
+      <p class="hero-tagline">
+        The URL you followed isn't part of the runtime. No crash, no timeout —
+        just nothing here. Head back to a supervised route.
+      </p>
+      <div class="hero-actions">
+        <a class="cta primary" href="/">Back home</a>
+        <a class="cta" href="/start/overview/">Read the docs</a>
+      </div>
+    </header>
+
+    <footer class="landing-footer">
+      <a href="https://github.com/ZhenchongLi/soma">github.com/ZhenchongLi/soma</a>
+    </footer>
+  </body>
+</html>

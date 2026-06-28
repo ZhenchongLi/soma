@@ -31,7 +31,7 @@ if [ ! -f "${NOTFOUND_HTML}" ]; then
 fi
 
 # The 404 page must link back into the site: an anchor whose href is "/".
-HOME_HREF='href="/__staged_red_no_such_home__"'
+HOME_HREF='href="/"'
 
 if ! grep -qF -- "${HOME_HREF}" "${NOTFOUND_HTML}"; then
   echo "FAIL: Criterion 2 — 404 page missing a home link (${HOME_HREF}) in ${NOTFOUND_HTML}" >&2
