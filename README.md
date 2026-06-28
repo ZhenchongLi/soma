@@ -199,7 +199,7 @@ in [docs/usage.md](docs/usage.md).
   tool_call_id, event_type, payload`): `session.started -> run.accepted ->
   run.started ->` per step `step.started -> tool.started -> tool.succeeded ->
   step.succeeded -> ... -> run.completed` (or `run.failed` / `run.timeout` /
-  `run.cancelled`). Actor-layer events add `actor.*` types and an
+  `run.cancelled`), and a resumed run emits `run.resumed`. Actor-layer events add `actor.*` types and an
   `actor_id` / `task_id` / `correlation_id` extension; a `soma_run` started by an
   actor stamps the `correlation_id` onto every run event too.
 - **A durable event store, opt-in** (v0.6). The store also has a `disk_log`
