@@ -51,6 +51,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'Roadmap', link: '/reference/roadmap/' },
+            { label: 'Erlang/OTP primer', link: '/reference/erlang-otp-primer/' },
           ],
         },
       ],
