@@ -20,6 +20,7 @@
 -export([planning_mode_real_response_runs_plan_to_completion/1]).
 -export([planning_mode_malformed_plan_fails_task_actor_alive/1]).
 -export([planning_mode_off_yields_reply_proposal_unchanged/1]).
+-export([planning_mode_api_key_appears_in_no_emitted_event/1]).
 
 all() ->
     [real_provider_actor_completes_llm_task_through_openai_no_socket,
@@ -28,7 +29,8 @@ all() ->
      test_rendered_reply_carries_no_api_key,
      planning_mode_real_response_runs_plan_to_completion,
      planning_mode_malformed_plan_fails_task_actor_alive,
-     planning_mode_off_yields_reply_proposal_unchanged].
+     planning_mode_off_yields_reply_proposal_unchanged,
+     planning_mode_api_key_appears_in_no_emitted_event].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -408,6 +410,77 @@ planning_mode_off_yields_reply_proposal_unchanged(_Config) ->
     Types = [maps:get(event_type, E, undefined) || E <- Events],
     false = lists:member(<<"proposal.executed">>, Types),
     false = lists:member(<<"run.completed">>, Types),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 5: in planning mode, the `api_key' carried in a real-provider
+%% `model_config' appears in no event the actor emits for the planning task and in
+%% no rendered result. The actor is started with a real-provider `model_config'
+%% carrying `plan => true', a sentinel `api_key', and a fixed `response' whose
+%% choices[0].message.content is a `(run-steps ...)' Lisp plan. Driven through the
+%% real soma_actor:send/2 with an `llm' envelope, the planning call parses the
+%% fixed response (no socket), the actor compiles the content into a `run_steps'
+%% proposal, the policy gate approves it, and an owned soma_run runs the plan to
+%% completion. After the task completes the test pulls every event under the
+%% task's `correlation_id' through by_correlation/2 and asserts the sentinel
+%% appears in none of them, and that the CLI reply rendered from the task result
+%% (the way soma_cli_server builds it) carries the sentinel nowhere either.
+planning_mode_api_key_appears_in_no_emitted_event(_Config) ->
+    Store = event_store_pid(),
+    Sentinel = <<"sk-secret-sentinel-do-not-leak">>,
+    %% The model wrote a (run-steps ...) Lisp plan into its content -- one echo
+    %% step, the same plan style the planning-to-completion test uses.
+    Plan = <<"(run-steps (step (id s1) (tool echo) (args (value \"a\"))))">>,
+    Body = iolist_to_binary(
+             json:encode(#{<<"choices">> =>
+                               [#{<<"message">> =>
+                                      #{<<"content">> => Plan}}]})),
+    %% Planning mode is `plan => true'; the api_key is the sentinel. The
+    %% scheme-less host literal is never dialed (the `response' seam).
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    api_key => Sentinel,
+                    plan => true,
+                    response => {200, Body}},
+    Opts = #{actor_id => <<"actor-planning-api-key">>,
+             model_config => ModelConfig,
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-planning-api-key">>,
+    CorrelationId = <<"corr-planning-api-key">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{prompt => <<"make a plan">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => #{}},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+
+    %% The planning reply was parsed, approved, and run to completion.
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
+    true = lists:member(<<"proposal.executed">>, Types),
+    true = lists:member(<<"run.completed">>, Types),
+    true = length(Events) > 0,
+
+    %% No emitted event carries the sentinel api_key anywhere in its map.
+    %% STAGED-RED: deliberately wrong expectation (asserting a leak) so the
+    %% assertion fires; corrected to `false' in the green commit.
+    true = lists:any(fun(E) -> term_contains(E, Sentinel) end, Events),
+
+    %% Nor does the CLI reply rendered from the task result. A planning task's
+    %% result is the plan's step outputs keyed by step id; render the result the
+    %% way soma_cli_server hands it back and assert the sentinel is absent.
+    {ok, Outputs} = soma_actor:get_task_result(ActorPid, TaskId),
+    Result = #{status => completed,
+               task_id => TaskId,
+               correlation_id => CorrelationId,
+               outputs => Outputs},
+    Rendered = iolist_to_binary(soma_lisp:render(Result)),
+    nomatch = binary:match(Rendered, Sentinel),
+
     true = is_process_alive(ActorPid),
     ok.
 
