@@ -77,7 +77,7 @@ test_reject_form_normalizes_to_reject_kind() ->
     {ok, ProposalMap} = soma_lfe:compile(Source, #{}),
     {ok, Normalized} = soma_proposal:normalize(ProposalMap),
     ?assertEqual(reject, maps:get(kind, Normalized)),
-    ?assertEqual(<<"WRONG EXPECTED REASON">>, maps:get(reason, Normalized)).
+    ?assertEqual(<<"tool not allowed">>, maps:get(reason, Normalized)).
 
 reject_form_normalizes_to_reject_kind_test() ->
     test_reject_form_normalizes_to_reject_kind().
