@@ -6,11 +6,13 @@
 -export([test_stop_returns_stopped_result/1]).
 -export([test_after_stop_fresh_connect_fails/1]).
 -export([test_after_stop_socket_file_gone/1]).
+-export([test_after_stop_start_link_rebinds_path/1]).
 
 all() ->
     [test_stop_returns_stopped_result,
      test_after_stop_fresh_connect_fails,
-     test_after_stop_socket_file_gone].
+     test_after_stop_socket_file_gone,
+     test_after_stop_start_link_rebinds_path].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -73,7 +75,43 @@ test_after_stop_socket_file_gone(Config) ->
     %% The socket file at Path must be gone from disk after the stop.
     {error, enoent} = file_gone(Path, 80).
 
+%% Criterion 5 (CLI.9): after a `(stop)' a fresh `soma_cli_server:start_link/1' on
+%% the *same* path must bind successfully -- the proof that both the listen socket
+%% and the AF_UNIX socket file were released, not just made unreachable. A real
+%% client sends framed `(stop)' and reads the terminal reply; we then poll
+%% (bounded) a fresh `start_link/1' on the same path until it returns `{ok, _}'
+%% (the teardown races the reply read), and confirm the new server actually
+%% listens with a `{local, _}' connect.
+test_after_stop_start_link_rebinds_path(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = connect(Path),
+    ok = gen_tcp:send(Client, <<"(stop)">>),
+    {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
+    ok = gen_tcp:close(Client),
+    %% A fresh start_link on the same path must bind, proving the path is free.
+    {error, _Rebound} = rebind(Path, 80),
+    %% And the rebound server must actually be listening on that path.
+    {ok, NewClient} = connect(Path),
+    ok = gen_tcp:close(NewClient).
+
 %% --- helpers (mirroring soma_cli_server_SUITE) ---------------------------
+
+%% Poll for the path becoming rebindable. While the old listener has not yet torn
+%% down (raced against the reply read), a fresh `start_link/1' would land on a
+%% still-live path; keep retrying until it returns `{ok, _}' or the budget runs
+%% out. The probe-based `unlink_stale/1' in the server only clears a *stale* file,
+%% so a successful bind here means the old server genuinely released the path.
+rebind(_Path, 0) ->
+    {error, giving_up};
+rebind(Path, N) ->
+    case soma_cli_server:start_link(#{socket => Path}) of
+        {ok, _Pid} = Ok ->
+            Ok;
+        {error, _} ->
+            timer:sleep(25),
+            rebind(Path, N - 1)
+    end.
 
 %% Poll for the socket file being unlinked. While `file:read_file_info/1' still
 %% reports the file present, the listener has not unlinked yet, so keep waiting
