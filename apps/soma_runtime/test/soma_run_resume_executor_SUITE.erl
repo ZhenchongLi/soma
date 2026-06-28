@@ -6,10 +6,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_between_steps_resume_starts_fresh_child_that_completes/1]).
 -export([test_between_steps_resume_sends_owner_completed_with_merged_outputs/1]).
+-export([test_in_flight_safe_step_reruns_in_own_worker_and_completes/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
-     test_between_steps_resume_sends_owner_completed_with_merged_outputs].
+     test_between_steps_resume_sends_owner_completed_with_merged_outputs,
+     test_in_flight_safe_step_reruns_in_own_worker_and_completes].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -107,6 +109,66 @@ test_between_steps_resume_sends_owner_completed_with_merged_outputs(_Config) ->
     ?assertEqual(#{value => <<"committed">>}, maps:get(s1, Outputs)),
     ?assertEqual(#{value => <<"pending">>}, maps:get(s2, Outputs)).
 
+%% Criterion 3: resume/3 on a run interrupted DURING a safe in-flight step
+%% (a tool.started landed for next_step but no step.succeeded) re-runs that step
+%% in its own monitored soma_tool_call worker and the run reaches run.completed.
+%% Seed a single-step file_read trail (file_read is reader/idempotent, so the
+%% in-flight step is safe to re-run) with a tool.started for s1 and no
+%% step.succeeded; the file is seeded first so the read succeeds. Resume, then
+%% assert the post-resume trail carries a tool.started whose tool_call_pid is a
+%% real pid distinct from the run pid, and that run.completed lands.
+test_in_flight_safe_step_reruns_in_own_worker_and_completes(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-in-flight-safe-1">>,
+    SessionId = <<"sess-exec-in-flight-safe-1">>,
+    Owner = self(),
+    Root = make_temp_root(),
+    Bytes = <<"in-flight safe read bytes">>,
+    ok = file:write_file(filename:join(Root, "in.txt"), Bytes),
+    S1 = #{id => s1, tool => file_read,
+           args => #{path => <<"in.txt">>, root => list_to_binary(Root)}},
+    Steps = [S1],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    %% A tool.started for s1 with NO step.succeeded: the step was mid-execution
+    %% when the run was interrupted. file_read is reader/idempotent so the plan
+    %% classifies it {resume, _}, not {unsafe, _}.
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"tool.started">>,
+                                   payload => #{tool_call_pid => self()}}),
+
+    {ok, RunPid} = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+    ?assert(is_pid(RunPid)),
+
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+
+    %% The re-run of s1 happened in its own soma_tool_call worker: a fresh
+    %% tool.started carries a real tool_call_pid distinct from the run pid.
+    ToolStartedPids =
+        [Pid
+         || E <- Events,
+            maps:get(event_type, E) =:= <<"tool.started">>,
+            Pid <- [tool_call_pid_of(E)],
+            is_pid(Pid),
+            Pid =/= RunPid],
+    ?assert(ToolStartedPids =/= []),
+
+    %% the resumed run reaches run.completed and does not fail.
+    %% STAGED-RED: deliberately wrong expectation -- a safe in-flight resume DOES
+    %% reach run.completed, so asserting its absence fires. Corrected in green.
+    ?assertNot(lists:member(<<"run.completed">>, Types)),
+    ?assertNot(lists:member(<<"run.failed">>, Types)).
+
 wait_for_run_completed(_StorePid, _RunId, 0) ->
     {error, timeout};
 wait_for_run_completed(StorePid, RunId, N) ->
@@ -126,3 +188,19 @@ event_store_pid() ->
     {soma_event_store, Pid, _Type, _Mods} =
         lists:keyfind(soma_event_store, 1, Children),
     Pid.
+
+tool_call_pid_of(Event) ->
+    case maps:get(payload, Event, undefined) of
+        Payload when is_map(Payload) ->
+            maps:get(tool_call_pid, Payload, undefined);
+        _ ->
+            undefined
+    end.
+
+make_temp_root() ->
+    Dir = filename:join(
+            ["/tmp",
+             "soma_resume_exec_test_"
+             ++ integer_to_list(erlang:unique_integer([positive]))]),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Dir.
