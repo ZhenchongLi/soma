@@ -7,11 +7,13 @@
 -export([test_between_steps_resumes_with_pending_suffix_outputs_and_options/1]).
 -export([test_in_flight_safe_step_resumes/1]).
 -export([test_in_flight_unsafe_state_step_is_unsafe/1]).
+-export([test_terminal_trail_returns_terminal_status_over_next_step/1]).
 
 all() ->
     [test_between_steps_resumes_with_pending_suffix_outputs_and_options,
      test_in_flight_safe_step_resumes,
-     test_in_flight_unsafe_state_step_is_unsafe].
+     test_in_flight_unsafe_state_step_is_unsafe,
+     test_terminal_trail_returns_terminal_status_over_next_step].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -109,6 +111,67 @@ test_in_flight_unsafe_state_step_is_unsafe(_Config) ->
 
     ?assertEqual({unsafe, s1}, Verdict),
     ?assertNotMatch({resume, _}, Verdict).
+
+test_terminal_trail_returns_terminal_status_over_next_step(_Config) ->
+    StorePid = event_store_pid(),
+    %% A run that failed mid-step: s1 committed, s2 uncommitted (so next_step is
+    %% s2), but a terminal run.failed is on the trail. Terminal wins over the
+    %% uncommitted next_step.
+    FailedRunId = <<"run-plan-terminal-failed-1">>,
+    FailedSessionId = <<"sess-plan-terminal-failed-1">>,
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    S2 = #{id => s2, tool => echo, args => #{value => <<"pending">>}},
+    Steps = [S1, S2],
+    FailedRunOptions = #{run_id => FailedRunId, session_id => FailedSessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => FailedRunId,
+                                   session_id => FailedSessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => FailedRunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => FailedRunId,
+                                   session_id => FailedSessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => FailedRunId,
+                                   session_id => FailedSessionId,
+                                   event_type => <<"run.failed">>,
+                                   payload => #{}}),
+
+    FailedVerdict = soma_run_resume_plan:plan(StorePid, FailedRunId),
+
+    ?assertEqual({terminal, failed}, FailedVerdict),
+    ?assertNotMatch({resume, _}, FailedVerdict),
+
+    %% A run.completed trail maps to {terminal, completed}.
+    CompletedRunId = <<"run-plan-terminal-completed-1">>,
+    CompletedSessionId = <<"sess-plan-terminal-completed-1">>,
+    CompletedRunOptions = #{run_id => CompletedRunId,
+                            session_id => CompletedSessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => CompletedRunId,
+                                   session_id => CompletedSessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => CompletedRunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => CompletedRunId,
+                                   session_id => CompletedSessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => CompletedRunId,
+                                   session_id => CompletedSessionId,
+                                   event_type => <<"run.completed">>,
+                                   payload => #{}}),
+
+    CompletedVerdict = soma_run_resume_plan:plan(StorePid, CompletedRunId),
+
+    ?assertEqual({terminal, completed}, CompletedVerdict).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
