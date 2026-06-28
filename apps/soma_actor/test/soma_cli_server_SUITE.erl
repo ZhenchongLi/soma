@@ -18,6 +18,7 @@
 -export([test_worker_dead_after_client_disconnect/1]).
 -export([test_server_serves_after_client_disconnect/1]).
 -export([test_ask_reply_returns_completed_result_with_text/1]).
+-export([test_ask_no_model_returns_named_no_model_configured/1]).
 -export([test_ask_reject_returns_rejected_result_with_reason/1]).
 -export([test_ask_budget_llm_zero_returns_budget_exceeded/1]).
 -export([test_trace_after_run_returns_ordered_chain_ending_completed/1]).
@@ -54,6 +55,7 @@ all() ->
      test_worker_dead_after_client_disconnect,
      test_server_serves_after_client_disconnect,
      test_ask_reply_returns_completed_result_with_text,
+     test_ask_no_model_returns_named_no_model_configured,
      test_ask_reject_returns_rejected_result_with_reason,
      test_ask_budget_llm_zero_returns_budget_exceeded,
      test_trace_after_run_returns_ordered_chain_ending_completed,
@@ -407,6 +409,31 @@ test_ask_reply_returns_completed_result_with_text(Config) ->
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "the answer", [{capture, none}]),
+    ok = gen_tcp:close(Client).
+
+%% Criterion 2 (#179): a framed `(ask (intent "..."))' request handled by a server
+%% started with NO `model_config' key (the `undefined' daemon default, i.e. no
+%% `~/.soma/config') must reply a `failed' `(result ...)' whose `error' sub-form is
+%% the named atom `no_model_configured' -- rendered by `soma_lisp:render/1' as the
+%% symbol `no-model-configured' -- not a leaked `function_clause' crash term. The
+%% no-model guard in `handle_ask/2' short-circuits before any actor or LLM call is
+%% started. A real gen_tcp client over the local Unix socket sends the s-expr and
+%% reads the s-expr reply; no layer is bypassed.
+test_ask_no_model_returns_named_no_model_configured(Config) ->
+    Path = socket_path(Config),
+    %% Started with no `model_config' key: the `undefined' daemon default.
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = connect(Path),
+    Request = <<"(ask (intent \"what is the answer\"))">>,
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The reply must be a `(result ...)' s-expr whose status sub-form is `failed'
+    %% and whose `error' sub-form is the named symbol `no-model-configured' -- not a
+    %% `function_clause' crash term leaking onto the wire.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status failed\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(error no-model-configured\\)", [{capture, none}]),
+    nomatch = re:run(Reply, "function_clause", [{capture, none}]),
     ok = gen_tcp:close(Client).
 
 %% Criterion 5 (CLI.2): a framed `(ask (intent "..."))' request whose server is
