@@ -24,7 +24,7 @@ npm ci && npm run build || {
   exit 1
 }
 
-EN_DOCS="${SITE_DIR}/dist/start/overview/THIS_PATH_DOES_NOT_EXIST.html"
+EN_DOCS="${SITE_DIR}/dist/start/overview/index.html"
 
 if [ -f "${EN_DOCS}" ]; then
   echo "PASS: Criterion 13 — English seed docs route survives at ${EN_DOCS}"
