@@ -44,6 +44,7 @@ export default defineConfig({
             { label: 'Usage', link: '/guides/usage/' },
             { label: 'LFE DSL', link: '/guides/lfe-dsl/' },
             { label: 'CLI', link: '/guides/cli/' },
+            { label: 'Release', link: '/guides/release/' },
           ],
         },
       ],
