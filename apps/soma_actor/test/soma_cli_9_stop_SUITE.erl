@@ -8,13 +8,15 @@
 -export([test_after_stop_socket_file_gone/1]).
 -export([test_after_stop_start_link_rebinds_path/1]).
 -export([test_stop_cancels_active_detached_run/1]).
+-export([test_stop_kills_active_detached_tool_worker/1]).
 
 all() ->
     [test_stop_returns_stopped_result,
      test_after_stop_fresh_connect_fails,
      test_after_stop_socket_file_gone,
      test_after_stop_start_link_rebinds_path,
-     test_stop_cancels_active_detached_run].
+     test_stop_cancels_active_detached_run,
+     test_stop_kills_active_detached_tool_worker].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -135,7 +137,53 @@ test_stop_cancels_active_detached_run(Config) ->
     Types = [maps:get(event_type, Event) || Event <- Events],
     true = lists:member(<<"run.cancelled">>, Types).
 
+%% Criterion 7 (CLI.9): the tool-call worker of a detached run that is still
+%% active when `(stop)' arrives must be dead after the stop. The cancel path's
+%% brutal `exit(WorkerPid, kill)' is what makes cancellation real -- not a flag
+%% checked at the end -- so the worker process must genuinely be gone. Same
+%% real-socket detached-run setup as Criterion 6: a client starts a detached long
+%% `sleep', we wait (bounded) for the run's `tool.started' and read the worker pid
+%% off that event (`tool_call_pid' is not on the reply path, so the event store is
+%% the only seam), send `(stop)', wait for `run.cancelled', then assert
+%% `is_process_alive/1' on the captured worker pid is `false'.
+test_stop_kills_active_detached_tool_worker(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    StorePid = event_store_pid(),
+    {ok, C1} = connect(Path),
+    Request = <<"(run (detach) (step s1 sleep (args (ms 5000))))">>,
+    ok = gen_tcp:send(C1, Request),
+    {ok, Reply} = gen_tcp:recv(C1, 0, 1000),
+    ok = gen_tcp:close(C1),
+    match = re:run(Reply, "^\\(accepted ", [{capture, none}]),
+    {match, [TaskId]} =
+        re:run(Reply, "\\(task-id \"([^\"]+)\"\\)",
+               [{capture, all_but_first, binary}]),
+    running = wait_for_registry_status(TaskId, running, 100),
+    {ok, #{run_id := RunId}} = soma_cli_task_registry:lookup(TaskId),
+    %% Wait for `tool.started' so the worker is live, then read its pid.
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 100),
+    WorkerPid = tool_call_pid(StorePid, RunId),
+    true = is_pid(WorkerPid),
+
+    {ok, C2} = connect(Path),
+    ok = gen_tcp:send(C2, <<"(stop)">>),
+    {ok, _StopReply} = gen_tcp:recv(C2, 0, 5000),
+    ok = gen_tcp:close(C2),
+    %% The detached run must reach `cancelled' -- once that lands, the cancel
+    %% path has already killed the worker.
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 100),
+    %% The worker process of that detached run must be dead after the stop.
+    true = is_process_alive(WorkerPid).
+
 %% --- helpers (mirroring soma_cli_server_SUITE) ---------------------------
+
+%% Read the worker pid off the run's `tool.started' event in the store.
+tool_call_pid(StorePid, RunId) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    [Started | _] =
+        [E || E <- Events, maps:get(event_type, E) =:= <<"tool.started">>],
+    maps:get(tool_call_pid, Started).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
