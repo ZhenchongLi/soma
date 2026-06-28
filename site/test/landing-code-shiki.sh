@@ -33,7 +33,7 @@ if [ ! -f "${EN_ROOT}" ]; then
 fi
 
 # The Shiki highlight class Astro emits on a highlighted code block.
-SHIKI_CLASS='class="astro-code-WRONG"'
+SHIKI_CLASS='class="astro-code'
 
 if ! grep -qF -- "${SHIKI_CLASS}" "${EN_ROOT}"; then
   echo "FAIL: Criterion 9 — English root has no Shiki-highlighted code block (${SHIKI_CLASS} not found) in ${EN_ROOT}" >&2
