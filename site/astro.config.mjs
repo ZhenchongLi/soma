@@ -38,6 +38,14 @@ export default defineConfig({
             { label: 'Resume', link: '/concepts/resume/' },
           ],
         },
+        {
+          label: 'Guides',
+          items: [
+            { label: 'Usage', link: '/guides/usage/' },
+            { label: 'LFE DSL', link: '/guides/lfe-dsl/' },
+            { label: 'CLI', link: '/guides/cli/' },
+          ],
+        },
       ],
     }),
   ],
