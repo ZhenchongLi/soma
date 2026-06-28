@@ -83,13 +83,30 @@ render_step(Step) when is_map(Step) ->
     Pairs = [render_pair(K, V) || {K, V} <- maps:to_list(Step)],
     ["(step ", lists:join(" ", Pairs), ")"].
 
-%% A result map is marked by `status' plus either `outputs' (a completed run) or
-%% `error' (a failed run / malformed request). The completed case keeps its fixed
+%% A result map is marked by a `status' whose value is one of the terminal
+%% statuses the CLI emits. The completed case keeps its fixed
 %% `status outputs correlation-id' order; the failed case omits `outputs', emits
 %% `(error ...)' in its place, and carries `correlation-id' only when present.
+%% A payload-less terminal map (a timed-out or cancelled run carries neither
+%% `outputs' nor `error') is still a result map -- it renders as
+%% `(result (status timeout) ...)' so the reply stays a recognizable terminal
+%% result rather than a headless pair list. The status-whitelist keeps the
+%% event-map and envelope-map branches below cleanly separate: an event map's
+%% `status' (if any) is not a terminal status, and a `#{status => running}'
+%% registry map is not terminal either, so neither is wrongly headed `result'.
 is_result_map(Map) ->
-    maps:is_key(status, Map)
-        andalso (maps:is_key(outputs, Map) orelse maps:is_key(error, Map)).
+    case maps:find(status, Map) of
+        {ok, Status} -> is_terminal_status(Status);
+        error -> false
+    end.
+
+is_terminal_status(completed) -> true;
+is_terminal_status(failed) -> true;
+is_terminal_status(timeout) -> true;
+is_terminal_status(cancelled) -> true;
+is_terminal_status(rejected) -> true;
+is_terminal_status(error) -> true;
+is_terminal_status(_) -> false.
 
 %% The result sub-forms, in order: status, then task-id if present, then outputs
 %% if present, then error if present, then correlation-id if present. `task-id'
