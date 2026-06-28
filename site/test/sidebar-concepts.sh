@@ -36,7 +36,7 @@ fi
 
 # The eight Concepts routes the sidebar group must link to.
 CONCEPT_SLUGS=(
-  nonexistent
+  architecture
   steps
   tools
   actors
