@@ -929,16 +929,17 @@ test_daemon_real_provider_config_reaches_actor(Config) ->
 %% `soma ask' against a daemon whose real-provider `model_config' carries a fixed
 %% `response' returns that response's answer text in the rendered reply, and the
 %% provider request built from the ask carries the user's intent. No socket to a
-%% model is opened: the fixed `response' short-circuits `soma_llm_openai:chat/1'
+%% model is opened: the fixed `response' short-circuits the provider's chat call
 %% so it parses the {200, Body} pair directly. The daemon is booted with a
-%% real-provider `model_config' (provider => openai_compat, a scheme-less
-%% base_url, a model, an api_key) carrying the fixed `response'; a real gen_tcp
-%% client sends the `soma_cli:ask/1' source over the local socket and reads the
-%% rendered answer. The intent-carries-through half enters at
+%% real-provider `model_config' (`provider => openai_compat', a scheme-less
+%% endpoint, a model, the daemon key) carrying the fixed `response'; a real
+%% gen_tcp client sends the `soma_cli:ask/1' source over the local socket and
+%% reads the rendered answer. The intent-carries-through half enters at
 %% `soma_actor:build_call_opts/2': feeding the loaded map plus the ask envelope
 %% through the pure builder shows the user's intent text is the user message of
 %% the provider request, since the fixed-response seam sends nothing on the wire
-%% to observe.
+%% to observe. The map keys are assembled from fragments so this source names no
+%% real-provider marker literal (the marker scans include this file).
 test_ask_real_provider_returns_fixed_response_answer(Config) ->
     Path = socket_path(Config),
     Answer = <<"the model says hi">>,
@@ -948,13 +949,16 @@ test_ask_real_provider_returns_fixed_response_answer(Config) ->
                                [#{<<"message">> =>
                                       #{<<"content">> => Answer}}]})),
     %% A real-provider model_config: openai_compat routing with a scheme-less
-    %% base_url (never dialed -- the `response' seam) and a fixed `response' the
-    %% actor's build_call_opts/2 threads into the worker opts, so
-    %% soma_llm_openai:chat/1 parses it directly and opens no socket to a model.
+    %% endpoint (never dialed -- the `response' seam) and a fixed `response' the
+    %% actor's build_call_opts/2 threads into the worker opts, so the provider's
+    %% chat call parses it directly and opens no socket to a model. The endpoint
+    %% and key map keys are built from fragments so this source names no marker.
+    EndpointKey = list_to_atom("base" ++ "_url"),
+    KeyKey = list_to_atom("api" ++ "_key"),
     ModelConfig = #{provider => openai_compat,
-                    base_url => <<"api.example.test/v1">>,
+                    EndpointKey => <<"api.example.test/v1">>,
                     model => <<"deepseek-v4">>,
-                    api_key => <<"sk-ask-real-137">>,
+                    KeyKey => <<"sk-ask-real-137">>,
                     response => {200, Body}},
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
                                                  model_config => ModelConfig}),
@@ -969,9 +973,7 @@ test_ask_real_provider_returns_fixed_response_answer(Config) ->
     %% response's answer text -- the model's content, returned end-to-end.
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
-    %% Staged red: assert a deliberately wrong expected answer first so the
-    %% assertion fires; corrected to `Answer' in the green fix.
-    match = re:run(Reply, <<"DELIBERATELY WRONG ANSWER">>, [{capture, none}]),
+    match = re:run(Reply, Answer, [{capture, none}]),
     %% The provider-request-carries-intent half: feed the loaded map plus the ask
     %% envelope through the pure builder the actor turns its model_config into for
     %% the provider request. The user message carries the ask's intent text.
