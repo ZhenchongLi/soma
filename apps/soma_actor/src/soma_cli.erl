@@ -118,7 +118,9 @@ cancel_source(TaskId) ->
 daemon(Args) ->
     {ok, _Started} = application:ensure_all_started(soma_runtime),
     Path = resolve_socket(Args),
-    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    ModelConfig = soma_config:load(Args),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                 model_config => ModelConfig}),
     {ok, Path}.
 
 %% Shared socket-path resolver. Both `daemon/1' and `soma_cli_main' call this so
