@@ -221,7 +221,7 @@ test_propagates_reconstruct_errors(_Config) ->
 
     NoJournalVerdict = soma_run_resume_plan:plan(StorePid, NoJournalRunId),
 
-    ?assertEqual(nothing_to_do, NoJournalVerdict),
+    ?assertEqual({error, no_run_started_journal}, NoJournalVerdict),
 
     %% A trail that commits a step the journal never declared: reconstruct's
     %% {error, {unknown_committed_step, StepId}} comes straight back.
@@ -245,7 +245,7 @@ test_propagates_reconstruct_errors(_Config) ->
 
     UnknownVerdict = soma_run_resume_plan:plan(StorePid, UnknownRunId),
 
-    ?assertEqual(nothing_to_do, UnknownVerdict).
+    ?assertEqual({error, {unknown_committed_step, s_undeclared}}, UnknownVerdict).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
