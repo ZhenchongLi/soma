@@ -332,10 +332,9 @@ planning_mode_malformed_plan_fails_task_actor_alive(_Config) ->
                     llm => #{}},
     {ok, BadTaskId} = soma_actor:send(ActorPid, BadEnvelope),
 
-    %% STAGED-RED: deliberately wrong expected terminal status. The malformed plan
-    %% drives the task to `failed', never `completed', so this assertion fires.
-    %% Corrected to `failed' in the green commit.
-    ok = wait_for_status(ActorPid, BadTaskId, completed, 100),
+    %% The malformed plan drives the task to terminal `failed' as data: the compile
+    %% diagnostics are recorded as the task reason, and the actor survives.
+    ok = wait_for_status(ActorPid, BadTaskId, failed, 100),
     #{status := failed, reason := BadReason} =
         soma_actor:get_task_status(ActorPid, BadTaskId),
     true = BadReason =/= undefined,
