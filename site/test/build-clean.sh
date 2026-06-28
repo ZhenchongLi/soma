@@ -33,9 +33,8 @@ if [ "${build_status}" -ne 0 ]; then
 fi
 
 # Scan for any line matching the pattern (case-insensitive). A clean build has
-# none. The DELIBERATELY-WRONG-RED match below scans for a benign token that the
-# build log always contains, so the assertion fires on a clean build.
-SCAN_PATTERN='built|error|warning'
+# none.
+SCAN_PATTERN='error|warning'
 
 if printf '%s\n' "${log}" | grep -niE "${SCAN_PATTERN}" >&2; then
   echo "FAIL: Criterion 1 — build output contains error/warning line(s) (shown above)" >&2
