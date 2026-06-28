@@ -8,12 +8,14 @@
 -export([test_in_flight_safe_step_resumes/1]).
 -export([test_in_flight_unsafe_state_step_is_unsafe/1]).
 -export([test_terminal_trail_returns_terminal_status_over_next_step/1]).
+-export([test_all_committed_no_terminal_is_nothing_to_do/1]).
 
 all() ->
     [test_between_steps_resumes_with_pending_suffix_outputs_and_options,
      test_in_flight_safe_step_resumes,
      test_in_flight_unsafe_state_step_is_unsafe,
-     test_terminal_trail_returns_terminal_status_over_next_step].
+     test_terminal_trail_returns_terminal_status_over_next_step,
+     test_all_committed_no_terminal_is_nothing_to_do].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -172,6 +174,34 @@ test_terminal_trail_returns_terminal_status_over_next_step(_Config) ->
     CompletedVerdict = soma_run_resume_plan:plan(StorePid, CompletedRunId),
 
     ?assertEqual({terminal, completed}, CompletedVerdict).
+
+test_all_committed_no_terminal_is_nothing_to_do(_Config) ->
+    StorePid = event_store_pid(),
+    %% A single-step run where the only journaled step is committed and no
+    %% terminal event landed: reconstruct returns next_step => undefined, so
+    %% there is nothing left to resume.
+    RunId = <<"run-plan-all-committed-1">>,
+    SessionId = <<"sess-plan-all-committed-1">>,
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    Steps = [S1],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+
+    Verdict = soma_run_resume_plan:plan(StorePid, RunId),
+
+    ?assertEqual(nothing_to_do, Verdict),
+    ?assertNotMatch({resume, _}, Verdict).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
