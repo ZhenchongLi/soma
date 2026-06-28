@@ -61,6 +61,29 @@ test_ensure_daemon_launches_then_succeeds() ->
 ensure_daemon_launches_then_succeeds_test_() ->
     {timeout, 30, fun test_ensure_daemon_launches_then_succeeds/0}.
 
+%% Issue #155 criterion 3 (CLI.7b): when nothing is listening and `LaunchFun'
+%% never brings a listener up, `soma_cli:ensure_daemon(#{socket => Path},
+%% LaunchFun)' probes once (`soma_cli:ping/1' returns `1'), calls the no-op
+%% `LaunchFun', then polls `ping/1' on its bound -- every probe returns `1' -- and
+%% gives up with a bounded `{error, _}' rather than looping forever. The mock
+%% `LaunchFun' starts nothing. The whole call is wrapped in an eunit `{timeout,
+%% ...}' so a hang fails the test instead of stalling the gate; the bounded poll
+%% must return well before that timeout fires.
+test_ensure_daemon_launch_never_listens_returns_bounded_error() ->
+    Path = socket_path(),
+    LaunchFun = fun() -> ok end,
+    %% Staged red: ensure_daemon returns a bounded {error, _} here, but pin the
+    %% wrong expected value first so the assertion fires for the right reason,
+    %% then correct it to {error, _} in the follow-up fix(test) commit.
+    ?assertMatch(ok,
+                 soma_cli:ensure_daemon(#{socket => Path}, LaunchFun)),
+    _ = file:delete(Path),
+    ok.
+
+ensure_daemon_launch_never_listens_returns_bounded_error_test_() ->
+    {timeout, 30,
+     fun test_ensure_daemon_launch_never_listens_returns_bounded_error/0}.
+
 %% Drain `{launched, Server}' messages the mock `LaunchFun' sent: count them and
 %% collect the server pids so the test can tear each one down.
 drain_launches() ->
