@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Criterion 2 harness: `npm run build` emits a clean log in site/ —
-# no error lines and no Starlight/Astro warning lines.
+# Issue #169 Criterion 1 harness: `cd site && npm ci && npm run build` exits 0
+# with no error or warning lines in its output.
 #
 # Run from anywhere: this resolves site/ relative to its own location so the
 # assertion is about the build's output text, not the caller's cwd.
 #
-# The build is run and its combined stdout+stderr is captured, then scanned for
-# any line matching `error` or `warning` (case-insensitive). A clean build emits
-# none; a Soma-caused misconfiguration would surface as a warning/error line.
+# The build is run (clean install then build) and its combined stdout+stderr is
+# captured, then scanned for any line matching `error` or `warning`
+# (case-insensitive). A clean build emits none over the Concepts section and the
+# explicit sidebar; a Soma-caused misconfiguration (a sidebar link to a missing
+# page, a broken page) would surface as a warning/error line, and a build failure
+# would make the install-or-build step exit nonzero.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,19 +21,26 @@ cd "${SITE_DIR}" || {
   exit 1
 }
 
-# Run the build, capturing combined stdout+stderr. We do not gate on the build's
-# own exit code here (that is Criterion 1) — this harness is purely about output
-# cleanliness.
-log="$(npm run build 2>&1)"
+# Clean install then build, capturing combined stdout+stderr. Both steps must
+# exit 0 for the criterion to hold.
+log="$(npm ci 2>&1 && npm run build 2>&1)"
+build_status=$?
+
+if [ "${build_status}" -ne 0 ]; then
+  printf '%s\n' "${log}" >&2
+  echo "FAIL: Criterion 1 — npm ci && npm run build exited ${build_status}" >&2
+  exit 1
+fi
 
 # Scan for any line matching the pattern (case-insensitive). A clean build has
-# none.
-SCAN_PATTERN='error|warning'
+# none. The DELIBERATELY-WRONG-RED match below scans for a benign token that the
+# build log always contains, so the assertion fires on a clean build.
+SCAN_PATTERN='built|error|warning'
 
 if printf '%s\n' "${log}" | grep -niE "${SCAN_PATTERN}" >&2; then
-  echo "FAIL: Criterion 2 — build output contains error/warning line(s) (shown above)" >&2
+  echo "FAIL: Criterion 1 — build output contains error/warning line(s) (shown above)" >&2
   exit 1
 else
-  echo "PASS: Criterion 2 — build output has no error or warning lines"
+  echo "PASS: Criterion 1 — npm ci && npm run build exits 0 with no error or warning lines"
   exit 0
 fi
