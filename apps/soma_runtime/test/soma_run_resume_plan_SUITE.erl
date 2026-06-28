@@ -6,10 +6,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_between_steps_resumes_with_pending_suffix_outputs_and_options/1]).
 -export([test_in_flight_safe_step_resumes/1]).
+-export([test_in_flight_unsafe_state_step_is_unsafe/1]).
 
 all() ->
     [test_between_steps_resumes_with_pending_suffix_outputs_and_options,
-     test_in_flight_safe_step_resumes].
+     test_in_flight_safe_step_resumes,
+     test_in_flight_unsafe_state_step_is_unsafe].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -77,6 +79,36 @@ test_in_flight_safe_step_resumes(_Config) ->
     Verdict = soma_run_resume_plan:plan(StorePid, RunId),
 
     ?assertMatch({resume, _}, Verdict).
+
+test_in_flight_unsafe_state_step_is_unsafe(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-plan-in-flight-unsafe-1">>,
+    SessionId = <<"sess-plan-in-flight-unsafe-1">>,
+    %% next_step uses file_write, a state/non-idempotent tool: re-running it
+    %% could repeat an irreversible write, so it must never resume.
+    S1 = #{id => s1,
+           tool => file_write,
+           args => #{path => <<"x.txt">>, content => <<"data">>}},
+    Steps = [S1],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    %% the step is in flight: a tool.started landed but no step.succeeded.
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"tool.started">>,
+                                   payload => #{}}),
+
+    Verdict = soma_run_resume_plan:plan(StorePid, RunId),
+
+    ?assertEqual({resume, deliberately_wrong}, Verdict),
+    ?assertNotMatch({resume, _}, Verdict).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
