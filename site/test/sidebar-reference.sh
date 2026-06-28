@@ -37,7 +37,7 @@ fi
 # The two Reference routes the sidebar group must link to.
 REFERENCE_SLUGS=(
   roadmap
-  erlang-otp-changelog
+  erlang-otp-primer
 )
 
 missing=0
