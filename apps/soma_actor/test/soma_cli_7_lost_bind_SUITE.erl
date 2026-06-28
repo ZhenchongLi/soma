@@ -101,10 +101,9 @@ test_lost_bind_leaves_original_listener_alive(Config) ->
     {ok, Client} = connect(Path),
     ok = gen_tcp:send(Client, <<"(stop)">>),
     {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
-    %% STAGED RED: assert the winner did NOT answer with `stopped' -- a
-    %% deliberately wrong expectation so the assertion fires against reality
-    %% (the winner does answer, so the match below is `match', not `nomatch').
-    nomatch = re:run(Reply, "\\(status stopped\\)", [{capture, none}]),
+    %% The winner answers the fresh `(stop)' with a `(status stopped)' result --
+    %% it kept serving Path through the loser's lost bind, untouched.
+    match = re:run(Reply, "\\(status stopped\\)", [{capture, none}]),
     gen_tcp:close(Client),
 
     %% The `(stop)' tore the winner down; reap its monitor so the linked process
