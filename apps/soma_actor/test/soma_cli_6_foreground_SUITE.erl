@@ -6,11 +6,13 @@
 -export([test_daemon_foreground_serves_stop_then_returns/1]).
 -export([test_dispatch_daemon_blocks_then_exits_zero/1]).
 -export([test_cold_boot_registers_actor_sup/1]).
+-export([test_warm_boot_tolerates_existing_actor_sup/1]).
 
 all() ->
     [test_daemon_foreground_serves_stop_then_returns,
      test_dispatch_daemon_blocks_then_exits_zero,
-     test_cold_boot_registers_actor_sup].
+     test_cold_boot_registers_actor_sup,
+     test_warm_boot_tolerates_existing_actor_sup].
 
 init_per_testcase(_Case, Config) ->
     %% Hermetic config: point SOMA_CONFIG at an absent path so the daemon loads
@@ -136,6 +138,51 @@ test_cold_boot_registers_actor_sup(Config) ->
     Sup = whereis(soma_actor_sup),
     true = is_pid(Sup),
     true = is_process_alive(Sup),
+
+    %% Tear the daemon down cleanly so the child returns and exits.
+    ok = gen_tcp:send(Client, <<"(stop)">>),
+    {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
+    ok = gen_tcp:close(Client),
+    receive
+        {'DOWN', ChildRef, process, Child, _Reason} -> ok
+    after 5000 ->
+        exit(Child, kill),
+        ct:fail(daemon_foreground_did_not_return)
+    end.
+
+%% Criterion 4 (CLI.6): `soma_cli:daemon_foreground(#{socket => Path})' boots
+%% without error when `soma_actor_sup' is already registered, rather than crashing
+%% on the already-started supervisor. `soma_actor_sup' is a named singleton, so a
+%% second `start_link' returns `{error, {already_started, Pid}}', which boot must
+%% tolerate. The test starts `soma_actor_sup' first, asserts its pid is live,
+%% boots `daemon_foreground/1' in a child, then confirms the daemon serves a real
+%% client request on `Path' (proving boot did not crash on the already-started
+%% supervisor). The same supervisor pid is still registered after boot.
+test_warm_boot_tolerates_existing_actor_sup(Config) ->
+    %% Start soma_actor_sup before booting the daemon, so boot meets an
+    %% already-registered supervisor. Tolerate a sibling case having left one up.
+    Sup0 = case soma_actor_sup:start_link() of
+               {ok, S} -> S;
+               {error, {already_started, S}} -> S
+           end,
+    true = is_pid(Sup0),
+    true = is_process_alive(Sup0),
+
+    Path = socket_path(Config),
+    Child = spawn(fun() -> soma_cli:daemon_foreground(#{socket => Path}) end),
+    ChildRef = monitor(process, Child),
+
+    %% The daemon must come up despite the pre-existing supervisor: a real client
+    %% can connect on Path only once the listener is accepting, which is after
+    %% boot tolerated the already-started supervisor.
+    {ok, Client} = connect(Path),
+
+    %% The same supervisor pid is still registered after boot -- boot did not
+    %% restart or replace it, it tolerated the already-started one.
+    Sup1 = whereis(soma_actor_sup),
+    true = is_pid(Sup1),
+    true = is_process_alive(Sup1),
+    true = (Sup0 =/= Sup1),
 
     %% Tear the daemon down cleanly so the child returns and exits.
     ok = gen_tcp:send(Client, <<"(stop)">>),
