@@ -33,6 +33,7 @@
 -export([test_non_detached_run_still_terminal_and_disconnect_cancels/1]).
 -export([test_daemon_threads_loaded_model_config/1]).
 -export([test_ask_no_config_runs_mock/1]).
+-export([test_daemon_real_provider_config_reaches_actor/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -64,7 +65,8 @@ all() ->
      test_cancel_terminal_task_reports_already_terminal_no_new_run,
      test_non_detached_run_still_terminal_and_disconnect_cancels,
      test_daemon_threads_loaded_model_config,
-     test_ask_no_config_runs_mock].
+     test_ask_no_config_runs_mock,
+     test_daemon_real_provider_config_reaches_actor].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -869,6 +871,73 @@ test_ask_no_config_runs_mock(Config) ->
     match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "mock answer", [{capture, none}]),
     ok = gen_tcp:close(Client).
+
+%% Criterion 9 (CLI.8b): with a real-provider config and `SOMA_LLM_API_KEY' set,
+%% `soma_cli:daemon/1' loads that provider map and threads it into
+%% `soma_cli_server:start_link/1' under `model_config', and the actor the ask path
+%% starts carries that same map -- proved by the resolve-and-load seam plus the
+%% pure `soma_actor:build_call_opts/2' the actor turns its `model_config' into for
+%% the provider request. No live socket to a model is opened: the daemon boots a
+%% `{local, _}' listener but the provider request is read through the pure builder,
+%% not by dialing the configured `base_url'.
+test_daemon_real_provider_config_reaches_actor(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = real_provider_config_file(Config),
+    DaemonOpts = #{socket => Path, config_path => ConfigPath},
+    Prev = os:getenv("SOMA_LLM_API_KEY"),
+    os:putenv("SOMA_LLM_API_KEY", "sk-daemon-real-137"),
+    %% The daemon must boot the runtime: stop it first so the boot is observable.
+    application:stop(soma_runtime),
+    try
+        {ok, Resolved} = soma_cli:daemon(DaemonOpts),
+        Path = Resolved,
+        %% The value the daemon resolved and threaded is `soma_config:load/1' on
+        %% the same override -- by construction. A real-provider file loads to the
+        %% provider map carrying the env-sourced api_key.
+        ModelConfig = soma_config:load(DaemonOpts),
+        openai_compat = maps:get(provider, ModelConfig),
+        <<"api.example/v1">> = maps:get(base_url, ModelConfig),
+        <<"deepseek-v4">> = maps:get(model, ModelConfig),
+        <<"sk-daemon-real-137">> = maps:get(api_key, ModelConfig),
+        %% The actor the ask path starts carries that same map: feed it through the
+        %% pure builder the actor uses to turn its `model_config' into the provider
+        %% request. The resulting worker opts route to `soma_llm_openai'
+        %% (`provider => openai_compat') with that base_url, model, and api_key --
+        %% no socket to a model is opened.
+        Envelope = #{type => <<"ask">>,
+                     payload => #{prompt => <<"what is the answer">>},
+                     llm => #{}},
+        CallOpts = soma_actor:build_call_opts(ModelConfig, Envelope),
+        openai_compat = maps:get(provider, CallOpts),
+        <<"api.example/v1">> = maps:get(base_url, CallOpts),
+        <<"deepseek-v4">> = maps:get(model, CallOpts),
+        %% RED: deliberately wrong expected api_key -- the env value is
+        %% "sk-daemon-real-137", not this sentinel. The match fails, proving the
+        %% assertion fires before correcting it to current reality.
+        <<"sk-WRONG-staged-red">> = maps:get(api_key, CallOpts),
+        %% The daemon booted a real listener: a `{local, _}' client connects.
+        {ok, Sock} = gen_tcp:connect({local, Resolved}, 0,
+                                     [binary, {packet, 4}, {active, false}]),
+        ok = gen_tcp:close(Sock)
+    after
+        case Prev of
+            false -> os:unsetenv("SOMA_LLM_API_KEY");
+            _ -> os:putenv("SOMA_LLM_API_KEY", Prev)
+        end
+    end.
+
+%% Write a temp config file with an `[llm]' table selecting a real provider, so
+%% `soma_config:load/1' (with `SOMA_LLM_API_KEY' set) returns the provider map.
+%% The `base_url' is scheme-less so no test names a dialable address.
+real_provider_config_file(Config) ->
+    Dir = ?config(priv_dir, Config),
+    File = filename:join(Dir, "real_provider.config"),
+    Toml = <<"[llm]\n"
+             "provider = \"openai_compat\"\n"
+             "base_url = \"api.example/v1\"\n"
+             "model = \"deepseek-v4\"\n">>,
+    ok = file:write_file(File, Toml),
+    File.
 
 %% Write a temp config file with comments but no `[llm]' table, so
 %% `soma_config:load/1' returns `undefined'.
