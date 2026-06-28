@@ -466,9 +466,7 @@ planning_mode_api_key_appears_in_no_emitted_event(_Config) ->
     true = length(Events) > 0,
 
     %% No emitted event carries the sentinel api_key anywhere in its map.
-    %% STAGED-RED: deliberately wrong expectation (asserting a leak) so the
-    %% assertion fires; corrected to `false' in the green commit.
-    true = lists:any(fun(E) -> term_contains(E, Sentinel) end, Events),
+    false = lists:any(fun(E) -> term_contains(E, Sentinel) end, Events),
 
     %% Nor does the CLI reply rendered from the task result. A planning task's
     %% result is the plan's step outputs keyed by step id; render the result the
