@@ -156,6 +156,36 @@ test_load_no_api_key_raises() ->
 load_no_api_key_raises_test() ->
     test_load_no_api_key_raises().
 
+%% Criterion 6: an absent config file, or a file with no [llm] table, makes
+%% load/1 return undefined.
+test_load_absent_or_no_llm_table_is_undefined() ->
+    Dir = case os:getenv("TMPDIR") of
+              false -> "/tmp";
+              "" -> "/tmp";
+              D -> D
+          end,
+    AbsentName = lists:flatten(
+                   io_lib:format("soma_config_absent_~p_~p.toml",
+                                 [os:getpid(),
+                                  erlang:unique_integer([positive])])),
+    AbsentPath = filename:join(Dir, AbsentName),
+    NoTableToml =
+        "# just a comment\n"
+        "\n"
+        "# no llm table here\n",
+    NoTablePath = write_temp_config(NoTableToml),
+    try
+        ?assertEqual(undefined,
+                     soma_config:load(#{config_path => AbsentPath})),
+        ?assertEqual(undefined,
+                     soma_config:load(#{config_path => NoTablePath}))
+    after
+        file:delete(NoTablePath)
+    end.
+
+load_absent_or_no_llm_table_is_undefined_test() ->
+    test_load_absent_or_no_llm_table_is_undefined().
+
 write_temp_config(Contents) ->
     Dir = case os:getenv("TMPDIR") of
               false -> "/tmp";
