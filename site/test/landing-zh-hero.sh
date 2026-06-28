@@ -30,7 +30,7 @@ if [ ! -f "${ZH_ROOT}" ]; then
 fi
 
 # The exact hero phrase the Chinese landing must carry.
-HERO_PHRASE="受监督的进程树"
+HERO_PHRASE="受监督的 OTP 进程树"
 
 if grep -qF -- "${HERO_PHRASE}" "${ZH_ROOT}"; then
   echo "PASS: Criterion 4 — Chinese root carries the hero phrase (${HERO_PHRASE}) in ${ZH_ROOT}"
