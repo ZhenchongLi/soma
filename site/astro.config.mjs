@@ -14,6 +14,15 @@ export default defineConfig({
       title: 'Soma',
       // English-only site — no i18n locales configured.
       customCss: ['./src/styles/custom.css'],
+      // Header social links. Starlight renders these into every docs page's
+      // header, so the GitHub repo link reaches all docs routes.
+      social: [
+        {
+          icon: 'github',
+          label: 'GitHub',
+          href: 'https://github.com/ZhenchongLi/soma',
+        },
+      ],
       // Explicit sidebar: setting this turns off Starlight's auto-generation
       // for the whole site, so every group the nav shows is listed here. Only
       // pages that exist are linked — a link to a missing page would emit a
