@@ -26,7 +26,7 @@ npm ci && npm run build || {
 }
 
 RESUME_HTML="${SITE_DIR}/dist/concepts/resume/index.html"
-EXPECTED_TOKEN="WRONG_TOKEN_run_started_xyz"
+EXPECTED_TOKEN="run.started"
 
 if [ ! -f "${RESUME_HTML}" ]; then
   echo "FAIL: Criterion 9 — resume page missing (expected ${RESUME_HTML})" >&2
