@@ -59,6 +59,31 @@ test_load_carries_optional_keys_and_omits_absent() ->
 load_carries_optional_keys_and_omits_absent_test() ->
     test_load_carries_optional_keys_and_omits_absent().
 
+%% Criterion 3: load/1 reads SOMA_LLM_API_KEY and puts its value into the built
+%% map as api_key => <<value>>.
+test_load_reads_api_key_from_env() ->
+    Toml =
+        "[llm]\n"
+        "provider = \"openai_compat\"\n"
+        "base_url = \"api.example/v1\"\n"
+        "model = \"deepseek-v4\"\n",
+    Path = write_temp_config(Toml),
+    Prev = os:getenv("SOMA_LLM_API_KEY"),
+    os:putenv("SOMA_LLM_API_KEY", "sk-test-sentinel-137"),
+    try
+        Config = soma_config:load(#{config_path => Path}),
+        ?assertEqual(<<"sk-test-sentinel-137">>, maps:get(api_key, Config))
+    after
+        case Prev of
+            false -> os:unsetenv("SOMA_LLM_API_KEY");
+            _ -> os:putenv("SOMA_LLM_API_KEY", Prev)
+        end,
+        file:delete(Path)
+    end.
+
+load_reads_api_key_from_env_test() ->
+    test_load_reads_api_key_from_env().
+
 write_temp_config(Contents) ->
     Dir = case os:getenv("TMPDIR") of
               false -> "/tmp";
