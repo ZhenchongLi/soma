@@ -7,11 +7,13 @@
 -export([test_between_steps_resume_starts_fresh_child_that_completes/1]).
 -export([test_between_steps_resume_sends_owner_completed_with_merged_outputs/1]).
 -export([test_in_flight_safe_step_reruns_in_own_worker_and_completes/1]).
+-export([test_unsafe_in_flight_resume_starts_no_run/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
      test_between_steps_resume_sends_owner_completed_with_merged_outputs,
-     test_in_flight_safe_step_reruns_in_own_worker_and_completes].
+     test_in_flight_safe_step_reruns_in_own_worker_and_completes,
+     test_unsafe_in_flight_resume_starts_no_run].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -166,6 +168,52 @@ test_in_flight_safe_step_reruns_in_own_worker_and_completes(_Config) ->
     %% the resumed run reaches run.completed and does not fail.
     ?assert(lists:member(<<"run.completed">>, Types)),
     ?assertNot(lists:member(<<"run.failed">>, Types)).
+
+%% Criterion 4: resume/3 on a run interrupted DURING an unsafe in-flight step
+%% (a non-idempotent `state' tool such as file_write) starts no soma_run child.
+%% Seed a single file_write step trail with a tool.started for s1 and no
+%% step.succeeded; file_write is state/non-idempotent so the plan classifies the
+%% in-flight step {unsafe, s1}. Capture supervisor:count_children(soma_run_sup)
+%% before and after resume/3, and assert the child tally is unchanged: nothing
+%% was started.
+test_unsafe_in_flight_resume_starts_no_run(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-in-flight-unsafe-1">>,
+    SessionId = <<"sess-exec-in-flight-unsafe-1">>,
+    Owner = self(),
+    Root = make_temp_root(),
+    S1 = #{id => s1, tool => file_write,
+           args => #{path => <<"out.txt">>,
+                     content => <<"unsafe bytes">>,
+                     root => list_to_binary(Root)}},
+    Steps = [S1],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    %% A tool.started for s1 with NO step.succeeded: file_write was mid-execution
+    %% when the run was interrupted. file_write is state/non-idempotent so the
+    %% plan classifies it {unsafe, s1}, not {resume, _}.
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"tool.started">>,
+                                   payload => #{tool_call_pid => self()}}),
+
+    BeforeCount = active_run_children(),
+
+    _Result = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    %% No soma_run child was started: the tally is unchanged.
+    AfterCount = active_run_children(),
+    ?assertEqual(BeforeCount, AfterCount).
+
+active_run_children() ->
+    proplists:get_value(active, supervisor:count_children(soma_run_sup)).
 
 wait_for_run_completed(_StorePid, _RunId, 0) ->
     {error, timeout};
