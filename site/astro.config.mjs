@@ -47,6 +47,12 @@ export default defineConfig({
             { label: 'Release', link: '/guides/release/' },
           ],
         },
+        {
+          label: 'Reference',
+          items: [
+            { label: 'Roadmap', link: '/reference/roadmap/' },
+          ],
+        },
       ],
     }),
   ],
