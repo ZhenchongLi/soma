@@ -105,7 +105,7 @@ test_between_steps_resume_sends_owner_completed_with_merged_outputs(_Config) ->
         end,
 
     ?assertEqual(#{value => <<"committed">>}, maps:get(s1, Outputs)),
-    ?assertEqual(#{value => <<"WRONG-pending">>}, maps:get(s2, Outputs)).
+    ?assertEqual(#{value => <<"pending">>}, maps:get(s2, Outputs)).
 
 wait_for_run_completed(_StorePid, _RunId, 0) ->
     {error, timeout};
