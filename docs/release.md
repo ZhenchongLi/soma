@@ -20,13 +20,12 @@ The release boots the runtime core — `soma_runtime` and its supervision tree.
 `soma_actor` (the v0.4 agent-entity layer) is bundled too: it ships in the
 release and the embedding application starts actors on top of the runtime.
 
-The release is named `somad`, so the generated `bin/somad` script is relx's OTP
-release control script: `console`, `foreground`, `daemon`, `status`, and `stop`
-manage the BEAM node itself. Alongside it the release ships **`bin/soma`**, the
-packaged task command described in [`cli.md`](cli.md) — `soma run` / `ask` /
-`status` / `cancel` / `trace` / `stop` / `daemon` over the local Unix socket. The
-two do not collide: `bin/somad` is node control, `bin/soma` is the task client
-(it runs on the release's bundled ERTS, so no separate Erlang install is needed).
+The generated `bin/soma` script is relx's OTP release control script. Commands
+such as `console`, `foreground`, `daemon`, `status`, and `stop` manage the BEAM
+node itself. They are distinct from the task-client API described in
+[`cli.md`](cli.md), which currently exists as Erlang modules (`soma_cli` /
+`soma_cli_server`) and is not yet packaged as an external `soma run` or
+`soma ask` command.
 
 The release is built per host architecture: building on macOS arm64 yields a
 macOS arm64 artifact, building on Linux x86_64 yields a Linux x86_64 artifact,
@@ -42,8 +41,8 @@ rebar3 as prod tar
 Produces:
 
 ```
-_build/prod/rel/somad/somad-0.1.0.tar.gz  # the distributable, ~13 MB
-_build/prod/rel/somad/                    # the same release, assembled in place
+_build/prod/rel/soma/soma-0.1.0.tar.gz   # the distributable, ~13 MB
+_build/prod/rel/soma/                     # the same release, assembled in place
 ```
 
 The tarball unpacks to `bin/`, `erts-<vsn>/`, `lib/`, and `releases/`.
@@ -54,16 +53,9 @@ Extract anywhere and start it. The release boots the supervision tree and starts
 `soma_runtime` automatically.
 
 ```bash
-tar xzf somad-0.1.0.tar.gz -C /opt/soma
-
-# the task command — your agents talk to the daemon through this
-/opt/soma/bin/soma daemon        # boot the daemon (blocks until `soma stop`)
-/opt/soma/bin/soma run flow.lfe  # run a workflow under supervision
-/opt/soma/bin/soma stop          # stop the daemon
-
-# the node-control script — manage the BEAM node directly
-/opt/soma/bin/somad console      # interactive shell with the runtime started
-/opt/soma/bin/somad foreground   # run in the foreground (e.g. under a supervisor)
+tar xzf soma-0.1.0.tar.gz -C /opt/soma
+/opt/soma/bin/soma console      # interactive shell with the runtime started
+/opt/soma/bin/soma foreground   # run in the foreground (e.g. under a supervisor)
 ```
 
 ## Enabling event persistence
@@ -90,7 +82,7 @@ the user running the node) with a `sys.config` such as:
 Start the release with that config so persistence is enabled from boot:
 
 ```bash
-/opt/soma/bin/somad console -config /path/to/sys.config
+/opt/soma/bin/soma console -config /path/to/sys.config
 ```
 
 Leave `event_store_log` unset (omit it from `sys.config`) to keep the default
@@ -104,7 +96,7 @@ no Erlang toolchain required, only the unpacked release:
 ```bash
 printf '%s\n' \
   '{ok,S}=soma_agent_session:start_link(#{}), {ok,_}=soma_agent_session:start_run(S,[#{id=>e,tool=>echo,args=>#{value=><<"smoke">>}}]), timer:sleep(300), io:format("~nSMOKE ~p alive=~p~n",[soma_agent_session:get_status(S), is_process_alive(S)]).' \
-  'init:stop().' | _build/prod/rel/somad/bin/somad console
+  'init:stop().' | _build/prod/rel/soma/bin/soma console
 ```
 
 Expect the run to show `completed` and `alive=true`.
@@ -121,7 +113,7 @@ required:
 ```bash
 printf '%s\n' \
   '{soma_event_store,Store,_,_}=lists:keyfind(soma_event_store,1,supervisor:which_children(soma_sup)), {ok,A}=soma_actor_sup:start_actor(#{actor_id=><<"smoke">>,model_config=>#{},tool_policy=>#{},event_store=>Store}), T=(<<"smoke-task">>), {ok,T}=soma_actor:send(A,#{type=><<"chat">>,payload=>#{text=><<"hi">>},task_id=>T,steps=>[#{id=>s1,tool=>echo,args=>#{value=><<"smoke">>}}]), timer:sleep(300), io:format("~nACTOR-SMOKE ~p alive=~p~n",[soma_actor:get_task_status(A,T), is_process_alive(A)]).' \
-  'init:stop().' | _build/prod/rel/somad/bin/somad console
+  'init:stop().' | _build/prod/rel/soma/bin/soma console
 ```
 
 Expect the task status to show `completed` and `alive=true`.
@@ -154,7 +146,7 @@ release — no Erlang toolchain, just the packaged binary. It uppercases its las
 argv argument (it does not read stdin):
 
 ```bash
-_build/prod/rel/somad/lib/soma_tools-0.1.0/priv/cli/soma_sample_upper hello
+_build/prod/rel/soma/lib/soma_tools-0.1.0/priv/cli/soma_sample_upper hello
 ```
 
 Expect it to print `HELLO`. Substitute the `soma_tools` version in

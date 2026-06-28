@@ -5,7 +5,7 @@
 -module(soma_cli).
 
 -export([run/1, ask/1, trace/1, status/1, cancel/1, stop/1, daemon/1,
-         daemon_foreground/1, resolve_socket/1]).
+         resolve_socket/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -144,37 +144,6 @@ daemon(Args) ->
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
                                                  model_config => ModelConfig}),
     {ok, Path}.
-
-%% Boot the daemon and block until its listener terminates, then return `ok'.
-%% The packaged `soma daemon' command runs this so the BEAM stays alive while the
-%% daemon serves, and exits cleanly once `soma stop' tears the listener down: the
-%% `(stop)' teardown ends the listener's accept loop (a normal process exit),
-%% which this monitor observes as a `DOWN'. A listener crash arrives over the
-%% `start_link' link and takes this process -- and the BEAM -- down with it.
-%% Unlike `daemon/1', this also starts `soma_actor', so the `ask' decision path
-%% is live in a standalone daemon (not only when a test pre-starts the actor sup).
--spec daemon_foreground(map()) -> ok.
-daemon_foreground(Args) ->
-    {ok, _Started} = application:ensure_all_started(soma_runtime),
-    %% The `ask' path needs `soma_actor_sup' registered. Start the actor app only
-    %% if nothing has started its supervisor already, so this is correct both in a
-    %% bare-`erl' daemon (nothing pre-started -> start the app) and under a test or
-    %% release that already brought the actor supervisor up.
-    _ = case whereis(soma_actor_sup) of
-            undefined ->
-                {ok, _} = application:ensure_all_started(soma_actor);
-            _Pid ->
-                ok
-        end,
-    Path = resolve_socket(Args),
-    ModelConfig = soma_config:load(Args),
-    {ok, ServerPid} = soma_cli_server:start_link(#{socket => Path,
-                                                   model_config => ModelConfig}),
-    Ref = erlang:monitor(process, ServerPid),
-    receive
-        {'DOWN', Ref, process, ServerPid, _Reason} ->
-            ok
-    end.
 
 %% Shared socket-path resolver. Both `daemon/1' and `soma_cli_main' call this so
 %% the daemon and a separately-launched client land on the same path. A `socket'
