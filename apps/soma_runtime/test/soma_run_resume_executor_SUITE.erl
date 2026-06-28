@@ -17,6 +17,7 @@
 -export([test_cancelling_resumed_run_stops_worker/1]).
 -export([test_timing_out_resumed_run_lands_terminal_event/1]).
 -export([test_tool_crash_in_resumed_step_does_not_crash_owner/1]).
+-export([test_resumed_run_stamps_correlation_id_from_run_options/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
@@ -31,7 +32,8 @@ all() ->
      test_resume_of_unreconstructable_trail_returns_error_noop,
      test_cancelling_resumed_run_stops_worker,
      test_timing_out_resumed_run_lands_terminal_event,
-     test_tool_crash_in_resumed_step_does_not_crash_owner].
+     test_tool_crash_in_resumed_step_does_not_crash_owner,
+     test_resumed_run_stamps_correlation_id_from_run_options].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -624,6 +626,55 @@ test_tool_crash_in_resumed_step_does_not_crash_owner(_Config) ->
 
     %% the tool crash is run data, not an Owner crash
     ?assert(is_process_alive(Owner)).
+
+%% Regression (#167): a resumed run must rejoin its correlation chain. The
+%% v0.7.1 journal allowlist carries `correlation_id' for exactly this reason --
+%% so a run interrupted mid-chain, when resumed, stamps the SAME correlation_id
+%% on its fresh events and `by_correlation/2' still finds the resumed work.
+%% Seed a between-steps trail whose run_options carry a correlation_id (plus a
+%% committed s1), resume, wait for run.completed, then assert the resumed run's
+%% events carry that correlation_id -- via by_correlation/2 surfacing the
+%% run.completed for this run_id. The executor must map correlation_id out of
+%% run_options into the start opts, not drop it (which would stamp `undefined').
+test_resumed_run_stamps_correlation_id_from_run_options(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-corr-id-1">>,
+    SessionId = <<"sess-exec-corr-id-1">>,
+    CorrelationId = <<"corr-exec-resume-1">>,
+    Owner = self(),
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    S2 = #{id => s2, tool => echo, args => #{value => <<"pending">>}},
+    Steps = [S1, S2],
+    RunOptions = #{run_id => RunId,
+                   session_id => SessionId,
+                   correlation_id => CorrelationId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   correlation_id => CorrelationId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   correlation_id => CorrelationId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+
+    {ok, _RunPid} = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+
+    %% The freshly-emitted resumed-run events carry the seeded correlation_id, so
+    %% by_correlation/2 surfaces this run's terminal event.
+    ByCorr = soma_event_store:by_correlation(StorePid, CorrelationId),
+    ResumedTypes = [maps:get(event_type, E)
+                    || E <- ByCorr,
+                       maps:get(run_id, E, undefined) =:= RunId,
+                       maps:get(event_type, E) =:= <<"run.completed">>],
+    ?assert(lists:member(<<"run.completed">>, ResumedTypes)).
 
 wait_for_event(_StorePid, _RunId, _Type, 0) ->
     {error, timeout};
