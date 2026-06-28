@@ -32,6 +32,23 @@ test_render_result_map_with_task_id_emits_task_id_subform() ->
 render_result_map_with_task_id_emits_task_id_subform_test() ->
     test_render_result_map_with_task_id_emits_task_id_subform().
 
+test_render_status_only_timeout_map_heads_result() ->
+    %% A terminal timeout map carries `status' but neither `outputs' nor `error'
+    %% (a timed-out run produced no outputs and recorded no error). It must still
+    %% render headed by `result' -- `(result (status timeout) ...)' -- so the CLI
+    %% reply is a recognizable terminal result and not a headless pair list.
+    Map = #{
+        status => timeout,
+        task_id => <<"t-1">>,
+        correlation_id => <<"c-1">>
+    },
+    Rendered = iolist_to_binary(soma_lisp:render(Map)),
+    ?assertMatch(<<"(result ", _/binary>>, Rendered),
+    ?assert(binary:match(Rendered, <<"(status timeout)">>) =/= nomatch).
+
+render_status_only_timeout_map_heads_result_test() ->
+    test_render_status_only_timeout_map_heads_result().
+
 test_render_event_map_carries_fields() ->
     EventMap = #{
         event_type => llm_started,
