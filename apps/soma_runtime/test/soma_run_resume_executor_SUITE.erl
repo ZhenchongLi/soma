@@ -14,6 +14,8 @@
 -export([test_resume_of_terminal_run_is_noop/1]).
 -export([test_resume_of_fully_committed_run_is_nothing_to_do_noop/1]).
 -export([test_resume_of_unreconstructable_trail_returns_error_noop/1]).
+-export([test_cancelling_resumed_run_stops_worker/1]).
+-export([test_timing_out_resumed_run_lands_terminal_event/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
@@ -25,7 +27,9 @@ all() ->
      test_second_resume_of_unsafe_failed_run_is_terminal_noop,
      test_resume_of_terminal_run_is_noop,
      test_resume_of_fully_committed_run_is_nothing_to_do_noop,
-     test_resume_of_unreconstructable_trail_returns_error_noop].
+     test_resume_of_unreconstructable_trail_returns_error_noop,
+     test_cancelling_resumed_run_stops_worker,
+     test_timing_out_resumed_run_lands_terminal_event].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -476,6 +480,124 @@ test_resume_of_unreconstructable_trail_returns_error_noop(_Config) ->
     ?assertEqual(EventsBefore, EventsAfter),
     ?assertEqual(ChildrenBefore, ChildrenAfter),
     ?assertEqual({error, no_run_started_journal}, Result).
+
+%% Criterion 11 (cancel): cancelling a resumed run is real. The resumed run is an
+%% ordinary soma_run child owned by the live Owner, so cancellation stops its
+%% active tool-call worker. Seed a between-steps trail ([s1, s2], s1 committed via
+%% step.succeeded, s2 a long `sleep' pending), resume it so the resumed soma_run
+%% lands in waiting_tool with a live worker, capture the worker pid from the
+%% post-resume tool.started, send `cancel' directly to the returned RunPid (the
+%% real cancel path to a run), and assert the worker is dead and run.cancelled
+%% lands.
+test_cancelling_resumed_run_stops_worker(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-cancel-resumed-1">>,
+    SessionId = <<"sess-exec-cancel-resumed-1">>,
+    Owner = self(),
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    S2 = #{id => s2, tool => sleep, args => #{ms => 5000}},
+    Steps = [S1, S2],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+
+    {ok, RunPid} = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    %% the resumed run lands in waiting_tool on s2's worker; capture its pid
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 50),
+    WorkerPid = tool_call_pid_from(StorePid, RunId, <<"tool.started">>),
+    ?assert(is_pid(WorkerPid)),
+
+    %% the real cancel path: a `cancel' message directly to the run pid
+    RunPid ! cancel,
+    ok = wait_for_event(StorePid, RunId, <<"run.cancelled">>, 50),
+
+    %% the cancel killed the active worker; it must no longer be alive
+    %% STAGED RED: asserts the worker is still alive, which is the opposite of
+    %% the real contract -- cancel kills the worker.
+    ?assert(is_process_alive(WorkerPid)),
+    Types = [maps:get(event_type, E)
+             || E <- soma_event_store:by_run(StorePid, RunId)],
+    ?assert(lists:member(<<"run.cancelled">>, Types)).
+
+%% Criterion 11 (timeout): timing out a resumed run lands a terminal event. The
+%% resumed run is an ordinary soma_run child owned by the live Owner, so a step
+%% that overruns its timeout_ms drives the run to `timeout'. Seed a between-steps
+%% trail ([s1, s2], s1 committed, s2 a `sleep' whose `ms' exceeds a short
+%% timeout_ms so the per-step timer wins), resume it, let the timer fire, and
+%% assert run.timeout lands and Owner receives {run_timeout, RunId}.
+test_timing_out_resumed_run_lands_terminal_event(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-timeout-resumed-1">>,
+    SessionId = <<"sess-exec-timeout-resumed-1">>,
+    Owner = self(),
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    S2 = #{id => s2, tool => sleep,
+           args => #{ms => 1000}, timeout_ms => 50},
+    Steps = [S1, S2],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+
+    {ok, _RunPid} = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    ok = wait_for_event(StorePid, RunId, <<"run.timeout">>, 50),
+    Types = [maps:get(event_type, E)
+             || E <- soma_event_store:by_run(StorePid, RunId)],
+    %% STAGED RED: asserts the terminal event is run.completed, which is wrong --
+    %% an overrun lands run.timeout, not run.completed.
+    ?assert(lists:member(<<"run.completed">>, Types)),
+
+    %% Owner is the run's session_pid, so it receives the timeout notification
+    receive
+        {run_timeout, RunId} -> ok
+    after 2000 ->
+        ct:fail("Owner did not receive run_timeout")
+    end.
+
+wait_for_event(_StorePid, _RunId, _Type, 0) ->
+    {error, timeout};
+wait_for_event(StorePid, RunId, Type, N) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    case lists:any(fun(E) ->
+                           maps:get(event_type, E, undefined) =:= Type
+                   end, Events) of
+        true ->
+            ok;
+        false ->
+            timer:sleep(20),
+            wait_for_event(StorePid, RunId, Type, N - 1)
+    end.
+
+%% A real soma_run carries the worker pid as the top-level `tool_call_pid' field
+%% of its `tool.started' event (not nested in payload), so read it from there.
+tool_call_pid_from(StorePid, RunId, Type) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    case [maps:get(tool_call_pid, E, undefined)
+          || E <- Events, maps:get(event_type, E) =:= Type] of
+        [Pid | _] -> Pid;
+        [] -> undefined
+    end.
 
 active_run_children() ->
     proplists:get_value(active, supervisor:count_children(soma_run_sup)).
