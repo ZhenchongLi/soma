@@ -107,7 +107,7 @@ test_in_flight_unsafe_state_step_is_unsafe(_Config) ->
 
     Verdict = soma_run_resume_plan:plan(StorePid, RunId),
 
-    ?assertEqual({resume, deliberately_wrong}, Verdict),
+    ?assertEqual({unsafe, s1}, Verdict),
     ?assertNotMatch({resume, _}, Verdict).
 
 event_store_pid() ->
