@@ -23,7 +23,7 @@ npm ci && npm run build || {
   exit 1
 }
 
-EN_ROOT="${SITE_DIR}/dist/index-en.html"
+EN_ROOT="${SITE_DIR}/dist/index.html"
 
 if [ -f "${EN_ROOT}" ]; then
   echo "PASS: Criterion 3 — English root route built at ${EN_ROOT}"
