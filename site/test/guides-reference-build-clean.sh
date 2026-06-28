@@ -37,13 +37,10 @@ fi
 # none.
 SCAN_PATTERN='error|warning'
 
-# Staged-red: this branch deliberately inverts the expectation — it passes only
-# when the build output DOES contain an error/warning line. The current site
-# builds clean, so this assertion fires.
 if printf '%s\n' "${log}" | grep -niE "${SCAN_PATTERN}" >&2; then
-  echo "PASS: Criterion 1 — build output contains error/warning line(s) (shown above)"
-  exit 0
-else
-  echo "FAIL: Criterion 1 — build output contains no error/warning lines" >&2
+  echo "FAIL: Criterion 1 — build output contains error/warning line(s) (shown above)" >&2
   exit 1
+else
+  echo "PASS: Criterion 1 — npm ci && npm run build exits 0 with no error or warning lines"
+  exit 0
 fi
