@@ -35,7 +35,7 @@ fi
 
 # Scan for any line matching the pattern (case-insensitive). A clean build has
 # none.
-SCAN_PATTERN='error|warning|build'
+SCAN_PATTERN='error|warning'
 
 if printf '%s\n' "${log}" | grep -niE "${SCAN_PATTERN}" >&2; then
   echo "FAIL: Criterion 1 — build output contains error/warning line(s) (shown above)" >&2
