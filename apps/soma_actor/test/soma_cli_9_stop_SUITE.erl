@@ -90,7 +90,7 @@ test_after_stop_start_link_rebinds_path(Config) ->
     {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
     ok = gen_tcp:close(Client),
     %% A fresh start_link on the same path must bind, proving the path is free.
-    {error, _Rebound} = rebind(Path, 80),
+    {ok, _Rebound} = rebind(Path, 80),
     %% And the rebound server must actually be listening on that path.
     {ok, NewClient} = connect(Path),
     ok = gen_tcp:close(NewClient).
