@@ -114,3 +114,34 @@ test_max_tokens_threads_through_to_request_body() ->
 
 max_tokens_threads_through_to_request_body_test() ->
     test_max_tokens_threads_through_to_request_body().
+
+%% Criterion 2: in planning mode (`plan => true' on the model_config) the request
+%% the actor builds carries a *system* message ahead of the user message,
+%% instructing the model to emit a `(run-steps ...)' plan over the allowed tool
+%% names. The allowed tools come from the actor's tool_policy, threaded into the
+%% model_config the builder reads (`allowed_tools => [atom()]'). Feeding a planning
+%% real-provider config with a concrete allowlist and asserting the first message
+%% is a system message whose content mentions `(run-steps' and every allowed tool
+%% name pins the planning instruction. The user message still follows.
+test_planning_mode_builds_run_steps_system_message_over_allowed_tools() ->
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    plan => true,
+                    allowed_tools => [echo, file_read]},
+    Envelope = #{payload => #{prompt => <<"summarize the file">>}},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    Messages = maps:get(messages, Opts),
+    [System | Rest] = Messages,
+    ?assertEqual(<<"system">>, maps:get(role, System)),
+    SystemContent = maps:get(content, System),
+    ?assert(is_binary(SystemContent)),
+    ?assertNotEqual(nomatch, binary:match(SystemContent, <<"(run-steps">>)),
+    ?assertNotEqual(nomatch, binary:match(SystemContent, <<"echo">>)),
+    ?assertNotEqual(nomatch, binary:match(SystemContent, <<"file_read">>)),
+    %% The user prompt message still follows the system message unchanged.
+    ?assertEqual([#{role => <<"user">>, content => <<"summarize the file">>}],
+                 Rest).
+
+planning_mode_builds_run_steps_system_message_over_allowed_tools_test() ->
+    test_planning_mode_builds_run_steps_system_message_over_allowed_tools().
