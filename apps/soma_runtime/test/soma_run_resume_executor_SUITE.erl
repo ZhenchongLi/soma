@@ -11,6 +11,7 @@
 -export([test_unsafe_resume_appends_run_failed_with_resume_unsafe_reason/1]).
 -export([test_after_unsafe_resume_reconstruct_reports_failed/1]).
 -export([test_second_resume_of_unsafe_failed_run_is_terminal_noop/1]).
+-export([test_resume_of_terminal_run_is_noop/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
@@ -19,7 +20,8 @@ all() ->
      test_unsafe_in_flight_resume_starts_no_run,
      test_unsafe_resume_appends_run_failed_with_resume_unsafe_reason,
      test_after_unsafe_resume_reconstruct_reports_failed,
-     test_second_resume_of_unsafe_failed_run_is_terminal_noop].
+     test_second_resume_of_unsafe_failed_run_is_terminal_noop,
+     test_resume_of_terminal_run_is_noop].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -337,6 +339,53 @@ test_second_resume_of_unsafe_failed_run_is_terminal_noop(_Config) ->
 
     %% Second resume: the trail already carries terminal run.failed, so plan/2
     %% reconstructs terminal_status => failed and classifies {terminal, failed}.
+    Result = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    %% No new run, no new event, terminal verdict returned.
+    EventsAfter = soma_event_store:by_run(StorePid, RunId),
+    ChildrenAfter = active_run_children(),
+    ?assertEqual(EventsBefore, EventsAfter),
+    ?assertEqual(ChildrenBefore, ChildrenAfter),
+    ?assertEqual({terminal, failed}, Result).
+
+%% Criterion 8: resume/3 on an already-terminal run (one that reached
+%% run.completed) starts no run, appends no event, and returns the terminal
+%% verdict. The plan reconstructs terminal_status => completed and classifies
+%% {terminal, completed} before it ever inspects next_step. Seed a terminal trail
+%% (run.started for [s1] + step.succeeded for s1 + run.completed), snapshot the
+%% run's event list and the soma_run_sup child tally, call resume/3, and assert:
+%% the event list is byte-for-byte unchanged, the child tally is unchanged, and
+%% the return is {terminal, completed}.
+test_resume_of_terminal_run_is_noop(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-terminal-noop-1">>,
+    SessionId = <<"sess-exec-terminal-noop-1">>,
+    Owner = self(),
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    Steps = [S1],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.completed">>,
+                                   payload => #{}}),
+
+    %% Snapshot the trail and the child tally before resume.
+    EventsBefore = soma_event_store:by_run(StorePid, RunId),
+    ChildrenBefore = active_run_children(),
+
     Result = soma_run_resume_executor:resume(RunId, Owner, StorePid),
 
     %% No new run, no new event, terminal verdict returned.
