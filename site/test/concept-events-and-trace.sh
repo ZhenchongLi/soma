@@ -26,7 +26,7 @@ npm ci && npm run build || {
 }
 
 EVENTS_HTML="${SITE_DIR}/dist/concepts/events-and-trace/index.html"
-EXPECTED_TOKEN="correlation_id_WRONG"
+EXPECTED_TOKEN="correlation_id"
 
 if [ ! -f "${EVENTS_HTML}" ]; then
   echo "FAIL: Criterion 7 — events-and-trace page missing (expected ${EVENTS_HTML})" >&2
