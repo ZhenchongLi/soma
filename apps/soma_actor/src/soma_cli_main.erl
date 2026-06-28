@@ -80,6 +80,14 @@ dispatch(["daemon" | Flags]) ->
         ok = soma_cli:daemon_foreground(#{socket => socket(Opts)}),
         0
     end);
+dispatch(["__ping" | Flags]) ->
+    %% Wrapper-internal liveness probe -- not a user-facing verb, so it stays out
+    %% of `usage/0'. Resolve the socket and drive `soma_cli:ping/1', returning its
+    %% exit code (0 when a listener answers, 1 when none does). The wrapper uses
+    %% this to decide whether a daemon is already up before auto-starting one.
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:ping(#{socket => socket(Opts)})
+    end);
 %% Malformed argv -- no subcommand at all, an unknown subcommand, or a known
 %% subcommand missing its required positional -- has no matching clause above.
 %% Print a usage message to stderr (stdout stays clean for the well-formed
