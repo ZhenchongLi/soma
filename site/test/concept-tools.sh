@@ -25,7 +25,7 @@ npm ci && npm run build || {
 }
 
 TOOLS_HTML="${SITE_DIR}/dist/concepts/tools/index.html"
-EXPECTED_TOKEN="WRONG_TOKEN_STAGED_RED"
+EXPECTED_TOKEN="manifest"
 
 if [ ! -f "${TOOLS_HTML}" ]; then
   echo "FAIL: Criterion 4 — tools page missing (expected ${TOOLS_HTML})" >&2
