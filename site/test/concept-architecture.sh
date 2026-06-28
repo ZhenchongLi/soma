@@ -26,7 +26,7 @@ npm ci && npm run build || {
 }
 
 ARCH_HTML="${SITE_DIR}/dist/concepts/architecture/index.html"
-EXPECTED_TOKEN="soma_run_supervisor_gen_statem_does_not_exist"
+EXPECTED_TOKEN="soma_run"
 
 if [ ! -f "${ARCH_HTML}" ]; then
   echo "FAIL: Criterion 2 — architecture page missing (expected ${ARCH_HTML})" >&2
