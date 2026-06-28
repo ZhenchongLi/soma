@@ -26,7 +26,7 @@ npm ci && npm run build || {
   exit 1
 }
 
-OVERVIEW="${SITE_DIR}/dist/start/quick-start/index.html"
+OVERVIEW="${SITE_DIR}/dist/start/overview/index.html"
 
 if [ -f "${OVERVIEW}" ]; then
   echo "PASS: Criterion 13 — overview route built at ${OVERVIEW}"
