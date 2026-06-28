@@ -182,7 +182,7 @@ test_warm_boot_tolerates_existing_actor_sup(Config) ->
     Sup1 = whereis(soma_actor_sup),
     true = is_pid(Sup1),
     true = is_process_alive(Sup1),
-    true = (Sup0 =/= Sup1),
+    true = (Sup0 =:= Sup1),
 
     %% Tear the daemon down cleanly so the child returns and exits.
     ok = gen_tcp:send(Client, <<"(stop)">>),
