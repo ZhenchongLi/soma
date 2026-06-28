@@ -7,12 +7,14 @@
 -export([test_each_pending_step_runs_in_own_worker/1]).
 -export([test_pending_from_step_resolves_from_seeded_outputs/1]).
 -export([test_resumed_run_completes_with_merged_outputs/1]).
+-export([test_resume_emits_run_resumed_with_first_pending_step/1]).
 
 all() ->
     [test_resume_emits_no_start_events_for_committed_steps,
      test_each_pending_step_runs_in_own_worker,
      test_pending_from_step_resolves_from_seeded_outputs,
-     test_resumed_run_completes_with_merged_outputs].
+     test_resumed_run_completes_with_merged_outputs,
+     test_resume_emits_run_resumed_with_first_pending_step].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -170,6 +172,38 @@ test_resumed_run_completes_with_merged_outputs(_Config) ->
     %% the merged map carries exactly those three steps: one seeded committed
     %% step plus the two newly-run pending steps.
     3 = map_size(MergedOutputs),
+    ok.
+
+%% Criterion 5: a resume start emits a `run.resumed' event carrying the run id
+%% and the first pending step id. The full list is [s1, s2]; s1 is committed
+%% (seeded in `outputs', omitted from `pending') and only s2 is pending, so the
+%% first pending step is s2. The recorded trail must carry a `run.resumed' event
+%% whose `run_id' is this run's id and whose payload names s2 as the first
+%% pending step.
+test_resume_emits_run_resumed_with_first_pending_step(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-resume-resumed-event-1">>,
+    FullSteps = [#{id => s1, tool => echo, args => #{value => <<"a">>}},
+                 #{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    Pending = [#{id => s2, tool => echo, args => #{value => <<"b">>}}],
+    Outputs = #{s1 => #{value => <<"a">>}},
+    {ok, _RunPid} = soma_run:start_link(#{run_id => RunId,
+                                          session_id => <<"sess-resume-resumed-1">>,
+                                          event_store => StorePid,
+                                          steps => FullSteps,
+                                          pending => Pending,
+                                          outputs => Outputs}),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Resumed = [E || E <- Events,
+                    maps:get(event_type, E) =:= <<"run.resumed">>],
+    %% exactly one run.resumed event opened the resume start
+    [ResumedEvent] = Resumed,
+    %% it carries this run's id
+    RunId = maps:get(run_id, ResumedEvent),
+    %% its payload names the first pending step
+    Payload = maps:get(payload, ResumedEvent),
+    s2 = maps:get(first_pending_step, Payload),
     ok.
 
 step_output(Events, StepId) ->
