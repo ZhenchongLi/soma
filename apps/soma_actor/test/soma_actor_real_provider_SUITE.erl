@@ -17,12 +17,14 @@
 -export([mock_model_config_completes_llm_task_same_result_and_events/1]).
 -export([api_key_appears_in_no_emitted_event/1]).
 -export([test_rendered_reply_carries_no_api_key/1]).
+-export([planning_mode_real_response_runs_plan_to_completion/1]).
 
 all() ->
     [real_provider_actor_completes_llm_task_through_openai_no_socket,
      mock_model_config_completes_llm_task_same_result_and_events,
      api_key_appears_in_no_emitted_event,
-     test_rendered_reply_carries_no_api_key].
+     test_rendered_reply_carries_no_api_key,
+     planning_mode_real_response_runs_plan_to_completion].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -223,6 +225,64 @@ test_rendered_reply_carries_no_api_key(_Config) ->
                outputs => #{reply => Text}},
     Rendered = iolist_to_binary(soma_lisp:render(Result)),
     nomatch = binary:match(Rendered, Sentinel),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 1: in planning mode, a fixed real-provider response whose message
+%% content is a `(run-steps ...)' Lisp plan executes end to end. The actor is
+%% started with a real-provider `model_config' carrying `plan => true' and a fixed
+%% `response' -- a {200, JSON body} whose choices[0].message.content is the Lisp
+%% plan string. Entering through the real soma_actor:send/2 with an `llm' envelope,
+%% the planning call goes to soma_llm_openai (which parses the fixed response with
+%% no socket and returns the content as a reply); the actor, knowing the task was a
+%% planning call, runs that content through soma_lfe:compile/2 ->
+%% soma_proposal:normalize/1 into a `run_steps' proposal, the policy gate approves
+%% it, and an owned soma_run executes the plan. The test waits for `completed',
+%% asserts the trail carries `proposal.executed' and `run.completed', and that the
+%% task result holds the plan's step outputs keyed by step id.
+planning_mode_real_response_runs_plan_to_completion(_Config) ->
+    Store = event_store_pid(),
+    %% The model wrote a (run-steps ...) Lisp plan into its content -- one echo
+    %% step, the same plan style soma_actor_lisp_proposal_SUITE uses.
+    Plan = <<"(run-steps (step (id s1) (tool echo) (args (value \"a\"))))">>,
+    Body = iolist_to_binary(
+             json:encode(#{<<"choices">> =>
+                               [#{<<"message">> =>
+                                      #{<<"content">> => Plan}}]})),
+    %% Planning mode is `plan => true' on the real-provider model_config. The
+    %% scheme-less host literal is never dialed (the `response' seam).
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    api_key => <<"sk-test-key">>,
+                    plan => true,
+                    response => {200, Body}},
+    Opts = #{actor_id => <<"actor-planning">>,
+             model_config => ModelConfig,
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-planning">>,
+    CorrelationId = <<"corr-planning">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{prompt => <<"make a plan">>},
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 llm => #{}},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_status(ActorPid, TaskId, completed, 100),
+
+    %% The planning reply was parsed as a plan, approved, and run: the trail
+    %% carries `proposal.executed' and the owned run reached `run.completed'.
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    Types = [maps:get(event_type, E, undefined) || E <- Events],
+    true = lists:member(<<"proposal.executed">>, Types),
+    true = lists:member(<<"run.completed">>, Types),
+
+    %% The task result holds the plan's step outputs keyed by step id -- the
+    %% single echo step s1 echoes its args unchanged.
+    {ok, Outputs} = soma_actor:get_task_result(ActorPid, TaskId),
+    #{s1 := #{value := <<"a">>}} = Outputs,
     true = is_process_alive(ActorPid),
     ok.
 
