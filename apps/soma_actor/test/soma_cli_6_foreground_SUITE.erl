@@ -5,10 +5,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_daemon_foreground_serves_stop_then_returns/1]).
 -export([test_dispatch_daemon_blocks_then_exits_zero/1]).
+-export([test_cold_boot_registers_actor_sup/1]).
 
 all() ->
     [test_daemon_foreground_serves_stop_then_returns,
-     test_dispatch_daemon_blocks_then_exits_zero].
+     test_dispatch_daemon_blocks_then_exits_zero,
+     test_cold_boot_registers_actor_sup].
 
 init_per_testcase(_Case, Config) ->
     %% Hermetic config: point SOMA_CONFIG at an absent path so the daemon loads
@@ -98,6 +100,53 @@ test_dispatch_daemon_blocks_then_exits_zero(Config) ->
     after 5000 ->
         exit(Child, kill),
         ct:fail(dispatch_daemon_did_not_return)
+    end.
+
+%% Criterion 3 (CLI.6): after `soma_cli:daemon_foreground(#{socket => Path})'
+%% boots in a BEAM where `soma_actor_sup' was not registered beforehand,
+%% `whereis(soma_actor_sup)' returns a live pid -- so a standalone daemon can
+%% serve `ask' (whose `start_actor/1' needs a live supervisor). `soma_actor_sup'
+%% is a named singleton, so the cold-boot precondition is order-sensitive within
+%% a CT run: if an earlier case left it registered, this case tears it down first
+%% so the boot is a genuine cold boot, then asserts it is `undefined' before
+%% booting. The read is gated on a bounded poll for the listener accepting
+%% connections, so it happens after boot completed.
+test_cold_boot_registers_actor_sup(Config) ->
+    %% Make the cold-boot precondition real, not an accident of ordering: tear
+    %% down any `soma_actor_sup' an earlier case left registered.
+    case whereis(soma_actor_sup) of
+        undefined -> ok;
+        Existing ->
+            Mon = monitor(process, Existing),
+            ok = supervisor:terminate_child(soma_actor_sup, Existing),
+            exit(Existing, shutdown),
+            receive {'DOWN', Mon, process, Existing, _} -> ok after 5000 -> ok end
+    end,
+    undefined = whereis(soma_actor_sup),
+
+    Path = socket_path(Config),
+    Child = spawn(fun() -> soma_cli:daemon_foreground(#{socket => Path}) end),
+    ChildRef = monitor(process, Child),
+
+    %% Gate the read on boot completing: a real client can connect on Path only
+    %% once the listener is accepting, which is after boot started soma_actor_sup.
+    {ok, Client} = connect(Path),
+
+    %% RED (staged): deliberately wrong expectation -- the boot DOES register
+    %% soma_actor_sup, so whereis is a live pid, not undefined. This assertion
+    %% must fire to prove the test exercises the post-boot state. Corrected to
+    %% the real expectation (a live pid) in the green commit.
+    undefined = whereis(soma_actor_sup),
+
+    %% Tear the daemon down cleanly so the child returns and exits.
+    ok = gen_tcp:send(Client, <<"(stop)">>),
+    {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
+    ok = gen_tcp:close(Client),
+    receive
+        {'DOWN', ChildRef, process, Child, _Reason} -> ok
+    after 5000 ->
+        exit(Child, kill),
+        ct:fail(daemon_foreground_did_not_return)
     end.
 
 %% --- helpers (mirroring the sibling daemon suites) -----------------------
