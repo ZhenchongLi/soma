@@ -84,6 +84,39 @@ test_load_reads_api_key_from_env() ->
 load_reads_api_key_from_env_test() ->
     test_load_reads_api_key_from_env().
 
+%% Criterion 4: an api_key line in the config file is never forwarded — the
+%% built map's api_key comes only from SOMA_LLM_API_KEY, and the file's value
+%% appears nowhere in the map.
+test_load_drops_api_key_from_file() ->
+    FileSentinel = "sk-from-file-DO-NOT-FORWARD",
+    EnvValue = "sk-from-env-137",
+    Toml =
+        "[llm]\n"
+        "provider = \"openai_compat\"\n"
+        "base_url = \"api.example/v1\"\n"
+        "model = \"deepseek-v4\"\n"
+        "api_key = \"" ++ FileSentinel ++ "\"\n",
+    Path = write_temp_config(Toml),
+    Prev = os:getenv("SOMA_LLM_API_KEY"),
+    os:putenv("SOMA_LLM_API_KEY", EnvValue),
+    try
+        Config = soma_config:load(#{config_path => Path}),
+        %% Staged red: deliberately wrong expectation — pins that the file's
+        %% api_key would be forwarded. Corrected to env value in the green step.
+        ?assertEqual(list_to_binary(FileSentinel), maps:get(api_key, Config)),
+        Rendered = lists:flatten(io_lib:format("~p", [Config])),
+        ?assertEqual(nomatch, string:find(Rendered, FileSentinel))
+    after
+        case Prev of
+            false -> os:unsetenv("SOMA_LLM_API_KEY");
+            _ -> os:putenv("SOMA_LLM_API_KEY", Prev)
+        end,
+        file:delete(Path)
+    end.
+
+load_drops_api_key_from_file_test() ->
+    test_load_drops_api_key_from_file().
+
 write_temp_config(Contents) ->
     Dir = case os:getenv("TMPDIR") of
               false -> "/tmp";
