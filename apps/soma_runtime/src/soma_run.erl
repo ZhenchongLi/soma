@@ -51,10 +51,30 @@ init(Opts) ->
                  %% step id, so a pending step's `from_step' into a committed step
                  %% resolves. A normal start omits the opt and begins with `#{}'.
                  outputs = maps:get(outputs, Opts, #{})},
-    emit(Data, <<"run.started">>,
-         #{payload => #{steps => Data#data.steps,
-                        run_options => durable_run_options(Data)}}),
+    %% A start is a resume when the caller supplies the `pending' opt: the
+    %% reconstructed not-yet-committed suffix. A resume start opens with
+    %% `run.resumed' (naming the first pending step) and deliberately does NOT
+    %% re-emit `run.started', so the original journal stays the single source of
+    %% truth `reconstruct' reads. A normal start (no `pending' opt) emits
+    %% `run.started' with the same payload as before.
+    case maps:is_key(pending, Opts) of
+        true ->
+            emit(Data, <<"run.resumed">>,
+                 #{payload => #{first_pending_step =>
+                                    first_pending_step(Data#data.pending)}});
+        false ->
+            emit(Data, <<"run.started">>,
+                 #{payload => #{steps => Data#data.steps,
+                                run_options => durable_run_options(Data)}})
+    end,
     {ok, executing, Data, [{next_event, internal, next_step}]}.
+
+%% The step id of the first not-yet-committed step, or `undefined' when the
+%% pending suffix is empty (a resume with nothing left to run).
+first_pending_step([Step | _]) ->
+    maps:get(id, Step);
+first_pending_step([]) ->
+    undefined.
 
 %% Drive the next step, or finish the run when none remain.
 executing(internal, next_step, Data = #data{pending = []}) ->
