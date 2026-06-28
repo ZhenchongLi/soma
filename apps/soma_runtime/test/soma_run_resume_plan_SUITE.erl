@@ -76,9 +76,7 @@ test_in_flight_safe_step_resumes(_Config) ->
 
     Verdict = soma_run_resume_plan:plan(StorePid, RunId),
 
-    %% staged red: a safe in-flight step must resume, asserting a wrong
-    %% verdict first to watch the assertion fire.
-    ?assertMatch({unsafe, _}, Verdict).
+    ?assertMatch({resume, _}, Verdict).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
