@@ -52,3 +52,18 @@ test_malformed_proposal_form_returns_diagnostic() ->
 
 malformed_proposal_form_returns_diagnostic_test() ->
     test_malformed_proposal_form_returns_diagnostic().
+
+%% Criterion 1 (#138) — (reject (reason "tool not allowed")) parses through
+%% soma_lfe:compile/2 into #{kind => reject, reason => <<"tool not allowed">>}
+%% with the reason as a binary. The real parser boundary is exercised end to
+%% end; no layer is bypassed.
+test_reject_form_compiles_to_reject_kind() ->
+    Source = <<"(reject (reason \"tool not allowed\"))">>,
+    {ok, ProposalMap} = soma_lfe:compile(Source, #{}),
+    ?assertEqual(reject, maps:get(kind, ProposalMap)),
+    Reason = maps:get(reason, ProposalMap),
+    ?assertEqual(<<"tool not allowed">>, Reason),
+    ?assert(is_binary(Reason)).
+
+reject_form_compiles_to_reject_kind_test() ->
+    test_reject_form_compiles_to_reject_kind().
