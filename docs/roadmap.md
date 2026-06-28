@@ -33,7 +33,7 @@ v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
 node B  real LLM provider behind the perform_call seam   [B.1/B.2 done; structured planning next]
-CLI     single-user soma daemon + CLI clients            [module/server path done; packaged command UX next]
+CLI     single-user soma daemon + CLI clients            [packaged `soma` command done; auto-start next]
 Lisp    s-expr actor/agent message language (soma_lfe)   [L.1-L.5 done]
 ```
 
@@ -278,9 +278,20 @@ with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
 - `CLI.3` / follow-up — read/manage commands [done on the module/server path]:
   `soma_cli:status/1`, `trace/1`, `cancel/1`, plus detached run support and
   cancel-by-id through `soma_cli_task_registry`.
-- Remaining CLI product work: expose a packaged external task command without
-  colliding with relx's `bin/soma` node-control script, add auto-start if wanted,
-  and settle config-file UX for real-provider daemon settings.
+- `CLI.8` — `~/.soma/config` (TOML) → daemon `model_config` [done]: a hand-rolled
+  minimal TOML reader builds the real-provider config at daemon boot, with the API
+  key only from `SOMA_LLM_API_KEY` env, so `soma ask` can answer from a real model.
+- `CLI.9` — `soma stop` [done]: an in-band `(stop)` request tears the daemon down
+  (closes the listen socket, cancels in-flight runs, unlinks the socket file),
+  distinct from relx's node-control `stop`.
+- `CLI.6` — packaged `soma` command [done]: the OTP release is named `somad` (so
+  `bin/somad` is node control) and ships `bin/soma`, a wrapper that dispatches
+  `run` / `ask` / `status` / `cancel` / `trace` / `stop` / `daemon` to
+  `soma_cli_main` over the bundled ERTS — no separate Erlang install, no name
+  collision. `soma daemon` blocks until `soma stop`. Verified by an end-to-end
+  release smoke test.
+- Remaining CLI product work: auto-start the daemon when the socket is absent
+  (`CLI.7`).
 
 ## Lisp — s-expr actor/agent message language
 

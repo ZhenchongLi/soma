@@ -906,9 +906,11 @@ The wire is length-prefixed Lisp s-expressions: `(run ...)`, `(ask ...)`,
 `soma_lisp`. Detached run support is a `(detach)` marker inside `(run ...)`;
 detached tasks live in `soma_cli_task_registry` and can be managed by id.
 
-This is not yet a packaged external `soma run` command. The release's `bin/soma`
-script is relx's node-control script (`console`, `foreground`, `daemon`, `stop`,
-`status`, and related commands).
+These ship as the packaged **`soma`** task command in the release (`soma run` /
+`ask` / `status` / `cancel` / `trace` / `stop` / `daemon`). To avoid colliding
+with relx's node-control verbs, the release is named `somad`: `bin/somad` is the
+node-control script (`console`, `foreground`, `daemon`, `stop`, `status`, …) and
+`bin/soma` is the task client. See [`cli.md`](cli.md) and [`release.md`](release.md).
 
 ## Failure reasons
 
