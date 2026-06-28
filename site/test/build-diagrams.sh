@@ -38,7 +38,7 @@ SVGS=(
   soma-actor-flow.svg
   soma-actor-loop.svg
   supervision-tree.svg
-  nonexistent-diagram.svg
+  tool-call.svg
 )
 
 for svg in "${SVGS[@]}"; do
