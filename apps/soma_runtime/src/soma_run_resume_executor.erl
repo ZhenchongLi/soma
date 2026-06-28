@@ -36,5 +36,12 @@ resume(RunId, Owner, Store) ->
                 step_id => StepId,
                 event_type => <<"run.failed">>,
                 payload => #{reason => {resume_unsafe, StepId}}}),
-            {error, {resume_unsafe, StepId}}
+            {error, {resume_unsafe, StepId}};
+        %% A terminal event is already on the trail (a run that finished, or one a
+        %% prior unsafe resume already landed as failed): start no run, append no
+        %% event, return the terminal verdict. This is what makes a repeated unsafe
+        %% resume idempotent -- the trail remembers the terminal, so the second
+        %% call classifies {terminal, _} before it ever looks at next_step.
+        {terminal, Status} ->
+            {terminal, Status}
     end.
