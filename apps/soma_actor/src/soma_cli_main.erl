@@ -62,6 +62,15 @@ dispatch(["stop" | Flags]) ->
     with_flags(Flags, fun(Opts) ->
         soma_cli:stop(#{socket => socket(Opts)})
     end);
+dispatch(["daemon" | Flags]) ->
+    %% Boot the daemon in the foreground and block while it serves. Unlike the
+    %% other verbs this one does not return until a `(stop)' tears the listener
+    %% down; `daemon_foreground/1' returns `ok' on that clean stop, which maps to
+    %% exit code 0.
+    with_flags(Flags, fun(Opts) ->
+        ok = soma_cli:daemon_foreground(#{socket => socket(Opts)}),
+        0
+    end);
 %% Malformed argv -- no subcommand at all, an unknown subcommand, or a known
 %% subcommand missing its required positional -- has no matching clause above.
 %% Print a usage message to stderr (stdout stays clean for the well-formed
@@ -74,7 +83,7 @@ dispatch(_Argv) ->
 %% with a subcommand's reply.
 usage() ->
     io:put_chars(standard_error,
-                 "usage: soma <run|ask|status|trace|cancel|stop> ...\n"),
+                 "usage: soma <run|ask|status|trace|cancel|stop|daemon> ...\n"),
     2.
 
 %% Parse the trailing flags, then run `Run(Opts)' for a well-formed flag list.
