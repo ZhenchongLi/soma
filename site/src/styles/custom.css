@@ -1,0 +1,28 @@
+/* Soma design tokens.
+ *
+ * Self-hosted fonts: Inter for body, IBM Plex Mono for code. Importing the
+ * @fontsource packages lands the @font-face rules — and the family names — in
+ * the bundled CSS, with no runtime CDN.
+ */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+
+:root {
+  /* BEAM/Erlang red accent (not Elixir green). */
+  --sl-color-accent-low: #3a0a0e;
+  --sl-color-accent: #a1232b;
+  --sl-color-accent-high: #f0a8ad;
+
+  --sl-font: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, sans-serif;
+  --sl-font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo,
+    Consolas, monospace;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #f0c2c5;
+  --sl-color-accent: #a1232b;
+  --sl-color-accent-high: #5c1418;
+}
