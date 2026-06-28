@@ -13,6 +13,7 @@
 -export([test_second_resume_of_unsafe_failed_run_is_terminal_noop/1]).
 -export([test_resume_of_terminal_run_is_noop/1]).
 -export([test_resume_of_fully_committed_run_is_nothing_to_do_noop/1]).
+-export([test_resume_of_unreconstructable_trail_returns_error_noop/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
@@ -23,7 +24,8 @@ all() ->
      test_after_unsafe_resume_reconstruct_reports_failed,
      test_second_resume_of_unsafe_failed_run_is_terminal_noop,
      test_resume_of_terminal_run_is_noop,
-     test_resume_of_fully_committed_run_is_nothing_to_do_noop].
+     test_resume_of_fully_committed_run_is_nothing_to_do_noop,
+     test_resume_of_unreconstructable_trail_returns_error_noop].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -438,6 +440,42 @@ test_resume_of_fully_committed_run_is_nothing_to_do_noop(_Config) ->
     ?assertEqual(EventsBefore, EventsAfter),
     ?assertEqual(ChildrenBefore, ChildrenAfter),
     ?assertEqual(nothing_to_do, Result).
+
+%% Criterion 10: resume/3 on a trail that reconstructs to {error, _} -- here an
+%% orphan step.succeeded with no run.started journal -- starts no run, appends no
+%% event, and returns that error. The plan reconstructs no usable journal and
+%% propagates {error, no_run_started_journal}; the executor passes it straight
+%% through without touching the store or the supervisor. Seed only an orphan
+%% step.succeeded (no run.started), snapshot the run's event list and the
+%% soma_run_sup child tally, call resume/3, and assert: the event list is
+%% byte-for-byte unchanged, the child tally is unchanged, and the return is
+%% {error, no_run_started_journal}.
+test_resume_of_unreconstructable_trail_returns_error_noop(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-unreconstructable-error-1">>,
+    SessionId = <<"sess-exec-unreconstructable-error-1">>,
+    Owner = self(),
+    %% An orphan step.succeeded with NO run.started journal: there is no journal
+    %% to reconstruct from, so plan/2 returns {error, no_run_started_journal}.
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"orphan">>}}}),
+
+    %% Snapshot the trail and the child tally before resume.
+    EventsBefore = soma_event_store:by_run(StorePid, RunId),
+    ChildrenBefore = active_run_children(),
+
+    Result = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    %% No new run, no new event, the error propagated.
+    EventsAfter = soma_event_store:by_run(StorePid, RunId),
+    ChildrenAfter = active_run_children(),
+    ?assertEqual(EventsBefore, EventsAfter),
+    ?assertEqual(ChildrenBefore, ChildrenAfter),
+    ?assertEqual({error, no_run_started_journal}, Result).
 
 active_run_children() ->
     proplists:get_value(active, supervisor:count_children(soma_run_sup)).
