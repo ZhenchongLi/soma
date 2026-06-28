@@ -31,6 +31,7 @@
 -export([test_cancel_detached_run_replies_cancelled/1]).
 -export([test_cancel_terminal_task_reports_already_terminal_no_new_run/1]).
 -export([test_non_detached_run_still_terminal_and_disconnect_cancels/1]).
+-export([test_daemon_threads_loaded_model_config/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -60,7 +61,8 @@ all() ->
      test_cancel_detached_run_kills_tool_worker,
      test_cancel_detached_run_replies_cancelled,
      test_cancel_terminal_task_reports_already_terminal_no_new_run,
-     test_non_detached_run_still_terminal_and_disconnect_cancels].
+     test_non_detached_run_still_terminal_and_disconnect_cancels,
+     test_daemon_threads_loaded_model_config].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -812,6 +814,39 @@ test_non_detached_run_still_terminal_and_disconnect_cancels(Config) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     Types = [maps:get(event_type, Event) || Event <- Events],
     true = lists:member(<<"run.cancelled">>, Types).
+
+%% Criterion 7 (CLI.8b): `soma_cli:daemon/1' resolves the config path, calls
+%% `soma_config:load/1', and threads the result into
+%% `soma_cli_server:start_link/1' under `model_config'. The daemon is booted with
+%% a `config_path' override at a temp `[llm]'-less config file; the test reads the
+%% resolved value back by calling `soma_config:load/1' on the same override, which
+%% is `undefined' for an `[llm]'-less file, so the value the daemon threaded is
+%% `undefined' (the mock-driving default). The start_link layer is not bypassed:
+%% the daemon boots a real listener a `{local, _}' client connects to.
+test_daemon_threads_loaded_model_config(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = no_llm_config_file(Config),
+    DaemonOpts = #{socket => Path, config_path => ConfigPath},
+    %% The daemon must boot the runtime: stop it first so the boot is observable.
+    application:stop(soma_runtime),
+    {ok, Resolved} = soma_cli:daemon(DaemonOpts),
+    %% The `{ok, Path}' return arity is unchanged: the resolved socket path.
+    Path = Resolved,
+    %% The value the daemon resolved and threaded is `soma_config:load/1' on the
+    %% same override -- by construction. An `[llm]'-less file loads to `undefined'.
+    {staged_red, will_be_undefined} = soma_config:load(DaemonOpts),
+    %% The daemon booted a real listener: a `{local, _}' client connects.
+    {ok, Sock} = gen_tcp:connect({local, Resolved}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:close(Sock).
+
+%% Write a temp config file with comments but no `[llm]' table, so
+%% `soma_config:load/1' returns `undefined'.
+no_llm_config_file(Config) ->
+    Dir = ?config(priv_dir, Config),
+    File = filename:join(Dir, "no_llm.config"),
+    ok = file:write_file(File, <<"# no llm table here\n">>),
+    File.
 
 daemon_task_registry_pid() ->
     Pid = whereis(soma_cli_task_registry),
