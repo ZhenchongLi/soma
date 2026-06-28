@@ -24,7 +24,7 @@ npm ci && npm run build || {
   exit 1
 }
 
-ZH_DOCS="${SITE_DIR}/dist/zh/start/overview/NONEXISTENT/index.html"
+ZH_DOCS="${SITE_DIR}/dist/zh/start/overview/index.html"
 
 if [ -f "${ZH_DOCS}" ]; then
   echo "PASS: Criterion 14 — Chinese seed docs route survives at ${ZH_DOCS}"
