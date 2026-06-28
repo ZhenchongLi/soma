@@ -37,3 +37,18 @@ test_doc_names_resume_journal_suite_and_cases() ->
 
 doc_names_resume_journal_suite_and_cases_test() ->
     test_doc_names_resume_journal_suite_and_cases().
+
+%% The contract also names the resume-executor suites (v0.7.2 seam, v0.7.3 plan,
+%% v0.7.4 executor) and a representative case from each, so the executor layer is
+%% documented alongside the journal/reconstruction layer.
+test_doc_names_resume_executor_suites_and_cases() ->
+    Doc = read_doc(),
+    ?assert(contains(Doc, <<"soma_run_resume_seam_SUITE">>)),
+    ?assert(contains(Doc, <<"test_resume_emits_run_resumed_with_first_pending_step">>)),
+    ?assert(contains(Doc, <<"soma_run_resume_plan_SUITE">>)),
+    ?assert(contains(Doc, <<"test_in_flight_unsafe_state_step_is_unsafe">>)),
+    ?assert(contains(Doc, <<"soma_run_resume_executor_SUITE">>)),
+    ?assert(contains(Doc, <<"test_unsafe_resume_appends_run_failed_with_resume_unsafe_reason">>)).
+
+doc_names_resume_executor_suites_and_cases_test() ->
+    test_doc_names_resume_executor_suites_and_cases().

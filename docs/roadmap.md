@@ -28,7 +28,7 @@ v0.4    soma_actor -- agent entity skeleton            [done]
 v0.4.1  actor hardening + release/docs alignment       [done]
 v0.5    LLM worker + proposal + policy + budget        [done]
 v0.6    trace tooling + persistent event store         [done]
-v0.7    persistent resume                              [v0.7.1 done; executor next]
+v0.7    persistent resume                              [done — journal + reconstruct + executor; v0.7.5 auto-scan deferred]
 v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
@@ -215,13 +215,28 @@ event trail to the last committed step and continue from there.
   step id is absent from the journal. Proofs in
   [contracts/v0.7-test-contract.md](contracts/v0.7-test-contract.md).
 
-Still open (the resume executor):
+- `v0.7.2` — the `soma_run` resume seam [done] (#162): `init/1` accepts a `pending`
+  suffix + a pre-seeded `outputs` map, so a run starts mid-list; a resume start
+  emits `run.resumed` instead of re-journaling `run.started`; a normal start is
+  unchanged.
+- `v0.7.3` — the resume plan [done] (#165): `soma_run_resume_plan:plan/2` (pure)
+  returns `{resume, …}` / `{unsafe, StepId}` / `{terminal, Status}` /
+  `nothing_to_do` / `{error, _}`. It gates on `terminal_status` and classifies an
+  in-flight step via the tool registry's `effect`/`idempotent`.
+- `v0.7.4` — the resume executor [done] (#167): `soma_run_resume_executor:resume/3`
+  (reconstruct → plan → act) starts a resumed run under `soma_run_sup` owned by a
+  live session, or lands it terminal `failed {resume_unsafe, StepId}`. **The
+  decided idempotency rule is fail-safe: never re-run a non-idempotent `state`
+  step that was in flight** — the run fails clearly rather than risk doubling an
+  irreversible side effect, and the fail-safe is sticky.
 
-- idempotency rules for re-running or skipping completed steps;
-- what resume means for external CLI tools and stateful tools;
-- how actor task state is reconstructed from the event stream;
-- how cancellation and timeout are represented during resume;
-- starting a resumed run from a reconstructed snapshot, and auto-resume on boot.
+Still open:
+
+- `v0.7.5` — auto-resume on boot: an auto-scan of interrupted runs (`run.started`,
+  no terminal event). Deferred — the event store has no by-event-type or
+  enumerate-run-ids query yet. The manual `resume/3` is the controlled first form.
+- Later relaxations of the fail-safe rule: a per-tool resume policy, or a
+  compensate-then-retry hook for non-idempotent steps.
 
 ## v0.8 — DAG / parallel execution
 
