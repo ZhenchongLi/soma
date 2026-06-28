@@ -33,7 +33,7 @@ if [ ! -f "${ZH_ROOT}" ]; then
 fi
 
 # The exact lang attribute the Chinese landing's <html> tag must carry.
-LANG_ATTR='lang="zh-TW"'
+LANG_ATTR='lang="zh-CN"'
 
 if ! grep -Eq "<html[^>]*${LANG_ATTR}" "${ZH_ROOT}"; then
   echo "FAIL: Criterion 12 — Chinese root <html> missing ${LANG_ATTR} in ${ZH_ROOT}" >&2
