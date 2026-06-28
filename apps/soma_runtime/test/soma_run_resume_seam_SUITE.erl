@@ -167,9 +167,9 @@ test_resumed_run_completes_with_merged_outputs(_Config) ->
     %% the newly-run pending steps' outputs are present too
     #{value := <<"b">>} = maps:get(s2, MergedOutputs),
     #{value := <<"c">>} = maps:get(s3, MergedOutputs),
-    %% the merged map carries exactly those three steps -- DELIBERATELY WRONG
-    %% (staged red): the real merged map has 3 keys.
-    2 = map_size(MergedOutputs),
+    %% the merged map carries exactly those three steps: one seeded committed
+    %% step plus the two newly-run pending steps.
+    3 = map_size(MergedOutputs),
     ok.
 
 step_output(Events, StepId) ->
