@@ -29,6 +29,24 @@ These are direct parser-level proofs: `soma_lfe:compile/2` →
 | 2 — `(run-steps (step ...))` parses to a `run_steps` proposal with steps equivalent to the L.1 run path | `soma_lfe_proposal_tests` | `test_run_steps_form_normalizes_with_equivalent_steps` |
 | 3 — a malformed proposal form returns `{error, [Diagnostic]}` with `message`/`line`, no crash | `soma_lfe_proposal_tests` | `test_malformed_proposal_form_returns_diagnostic` |
 
+### The `(reject (reason ...))` form (issue #138)
+
+`(reject (reason "..."))` is the third Lisp proposal form. It compiles to
+`#{kind => reject, reason => <<...>>}` — the reason string becomes a binary —
+and normalizes through `soma_proposal:normalize/1`'s existing reject clause. A
+malformed `(reject (reason))` (no reason string) does not match the reject
+clause and falls through the existing catch-all to a diagnostic carrying a
+binary `message` and a `line` key, without crashing. These proofs route through
+the same `soma_lfe:compile/2` → `soma_lfe:dispatch/1` → `parse_proposal/1`
+boundary as the `reply` / `run-steps` forms above.
+
+| Property | Test module | Test name |
+|----------|-------------|-----------|
+| `(reject (reason "..."))` compiles to a `reject` map with a binary reason | `soma_lfe_proposal_tests` | `test_reject_form_compiles_to_reject_kind` |
+| the compiled reject map normalizes through `soma_proposal:normalize/1` to a `reject` proposal | `soma_lfe_proposal_tests` | `test_reject_form_normalizes_to_reject_kind` |
+| a malformed `(reject (reason))` returns a diagnostic (binary `message`, `line` key), no crash | `soma_lfe_proposal_tests` | `test_malformed_reject_form_returns_diagnostic` |
+| `docs/contracts/L.3-test-contract.md`, `docs/lfe-dsl.md`, `docs/lisp-messages.md` document the reject form | `soma_lfe_reject_doc_tests` | `test_docs_document_reject_form` |
+
 ## Actor integration (Lisp proposal, end-to-end)
 
 These tests drive the full decision chain — `soma_actor:send/2` → `idle/3` →

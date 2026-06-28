@@ -80,7 +80,7 @@ implemented top-level forms are:
 |---|---|
 | `(msg (type T) (payload …) (steps …) (llm …) (correlation-id "…"))` | an envelope `#{type, payload, steps?, llm?, correlation_id?}` |
 | `(step (id s1) (tool echo) (args (value "hi")))`, `(from-step s1)` | a step map (the existing v0.3 grammar) |
-| `(reply (text "…"))` / `(run-steps (step …) …)` | a proposal `#{kind, …}` accepted by `soma_proposal:normalize/1` |
+| `(reply (text "…"))` / `(run-steps (step …) …)` / `(reject (reason "..."))` | a proposal `#{kind, …}` accepted by `soma_proposal:normalize/1` |
 | `(ask (intent "…") (allow echo) (budget-llm 1) (budget-steps 3))` | a CLI ask command map |
 | `(trace "corr")`, `(status "task")`, `(cancel "task")` | CLI read/manage command maps |
 

@@ -150,6 +150,7 @@ executor:
 | `(msg ...)` | `#{type := ..., payload := ..., steps? := ..., llm? := ...}` | `soma_actor:send/2` / `ask/3` string boundary |
 | `(reply (text "..."))` | `#{kind => reply, text => ...}` | LLM proposal boundary |
 | `(run-steps (step ...))` | `#{kind => run_steps, steps => [...]}` | LLM proposal boundary |
+| `(reject (reason "..."))` | `#{kind => reject, reason => ...}` | LLM proposal boundary |
 | `(ask (intent "...") ...)` | `#{ask => ...}` | `soma_cli_server` ask handler |
 | `(trace "...")`, `(status "...")`, `(cancel "...")` | command maps keyed by `trace`, `status`, or `cancel` | `soma_cli_server` read/manage handlers |
 
