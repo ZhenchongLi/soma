@@ -36,7 +36,7 @@ fi
 
 # The four Guides routes the sidebar group must link to.
 GUIDE_SLUGS=(
-  nonexistent
+  usage
   lfe-dsl
   cli
   release
