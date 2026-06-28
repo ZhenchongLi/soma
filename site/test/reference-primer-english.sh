@@ -36,7 +36,7 @@ fi
 # must be fully translated, so the expected count is zero. perl with -CSD is
 # used (portable across BSD/GNU; macOS grep has no -P Unicode-range support).
 CJK_COUNT="$(perl -CSD -e 'local $/; my $c = <>; my $n = () = $c =~ /[\x{4e00}-\x{9fff}]/g; print "$n\n";' "${PRIMER_HTML}")"
-EXPECTED_CJK_COUNT=1
+EXPECTED_CJK_COUNT=0
 
 # Positive English-presence check: a sentence fragment from the translation.
 ENGLISH_FRAGMENT="This page is for readers"
