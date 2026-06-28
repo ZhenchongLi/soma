@@ -42,7 +42,15 @@ init(Opts) ->
                  correlation_id = maps:get(correlation_id, Opts, undefined),
                  event_store = maps:get(event_store, Opts, undefined),
                  steps = maps:get(steps, Opts, []),
-                 pending = maps:get(steps, Opts, [])},
+                 %% `pending' is the not-yet-committed suffix the state machine
+                 %% walks. A resume start passes it omitting the already-committed
+                 %% prefix; a normal start omits the opt, so it defaults to the
+                 %% full `steps' list and the run begins at step 0 unchanged.
+                 pending = maps:get(pending, Opts, maps:get(steps, Opts, [])),
+                 %% `outputs' seeds the committed steps' recorded outputs keyed by
+                 %% step id, so a pending step's `from_step' into a committed step
+                 %% resolves. A normal start omits the opt and begins with `#{}'.
+                 outputs = maps:get(outputs, Opts, #{})},
     emit(Data, <<"run.started">>,
          #{payload => #{steps => Data#data.steps,
                         run_options => durable_run_options(Data)}}),
