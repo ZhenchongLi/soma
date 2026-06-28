@@ -23,6 +23,7 @@ resume(RunId, Owner, Store) ->
                    run_options := RunOptions}} ->
             Opts = #{run_id => maps:get(run_id, RunOptions, RunId),
                      session_id => maps:get(session_id, RunOptions, undefined),
+                     correlation_id => maps:get(correlation_id, RunOptions, undefined),
                      event_store => Store,
                      session_pid => Owner,
                      steps => Steps,
