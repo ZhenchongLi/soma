@@ -101,9 +101,7 @@ test_load_drops_api_key_from_file() ->
     os:putenv("SOMA_LLM_API_KEY", EnvValue),
     try
         Config = soma_config:load(#{config_path => Path}),
-        %% Staged red: deliberately wrong expectation — pins that the file's
-        %% api_key would be forwarded. Corrected to env value in the green step.
-        ?assertEqual(list_to_binary(FileSentinel), maps:get(api_key, Config)),
+        ?assertEqual(list_to_binary(EnvValue), maps:get(api_key, Config)),
         Rendered = lists:flatten(io_lib:format("~p", [Config])),
         ?assertEqual(nomatch, string:find(Rendered, FileSentinel))
     after
