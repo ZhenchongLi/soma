@@ -266,7 +266,7 @@ test_plan_is_read_only(_Config) ->
 
     %% plan is read-only: it appends no events (byte-for-byte unchanged) and
     %% starts no run child (the soma_run_sup child tally is unchanged).
-    ?assertNotEqual(EventsBefore, EventsAfter),
+    ?assertEqual(EventsBefore, EventsAfter),
     ?assertEqual(CountBefore, CountAfter).
 
 wait_for_run_completed(_StorePid, _RunId, 0) ->
