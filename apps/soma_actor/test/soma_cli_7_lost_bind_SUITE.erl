@@ -5,10 +5,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_daemon_foreground_lost_bind_returns_ok/1]).
 -export([test_lost_bind_leaves_original_listener_alive/1]).
+-export([test_dispatch_ping_returns_ping_exit_code/1]).
 
 all() ->
     [test_daemon_foreground_lost_bind_returns_ok,
-     test_lost_bind_leaves_original_listener_alive].
+     test_lost_bind_leaves_original_listener_alive,
+     test_dispatch_ping_returns_ping_exit_code].
 
 init_per_testcase(_Case, Config) ->
     %% Hermetic config: point SOMA_CONFIG at an absent path so the daemon loads
@@ -18,13 +20,34 @@ init_per_testcase(_Case, Config) ->
                                  "absent_soma_config_" ++ os:getpid()),
     _ = file:delete(AbsentConfig),
     os:putenv("SOMA_CONFIG", AbsentConfig),
-    [{prev_config, PrevConfig} | Config].
+    %% Point the resolver at a unique per-run XDG_RUNTIME_DIR so the ping
+    %% dispatch (no `--socket' override) resolves the same socket we boot the
+    %% server on, mirroring `soma_cli_dispatch_SUITE'. Saved/restored per case.
+    PrevXdg = os:getenv("XDG_RUNTIME_DIR"),
+    Tmp = case os:getenv("TMPDIR") of
+              false -> "/tmp";
+              Dir -> Dir
+          end,
+    XdgDir = filename:join(Tmp,
+                           "soma_cli7_xdg_" ++ os:getpid() ++ "_"
+                           ++ integer_to_list(erlang:unique_integer([positive]))),
+    ok = filelib:ensure_dir(filename:join(XdgDir, "x")),
+    ResolvedPath = filename:join(XdgDir, "soma.sock"),
+    _ = file:delete(ResolvedPath),
+    os:putenv("XDG_RUNTIME_DIR", XdgDir),
+    [{prev_config, PrevConfig}, {prev_xdg, PrevXdg},
+     {resolved_path, ResolvedPath} | Config].
 
 end_per_testcase(_Case, Config) ->
     case ?config(prev_config, Config) of
         false -> os:unsetenv("SOMA_CONFIG");
         Prev -> os:putenv("SOMA_CONFIG", Prev)
     end,
+    case ?config(prev_xdg, Config) of
+        false -> os:unsetenv("XDG_RUNTIME_DIR");
+        PrevXdg -> os:putenv("XDG_RUNTIME_DIR", PrevXdg)
+    end,
+    _ = file:delete(?config(resolved_path, Config)),
     ok.
 
 %% Criterion 3 (CLI.7): `soma_cli:daemon_foreground(#{socket => Path})' returns
@@ -117,7 +140,52 @@ test_lost_bind_leaves_original_listener_alive(Config) ->
     _ = file:delete(Path),
     ok.
 
+%% Criterion 5 (CLI.7): `soma_cli_main:dispatch(["__ping"])' drives
+%% `soma_cli:ping/1' over the resolved socket and returns its exit code. The
+%% dispatcher resolves the socket itself (no `--socket' override) through the
+%% per-run `XDG_RUNTIME_DIR' the resolver points at. With a live
+%% `soma_cli_server' bound on that path the probe connect succeeds and the
+%% dispatch returns 0 (mirroring `ping/1''s listening case); after the listener
+%% is torn down the connect is refused and the dispatch returns 1 (mirroring
+%% `ping/1''s no-listener case). The two returns prove the dispatcher routed the
+%% wrapper-internal `__ping' verb through `ping/1' on the resolved socket.
+test_dispatch_ping_returns_ping_exit_code(Config) ->
+    Path = ?config(resolved_path, Config),
+    %% A live listener on the resolved path: the probe connect must succeed.
+    {ok, Server} = soma_cli_server:start_link(#{socket => Path}),
+    ok = wait_listening(Path, 80),
+
+    %% The dispatcher resolves the socket itself (no `--socket') and lands on the
+    %% live listener, so `ping/1' returns 0.
+    0 = soma_cli_main:dispatch(["__ping"]),
+
+    %% Tear the listener down: it is linked to this process, so unlink + kill and
+    %% clear the socket file so a fresh connect is refused.
+    unlink(Server),
+    exit(Server, kill),
+    _ = file:delete(Path),
+    ok = wait_for_connect_refused(Path, 100),
+
+    %% With nothing listening the probe connect is refused, so `ping/1' returns 1.
+    1 = soma_cli_main:dispatch(["__ping"]),
+    ok.
+
 %% --- helpers (mirroring the sibling daemon suites) -----------------------
+
+%% Bounded poll: returns ok once a `{local, Path}' connect is refused (the
+%% listener has torn down), retrying up to `N' times with a short sleep between.
+wait_for_connect_refused(_Path, 0) ->
+    {error, still_listening};
+wait_for_connect_refused(Path, N) ->
+    case gen_tcp:connect({local, Path}, 0,
+                         [binary, {packet, 4}, {active, false}]) of
+        {ok, Sock} ->
+            ok = gen_tcp:close(Sock),
+            timer:sleep(20),
+            wait_for_connect_refused(Path, N - 1);
+        {error, _} ->
+            ok
+    end.
 
 %% Poll until a `{local, Path}' connect succeeds, so the loser races a live
 %% listener rather than racing the winner's bind.
