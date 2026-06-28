@@ -6,6 +6,11 @@
 %% is a distinct process from the interrupted original: the original is gone, so
 %% resume means a new attempt over the same `run_id', seeded with the committed
 %% outputs and the pending steps the plan reconstructed.
+%%
+%% On an `{unsafe, _}' verdict -- a run interrupted mid-execution of a
+%% non-idempotent `state' tool, where re-running could double an external effect
+%% -- resume is fail-safe: it lands the run as failed (appends `run.failed') and
+%% starts no `soma_run' child.
 -module(soma_run_resume_executor).
 
 -export([resume/3]).
@@ -23,5 +28,13 @@ resume(RunId, Owner, Store) ->
                      steps => Steps,
                      pending => Pending,
                      outputs => Outputs},
-            soma_run_sup:start_run(Opts)
+            soma_run_sup:start_run(Opts);
+        {unsafe, StepId} ->
+            soma_event_store:append(
+              Store,
+              #{run_id => RunId,
+                step_id => StepId,
+                event_type => <<"run.failed">>,
+                payload => #{reason => {unsafe_in_flight_step, StepId}}}),
+            {error, {unsafe_in_flight_step, StepId}}
     end.
