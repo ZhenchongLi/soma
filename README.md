@@ -53,34 +53,7 @@ for it. See [docs/design.md](docs/design.md) for the full thesis.
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    subgraph rt["apps/soma_runtime"]
-        sup["soma_sup<br/>supervisor"]
-        es["soma_event_store<br/>gen_server · audit log"]
-        tr["soma_tool_registry<br/>gen_server · descriptors"]
-        ssup["soma_session_sup<br/>supervisor"]
-        sess["soma_agent_session<br/>gen_server · long-lived"]
-        rsup["soma_run_sup<br/>supervisor"]
-        run["soma_run<br/>gen_statem · per-run"]
-        tc["soma_tool_call<br/>worker · one call, then dies"]
-        sup --> es
-        sup --> tr
-        sup --> ssup --> sess
-        sup --> rsup --> run --> tc
-    end
-    cli(["cli child<br/>external OS process · port"])
-    tc -.-> cli
-    subgraph ac["apps/soma_actor · separate app, one-way dep (v0.4)"]
-        asup["soma_actor_sup<br/>supervisor · simple_one_for_one"]
-        act["soma_actor<br/>gen_statem · agent entity"]
-        asup --> act
-    end
-    act -.->|"starts runs directly · session_pid = self"| rsup
-```
-
-A tool crash is **data for the run, not a crash of the session**: `soma_run`
-monitors each worker, so a crash arrives as a `'DOWN'` message.
+![Soma supervision tree — soma_sup (apps/soma_runtime) supervises the in-memory event store, the tool registry, a session supervisor over the long-lived soma_agent_session (gen_server), and a run supervisor over soma_run (a per-run gen_statem) which spawns a disposable soma_tool_call worker per tool call; a cli tool's external OS process hangs off that worker. Below it, a separate app apps/soma_actor has its own soma_actor_sup over the soma_actor agent entity (gen_statem), which starts runs directly under soma_run_sup.](docs/diagrams/supervision-tree.svg)
 
 - **`soma_agent_session`** (`gen_server`) owns a `session_id`, accepts run
   requests, starts runs, tracks them, and **survives any run's failure**. It
@@ -105,23 +78,7 @@ monitors each worker, so a crash arrives as a `'DOWN'` message.
   failed / timed-out / cancelled run as data — the actor never executes tool
   logic itself.
 
-```mermaid
-stateDiagram-v2
-    [*] --> executing
-    executing --> waiting_tool: start tool call
-    waiting_tool --> executing: tool ok · next step
-    executing --> completed: no steps left
-    waiting_tool --> failed: error / crash
-    waiting_tool --> timeout: step timeout
-    waiting_tool --> cancelled: cancel
-    completed --> [*]
-    failed --> [*]
-    timeout --> [*]
-    cancelled --> [*]
-```
-
-A timeout or cancel kills the active worker (and, for a `cli` tool, its external
-OS process) before the run settles.
+![soma_run state machine — executing and waiting_tool form the step loop (a successful tool result advances to the next step); the explicit terminal states are completed, failed, timeout, and cancelled.](docs/diagrams/run-states.svg)
 
 ## Quick start
 
@@ -260,24 +217,7 @@ in [docs/usage.md](docs/usage.md).
   maps. Read-only, it turns the event stream into an operational view without
   changing it.
 
-```mermaid
-flowchart LR
-    subgraph runp["soma_run process"]
-        run["soma_run<br/>gen_statem · owns run state"]
-    end
-    subgraph workp["worker process · per call"]
-        tc["soma_tool_call<br/>worker · one call, then exits"]
-    end
-    erl["erlang_module<br/>Module:invoke/2 · in-BEAM"]
-    cli(["cli<br/>open_port → external exe"])
-    run -->|"spawn + monitor"| tc
-    tc -->|"adapter = erlang_module"| erl
-    tc -.->|"adapter = cli"| cli
-    tc -->|"tool_result message"| run
-```
-
-On timeout / cancel, `soma_run` kills the worker — and a `cli` tool's external OS
-process with it, shell-free (no `os:cmd`).
+![A tool call crosses a process boundary — soma_run spawns and monitors a soma_tool_call worker; the worker runs an erlang_module tool in-BEAM or a cli tool through a port, then sends the result back as a message. On timeout or cancel the run kills the worker, and a cli tool's external OS process with it.](docs/diagrams/tool-call.svg)
 
 Every guarantee is proven by a test that asserts **process survival, not just
 return values**. The runtime proofs live in `apps/soma_runtime/test/`; the full
