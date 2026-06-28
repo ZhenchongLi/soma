@@ -1,12 +1,12 @@
 ---
-// 简体中文 landing root, built to /zh/index.html.
-// Standalone Astro page; <html lang="zh-CN"> and the language toggle anchor are
-// authored by hand. Imports the same custom.css for the accent token and fonts.
+// 简体中文落地页，构建到 /zh/index.html。
+// 独立的 Astro 页面：<html lang="zh-CN">、语言切换链接、导航都在这里手写。
+// 中文是单独写的「人话」版本，不是英文的逐句翻译。
 import { Code } from 'astro:components';
 import '../../styles/custom.css';
 import '../../styles/landing.css';
 
-const quickStart = `# 启动守护进程，运行一个步骤列表
+const quickStart = `# 启动后台服务，再跑一个步骤清单
 soma daemon
 soma run ./pipeline.lfe
 soma status`;
@@ -17,10 +17,10 @@ soma status`;
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <title>Soma — 一个 Erlang/OTP 原生的 agent 运行时</title>
+    <title>Soma — 长在 Erlang/OTP 上的 agent 运行时</title>
     <meta
       name="description"
-      content="一个 Erlang/OTP 原生的 agent 运行时：一次 agent 运行是一棵受监督的 OTP 进程树，而不是在循环里调用工具的函数。"
+      content="Soma 把每一次 agent 运行做成一棵受监督的进程树，而不是一个在循环里反复调工具的函数。超时、卡死、崩溃、取消，都能稳稳接住。"
     />
   </head>
   <body>
@@ -29,60 +29,63 @@ soma status`;
       <div class="nav-links">
         <a href="/zh/start/overview/">文档</a>
         <a href="https://github.com/ZhenchongLi/soma">GitHub</a>
-        <a class="lang-toggle" href="/">English</a>
+        <a class="lang-toggle" href="/">EN</a>
       </div>
     </nav>
 
     <header class="hero">
-      <h1>一次 agent 运行是一棵受监督的 OTP 进程树。</h1>
+      <h1>一次 agent 运行，是一棵受监督的 OTP 进程树。</h1>
       <p class="hero-tagline">
-        Soma 是一个 Erlang/OTP 原生的 agent 运行时。每一个 session、run 和 tool
-        call 都是一个受监督的 OTP 进程——而不是在循环里调用工具的函数。
+        Soma 是一个长在 Erlang/OTP 上的 agent 运行时。它把每一次对话、每一次运行、
+        每一次工具调用，都当成一个独立、有人盯着的进程来跑——而不是一个在循环里
+        反复调工具的函数。
       </p>
       <div class="hero-actions">
-        <a class="cta primary" href="/zh/start/overview/">开始</a>
-        <a class="cta" href="https://github.com/ZhenchongLi/soma">在 GitHub 上查看</a>
+        <a class="cta primary" href="/zh/start/overview/">快速上手</a>
+        <a class="cta" href="https://github.com/ZhenchongLi/soma">去 GitHub 看看</a>
       </div>
     </header>
 
     <section class="thesis">
       <p>
-        核心论点很简单：agent 会以运维的方式出错——它们会超时、会卡住、会崩溃、会被取消。
-        OTP 本来就为这些场景提供了监督、监控和崩溃隔离语义，所以 Soma 把一次运行建模成
-        一棵进程树，而不是一个进程内的循环。
+        想法其实很简单：<strong>agent 出问题，往往不是算错了，而是工程上出岔子</strong>——
+        会超时、会卡死、会崩溃，还得能中途喊停。这些麻烦，Erlang/OTP 几十年前就处理得
+        很好了：让出错的那一块安全地倒下，不连累旁边。所以 Soma 把一次运行做成一棵进程树，
+        而不是一段闷头跑到底的循环。
       </p>
     </section>
 
     <section class="features">
       <article class="card">
-        <h3>LFE DSL</h3>
+        <h3>一段脚本，写清要做的事</h3>
         <p>
-          一套受约束的 Lisp 风格语法编译成运行时执行的步骤列表——只编译、不起进程，
-          单向依赖。
+          用一小段 Lisp 风格的写法，说清楚「分几步、每步干什么」，再翻译成运行时照着
+          执行的清单。只做翻译，不会偷偷替你跑任何东西。
         </p>
       </article>
       <article class="card">
-        <h3>Decision layer</h3>
+        <h3>先想清楚，再动手</h3>
         <p>
-          一个纯粹的 proposal / policy 边界，把一次 LLM 调用变成带类型、经白名单校验的数据，
-          之后才会有工具真正运行。
+          模型想做什么，先落成一条「提议」，过一遍白名单规则；确认放行了，工具才真的
+          动手——不是模型说一句就直接执行。
         </p>
       </article>
       <article class="card">
-        <h3>Resume journal</h3>
+        <h3>崩了也能接着跑</h3>
         <p>
-          持久化的事件日志是唯一真相来源；内存索引只是一个可重建的缓存，
-          在重启后重建运行进度。
+          每一步都写进一份持久的日志，这份日志才是唯一的事实来源。就算整个程序重启，
+          也能照着它把「跑到哪儿了」重新拼回来。
         </p>
       </article>
     </section>
 
     <section class="architecture">
-      <h2>自上而下，全程受监督</h2>
+      <h2>从上到下，全程有人盯着</h2>
       <p>
-        每一次工具调用都跨越进程边界。一次工具崩溃对运行来说只是数据，而不是 session 的崩溃。
+        每一次工具调用，都跑在自己独立的进程里。某个工具崩了，对这次运行来说只是一条
+        「它挂了」的记录，不会把整场对话也拖下水。
       </p>
-      <img src="/supervision-tree.svg" alt="Soma 监督树" />
+      <img src="/supervision-tree.svg" alt="Soma 的进程监督树" />
     </section>
 
     <section class="quickstart">
@@ -94,16 +97,16 @@ soma status`;
       <h2>为什么是 Erlang/OTP</h2>
       <div class="why-grid">
         <div>
-          <h4>真正的取消</h4>
-          <p>取消是一条消息，会停掉正在运行的工具进程，而不是在结尾检查一个标志位。</p>
+          <h4>取消是真的</h4>
+          <p>点了取消，是真去把正在跑的那个工具停掉——不是等它跑完，再回头看一眼你刚才想取消。</p>
         </div>
         <div>
-          <h4>崩溃隔离</h4>
-          <p>link、monitor 和监督树承担容错工作——而不是一堆防御式的 try/catch。</p>
+          <h4>出错互不连累</h4>
+          <p>一处崩溃就地被隔离，靠的是 Erlang 自带的监管机制，而不是到处写满 try/catch 兜底。</p>
         </div>
         <div>
-          <h4>事件是强制的</h4>
-          <p>从第一天起，每一个 session、run 和 tool call 都发出可持久化、可查询的事件。</p>
+          <h4>全程留痕</h4>
+          <p>从第一天起，每一次对话、每一次运行、每一次工具调用，都会留下可查询、可回放的记录。</p>
         </div>
       </div>
     </section>
