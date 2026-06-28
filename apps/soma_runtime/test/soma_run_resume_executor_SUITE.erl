@@ -5,9 +5,11 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_between_steps_resume_starts_fresh_child_that_completes/1]).
+-export([test_between_steps_resume_sends_owner_completed_with_merged_outputs/1]).
 
 all() ->
-    [test_between_steps_resume_starts_fresh_child_that_completes].
+    [test_between_steps_resume_starts_fresh_child_that_completes,
+     test_between_steps_resume_sends_owner_completed_with_merged_outputs].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -65,6 +67,45 @@ test_between_steps_resume_starts_fresh_child_that_completes(_Config) ->
              || E <- soma_event_store:by_run(StorePid, RunId)],
     ?assert(lists:member(<<"run.completed">>, Types)),
     ?assertNot(lists:member(<<"run.failed">>, Types)).
+
+%% Criterion 2: on a between-steps resume, Owner (the run's session_pid) receives
+%% a {run_completed, RunId, Outputs} message whose Outputs map holds BOTH the
+%% seeded committed step's output (s1) AND the freshly-run pending step's output
+%% (s2). Seed the same between-steps trail with s1 committed, resume with Owner =
+%% self(), wait for run.completed, then assert the received Outputs merges both.
+test_between_steps_resume_sends_owner_completed_with_merged_outputs(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-merged-outputs-1">>,
+    SessionId = <<"sess-exec-merged-outputs-1">>,
+    Owner = self(),
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    S2 = #{id => s2, tool => echo, args => #{value => <<"pending">>}},
+    Steps = [S1, S2],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"step.succeeded">>,
+                                   payload => #{output => #{value => <<"committed">>}}}),
+
+    {ok, _RunPid} = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    Outputs =
+        receive
+            {run_completed, RunId, O} -> O
+        after 2000 ->
+            ct:fail("Owner did not receive run_completed")
+        end,
+
+    ?assertEqual(#{value => <<"committed">>}, maps:get(s1, Outputs)),
+    ?assertEqual(#{value => <<"WRONG-pending">>}, maps:get(s2, Outputs)).
 
 wait_for_run_completed(_StorePid, _RunId, 0) ->
     {error, timeout};
