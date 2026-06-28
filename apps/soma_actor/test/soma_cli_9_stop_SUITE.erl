@@ -4,9 +4,11 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_stop_returns_stopped_result/1]).
+-export([test_after_stop_fresh_connect_fails/1]).
 
 all() ->
-    [test_stop_returns_stopped_result].
+    [test_stop_returns_stopped_result,
+     test_after_stop_fresh_connect_fails].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -36,7 +38,38 @@ test_stop_returns_stopped_result(Config) ->
     match = re:run(Reply, "\\(status stopped\\)", [{capture, none}]),
     ok = gen_tcp:close(Client).
 
+%% Criterion 3 (CLI.9): after a `(stop)' the daemon stops accepting connections.
+%% A real client sends framed `(stop)' and reads the terminal reply; the handler
+%% signals the listener to close the listen socket, ending the accept loop. A
+%% fresh `gen_tcp:connect' to the same path must then error -- nothing is
+%% listening. We poll (bounded) because the close races the reply read.
+test_after_stop_fresh_connect_fails(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = connect(Path),
+    ok = gen_tcp:send(Client, <<"(stop)">>),
+    {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
+    ok = gen_tcp:close(Client),
+    %% A fresh connect to the same path must fail -- the daemon no longer accepts.
+    {error, _} = connect_fails(Path, 80).
+
 %% --- helpers (mirroring soma_cli_server_SUITE) ---------------------------
+
+%% Poll for the listen socket being gone: a single (non-retrying) connect that
+%% keeps succeeding means the daemon is still accepting, so keep waiting until
+%% it errors or the budget runs out.
+connect_fails(_Path, 0) ->
+    {ok, still_accepting};
+connect_fails(Path, N) ->
+    case gen_tcp:connect({local, Path}, 0,
+                         [binary, {packet, 4}, {active, false}], 200) of
+        {ok, Sock} ->
+            gen_tcp:close(Sock),
+            timer:sleep(25),
+            connect_fails(Path, N - 1);
+        {error, _} = Err ->
+            Err
+    end.
 
 connect(Path) -> connect(Path, 80).
 connect(_Path, 0) ->
