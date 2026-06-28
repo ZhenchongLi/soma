@@ -290,7 +290,7 @@ test_after_unsafe_resume_reconstruct_reports_failed(_Config) ->
     _Result = soma_run_resume_executor:resume(RunId, Owner, StorePid),
 
     Reconstructed = soma_run_resume:reconstruct(StorePid, RunId),
-    ?assertMatch({ok, #{terminal_status := completed}}, Reconstructed).
+    ?assertMatch({ok, #{terminal_status := failed}}, Reconstructed).
 
 active_run_children() ->
     proplists:get_value(active, supervisor:count_children(soma_run_sup)).
