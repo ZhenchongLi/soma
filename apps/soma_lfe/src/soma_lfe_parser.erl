@@ -107,6 +107,8 @@ parse_msg_step([Other | _], _Acc) ->
 -spec parse_proposal([term()]) -> {ok, map()} | {error, [diagnostic()]}.
 parse_proposal([reply, [text, Text]]) when is_binary(Text) ->
     {ok, #{kind => reply, text => Text}};
+parse_proposal([reject, [reason, Reason]]) when is_binary(Reason) ->
+    {ok, #{kind => reject, reason => Reason}};
 parse_proposal(['run-steps' | StepForms]) ->
     %% Reuse the L.1 step parser (parse_msg_steps) so the step maps are
     %% identical to the run path's steps.
