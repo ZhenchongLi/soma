@@ -5,7 +5,7 @@
 -compile({no_auto_import, [register/2]}).
 
 -export([start_link/0, register/2, lookup/1, start_detached_run/5,
-         cancel/1]).
+         cancel/1, cancel_all/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -24,6 +24,9 @@ start_detached_run(TaskId, CorrId, RunId, Steps, Store) ->
 
 cancel(TaskId) ->
     gen_server:call(?MODULE, {cancel, TaskId}).
+
+cancel_all() ->
+    gen_server:call(?MODULE, cancel_all).
 
 init([]) ->
     {ok, #{tasks => #{}, runs => #{}}}.
@@ -52,6 +55,17 @@ handle_call({cancel, TaskId}, _From, #{tasks := Tasks} = State) ->
                     {error, not_found}
             end,
     {reply, Reply, State};
+handle_call(cancel_all, _From, #{tasks := Tasks} = State) ->
+    %% Send the bare `cancel' to every running run's pid -- the same lever
+    %% `cancel/1' drives -- so a `(stop)' drains in-flight detached runs. Each
+    %% `soma_run' tears down its worker and emits `run.cancelled' itself.
+    _ = maps:foreach(
+          fun(_TaskId, #{status := running, pid := RunPid}) ->
+                  RunPid ! cancel;
+             (_TaskId, _Task) ->
+                  ok
+          end, Tasks),
+    {reply, ok, State};
 handle_call({start_detached_run, TaskId, CorrId, RunId, Steps, Store}, _From,
             #{tasks := Tasks, runs := Runs} = State) ->
     {ok, RunPid} = soma_run_sup:start_run(
