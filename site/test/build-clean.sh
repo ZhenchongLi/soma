@@ -25,7 +25,7 @@ log="$(npm run build 2>&1)"
 
 # Scan for any line matching the pattern (case-insensitive). A clean build has
 # none.
-SCAN_PATTERN='completed'
+SCAN_PATTERN='error|warning'
 
 if printf '%s\n' "${log}" | grep -niE "${SCAN_PATTERN}" >&2; then
   echo "FAIL: Criterion 2 — build output contains error/warning line(s) (shown above)" >&2
