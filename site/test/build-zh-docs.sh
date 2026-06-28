@@ -23,7 +23,7 @@ npm ci && npm run build || {
   exit 1
 }
 
-ZH_DOCS="${SITE_DIR}/dist/zh/start/overview.html"
+ZH_DOCS="${SITE_DIR}/dist/zh/start/overview/index.html"
 
 if [ -f "${ZH_DOCS}" ]; then
   echo "PASS: Criterion 6 — Chinese seed docs route built at ${ZH_DOCS}"
