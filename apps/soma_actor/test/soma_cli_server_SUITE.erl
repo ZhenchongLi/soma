@@ -464,7 +464,7 @@ test_server_serves_after_no_model_ask(Config) ->
     %% The second reply must be a completed `(result ...)' -- the server survived
     %% the earlier no-model failure and served this fresh well-formed request.
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
-    match = re:run(Reply, "\\(status failed\\)", [{capture, none}]),
+    match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
 
 %% Criterion 5 (CLI.2): a framed `(ask (intent "..."))' request whose server is
