@@ -26,7 +26,7 @@ npm ci && npm run build || {
 }
 
 DECISION_HTML="${SITE_DIR}/dist/concepts/decision-layer/index.html"
-EXPECTED_TOKEN="DELIBERATELY_WRONG_TOKEN_RED"
+EXPECTED_TOKEN="policy"
 
 if [ ! -f "${DECISION_HTML}" ]; then
   echo "FAIL: Criterion 6 — decision-layer page missing (expected ${DECISION_HTML})" >&2
