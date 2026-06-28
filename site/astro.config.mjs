@@ -22,6 +22,7 @@ export default defineConfig({
         {
           label: 'Start Here',
           items: [
+            { label: 'Home', link: '/' },
             { label: 'Overview', link: '/start/overview/' },
             { label: 'Quick start', link: '/start/quick-start/' },
           ],
