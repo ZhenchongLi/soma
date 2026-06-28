@@ -231,7 +231,7 @@ test_resume_emits_no_run_started(_Config) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     Types = [maps:get(event_type, E) || E <- Events],
     %% a resume start does not emit run.started
-    true = lists:member(<<"run.started">>, Types),
+    false = lists:member(<<"run.started">>, Types),
     ok.
 
 step_output(Events, StepId) ->
