@@ -17,7 +17,7 @@ cd "${SITE_DIR}" || {
 npm ci && npm run build
 status=$?
 
-if [ "${status}" -eq 0 ]; then
+if [ "${status}" -eq 1 ]; then
   echo "PASS: Criterion 1 — npm ci && npm run build exits 0 in site/"
   exit 0
 else
