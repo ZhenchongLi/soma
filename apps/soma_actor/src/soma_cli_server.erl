@@ -131,6 +131,8 @@ handle_lisp_request(Bytes, Socket, ModelConfig) ->
             handle_status(TaskId);
         {ok, #{cancel := #{task_id := TaskId}}} ->
             handle_cancel(TaskId);
+        {ok, #{stop := _Stop}} ->
+            handle_stop();
         {error, Diagnostics} ->
             soma_lisp:render(#{status => error, error => Diagnostics})
     end.
@@ -203,6 +205,16 @@ handle_ask(Ask, ModelConfig) ->
                        correlation_id => CorrId}
              end,
     soma_lisp:render(Result).
+
+%% Render a terminal reply for a `(stop)' request: a `(result (status stopped))'
+%% s-expr telling the client the daemon accepted the stop. The reply is framed
+%% back to the stopping client before any teardown so the client's one read is
+%% deterministic (the accepted connection survives the listen socket closing).
+%% Teardown -- signalling the listener to close the listen socket, cancelling
+%% in-flight runs, unlinking the socket file -- lands in the later CLI.9 criteria
+%% and slots in ahead of this reply without changing its shape.
+handle_stop() ->
+    ["(result (status stopped))"].
 
 %% Render a `(trace "<corr>")' read request. `soma_trace:render_lisp/2' fetches
 %% the correlation chain from the event store, sorts it by timestamp ascending,
