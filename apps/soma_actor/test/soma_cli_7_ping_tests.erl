@@ -26,6 +26,18 @@ test_ping_returns_zero_when_listening() ->
 ping_returns_zero_when_listening_test_() ->
     {timeout, 30, fun test_ping_returns_zero_when_listening/0}.
 
+%% Issue #147 criterion 2 (CLI.7): the probe returns `1' when nothing is
+%% listening on `Path' -- no daemon running and no socket file present. With a
+%% unique-per-run path that we pre-delete, the `{local, Path}' connect fails
+%% (`enoent'/`econnrefused') and `ping/1' falls through to exit `1'.
+test_ping_returns_one_when_nothing_listening() ->
+    Path = socket_path(),
+    %% No listener was started; `socket_path/0' already pre-deleted the file.
+    ?assertEqual(0, soma_cli:ping(#{socket => Path})).
+
+ping_returns_one_when_nothing_listening_test_() ->
+    {timeout, 30, fun test_ping_returns_one_when_nothing_listening/0}.
+
 %% Poll until a `{local, Path}' connect succeeds, so the probe lands on a live
 %% listener rather than racing the bind.
 wait_listening(_Path, 0) ->
