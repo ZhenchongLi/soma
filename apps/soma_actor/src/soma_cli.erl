@@ -173,6 +173,9 @@ daemon(Args) ->
 %% turned into a clean return. The monitor is the additional handle for the
 %% normal-stop case. `soma_actor_sup' is a named singleton, so a second
 %% `start_link' returns `{error, {already_started, Pid}}', which we tolerate.
+%% When the listener `start_link/1' returns `{error, _}' -- the path is already
+%% bound by a live winner of an auto-start race -- this redundant daemon returns
+%% `ok' and exits cleanly rather than crashing on the lost bind.
 -spec daemon_foreground(map()) -> ok.
 daemon_foreground(Args) ->
     {ok, _Started} = application:ensure_all_started(soma_runtime),
@@ -182,11 +185,19 @@ daemon_foreground(Args) ->
     end,
     Path = resolve_socket(Args),
     ModelConfig = soma_config:load(Args),
-    {ok, Server} = soma_cli_server:start_link(#{socket => Path,
-                                                model_config => ModelConfig}),
-    Ref = monitor(process, Server),
-    receive
-        {'DOWN', Ref, process, Server, _Reason} ->
+    case soma_cli_server:start_link(#{socket => Path,
+                                      model_config => ModelConfig}) of
+        {ok, Server} ->
+            Ref = monitor(process, Server),
+            receive
+                {'DOWN', Ref, process, Server, _Reason} ->
+                    ok
+            end;
+        {error, _Reason} ->
+            %% Lost the bind: the path is already served by a live listener
+            %% (the winner of an auto-start race), so this redundant daemon has
+            %% nothing to do -- return cleanly and let the process exit instead
+            %% of crashing on the failed bind.
             ok
     end.
 
