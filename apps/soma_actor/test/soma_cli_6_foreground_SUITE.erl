@@ -4,9 +4,11 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_daemon_foreground_serves_stop_then_returns/1]).
+-export([test_dispatch_daemon_blocks_then_exits_zero/1]).
 
 all() ->
-    [test_daemon_foreground_serves_stop_then_returns].
+    [test_daemon_foreground_serves_stop_then_returns,
+     test_dispatch_daemon_blocks_then_exits_zero].
 
 init_per_testcase(_Case, Config) ->
     %% Hermetic config: point SOMA_CONFIG at an absent path so the daemon loads
@@ -58,6 +60,44 @@ test_daemon_foreground_serves_stop_then_returns(Config) ->
     after 5000 ->
         exit(Child, kill),
         ct:fail(daemon_foreground_did_not_return)
+    end.
+
+%% Criterion 2 (CLI.6): `soma_cli_main:dispatch(["daemon", "--socket", Path])'
+%% routes to `soma_cli:daemon_foreground/1', blocks while the daemon serves, and
+%% returns exit code 0 after a `(stop)'. The full chain runs: a child runs
+%% `dispatch/1' (which parses the `--socket' flag and calls `daemon_foreground/1',
+%% booting + blocking on the listener monitor), a real `gen_tcp' client sends a
+%% framed `(stop)' over the socket, the server accept loop -> handler -> stop path
+%% closes the listen socket and replies stopped, the listener exits, the monitor
+%% `DOWN' fires, `daemon_foreground/1' returns, `dispatch/1' returns 0, and the
+%% child sends that exit code back. The exit code is captured by having the child
+%% send its `dispatch/1' return value to the test process, because `dispatch/1'
+%% blocks and only returns after the stop.
+test_dispatch_daemon_blocks_then_exits_zero(Config) ->
+    Path = socket_path(Config),
+    Parent = self(),
+    Child = spawn(fun() ->
+        Exit = soma_cli_main:dispatch(["daemon", "--socket", Path]),
+        Parent ! {dispatch_exit, self(), Exit}
+    end),
+
+    %% The daemon must come up: a real client can connect on Path.
+    {ok, Client} = connect(Path),
+    ok = gen_tcp:send(Client, <<"(stop)">>),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    %% The reply is the terminal `(result ...)' s-expr whose status is `stopped'.
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status stopped\\)", [{capture, none}]),
+    ok = gen_tcp:close(Client),
+
+    %% `dispatch/1' blocked while the daemon served and now returns exit code 0
+    %% after the `(stop)' tore the listener down -- the child reports it back.
+    receive
+        {dispatch_exit, Child, Exit} ->
+            0 = Exit
+    after 5000 ->
+        exit(Child, kill),
+        ct:fail(dispatch_daemon_did_not_return)
     end.
 
 %% --- helpers (mirroring the sibling daemon suites) -----------------------
