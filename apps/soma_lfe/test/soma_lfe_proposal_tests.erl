@@ -81,3 +81,21 @@ test_reject_form_normalizes_to_reject_kind() ->
 
 reject_form_normalizes_to_reject_kind_test() ->
     test_reject_form_normalizes_to_reject_kind().
+
+%% Criterion 3 (#138) — a malformed reject form (a (reject (reason)) missing its
+%% reason string) does not match the reject clause and falls through the existing
+%% catch-all, returning {error, [Diagnostic | _]} through soma_lfe:compile/2 where
+%% the first diagnostic carries a binary message and a line key. The compiler does
+%% not crash. The real parser boundary is exercised; no layer is bypassed.
+test_malformed_reject_form_returns_diagnostic() ->
+    Source = <<"(reject (reason))">>,
+    Result = soma_lfe:compile(Source, #{}),
+    %% red: deliberately wrong — a malformed reject is an error, not {ok, _}.
+    ?assertMatch({ok, _}, Result),
+    {error, [Diag | _]} = Result,
+    ?assert(maps:is_key(message, Diag)),
+    ?assert(maps:is_key(line, Diag)),
+    ?assert(is_binary(maps:get(message, Diag))).
+
+malformed_reject_form_returns_diagnostic_test() ->
+    test_malformed_reject_form_returns_diagnostic().
