@@ -73,11 +73,19 @@ build_model_config(Llm) when map_size(Llm) =:= 0 ->
     undefined;
 build_model_config(Llm) ->
     Provider = provider_atom(maps:get("provider", Llm)),
-    #{
+    Base = #{
         provider => Provider,
         base_url => maps:get("base_url", Llm),
         model => maps:get("model", Llm)
-    }.
+    },
+    lists:foldl(fun(Key, Acc) -> carry_optional(Key, Llm, Acc) end,
+                Base, ["enable_thinking", "max_tokens"]).
+
+carry_optional(Key, Llm, Acc) ->
+    case maps:find(Key, Llm) of
+        {ok, Value} -> Acc#{list_to_atom(Key) => Value};
+        error -> Acc
+    end.
 
 provider_atom(<<"openai_compat">>) ->
     openai_compat.
