@@ -26,7 +26,9 @@ main(Argv) ->
 %% the socket and drives `soma_cli:trace/1', returning its exit code (0 on a
 %% successful read -- not gated on `(status completed)'). `cancel TaskId' resolves
 %% the socket and drives `soma_cli:cancel/1', returning its exit code (0 on a
-%% successful cancel). A trailing `--detach' after `run File' or `ask Intent'
+%% successful cancel). `stop' resolves the socket and drives `soma_cli:stop/1',
+%% returning its exit code (0 on a successful stop). A trailing `--detach' after
+%% `run File' or `ask Intent'
 %% sets `detach => true' in the dispatched args, so the emitted request carries the
 %% `(detach)' marker.
 -spec dispatch([string()]) -> integer().
@@ -56,6 +58,10 @@ dispatch(["cancel", TaskId | Flags]) ->
     with_flags(Flags, fun(Opts) ->
         soma_cli:cancel(#{task_id => TaskId, socket => socket(Opts)})
     end);
+dispatch(["stop" | Flags]) ->
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:stop(#{socket => socket(Opts)})
+    end);
 %% Malformed argv -- no subcommand at all, an unknown subcommand, or a known
 %% subcommand missing its required positional -- has no matching clause above.
 %% Print a usage message to stderr (stdout stays clean for the well-formed
@@ -68,7 +74,7 @@ dispatch(_Argv) ->
 %% with a subcommand's reply.
 usage() ->
     io:put_chars(standard_error,
-                 "usage: soma <run|ask|status|trace|cancel> ...\n"),
+                 "usage: soma <run|ask|status|trace|cancel|stop> ...\n"),
     2.
 
 %% Parse the trailing flags, then run `Run(Opts)' for a well-formed flag list.

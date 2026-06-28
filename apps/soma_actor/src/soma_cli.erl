@@ -4,7 +4,8 @@
 %% detach flag mutates the request text to carry a `(detach)' marker.
 -module(soma_cli).
 
--export([run/1, ask/1, trace/1, status/1, cancel/1, daemon/1, resolve_socket/1]).
+-export([run/1, ask/1, trace/1, status/1, cancel/1, stop/1, daemon/1,
+         resolve_socket/1]).
 
 %% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -108,6 +109,27 @@ cancel(#{task_id := TaskId, socket := Path}) ->
 %% quotes.
 cancel_source(TaskId) ->
     iolist_to_binary(["(cancel \"", TaskId, "\")"]).
+
+%% Build the bare `(stop)' request client-side -- the daemon is the only parser --
+%% then drive the same connect / frame+send / read / print path as the other CLI
+%% commands. The reply is the terminal `(result (status stopped))' s-expr; exit 0
+%% when its status sub-form is `stopped', non-zero otherwise.
+-spec stop(map()) -> non_neg_integer().
+stop(#{socket := Path}) ->
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(stop)">>),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    io:format("~s~n", [Reply]),
+    stop_exit_code(Reply).
+
+%% Exit 0 when the rendered reply carries `(status stopped)', non-zero otherwise.
+stop_exit_code(Reply) ->
+    case re:run(Reply, "\\(status stopped\\)", [{capture, none}]) of
+        match -> 0;
+        nomatch -> 1
+    end.
 
 %% Boot the daemon: start the runtime, then a `soma_cli_server' listener on a
 %% resolved socket path. A test-supplied `socket' override points both ends at a
