@@ -35,6 +35,6 @@ resume(RunId, Owner, Store) ->
               #{run_id => RunId,
                 step_id => StepId,
                 event_type => <<"run.failed">>,
-                payload => #{reason => {unsafe_in_flight_step, StepId}}}),
-            {error, {unsafe_in_flight_step, StepId}}
+                payload => #{reason => {resume_unsafe, StepId}}}),
+            {error, {resume_unsafe, StepId}}
     end.
