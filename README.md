@@ -16,11 +16,23 @@ syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `Lisp at the edge -> validated data -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 227, Common Test 313, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 247, Common Test 334, Erlang/OTP 29).
 Every layer is proven under test, asserting *process survival*, not just return
 values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 
-![Soma status — six built runtime layers stacked from the v0.1–v0.2 runtime core up to the v0.7.1 resume journal, all green; alongside, two in-build tracks (a real OpenAI-compatible LLM provider and the soma_cli Lisp wire) and two not-yet-built items, the resume executor and the Linux x86_64 / arm64 release.](docs/diagrams/status-layers.svg)
+| Runtime layer (foundation → newest) — all built ✓ | What it adds |
+| --- | --- |
+| **v0.1–0.2** · Runtime core | supervised runs · timeout / cancel / crash · BEAM + CLI tools |
+| **v0.3** · LFE DSL | compile-only Lisp → step lists |
+| **v0.4** · Agent entity | `soma_actor` (`gen_statem`): messages → tasks → runs |
+| **v0.5** · Decision layer | LLM-call worker · proposals · policy gate · budgets |
+| **v0.6** · Durability + observability | `soma_trace` timelines · `disk_log` store, survives restart |
+| **v0.7.1** · Resume journal | `run.started` journal + read-only reconstruct from the trail |
+
+Two tracks build in parallel: a real **OpenAI-compatible LLM provider** (opt-in, off the
+gate) and the **`soma` CLI / daemon** — `run` / `ask` / `status` / `cancel` / `trace` over a
+local Unix socket, Lisp on the wire. Not yet built: the **resume executor** (replay a run
+from its reconstructed snapshot) and the **Linux x86_64 / arm64 release** (macOS arm64 is done).
 
 ## The idea
 
