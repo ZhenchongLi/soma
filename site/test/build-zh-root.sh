@@ -23,7 +23,7 @@ npm ci && npm run build || {
   exit 1
 }
 
-ZH_ROOT="${SITE_DIR}/dist/zh/index-zh.html"
+ZH_ROOT="${SITE_DIR}/dist/zh/index.html"
 
 if [ -f "${ZH_ROOT}" ]; then
   echo "PASS: Criterion 4 — Chinese root route built at ${ZH_ROOT}"
