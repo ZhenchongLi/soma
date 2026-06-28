@@ -35,6 +35,7 @@
 -export([test_ask_no_config_runs_mock/1]).
 -export([test_daemon_real_provider_config_reaches_actor/1]).
 -export([test_ask_real_provider_returns_fixed_response_answer/1]).
+-export([test_real_provider_api_key_leaks_nowhere/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -68,7 +69,8 @@ all() ->
      test_daemon_threads_loaded_model_config,
      test_ask_no_config_runs_mock,
      test_daemon_real_provider_config_reaches_actor,
-     test_ask_real_provider_returns_fixed_response_answer].
+     test_ask_real_provider_returns_fixed_response_answer,
+     test_real_provider_api_key_leaks_nowhere].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -984,6 +986,83 @@ test_ask_real_provider_returns_fixed_response_answer(Config) ->
     openai_compat = maps:get(provider, CallOpts),
     [#{role := <<"user">>, content := Intent}] = maps:get(messages, CallOpts),
     ok.
+
+%% Criterion 11 (CLI.8b): regression guard. For a real-provider ask driven through
+%% the daemon's config path, the `SOMA_LLM_API_KEY' value must appear in NO emitted
+%% event payload (via `by_correlation/2') and in NO rendered reply. The daemon
+%% config path sources the api_key: `soma_config:load/1' on a real-provider file,
+%% with `SOMA_LLM_API_KEY' set to a known sentinel, returns a provider map whose
+%% `api_key' IS that sentinel. The loaded map is given a fixed `response' so the
+%% provider's chat call parses the {200, Body} pair directly and opens no socket to
+%% a model -- hermetic. A real gen_tcp client over the local socket sends the
+%% `(ask ...)' s-expr and reads the rendered `(result ...)' reply; the reply's
+%% correlation id pulls every event for the task through `by_correlation/2'. The
+%% sentinel must be absent from every event field AND from the rendered reply.
+test_real_provider_api_key_leaks_nowhere(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = real_provider_config_file(Config),
+    KeyEnv = "SOMA_LLM_API_KEY",
+    Sentinel = "sk-secret-sentinel-137-do-not-leak",
+    SentinelBin = list_to_binary(Sentinel),
+    Prev = os:getenv(KeyEnv),
+    os:putenv(KeyEnv, Sentinel),
+    Answer = <<"the model says hi">>,
+    Body = iolist_to_binary(
+             json:encode(#{<<"choices">> =>
+                               [#{<<"message">> =>
+                                      #{<<"content">> => Answer}}]})),
+    try
+        %% The daemon config path sources the api_key: the loaded map's `api_key'
+        %% is exactly the `SOMA_LLM_API_KEY' sentinel.
+        Loaded = soma_config:load(#{config_path => ConfigPath}),
+        SentinelBin = maps:get(api_key, Loaded),
+        %% Give the loaded real-provider map a fixed `response' so the chat call
+        %% parses {200, Body} directly and opens no socket -- hermetic.
+        ModelConfig = Loaded#{response => {200, Body}},
+        {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                     model_config => ModelConfig}),
+        {ok, Client} = connect(Path),
+        Request = <<"(ask (intent \"what is the answer\"))">>,
+        ok = gen_tcp:send(Client, Request),
+        {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+        ok = gen_tcp:close(Client),
+        %% The ask completed end-to-end through the real-provider path.
+        match = re:run(Reply, "^\\(result ", [{capture, none}]),
+        match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+        %% STAGED-RED: deliberately wrong expectation (the sentinel leaks). The
+        %% guard's true expectation is `nomatch'; this asserts a leak so the
+        %% assertion fires for the right reason, then is corrected in the fix.
+        {match, _} = binary:match(Reply, SentinelBin),
+        %% Pull every event for the task through by_correlation/2 and assert the
+        %% sentinel appears in no event field, however nested.
+        {match, [Corr]} =
+            re:run(Reply, "\\(correlation-id \"([^\"]+)\"\\)",
+                   [{capture, all_but_first, binary}]),
+        StorePid = event_store_pid(),
+        Events = soma_event_store:by_correlation(StorePid, Corr),
+        true = length(Events) > 0,
+        true = lists:any(fun(E) -> term_contains(E, SentinelBin) end, Events)
+    after
+        case Prev of
+            false -> os:unsetenv(KeyEnv);
+            _ -> os:putenv(KeyEnv, Prev)
+        end
+    end.
+
+%% True when the sentinel binary appears anywhere inside Term (a map's keys or
+%% values, a list, or a tuple, however nested).
+term_contains(Term, Sentinel) when is_binary(Term) ->
+    binary:match(Term, Sentinel) =/= nomatch;
+term_contains(Term, Sentinel) when is_map(Term) ->
+    lists:any(fun({K, V}) ->
+                      term_contains(K, Sentinel) orelse term_contains(V, Sentinel)
+              end, maps:to_list(Term));
+term_contains(Term, Sentinel) when is_list(Term) ->
+    lists:any(fun(E) -> term_contains(E, Sentinel) end, Term);
+term_contains(Term, Sentinel) when is_tuple(Term) ->
+    term_contains(tuple_to_list(Term), Sentinel);
+term_contains(_Term, _Sentinel) ->
+    false.
 
 %% Write a temp config file with an `[llm]' table selecting a real provider, so
 %% `soma_config:load/1' (with the daemon key env set) returns the provider map.
