@@ -32,7 +32,7 @@ if [ ! -f "${EN_ROOT}" ]; then
 fi
 
 # The exact asset path the landing must reference.
-SVG_REF="/WRONG-supervision-tree.svg"
+SVG_REF="/supervision-tree.svg"
 # The built SVG file the reference must resolve to.
 SVG_FILE="${SITE_DIR}/dist/supervision-tree.svg"
 
