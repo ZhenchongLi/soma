@@ -175,6 +175,31 @@ handle_lisp_request(Bytes, Socket, ModelConfig, Listener) ->
 handle_ask(Ask, ModelConfig) ->
     TaskId = mint_id("task"),
     CorrId = mint_id("corr"),
+    case has_model(ModelConfig) of
+        false ->
+            %% No model is configured (no `~/.soma/config': `model_config' is
+            %% `undefined', `#{}', or a map carrying neither a `directive' nor a
+            %% `provider' key). Short-circuit to a named `failed' result without
+            %% starting the actor or the call -- so an empty `llm' map never reaches
+            %% `soma_llm_call:perform_call/1', where it would throw `function_clause'
+            %% and leak the raw stack term onto the wire. Nothing is spawned, so the
+            %% listener and the next request are untouched.
+            soma_lisp:render(#{status => failed,
+                               task_id => TaskId,
+                               correlation_id => CorrId,
+                               error => no_model_configured});
+        true ->
+            handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId)
+    end.
+
+%% A `model_config' is usable when it is a map carrying a mock `directive' or a
+%% real `provider' key. `undefined', `#{}', and any other shape are no-model.
+has_model(ModelConfig) when is_map(ModelConfig) ->
+    maps:is_key(directive, ModelConfig) orelse maps:is_key(provider, ModelConfig);
+has_model(_ModelConfig) ->
+    false.
+
+handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId) ->
     Intent = maps:get(intent, Ask),
     Opts0 = #{actor_id => mint_id("actor"),
               model_config => ModelConfig,
