@@ -25,7 +25,7 @@ npm ci && npm run build || {
 }
 
 ACTORS_HTML="${SITE_DIR}/dist/concepts/actors/index.html"
-EXPECTED_TOKEN="soma_actor_DOES_NOT_EXIST"
+EXPECTED_TOKEN="soma_actor"
 
 if [ ! -f "${ACTORS_HTML}" ]; then
   echo "FAIL: Criterion 5 — actors page missing (expected ${ACTORS_HTML})" >&2
