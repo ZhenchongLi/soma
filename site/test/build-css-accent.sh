@@ -31,7 +31,7 @@ if [ ! -d "${CSS_DIR}" ]; then
 fi
 
 # The soma red accent — a red hex value bound to Starlight's accent property.
-SOMA_RED="#ff0000"
+SOMA_RED="#a1232b"
 
 if grep -Eqr -- "--sl-color-accent:[[:space:]]*${SOMA_RED}\b" "${CSS_DIR}"; then
   echo "PASS: Criterion 9 — built CSS binds the soma red accent (${SOMA_RED}) to --sl-color-accent in ${CSS_DIR}"
