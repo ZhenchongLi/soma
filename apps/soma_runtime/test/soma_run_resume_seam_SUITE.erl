@@ -5,10 +5,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_resume_emits_no_start_events_for_committed_steps/1]).
 -export([test_each_pending_step_runs_in_own_worker/1]).
+-export([test_pending_from_step_resolves_from_seeded_outputs/1]).
 
 all() ->
     [test_resume_emits_no_start_events_for_committed_steps,
-     test_each_pending_step_runs_in_own_worker].
+     test_each_pending_step_runs_in_own_worker,
+     test_pending_from_step_resolves_from_seeded_outputs].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -92,6 +94,46 @@ test_each_pending_step_runs_in_own_worker(_Config) ->
     %% no worker pid is the run pid
     false = lists:member(RunPid, ToolPids),
     ok.
+
+%% Criterion 3: a pending step whose args reference an already-committed (seeded)
+%% step through `from_step' resolves that value from the seeded `outputs' map,
+%% without the run failing on a missing prior step. The full list is [s1, s2];
+%% s1 is committed (seeded in `outputs', omitted from `pending') with output
+%% `#{value => <<"seeded">>}', and only s2 is pending. s2 is a bare
+%% `#{from_step => s1}' echo, so its resolved input is s1's seeded output and --
+%% echo returning its input unchanged -- s2's recorded output must equal the
+%% seeded value. The run reaches `completed': it does not fail on a missing prior
+%% step, because the committed step's output is read from the seeded `outputs'.
+test_pending_from_step_resolves_from_seeded_outputs(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-resume-from-step-1">>,
+    Seeded = #{value => <<"seeded">>},
+    FullSteps = [#{id => s1, tool => echo, args => #{value => <<"seeded">>}},
+                 #{id => s2, tool => echo, args => #{from_step => s1}}],
+    Pending = [#{id => s2, tool => echo, args => #{from_step => s1}}],
+    Outputs = #{s1 => Seeded},
+    {ok, _RunPid} = soma_run:start_link(#{run_id => RunId,
+                                          session_id => <<"sess-resume-fs-1">>,
+                                          event_store => StorePid,
+                                          steps => FullSteps,
+                                          pending => Pending,
+                                          outputs => Outputs}),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    %% the run completed -- it did not fail on a missing prior step
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.completed">>, Types),
+    false = lists:member(<<"run.failed">>, Types),
+    %% the pending step's output reflects the seeded committed step's output
+    S2Out = step_output(Events, s2),
+    #{value := <<"WRONG-staged-red">>} = S2Out,
+    ok.
+
+step_output(Events, StepId) ->
+    [E] = [Ev || Ev <- Events,
+                 maps:get(event_type, Ev) =:= <<"step.succeeded">>,
+                 maps:get(step_id, Ev) =:= StepId],
+    maps:get(output, maps:get(payload, E)).
 
 wait_for_run_completed(_StorePid, _RunId, 0) ->
     {error, timeout};
