@@ -38,10 +38,8 @@ if [ ! -f "${ENTRY_HTML}" ]; then
 fi
 
 # The Start Here group label and its single overview route.
-# STAGED RED: deliberately-wrong route that does not exist in the build, so the
-# assertion fires before being corrected to current reality.
 GROUP_LABEL="Start Here"
-START_HREF="/start/nonexistent-overview/"
+START_HREF="/start/overview/"
 
 missing=0
 
