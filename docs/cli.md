@@ -1,11 +1,14 @@
 # Soma CLI & daemon
 
-> Status: the local daemon/server path is implemented as Erlang modules
-> (`soma_cli`, `soma_cli_server`, `soma_cli_task_registry`) and proven through the
-> test gate. The external shell command UX shown below is the intended product
-> shape; today's relx `bin/soma` is still the OTP release control script
-> (`console`, `foreground`, `daemon`, `status`, `stop`, and so on), not yet a
-> task-client command parser.
+> Status: the daemon/server path is implemented as Erlang modules (`soma_cli`,
+> `soma_cli_server`, `soma_cli_task_registry`, `soma_cli_main`), and the packaged
+> **`soma`** task command ships in the release — the `run` / `ask` / `status` /
+> `cancel` / `trace` / `stop` / `daemon` wrapper described below. To avoid
+> colliding with relx's generated node-control verbs, the OTP release is named
+> `somad`: `bin/somad` is the node-control script (`console`, `foreground`,
+> `daemon`, `stop`, …) and `bin/soma` is the task client. Both are proven through
+> the test gate and an end-to-end release smoke test (`soma daemon` → `soma run`
+> → `soma stop`).
 
 ## Scope: single-user, trusted, local
 
