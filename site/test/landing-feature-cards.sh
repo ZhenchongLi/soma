@@ -34,7 +34,7 @@ fi
 LABELS=(
   "LFE DSL"
   "Decision layer"
-  "Persistence journal"
+  "Resume journal"
 )
 
 for label in "${LABELS[@]}"; do
