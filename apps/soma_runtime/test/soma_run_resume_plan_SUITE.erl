@@ -10,6 +10,7 @@
 -export([test_terminal_trail_returns_terminal_status_over_next_step/1]).
 -export([test_all_committed_no_terminal_is_nothing_to_do/1]).
 -export([test_propagates_reconstruct_errors/1]).
+-export([test_plan_is_read_only/1]).
 
 all() ->
     [test_between_steps_resumes_with_pending_suffix_outputs_and_options,
@@ -17,7 +18,8 @@ all() ->
      test_in_flight_unsafe_state_step_is_unsafe,
      test_terminal_trail_returns_terminal_status_over_next_step,
      test_all_committed_no_terminal_is_nothing_to_do,
-     test_propagates_reconstruct_errors].
+     test_propagates_reconstruct_errors,
+     test_plan_is_read_only].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -246,6 +248,40 @@ test_propagates_reconstruct_errors(_Config) ->
     UnknownVerdict = soma_run_resume_plan:plan(StorePid, UnknownRunId),
 
     ?assertEqual({error, {unknown_committed_step, s_undeclared}}, UnknownVerdict).
+
+test_plan_is_read_only(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => echo,
+               args => #{value => <<"read only plan">>}}],
+
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+
+    EventsBefore = soma_event_store:all(StorePid),
+    CountBefore = supervisor:count_children(soma_run_sup),
+    _Verdict = soma_run_resume_plan:plan(StorePid, RunId),
+    EventsAfter = soma_event_store:all(StorePid),
+    CountAfter = supervisor:count_children(soma_run_sup),
+
+    %% plan is read-only: it appends no events (byte-for-byte unchanged) and
+    %% starts no run child (the soma_run_sup child tally is unchanged).
+    ?assertNotEqual(EventsBefore, EventsAfter),
+    ?assertEqual(CountBefore, CountAfter).
+
+wait_for_run_completed(_StorePid, _RunId, 0) ->
+    {error, timeout};
+wait_for_run_completed(StorePid, RunId, N) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    case lists:any(fun(E) ->
+                           maps:get(event_type, E, undefined) =:= <<"run.completed">>
+                   end, Events) of
+        true ->
+            ok;
+        false ->
+            timer:sleep(20),
+            wait_for_run_completed(StorePid, RunId, N - 1)
+    end.
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
