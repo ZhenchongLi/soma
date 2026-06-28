@@ -257,7 +257,7 @@ test_normal_start_emits_run_started_and_no_run_resumed(_Config) ->
     %% a normal start emits run.started ...
     true = lists:member(<<"run.started">>, Types),
     %% ... and emits no run.resumed event
-    true = lists:member(<<"run.resumed">>, Types),
+    false = lists:member(<<"run.resumed">>, Types),
     %% the full list ran from the first step: every step started
     StartedSteps = [maps:get(step_id, E, undefined)
                     || E <- Events,
