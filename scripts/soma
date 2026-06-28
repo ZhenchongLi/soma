@@ -38,40 +38,14 @@ done
 libs="$rel/lib"
 [ -d "$libs" ] || libs="$rel/_build/default/lib"
 
-run_soma() {
-    # shellcheck disable=SC2086
-    exec "$erl" -noshell -pa "$libs"/*/ebin \
-        -run soma_cli_main main_argv -extra "$@"
-}
+# Publish this wrapper's own path so the Erlang auto-start (soma_cli_main's
+# `launch_daemon/1`) knows how to spawn a detached `soma daemon' when a client
+# command finds no daemon up. The decide/launch/wait logic lives in Erlang
+# (soma_cli:ensure_daemon/2); only the detached spawn itself is a shell step.
+SOMA_SELF="$rel/bin/soma"
+[ -x "$SOMA_SELF" ] || SOMA_SELF="$0"
+export SOMA_SELF
 
-# Auto-start: a client command that finds no live daemon brings one up itself, so
-# there is no separate `soma daemon' ritual. Only client verbs auto-start;
-# `daemon' / `stop' / `__ping' must not. A `--socket' override is carried to the
-# probe and the auto-started daemon so all three resolve the same path. If two
-# clients race, both launch a daemon but only one wins the kernel bind -- the
-# loser's daemon_foreground returns and that BEAM exits -- so a lost race is
-# harmless.
-case "${1:-}" in
-    run|ask|status|cancel|trace)
-        sock=""; prev=""
-        for a in "$@"; do
-            [ "$prev" = "--socket" ] && sock="$a"
-            prev="$a"
-        done
-        [ -n "$sock" ] && sflag="--socket $sock" || sflag=""
-        # shellcheck disable=SC2086
-        if ! "$0" __ping $sflag >/dev/null 2>&1; then
-            # shellcheck disable=SC2086
-            nohup "$0" daemon $sflag >/dev/null 2>&1 &
-            i=0
-            while [ "$i" -lt 50 ]; do
-                # shellcheck disable=SC2086
-                "$0" __ping $sflag >/dev/null 2>&1 && break
-                sleep 0.1
-                i=$((i + 1))
-            done
-        fi
-        ;;
-esac
-
-run_soma "$@"
+# shellcheck disable=SC2086
+exec "$erl" -noshell -pa "$libs"/*/ebin \
+    -run soma_cli_main main_argv -extra "$@"

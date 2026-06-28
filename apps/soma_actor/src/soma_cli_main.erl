@@ -25,7 +25,12 @@ main(Argv) ->
 %% that argv.
 -spec main_argv() -> no_return().
 main_argv() ->
-    main(init:get_plain_arguments()).
+    Argv = init:get_plain_arguments(),
+    %% Auto-start a daemon for a client verb if none is up. This lives in the real
+    %% CLI entry (`main_argv/0'), not in `dispatch/1', so the unit tests that call
+    %% `dispatch/1' directly are never perturbed by an extra probe connection.
+    _ = ensure_daemon_for(Argv),
+    main(Argv).
 
 %% `run File' resolves the socket and drives `soma_cli:run/1', returning its exit
 %% code (0 only when the reply carries `(status completed)'). `ask Intent' resolves
@@ -141,6 +146,49 @@ add_flag(error, _Key, _Value) ->
 %% `/tmp/soma-<user>.sock'.
 socket(Opts) ->
     soma_cli:resolve_socket(Opts).
+
+%% Before a client verb runs, make sure a daemon is up -- auto-start one if none
+%% is, best-effort (if it never comes up the command runs anyway and fails with
+%% its own clear connection error). Only the client verbs auto-start;
+%% `daemon' / `stop' / `__ping' and malformed argv do not.
+ensure_daemon_for([Verb | Rest])
+  when Verb =:= "run"; Verb =:= "ask"; Verb =:= "status";
+       Verb =:= "cancel"; Verb =:= "trace" ->
+    Sock = socket(socket_opts(Rest)),
+    soma_cli:ensure_daemon(#{socket => Sock}, fun() -> launch_daemon(Sock) end);
+ensure_daemon_for(_Argv) ->
+    ok.
+
+%% Pull just the `--socket <path>' override out of a verb's trailing args so the
+%% auto-start resolves the exact socket the command will use; other tokens are
+%% ignored here (the command's own flag parsing handles them).
+socket_opts(["--socket", Path | _]) ->
+    #{socket => Path};
+socket_opts([_ | Rest]) ->
+    socket_opts(Rest);
+socket_opts([]) ->
+    #{}.
+
+%% The production launch seam for auto-start: spawn a DETACHED `soma daemon' so it
+%% outlives this short-lived client process. A detached background spawn needs a
+%% shell `&', so this is the one irreducibly-shell step -- isolated here, never on
+%% the tool-execution path (which stays executable+args, no shell). `SOMA_SELF' is
+%% the `soma' wrapper's own path, published by the wrapper; the path values are
+%% quoted so a directory with spaces still launches.
+launch_daemon(Sock) ->
+    case os:getenv("SOMA_SELF") of
+        false ->
+            %% Not invoked through the `soma' wrapper (e.g. a direct dispatch in a
+            %% test) -- there is no known binary to launch, so do nothing.
+            ok;
+        "" ->
+            ok;
+        Self ->
+            Cmd = "nohup \"" ++ Self ++ "\" daemon --socket \"" ++ Sock
+                  ++ "\" >/dev/null 2>&1 &",
+            _ = os:cmd(Cmd),
+            ok
+    end.
 
 %% The `detach => true' fragment to merge in when `--detach' was given, else empty.
 detach_opt(#{detach := true}) ->
