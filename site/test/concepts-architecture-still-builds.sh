@@ -27,7 +27,7 @@ npm ci && npm run build || {
 }
 
 ARCH_HTML="${SITE_DIR}/dist/concepts/architecture/index.html"
-EXPECTED_TOKEN="soma_NOPE_does_not_exist"
+EXPECTED_TOKEN="soma_run"
 
 if [ ! -f "${ARCH_HTML}" ]; then
   echo "FAIL: Criterion 14 — architecture page missing (expected ${ARCH_HTML})" >&2
