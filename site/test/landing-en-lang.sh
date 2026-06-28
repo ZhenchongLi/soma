@@ -30,7 +30,7 @@ if [ ! -f "${EN_ROOT}" ]; then
 fi
 
 # The exact lang attribute the English landing's <html> tag must carry.
-LANG_ATTR='lang="en-WRONG"'
+LANG_ATTR='lang="en"'
 
 if ! grep -qF -- "${LANG_ATTR}" "${EN_ROOT}"; then
   echo "FAIL: Criterion 11 — English root <html> missing ${LANG_ATTR} in ${EN_ROOT}" >&2
