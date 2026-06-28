@@ -322,7 +322,8 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
             %% raw output) becomes the task result so get_task_result/2 returns it.
             %% Output that is not a proposal candidate is stored verbatim, keeping
             %% the v0.5.1 opaque-output contract.
-            case proposal_result(Output, maps:get(llm_directive, Task, undefined)) of
+            case proposal_result(planning_output(Output, Task),
+                                 planning_directive(Task)) of
                 {proposal, Proposal} ->
                     Tasks0 = maps:put(TaskId, Task#{result => Proposal},
                                       Data0#data.tasks),
@@ -838,8 +839,17 @@ build_call_opts(#{provider := openai_compat,
     %% soma_llm_openai:chat/1 to parse a {Status, Body} pair directly and open no
     %% socket (the same no-socket seam node B.1 exposed). Each is copied only when
     %% present, so a config without one leaves that key off the opts.
-    copy_optional([api_key, response, enable_thinking, max_tokens],
-                  ModelConfig, Opts);
+    Opts1 = copy_optional([api_key, response, enable_thinking, max_tokens],
+                          ModelConfig, Opts),
+    %% Planning mode (`plan => true' on the model_config) marks the call so the
+    %% result handler reads the provider's content as a `(run-steps ...)' plan
+    %% rather than storing it as a plain reply. The marker rides on the worker
+    %% opts and is stamped onto the task when the call starts. Off or absent, the
+    %% opts are byte-for-byte the B.1/B.2 reply opts.
+    case maps:get(plan, ModelConfig, false) of
+        true -> Opts1#{plan => true};
+        _ -> Opts1
+    end;
 %% A non-real-provider `model_config' -- empty or carrying a `directive' (the
 %% v0.5 mock default) -- is not routed: the builder returns the envelope's
 %% `llm' map unchanged, the mock directive opts the actor passes to
@@ -944,6 +954,7 @@ start_llm_call(Llm, TaskId, CorrelationId, Data) ->
                   llm_call_pid => WorkerPid, llm_call_mref => MRef,
                   llm_timer_ref => TimerRef,
                   llm_directive => maps:get(directive, Llm, undefined),
+                  plan => maps:get(plan, Llm, false),
                   repair_output => maps:get(repair_output, Llm, undefined)},
     Tasks = maps:put(TaskId, Task1, Data#data.tasks),
     %% The count increments only when a call actually starts, so it tracks the
@@ -963,6 +974,30 @@ start_llm_call(Llm, TaskId, CorrelationId, Data) ->
 %% caller emits `proposal.created'. Any other output is opaque (the v0.5.1
 %% contract: a `success' directive's output is stored verbatim) and tagged
 %% `{opaque, _}' so no proposal event fires.
+%% In planning mode the provider still returns `#{kind => reply, text => Content}'
+%% (soma_llm_openai is unchanged), but the actor reads `Content' as a
+%% `(run-steps ...)' Lisp plan. Unwrap a planning task's reply map to its `text'
+%% so proposal_result/2's binary clause parses it through soma_lfe:compile/2. Any
+%% non-planning task's output is passed through untouched, so the off-path is
+%% byte-for-byte unchanged.
+planning_output(#{kind := reply, text := Content}, Task) ->
+    case maps:get(plan, Task, false) of
+        true -> Content;
+        _ -> #{kind => reply, text => Content}
+    end;
+planning_output(Output, _Task) ->
+    Output.
+
+%% A planning task's unwrapped content is fed to proposal_result/2 as if it were a
+%% `proposal' directive's binary output, so the existing Lisp-parse clause runs it
+%% through soma_lfe:compile/2 -> soma_proposal:normalize/1. Off the planning path
+%% the task's real `llm_directive' is used, so nothing moves.
+planning_directive(Task) ->
+    case maps:get(plan, Task, false) of
+        true -> proposal;
+        _ -> maps:get(llm_directive, Task, undefined)
+    end.
+
 proposal_result(Output, _Directive) when is_map(Output) ->
     case maps:is_key(kind, Output) of
         true ->
