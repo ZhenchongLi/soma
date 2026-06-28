@@ -30,7 +30,7 @@ if [ ! -f "${EN_ROOT}" ]; then
 fi
 
 # The exact hero phrase the landing must carry.
-HERO_PHRASE="supervised BEAM process forest"
+HERO_PHRASE="supervised OTP process tree"
 
 if grep -qF -- "${HERO_PHRASE}" "${EN_ROOT}"; then
   echo "PASS: Criterion 2 — English root carries the hero phrase (${HERO_PHRASE}) in ${EN_ROOT}"
