@@ -196,7 +196,7 @@ test_dispatch_ping_socket_override_wins(Config) ->
 
     %% The dispatch probes the override path (not the resolver), so `ping/1'
     %% connects to the live listener and returns 0.
-    1 = soma_cli_main:dispatch(["__ping", "--socket", OverridePath]),
+    0 = soma_cli_main:dispatch(["__ping", "--socket", OverridePath]),
 
     %% Tear the override listener down: it is linked to this process.
     unlink(Server),
