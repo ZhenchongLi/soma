@@ -18,13 +18,15 @@
 -export([api_key_appears_in_no_emitted_event/1]).
 -export([test_rendered_reply_carries_no_api_key/1]).
 -export([planning_mode_real_response_runs_plan_to_completion/1]).
+-export([planning_mode_malformed_plan_fails_task_actor_alive/1]).
 
 all() ->
     [real_provider_actor_completes_llm_task_through_openai_no_socket,
      mock_model_config_completes_llm_task_same_result_and_events,
      api_key_appears_in_no_emitted_event,
      test_rendered_reply_carries_no_api_key,
-     planning_mode_real_response_runs_plan_to_completion].
+     planning_mode_real_response_runs_plan_to_completion,
+     planning_mode_malformed_plan_fails_task_actor_alive].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -283,6 +285,74 @@ planning_mode_real_response_runs_plan_to_completion(_Config) ->
     %% single echo step s1 echoes its args unchanged.
     {ok, Outputs} = soma_actor:get_task_result(ActorPid, TaskId),
     #{s1 := #{value := <<"a">>}} = Outputs,
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Criterion 3: in planning mode, a fixed real-provider response whose message
+%% content is a MALFORMED `(run-steps ...)' Lisp plan drives the task to a terminal
+%% `failed' recorded as data, and the actor stays alive to serve the next message.
+%% The actor is started with a real-provider `model_config' carrying `plan => true'
+%% and a fixed `response' whose choices[0].message.content is an unterminated
+%% s-expr soma_lfe:compile/2 cannot parse. Entering through the real
+%% soma_actor:send/2 with an `llm' envelope, the planning call returns the content
+%% as a reply; the actor reads it as a plan and runs it through soma_lfe:compile/2,
+%% which returns `{error, Diags}' -> proposal_result/2 tags `{invalid_proposal,
+%% Diags}' -> maybe_repair/5 (no staged repair_output on a fresh real-provider
+%% planning call) drives the task to terminal `failed' with the diagnostics as
+%% data. The test asserts the malformed task reaches `failed' with a reason, the
+%% actor process is alive, and a second soma_actor:send/2 (a direct `steps' run,
+%% independent of the fixed broken response) reaches a normal terminal `completed'.
+planning_mode_malformed_plan_fails_task_actor_alive(_Config) ->
+    Store = event_store_pid(),
+    %% The model wrote a malformed `(run-steps ...)' plan into its content -- an
+    %% unterminated form soma_lfe:compile/2 rejects with `{error, Diags}'.
+    BadPlan = <<"(run-steps (step (id s1) (tool echo) (args (value \"a\"))">>,
+    Body = iolist_to_binary(
+             json:encode(#{<<"choices">> =>
+                               [#{<<"message">> =>
+                                      #{<<"content">> => BadPlan}}]})),
+    %% Planning mode is `plan => true' on the real-provider model_config. The
+    %% scheme-less host literal is never dialed (the `response' seam).
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    api_key => <<"sk-test-key">>,
+                    plan => true,
+                    response => {200, Body}},
+    Opts = #{actor_id => <<"actor-planning-malformed">>,
+             model_config => ModelConfig,
+             tool_policy => #{allowed_tools => [echo]},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    BadTaskId = <<"task-planning-malformed">>,
+    BadEnvelope = #{type => <<"chat">>,
+                    payload => #{prompt => <<"make a plan">>},
+                    task_id => BadTaskId,
+                    correlation_id => <<"corr-planning-malformed">>,
+                    llm => #{}},
+    {ok, BadTaskId} = soma_actor:send(ActorPid, BadEnvelope),
+
+    %% STAGED-RED: deliberately wrong expected terminal status. The malformed plan
+    %% drives the task to `failed', never `completed', so this assertion fires.
+    %% Corrected to `failed' in the green commit.
+    ok = wait_for_status(ActorPid, BadTaskId, completed, 100),
+    #{status := failed, reason := BadReason} =
+        soma_actor:get_task_status(ActorPid, BadTaskId),
+    true = BadReason =/= undefined,
+    true = is_process_alive(ActorPid),
+
+    %% The actor stays alive and serves the next message to a normal terminal
+    %% result: a direct `steps' run (independent of the fixed broken planning
+    %% response) reaches `completed'.
+    GoodTaskId = <<"task-planning-after-malformed">>,
+    GoodEnvelope = #{type => <<"chat">>,
+                     payload => #{text => <<"do it">>},
+                     task_id => GoodTaskId,
+                     correlation_id => <<"corr-planning-after-malformed">>,
+                     steps => [#{id => <<"s1">>, tool => echo,
+                                 args => #{value => <<"a">>}}]},
+    {ok, GoodTaskId} = soma_actor:send(ActorPid, GoodEnvelope),
+    ok = wait_for_status(ActorPid, GoodTaskId, completed, 100),
     true = is_process_alive(ActorPid),
     ok.
 
