@@ -10,6 +10,7 @@
 -export([test_unsafe_in_flight_resume_starts_no_run/1]).
 -export([test_unsafe_resume_appends_run_failed_with_resume_unsafe_reason/1]).
 -export([test_after_unsafe_resume_reconstruct_reports_failed/1]).
+-export([test_second_resume_of_unsafe_failed_run_is_terminal_noop/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
@@ -17,7 +18,8 @@ all() ->
      test_in_flight_safe_step_reruns_in_own_worker_and_completes,
      test_unsafe_in_flight_resume_starts_no_run,
      test_unsafe_resume_appends_run_failed_with_resume_unsafe_reason,
-     test_after_unsafe_resume_reconstruct_reports_failed].
+     test_after_unsafe_resume_reconstruct_reports_failed,
+     test_second_resume_of_unsafe_failed_run_is_terminal_noop].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -291,6 +293,58 @@ test_after_unsafe_resume_reconstruct_reports_failed(_Config) ->
 
     Reconstructed = soma_run_resume:reconstruct(StorePid, RunId),
     ?assertMatch({ok, #{terminal_status := failed}}, Reconstructed).
+
+%% Criterion 7: a SECOND resume/3 of a run already failed with {resume_unsafe, _}
+%% starts no new run and appends no new event, returning a terminal verdict. The
+%% idempotency is structural: the first unsafe resume lands a terminal run.failed,
+%% so the second plan/2 reconstructs terminal_status => failed and classifies
+%% {terminal, failed} before it ever inspects next_step. Seed the same single
+%% file_write in-flight trail (tool.started for s1, no step.succeeded), run the
+%% first (unsafe) resume/3, then snapshot the run's event list and the soma_run_sup
+%% child tally, call resume/3 again, and assert: the event list is byte-for-byte
+%% unchanged, the child tally is unchanged, and the return is {terminal, failed}.
+test_second_resume_of_unsafe_failed_run_is_terminal_noop(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-second-resume-terminal-noop-1">>,
+    SessionId = <<"sess-exec-second-resume-terminal-noop-1">>,
+    Owner = self(),
+    Root = make_temp_root(),
+    S1 = #{id => s1, tool => file_write,
+           args => #{path => <<"out.txt">>,
+                     content => <<"unsafe bytes">>,
+                     root => list_to_binary(Root)}},
+    Steps = [S1],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"tool.started">>,
+                                   payload => #{tool_call_pid => self()}}),
+
+    %% First resume: unsafe, lands the terminal run.failed.
+    _First = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    %% Snapshot the trail and the child tally after the first (unsafe) resume.
+    EventsBefore = soma_event_store:by_run(StorePid, RunId),
+    ChildrenBefore = active_run_children(),
+
+    %% Second resume: the trail already carries terminal run.failed, so plan/2
+    %% reconstructs terminal_status => failed and classifies {terminal, failed}.
+    Result = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    %% No new run, no new event, terminal verdict returned.
+    EventsAfter = soma_event_store:by_run(StorePid, RunId),
+    ChildrenAfter = active_run_children(),
+    ?assertEqual(EventsBefore, EventsAfter),
+    ?assertEqual(ChildrenBefore, ChildrenAfter),
+    ?assertEqual({terminal, failed}, Result).
 
 active_run_children() ->
     proplists:get_value(active, supervisor:count_children(soma_run_sup)).
