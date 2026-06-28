@@ -295,8 +295,11 @@ with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
   launches `soma daemon` detached and waits for it before running — so there is no
   separate `soma daemon` ritual. A lost auto-start race is harmless: only one
   daemon wins the kernel bind and `daemon_foreground/1` returns on the others.
-  The probe + graceful lost-bind went through relay; the wrapper auto-start is a
-  direct PR proven by a release smoke test. **The CLI track is complete.**
+  The testable core went through relay — the probe and graceful lost-bind
+  (`soma_cli:ping/1`, `daemon_foreground/1`), then the decide → launch → wait loop
+  (`soma_cli:ensure_daemon/2`), wired into `soma_cli_main:main_argv/0`; only the
+  irreducibly-shell detached launch (an isolated `os:cmd` seam) is direct, proven
+  by a release smoke test. **The CLI track is complete.**
 
 ## Lisp — s-expr actor/agent message language
 

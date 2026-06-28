@@ -356,9 +356,10 @@ documented now, fixed later, not v1 blockers:
 
 ## Decisions (settled)
 
-- **Auto-start** (done): a client verb auto-starts the daemon if absent
-  (`soma_cli:ping/1` probe → `nohup soma daemon`), single-user low-risk, rather
-  than erroring with "run `soma daemon`".
+- **Auto-start** (done): a client verb auto-starts the daemon if absent —
+  `soma_cli:ensure_daemon/2` (a `soma_cli:ping/1` probe → detached launch → bounded
+  wait), wired into `soma_cli_main:main_argv/0` — single-user low-risk, rather than
+  erroring with "run `soma daemon`".
 - **`soma ask` config file** (done): a small TOML at `~/.soma/config`
   (`provider` / `base_url` / `model`), the API key strictly from the daemon's
   `SOMA_LLM_API_KEY` env, never the file.

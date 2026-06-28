@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-The **v0.1–v0.6 layers, the first v0.7.1 persistent-resume slice, and the full single-user `soma` CLI/daemon command surface are built and merged** — all green on `main` (EUnit 251, CT 349), Erlang/OTP 29 + rebar3 3.27. `README.md` remains the authoritative spec — read it before extending anything; the sections below summarize what shapes day-to-day work.
+The **v0.1–v0.6 layers, the first v0.7.1 persistent-resume slice, and the full single-user `soma` CLI/daemon command surface are built and merged** — all green on `main` (EUnit 254, CT 349), Erlang/OTP 29 + rebar3 3.27. `README.md` remains the authoritative spec — read it before extending anything; the sections below summarize what shapes day-to-day work.
 
 **v0.1** (the runtime core): the in-memory event store; the tool behaviour + registry + the five v0.1 tools; the session/run/tool-call execution core (sequential steps, `from_step` wiring, the `file_read → echo → file_write` demo); and the full failure semantics (error, crash isolation, timeout, cancellation). All ten proofs of the v0.1 test contract pass.
 
