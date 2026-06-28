@@ -8,12 +8,14 @@
 -export([test_between_steps_resume_sends_owner_completed_with_merged_outputs/1]).
 -export([test_in_flight_safe_step_reruns_in_own_worker_and_completes/1]).
 -export([test_unsafe_in_flight_resume_starts_no_run/1]).
+-export([test_unsafe_resume_appends_run_failed_with_resume_unsafe_reason/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
      test_between_steps_resume_sends_owner_completed_with_merged_outputs,
      test_in_flight_safe_step_reruns_in_own_worker_and_completes,
-     test_unsafe_in_flight_resume_starts_no_run].
+     test_unsafe_in_flight_resume_starts_no_run,
+     test_unsafe_resume_appends_run_failed_with_resume_unsafe_reason].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -211,6 +213,47 @@ test_unsafe_in_flight_resume_starts_no_run(_Config) ->
     %% No soma_run child was started: the tally is unchanged.
     AfterCount = active_run_children(),
     ?assertEqual(BeforeCount, AfterCount).
+
+%% Criterion 5: on an unsafe in-flight resume, a terminal run.failed event is
+%% appended for the run whose payload.reason is {resume_unsafe, StepId}. Seed the
+%% same single file_write in-flight trail (tool.started for s1, no step.succeeded;
+%% file_write is state/non-idempotent so the plan classifies it {unsafe, s1}),
+%% call resume/3, then assert the run's trail gains exactly one run.failed event
+%% whose payload.reason equals {resume_unsafe, s1}.
+test_unsafe_resume_appends_run_failed_with_resume_unsafe_reason(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-in-flight-unsafe-reason-1">>,
+    SessionId = <<"sess-exec-in-flight-unsafe-reason-1">>,
+    Owner = self(),
+    Root = make_temp_root(),
+    S1 = #{id => s1, tool => file_write,
+           args => #{path => <<"out.txt">>,
+                     content => <<"unsafe bytes">>,
+                     root => list_to_binary(Root)}},
+    Steps = [S1],
+    RunOptions = #{run_id => RunId, session_id => SessionId},
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => RunOptions}}),
+    ok = soma_event_store:append(StorePid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => s1,
+                                   event_type => <<"tool.started">>,
+                                   payload => #{tool_call_pid => self()}}),
+
+    _Result = soma_run_resume_executor:resume(RunId, Owner, StorePid),
+
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Failed = [E || E <- Events,
+                   maps:get(event_type, E) =:= <<"run.failed">>],
+    ?assertEqual(1, length(Failed)),
+    [FailedEvent] = Failed,
+    Reason = maps:get(reason, maps:get(payload, FailedEvent)),
+    ?assertEqual({resume_unsafe, s1}, Reason).
 
 active_run_children() ->
     proplists:get_value(active, supervisor:count_children(soma_run_sup)).
