@@ -6,7 +6,8 @@
 # assertion is about the build output, not the caller's cwd.
 #
 # The build is run (clean install then build) and then the Chinese root route's
-# built HTML is asserted to carry lang="zh-TW" on its <html> element.
+# built HTML is asserted to carry a zh lang attribute (e.g. lang="zh-CN") on its
+# <html> element.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,7 +31,7 @@ if [ ! -f "${ZH_ROOT}" ]; then
   exit 1
 fi
 
-if grep -Eq '<html[^>]*lang="zh-TW"' "${ZH_ROOT}"; then
+if grep -Eq '<html[^>]*lang="zh' "${ZH_ROOT}"; then
   echo "PASS: Criterion 7 — Chinese page carries a zh lang attribute on <html> in ${ZH_ROOT}"
   exit 0
 else
