@@ -14,6 +14,12 @@ plan(StorePid, RunId) ->
             Error
     end.
 
+%% A terminal trail wins over an uncommitted next_step: a run that failed
+%% mid-step leaves the step uncommitted and writes a terminal event, so this is
+%% checked before next_step and never returns resume.
+classify(_StorePid, _RunId, #{terminal_status := Status})
+  when Status =/= undefined ->
+    {terminal, Status};
 classify(StorePid, RunId,
          #{steps := Steps,
            run_options := RunOptions,
