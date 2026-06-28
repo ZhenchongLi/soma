@@ -72,10 +72,7 @@ ensure_daemon_launches_then_succeeds_test_() ->
 test_ensure_daemon_launch_never_listens_returns_bounded_error() ->
     Path = socket_path(),
     LaunchFun = fun() -> ok end,
-    %% Staged red: ensure_daemon returns a bounded {error, _} here, but pin the
-    %% wrong expected value first so the assertion fires for the right reason,
-    %% then correct it to {error, _} in the follow-up fix(test) commit.
-    ?assertMatch(ok,
+    ?assertMatch({error, _},
                  soma_cli:ensure_daemon(#{socket => Path}, LaunchFun)),
     _ = file:delete(Path),
     ok.
