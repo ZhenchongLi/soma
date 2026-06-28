@@ -844,10 +844,18 @@ build_call_opts(#{provider := openai_compat,
     %% Planning mode (`plan => true' on the model_config) marks the call so the
     %% result handler reads the provider's content as a `(run-steps ...)' plan
     %% rather than storing it as a plain reply. The marker rides on the worker
-    %% opts and is stamped onto the task when the call starts. Off or absent, the
-    %% opts are byte-for-byte the B.1/B.2 reply opts.
+    %% opts and is stamped onto the task when the call starts. The request also
+    %% gains a system message ahead of the user prompt, instructing the model to
+    %% emit a `(run-steps ...)' plan over the allowed tool names (threaded in from
+    %% the actor's tool_policy as `allowed_tools'). Off or absent, the opts are
+    %% byte-for-byte the B.1/B.2 reply opts.
     case maps:get(plan, ModelConfig, false) of
-        true -> Opts1#{plan => true};
+        true ->
+            AllowedTools = maps:get(allowed_tools, ModelConfig, all),
+            System = #{role => <<"system">>,
+                       content => planning_system_prompt(AllowedTools)},
+            UserMessages = maps:get(messages, Opts1),
+            Opts1#{plan => true, messages => [System | UserMessages]};
         _ -> Opts1
     end;
 %% A non-real-provider `model_config' -- empty or carrying a `directive' (the
@@ -872,6 +880,30 @@ copy_optional(Keys, Src, Dst) ->
       Dst,
       Keys).
 
+%% Build the planning-mode system prompt: plain text instructing the model to
+%% answer with a `(run-steps ...)' Lisp plan, listing the allowed tool names when
+%% the policy names concrete tools. An `all' policy has no concrete names, so the
+%% instruction text carries the `(run-steps ...)' directive without a tool list.
+%% Pure -- no call, no event.
+planning_system_prompt(AllowedTools) when is_list(AllowedTools) ->
+    Names = [atom_to_binary(T, utf8) || T <- AllowedTools],
+    Joined = iolist_to_binary(lists:join(<<", ">>, Names)),
+    iolist_to_binary(
+      [<<"Answer with a Lisp plan of the form (run-steps ...) using only ">>,
+       <<"these tools: ">>, Joined, <<".">>]);
+planning_system_prompt(_All) ->
+    <<"Answer with a Lisp plan of the form (run-steps ...).">>.
+
+%% Merge the actor's allowed-tools list (held on its tool_policy) into the
+%% model_config the builder reads, so planning mode can name the allowed tools.
+%% A missing model_config or policy leaves things untouched; the policy's
+%% `allowed_tools' (a name list or `all') becomes the model_config's
+%% `allowed_tools'.
+planning_tools(ModelConfig, Policy) when is_map(ModelConfig), is_map(Policy) ->
+    ModelConfig#{allowed_tools => maps:get(allowed_tools, Policy, all)};
+planning_tools(ModelConfig, _Policy) ->
+    ModelConfig.
+
 maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
     case maps:get(llm, Envelope, undefined) of
         Llm when is_map(Llm) ->
@@ -883,7 +915,14 @@ maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
                     %% empty / directive-shaped one returns the envelope's `llm'
                     %% map unchanged, so the mock path the actor drives today is
                     %% byte-for-byte what it was.
-                    CallOpts = build_call_opts(Data#data.model_config, Envelope),
+                    %% Thread the actor's allowed-tools list (from its
+                    %% tool_policy) into the model_config the builder reads, so a
+                    %% planning-mode request can list the allowed tool names in
+                    %% its system message. A model_config without `plan => true'
+                    %% ignores it, so non-planning opts are unchanged.
+                    ModelConfig = planning_tools(Data#data.model_config,
+                                                 Data#data.tool_policy),
+                    CallOpts = build_call_opts(ModelConfig, Envelope),
                     start_llm_call(CallOpts, TaskId, CorrelationId, Data);
                 false ->
                     %% Spend point one: the task's LLM-call count is at the
