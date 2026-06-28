@@ -5,10 +5,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_stop_returns_stopped_result/1]).
 -export([test_after_stop_fresh_connect_fails/1]).
+-export([test_after_stop_socket_file_gone/1]).
 
 all() ->
     [test_stop_returns_stopped_result,
-     test_after_stop_fresh_connect_fails].
+     test_after_stop_fresh_connect_fails,
+     test_after_stop_socket_file_gone].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -53,7 +55,39 @@ test_after_stop_fresh_connect_fails(Config) ->
     %% A fresh connect to the same path must fail -- the daemon no longer accepts.
     {error, _} = connect_fails(Path, 80).
 
+%% Criterion 4 (CLI.9): after a `(stop)' the daemon also unlinks its socket file
+%% from disk -- closing the listen socket frees the descriptor, but the AF_UNIX
+%% path lingers as a leftover file unless the listener removes it. A real client
+%% sends framed `(stop)' and reads the terminal reply; we then poll (bounded)
+%% `file:read_file_info/1' on the path until it reports `{error, enoent}'. This
+%% off-chain file check is the only way to observe the unlink -- it is not on the
+%% reply path -- so the poll covers the race between the reply read and the
+%% listener's teardown.
+test_after_stop_socket_file_gone(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = connect(Path),
+    ok = gen_tcp:send(Client, <<"(stop)">>),
+    {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
+    ok = gen_tcp:close(Client),
+    %% The socket file at Path must be gone from disk after the stop.
+    {error, enoent} = file_gone(Path, 80).
+
 %% --- helpers (mirroring soma_cli_server_SUITE) ---------------------------
+
+%% Poll for the socket file being unlinked. While `file:read_file_info/1' still
+%% reports the file present, the listener has not unlinked yet, so keep waiting
+%% until it errors (`enoent') or the budget runs out.
+file_gone(Path, 0) ->
+    file:read_file_info(Path);
+file_gone(Path, N) ->
+    case file:read_file_info(Path) of
+        {ok, _} ->
+            timer:sleep(25),
+            file_gone(Path, N - 1);
+        {error, _} = Err ->
+            Err
+    end.
 
 %% Poll for the listen socket being gone: a single (non-retrying) connect that
 %% keeps succeeding means the daemon is still accepting, so keep waiting until
