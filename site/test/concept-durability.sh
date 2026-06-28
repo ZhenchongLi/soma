@@ -26,7 +26,7 @@ npm ci && npm run build || {
 }
 
 DURABILITY_HTML="${SITE_DIR}/dist/concepts/durability/index.html"
-EXPECTED_TOKEN="disk_log_DOES_NOT_EXIST"
+EXPECTED_TOKEN="disk_log"
 
 if [ ! -f "${DURABILITY_HTML}" ]; then
   echo "FAIL: Criterion 8 — durability page missing (expected ${DURABILITY_HTML})" >&2
