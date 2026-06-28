@@ -85,8 +85,8 @@ test_each_pending_step_runs_in_own_worker(_Config) ->
     %% both tool.started and tool.succeeded, so de-duplicate before counting)
     AllPids = [maps:get(tool_call_pid, E, undefined) || E <- Events],
     ToolPids = lists:usort([P || P <- AllPids, P =/= undefined]),
-    %% staged red: there are two pending steps, so two distinct worker pids
-    3 = length(ToolPids),
+    %% there are two pending steps, so two distinct worker pids
+    2 = length(ToolPids),
     %% every worker pid is actually a pid
     true = lists:all(fun erlang:is_pid/1, ToolPids),
     %% no worker pid is the run pid
