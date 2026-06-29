@@ -49,3 +49,16 @@ test_binding_name_becomes_step_id() ->
 
 binding_name_becomes_step_id_test() ->
     test_binding_name_becomes_step_id().
+
+test_tool_call_becomes_step_tool() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((read_file (tool file_read\n"
+        "                         (path \"input.txt\"))))\n"
+        "    (return read_file)))\n"
+    >>,
+    {ok, #{run := #{steps := [Step]}}} = soma_lfe:compile(Source, #{}),
+    ?assertEqual(file_read, maps:get(tool, Step)).
+
+tool_call_becomes_step_tool_test() ->
+    test_tool_call_becomes_step_tool().
