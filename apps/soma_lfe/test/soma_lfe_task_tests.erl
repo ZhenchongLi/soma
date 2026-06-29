@@ -110,3 +110,17 @@ test_field_from_lowers_to_from_step_tuple() ->
 
 field_from_lowers_to_from_step_tuple_test() ->
     test_field_from_lowers_to_from_step_tuple().
+
+test_timeout_ms_lowers_to_step_timeout_ms() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((wait (tool sleep\n"
+        "                  (timeout-ms 250)\n"
+        "                  (duration_ms 1000))))\n"
+        "    (return wait)))\n"
+    >>,
+    {ok, #{run := #{steps := [Step]}}} = soma_lfe:compile(Source, #{}),
+    ?assertEqual(250, maps:get(timeout_ms, Step)).
+
+timeout_ms_lowers_to_step_timeout_ms_test() ->
+    test_timeout_ms_lowers_to_step_timeout_ms().
