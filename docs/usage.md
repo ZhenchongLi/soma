@@ -900,6 +900,9 @@ soma_cli:trace(#{correlation_id => <<"corr-1">>, socket => SocketPath}).
 soma_cli:cancel(#{task_id => <<"task-1">>, socket => SocketPath}).
 ```
 
+At the packaged command surface, soma run FILE reads Soma Lisp source from
+FILE and submits it through the same local Lisp wire.
+
 The wire is length-prefixed Lisp s-expressions: `(run ...)`, `(ask ...)`,
 `(status ...)`, `(trace ...)`, and `(cancel ...)` requests, with `(result ...)`,
 `(accepted ...)`, `(status ...)`, or `(trace ...)` replies rendered by
