@@ -40,6 +40,10 @@ maps, and only those maps enter the runtime or actor boundary.
 compiles through `soma_lfe:compile/2` into the same validated run-step map shape
 that enters the runtime boundary.
 
+`(run ...)` remains the compatibility/core run form. It exposes the canonical
+step-list syntax used by the runtime and older callers, while `(task ...)` is
+the preferred public static task surface.
+
 ## v0.3 run syntax
 
 A valid run workflow contains exactly one top-level `run` form. Inside `run`
