@@ -241,3 +241,16 @@ test_malformed_binding_returns_diagnostic() ->
 
 malformed_binding_returns_diagnostic_test() ->
     test_malformed_binding_returns_diagnostic().
+
+test_malformed_tool_form_returns_diagnostic() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((echoed (tool \"echo\"\n"
+        "                   (value \"done\"))))\n"
+        "    (return echoed)))\n"
+    >>,
+    {error, Diags} = soma_lfe:compile(Source, #{}),
+    ?assertEqual([invalid_tool_form], [maps:get(code, Diag) || Diag <- Diags]).
+
+malformed_tool_form_returns_diagnostic_test() ->
+    test_malformed_tool_form_returns_diagnostic().
