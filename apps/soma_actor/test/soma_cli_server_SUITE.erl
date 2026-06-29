@@ -197,7 +197,9 @@ test_run_crash_lfe_body_returns_kaboom_error_result(Config) ->
     Path = socket_path(Config),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
     {ok, Client} = connect(Path),
-    {ok, Request} = file:read_file("examples/cli-demo/crash.lfe"),
+    %% The crash.lfe demo body, inlined so the test does not depend on the
+    %% example file's path resolving from the CT working directory.
+    Request = <<"(run (step boom fail (args (mode crash) (reason kaboom))))">>,
     ok = gen_tcp:send(Client, Request),
     {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
