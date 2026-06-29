@@ -74,6 +74,10 @@ parse_task([task, ['let*', Bindings, [return, ReturnId]]])
         {error, Diags} ->
             {error, Diags}
     end;
+parse_task([task, ['let*', Bindings]]) when is_list(Bindings) ->
+    {error, [#{code => invalid_return,
+               message => <<"task let* body must include (return Name)">>,
+               line => 0}]};
 parse_task([task | _]) ->
     {error, [#{code => malformed_task,
                message => <<"task form must be (task (let* ((id (tool name ...))) (return id)))">>,
