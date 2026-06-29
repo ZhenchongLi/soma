@@ -167,3 +167,15 @@ test_unknown_from_binding_returns_diagnostic() ->
 
 unknown_from_binding_returns_diagnostic_test() ->
     test_unknown_from_binding_returns_diagnostic().
+
+test_missing_return_returns_diagnostic() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((echoed (tool echo\n"
+        "                   (value \"done\"))))))\n"
+    >>,
+    {error, Diags} = soma_lfe:compile(Source, #{}),
+    ?assertEqual([invalid_return], [maps:get(code, Diag) || Diag <- Diags]).
+
+missing_return_returns_diagnostic_test() ->
+    test_missing_return_returns_diagnostic().
