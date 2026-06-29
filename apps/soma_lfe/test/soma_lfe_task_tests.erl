@@ -192,3 +192,17 @@ test_unknown_return_returns_diagnostic() ->
 
 unknown_return_returns_diagnostic_test() ->
     test_unknown_return_returns_diagnostic().
+
+test_invalid_timeout_ms_returns_diagnostic() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((wait (tool sleep\n"
+        "                  (timeout-ms 0)\n"
+        "                  (duration_ms 1000))))\n"
+        "    (return wait)))\n"
+    >>,
+    {error, Diags} = soma_lfe:compile(Source, #{}),
+    ?assertEqual([invalid_timeout], [maps:get(code, Diag) || Diag <- Diags]).
+
+invalid_timeout_ms_returns_diagnostic_test() ->
+    test_invalid_timeout_ms_returns_diagnostic().
