@@ -80,3 +80,18 @@ test_literal_task_args_use_existing_coercions() ->
 
 literal_task_args_use_existing_coercions_test() ->
     test_literal_task_args_use_existing_coercions().
+
+test_bare_from_lowers_to_from_step() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((read (tool file_read\n"
+        "                  (path \"input.txt\")))\n"
+        "         (echoed (tool echo\n"
+        "                   (from read))))\n"
+        "    (return echoed)))\n"
+    >>,
+    {ok, #{run := #{steps := [_ReadStep, EchoStep]}}} = soma_lfe:compile(Source, #{}),
+    ?assertEqual(#{from_step => read}, maps:get(args, EchoStep)).
+
+bare_from_lowers_to_from_step_test() ->
+    test_bare_from_lowers_to_from_step().
