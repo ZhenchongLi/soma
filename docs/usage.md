@@ -1,816 +1,285 @@
-# soma usage reference
+# Soma User Manual
 
-This document covers the concrete API you need to write code against soma —
-how to start the runtime, register tools, start runs, read events, and cancel.
-It does not repeat the architecture (see `README.md`) or tool manifest rules
-(see `tool-manifest.md`); it covers the parts only readable from source.
+This guide is for using Soma from the packaged `soma` command: running workflow
+files, asking a configured model, checking task status, cancelling work, and
+reading traces. For architecture and implementation boundaries, see
+[`README.md`](../README.md). For the full CLI protocol reference, see
+[`cli.md`](cli.md). For workflow syntax details, see [`lfe-dsl.md`](lfe-dsl.md).
 
-## Starting the runtime
+## Get The Command
 
-```erlang
-{ok, _} = application:ensure_all_started(soma_runtime).
+From an installed release, put the release `bin/` directory on your `PATH` and
+run `soma` directly.
+
+From this checkout:
+
+```bash
+rebar3 release
+SOMA="_build/default/rel/somad/bin/soma"
 ```
 
-This starts the full supervision tree: `soma_sup` → `soma_event_store`,
-`soma_tool_registry`, `soma_session_sup`, `soma_run_sup`. The five built-in
-tools (`echo`, `sleep`, `fail`, `file_read`, `file_write`) are seeded into
-the registry automatically.
+There are two executables in the release:
 
-## Registering a tool
+| Command | Use |
+| --- | --- |
+| `soma` | User task command: `run`, `ask`, `status`, `trace`, `cancel`, `stop`, `daemon`. |
+| `somad` | OTP node-control script: `console`, `foreground`, `daemon`, `stop`, `status`. |
 
-```erlang
-ok = soma_tool_registry:register_tool(Manifest).
+Most users only need `soma`. Client commands auto-start the local daemon when it
+is not already listening. You can run the daemon in the foreground when you want
+to watch logs:
+
+```bash
+$SOMA daemon
 ```
 
-`Manifest` is a map validated through `soma_tool_manifest:normalize/1`. The
-`name` field must be an atom; it becomes the key the step's `tool` field
-addresses. Two adapter shapes:
+Stop it with:
 
-```erlang
-%% Erlang module tool
-#{name => my_tool, effect => reader, idempotent => true,
-  timeout_ms => 5000, adapter => erlang_module, module => my_tool_module}
-
-%% External program tool
-#{name => my_cli, effect => reader, idempotent => true,
-  timeout_ms => 5000, adapter => cli,
-  executable => "/absolute/path/to/program",
-  argv => ["--flag", "value"]}
+```bash
+$SOMA stop
 ```
 
-A malformed manifest is rejected; the registry state is unchanged and the
-name does not resolve. `register_tool/1` returns `ok` or `{error, Reason}`.
+## Quick Start: Run A Workflow
 
-For `priv`-packaged helpers, resolve the path at runtime:
+Create a small file pipeline:
 
-```erlang
-Exe = filename:join([code:priv_dir(my_app), "cli", "my_helper"]).
+```bash
+mkdir -p /tmp/soma-demo
+printf 'hi soma\n' > /tmp/soma-demo/input.txt
+
+cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
+(run
+  (step read file_read
+    (args (path "input.txt") (root "/tmp/soma-demo")))
+  (step process echo
+    (args (from_step read)))
+  (step write file_write
+    (args (path "output.txt") (root "/tmp/soma-demo") (bytes (from_step process)))))
+EOF
+
+$SOMA run /tmp/soma-demo/pipeline.lfe
+cat /tmp/soma-demo/output.txt
 ```
 
-## Session API
+The command prints a Lisp `(result ...)` form. The important fields are:
 
-```erlang
-{ok, SessionPid} = soma_agent_session:start_link(#{}).
-Status = soma_agent_session:get_status(SessionPid).
-%% => #{session_id => <<"sess-1">>, runs => #{<<"run-1">> => completed, ...}}
+```lisp
+(result
+  (status completed)
+  (task-id "task-1")
+  (outputs ...)
+  (correlation-id "corr-2"))
 ```
 
-`get_status/1` returns the session's `session_id` and a map of every run it
-has started with its terminal status: `running | completed | failed | timeout
-| cancelled`.
+Use the `task-id` for `status` and `cancel`. Use the `correlation-id` for
+`trace`.
 
-## Starting a run
+## Workflow Files
 
-```erlang
-{ok, RunId} = soma_agent_session:start_run(SessionPid, Steps).
+`soma run WORKFLOW` reads one Lisp `(run ...)` form. Steps run strictly in the
+order they appear.
+
+```lisp
+(run
+  (step greet echo
+    (args (value "hello"))
+    (timeout_ms 5000)))
 ```
 
-`Steps` is a list of step maps. `RunId` is a binary like `<<"run-1">>`.
-Steps run strictly in list order.
+Each step has:
 
-### Step map format
+| Field | Meaning |
+| --- | --- |
+| Step id | A unique symbol inside this workflow, such as `greet` or `read`. |
+| Tool name | A registered tool, such as `echo`, `sleep`, `file_read`, or `file_write`. |
+| `(args ...)` | Input for the tool. Omit it for empty input. |
+| `(timeout_ms N)` | Optional per-step wall-clock budget. If it expires, the run times out and the active worker is stopped. |
 
-```erlang
-#{
-    id         => step_atom,       %% atom, referenced by from_step; must be unique
-    tool       => registered_name, %% atom, must resolve in registry
-    args       => ArgsMap,         %% see "Arg resolution" below
-    timeout_ms => 5000             %% optional; omit for no per-step limit
-}
+Internally, after the workflow is compiled, each step is a map with `id` and `tool`;
+the runtime rejects a bad step before starting the run. Duplicate step ids are
+not useful because later references need a single prior output, so keep ids
+unique.
+
+### Pass Data Between Steps
+
+Use a previous step's whole output as the next step's input:
+
+```lisp
+(step process echo
+  (args (from_step read)))
 ```
 
-`timeout_ms` in the step map is the per-step wall-clock budget. If it fires
-before the tool replies, the run reaches `run.timeout` and the active worker
-(and its OS process, for cli tools) is killed. Omitting it means the step
-waits indefinitely.
+Use a previous step's output as one field:
 
-Passing an empty steps list is valid and completes the run immediately with
-`run.completed` and no steps in the event trail.
-
-Step `id` atoms must be unique within a run. Duplicate IDs silently overwrite
-earlier step outputs in the `from_step` lookup map, so a later step that
-references the shared ID gets the second output, not the first, with no error.
-
-### Arg resolution
-
-Before the tool call starts, the run resolves the step's `args` map against
-prior step outputs. Two patterns:
-
-**Bare `from_step`** — the entire `args` map is `#{from_step => StepId}`.
-The resolved input is the prior step's raw output, not wrapped in a map:
-
-```erlang
-%% s2's input = whatever s1's tool returned
-#{id => s2, tool => my_tool, args => #{from_step => s1}}
+```lisp
+(step write file_write
+  (args
+    (path "output.txt")
+    (root "/tmp/soma-demo")
+    (bytes (from_step process))))
 ```
 
-**Value-level `from_step`** — one or more values in the `args` map are
-`{from_step, StepId}` tuples. Only those values are substituted; the rest
-pass through:
+`from_step` can only point to an earlier step in the same run. Unknown or
+forward references are compile errors.
 
-```erlang
-%% s2 gets #{path => "/tmp/f", content => <s1 output>}
-#{id => s2, tool => file_write,
-  args => #{path => "/tmp/f", content => {from_step, s1}}}
+### Run From Stdin
+
+Use `-` as the workflow path:
+
+```bash
+printf '(run (step greet echo (args (value "hello"))))\n' | $SOMA run -
 ```
 
-The `root` key in `args` is special: it is lifted out of the tool's input
-map and placed in the tool context, so file tools can read their sandbox
-root from it without the tool's `invoke/2` seeing it as a regular argument.
+## Built-In Tools
 
-## CLI tools: how input reaches the external program
+The local daemon seeds these tools automatically:
 
-For a `cli` tool, the adapter builds the final argv as:
+| Tool | Use |
+| --- | --- |
+| `echo` | Return the input as output. Useful for simple transforms and demos. |
+| `sleep` | Wait for a number of milliseconds. Useful for timeout and cancellation tests. |
+| `fail` | Return or raise a controlled failure. Mostly useful for testing isolation. |
+| `file_read` | Read a file under a supplied `root`. |
+| `file_write` | Write bytes to a file under a supplied `root`. |
 
-```
-manifest.argv ++ [render_input(ResolvedInput)]
-```
+File tools use `(root "...")` as their sandbox root. Keep file paths relative to
+that root:
 
-`render_input` converts the resolved input to a string:
-
-| Resolved input type | What the program receives as last argv |
-|---|---|
-| `binary()` | The binary bytes as a string — no quoting or wrapping |
-| `list()` | The list bytes as-is |
-| Any other term | `io_lib:format("~p", [Term])` — Erlang term repr |
-
-**Consequence**: if a step's `args` map is `#{input => <<"hello">>}` (a
-map, not a bare binary), the tool's resolved input is the map
-`#{input => <<"hello">>}`, which is term-printed to
-`"#{input => <<\"hello\">>}"` and passed as argv. If you want a clean
-string, use the bare `from_step` form so the input is the prior step's
-binary output directly.
-
-The program's merged stdout/stderr becomes the step's recorded output (as a
-binary) when it exits 0. The merged stream is capped at 64 KB; exceeding it
-fails the run with `{cli_output_limit_exceeded, 65536}` without buffering the
-full stream. Stderr counts against the same cap as stdout.
-
-CLI children run with a minimal environment (only `PATH` from the runtime)
-and in an adapter-chosen working directory — not the runtime process's cwd.
-
-## Reading events
-
-Locate the event store and query by run or session:
-
-```erlang
-%% Locate the running event store
-{soma_event_store, StorePid, _, _} =
-    lists:keyfind(soma_event_store, 1, supervisor:which_children(soma_sup)).
-
-%% All events for one run, in emission order
-Events = soma_event_store:by_run(StorePid, RunId).
-
-%% All events for one session, in emission order
-Events = soma_event_store:by_session(StorePid, SessionId).
-
-%% All events for one correlation_id — the whole actor+run task chain
-Events = soma_event_store:by_correlation(StorePid, CorrelationId).
-
-%% All events in the store
-Events = soma_event_store:all(StorePid).
+```lisp
+(step read file_read
+  (args (root "/tmp/soma-demo") (path "input.txt")))
 ```
 
-### Persistent store and restart durability
+Operators can register additional in-BEAM or external CLI tools. Workflow users
+still call them by tool name; workflows do not contain shell command strings.
 
-By default the event store is in-memory: `start_link/0` keeps every event in a
-single in-process list, writes nothing to disk, and the trail is gone when the
-BEAM stops. The full supervision tree starts the store this way.
+## Manage Tasks
 
-For a trail that outlives a restart, start the store with the opt-in
-`start_link/1`, passing a log path:
+For short work, `soma run` waits and prints the final result. For long work, run
+detached:
 
-```erlang
-{ok, StorePid} = soma_event_store:start_link(#{log => "/var/lib/soma/events.log"}).
+```bash
+$SOMA run examples/cli-demo/slow.lfe --detach
 ```
 
-A store started this way opens a `halt`-type `disk_log` at that path. Each
-`append/2` writes the same normalized event map it puts in the in-memory index
-to the `disk_log` as well, so what you read back from the file equals what a
-query returns. The query API is unchanged — `all/1`, `by_run/2`,
-`by_session/2`, and `by_correlation/2` always read the in-memory index, in both
-modes.
+Detached runs print an accepted handle:
 
-The durability payoff is on **restart**: when a store is started again with
-`start_link/1` at the same path, `init/1` replays the `disk_log` and rebuilds
-the index in append order, so every event written before the stop is served
-again through the same queries. The log is the source of truth; the index is a
-rebuildable cache. An unclean shutdown that leaves a half-written term at the
-end of the log does not break the restart — replay treats the corrupt tail as
-end-of-log, keeps every intact event read so far, and finishes `init/1`
-cleanly, costing you only the last partial event.
-
-The persistent path is opt-in and used by tests; the default release runs the
-in-memory store via `start_link/0`.
-
-### Event structure
-
-Every event is a map. The store normalizes it to always include:
-
-```
-event_id      binary()         unique ref-based id
-timestamp     integer()        erlang:system_time(nanosecond)
-session_id    binary() | undef
-run_id        binary() | undef
-step_id       atom()   | undef  matches the `id' field in the step map
-tool_call_id  binary() | undef
-event_type    binary()
-payload       map()    | undef
+```lisp
+(accepted (task-id "task-3") (correlation-id "corr-4"))
 ```
 
-Missing fields are set to `undefined` rather than omitted, so
-`maps:get(step_id, Event)` is always safe.
+Read status:
 
-Actor-layer events additionally carry `actor_id`, `task_id`, and
-`correlation_id`, and a `soma_run` started by an actor stamps `correlation_id`
-onto its run events too. These are not part of the mandatory 8 — they are
-present only when set — which is what lets `by_correlation/2` return an actor's
-events and its run's events together. See "Agent actor API" below.
-
-### Event types and their fields
-
-Events are emitted in this order for a successful one-step run:
-
-| event_type | Extra fields present |
-|---|---|
-| `<<"session.started">>` | `session_id` |
-| `<<"run.accepted">>` | `session_id`, `run_id` |
-| `<<"run.started">>` | `session_id`, `run_id` |
-| `<<"step.started">>` | `step_id`, `tool_call_id` |
-| `<<"tool.started">>` | `step_id`, `tool_call_id`, `tool_call_pid` |
-| `<<"tool.succeeded">>` | `step_id`, `tool_call_id`, `tool_call_pid` |
-| `<<"step.succeeded">>` | `step_id`, `tool_call_id`, `payload => #{output => Output}` |
-| `<<"run.completed">>` | — |
-
-For failure, timeout, and cancel the trail diverges after `tool.started`:
-
-| event_type | Extra fields present |
-|---|---|
-| `<<"tool.failed">>` | `step_id`, `tool_call_id`, `tool_call_pid`, `payload => #{reason => Reason}` |
-| `<<"step.failed">>` | `step_id`, `tool_call_id`, `payload => #{reason => Reason}` |
-| `<<"run.failed">>` | `payload => #{reason => Reason}` |
-| `<<"run.timeout">>` | `step_id`, `tool_call_id` — no `tool_call_pid` |
-| `<<"run.cancelled">>` | `step_id`, `tool_call_id` — no `tool_call_pid` |
-
-`tool_call_pid` is the `soma_tool_call` worker process pid — distinct from
-`soma_run`'s pid and from the external OS process. It is only present on
-`tool.started` and `tool.succeeded`/`tool.failed`, not on timeout or cancel
-events (the worker is already killed by the time those are emitted).
-
-Reading the step output from events:
-
-```erlang
-[E] = [Ev || Ev <- Events,
-             maps:get(event_type, Ev) =:= <<"step.succeeded">>,
-             maps:get(step_id, Ev) =:= my_step_id],
-Output = maps:get(output, maps:get(payload, E)).
+```bash
+$SOMA status "task-3"
 ```
 
-## Cancelling a run
+Common states:
 
-Send a message to the session pid:
+| State | Meaning |
+| --- | --- |
+| `running` | Work is still active. |
+| `completed` | The workflow finished successfully. |
+| `failed` | A tool or task failed. The reply usually carries an error reason. |
+| `timeout` | A step or model call exceeded its timeout. |
+| `cancelled` | The task was cancelled. |
+| `unknown` | The daemon does not know that task id. |
 
-```erlang
-SessionPid ! {cancel_run, RunId}.
+Cancel a live detached task:
+
+```bash
+$SOMA cancel "task-3"
 ```
 
-The session looks up the run pid and forwards `cancel` to it. The run kills
-the active worker and, for cli tools, the external OS process. It then
-records `run.cancelled` and moves to the `cancelled` terminal state. The
-session stays alive.
+Cancellation is real: Soma stops the active tool worker, and for external CLI
+tools it also tears down the child OS process. Cancelling a task that is already
+terminal is a no-op or returns a non-running result.
 
-Cancel only takes effect while the run is in `waiting_tool` (an active step
-is in flight). Sending it after the run reaches a terminal state (`completed`,
-`failed`, `timeout`, `cancelled`) is a no-op — those states have catch-all
-handlers. Sending it during the very brief `executing` window between steps
-is unsafe; in practice this window is sub-millisecond but the safe pattern
-is to wait for `tool.started` before sending cancel, which guarantees the run
-is in `waiting_tool`.
+Synchronous runs are tied to the client connection. If a synchronous `soma run`
+client disconnects while a tool is active, the daemon cancels that in-flight run.
+Detached runs outlive the client and must be managed by task id.
 
-## Agent actor API (soma_actor)
+## Tracing
 
-`soma_actor` is the agent-entity layer (v0.4) above the session/run core: a
-long-lived `gen_statem` that takes a message, creates a task, runs it through
-`soma_run`, and returns a result. It starts the run **directly** — owning it as
-`session_pid => self()`, with no `soma_agent_session` in its path — and learns
-the outcome from the run's terminal message. The v0.4 path documented here is the
-fixed rule: an envelope that carries `steps` runs them. The **decision layer**
-(v0.5) — a mock LLM call, a proposal schema, a policy gate, a per-task budget, and
-actor-to-actor messages — is documented in "Agent decision layer (v0.5)" below.
+Every task gets a correlation id. Use it to read the operational timeline:
 
-### Starting an actor
-
-```erlang
-{ok, _} = application:ensure_all_started(soma_actor).
-{ok, Actor} = soma_actor_sup:start_actor(#{
-    actor_id     => <<"actor-1">>,
-    model_config => #{},
-    tool_policy  => #{},
-    event_store  => StorePid       %% optional; runs the actor starts share it
-}).
+```bash
+$SOMA trace "corr-4"
 ```
 
-`event_store` is the pid the actor — and every run it starts — emits into; pass
-a store you can query. With no `event_store` the actor still runs but emits
-nothing. `application:ensure_all_started(soma_actor)` starts the runtime
-dependencies (`soma_runtime`, `soma_run_sup`, and the event store) first.
+The trace shows the task and run events in timestamp order: actor events, model
+events when present, proposal events when present, run events, step events, and
+tool events. It is the easiest way to answer "what happened to this task?"
 
-### The message envelope
-
-Work enters only through the mailbox. The native form is an envelope map:
-
-```erlang
-#{
-    type           => <<"chat">>,      %% required
-    payload        => #{...},          %% required
-    steps          => [StepMap, ...],  %% optional; present => the actor runs them
-    task_id        => <<"task-1">>,    %% optional; minted if absent
-    correlation_id => <<"corr-1">>     %% optional; defaults to task_id
-}
-```
-
-`type` and `payload` are required — an envelope missing either, or one that is
-not a map, is rejected with `{error, Reason}`. A `steps` list is the v0.4 fixed
-rule: present → the actor validates it up front
-(each step is a map with `id` and `tool`; a step that fails this is rejected
-with `{error, Reason}` before any run starts) and then starts a `soma_run`;
-absent → the task is accepted
-(`status` stays `accepted`) but no run starts. `StepMap` is exactly the step
-format documented above.
-
-`send/2` and `ask/3` also accept a Lisp string or binary. The wrapper compiles it
-with `soma_lfe:compile/2`; a `(msg ...)` form becomes the same envelope map above,
-and malformed Lisp returns `{error, Diagnostics}` without touching the actor
-mailbox. Map envelopes keep the original path unchanged.
-
-### send/2 — fire and get a task id
-
-```erlang
-{ok, TaskId} = soma_actor:send(Actor, Envelope).   %% or {error, Reason}
-```
-
-Returns as soon as the task is accepted and its run is started; the result is
-recorded asynchronously when the run finishes. The actor never blocks on the
-run.
-
-### ask/3 — block for the result
-
-```erlang
-soma_actor:ask(Actor, Envelope, TimeoutMs).
-%% => {ok, Result} | {ok, accepted, TaskId} | {error, Reason} | timeout
-```
-
-Blocks the *caller* (not the actor) until the task reaches a terminal state.
-`Result` is the run's outputs map, keyed by step id (e.g.
-`#{s1 => #{value => <<"hi">>}}`). A failed run returns `{error, Reason}`; if
-`TimeoutMs` elapses first the call returns `timeout` and the actor still drives
-the task to completion.
-
-A **no-steps envelope** is valid but starts no run, so no terminal event will
-ever fire. Rather than block the caller until `TimeoutMs`, `ask/3` returns
-immediately with the distinct 3-tuple `{ok, accepted, TaskId}` — accepted, no
-run started, here is the id to poll. The shape is deliberately distinct from the
-completed-run `{ok, Result}`: `{ok, Result}` keeps its one meaning and a bare
-`{ok, TaskId}` never overloads it.
-
-### Polling: status and result
-
-```erlang
-soma_actor:get_task_status(Actor, TaskId).
-%% known   => #{task_id => T, correlation_id => C, status => S}
-%% unknown => #{task_id => T, status => not_found}
-
-soma_actor:get_task_result(Actor, TaskId).
-%% => {ok, Result} | not_ready | {error, not_found}
-```
-
-`status` is `accepted` (a no-steps task), `running`, `completed`, `failed`, or
-`cancelled`.
-
-### cancel/2
-
-```erlang
-soma_actor:cancel(Actor, TaskId).
-%% => ok | {error, not_found} | {error, not_running}
-```
-
-`ok` means *cancel requested*: the actor sends `cancel` to the run it owns,
-which kills the active tool worker for real (and a cli tool's external OS
-process) and reports back; the task then reaches `cancelled`. Only a task whose
-run is in flight (`running`) is cancellable — anything else is `{error,
-not_running}`. Cancellation targets an in-flight tool step (the run's
-`waiting_tool` state), the same window as run-level cancel above.
-
-### Actor events
-
-Actor-layer events extend the 8-field event with `actor_id`, `task_id`, and
-`correlation_id`. A successful task emits, in order:
-
-| event_type | |
-|---|---|
-| `<<"actor.started">>` | on actor start (`actor_id`) |
-| `<<"actor.message.received">>` | `actor_id`, `task_id`, `correlation_id` |
-| `<<"actor.task.accepted">>` | same ids |
-| `<<"actor.result.created">>` | same ids (after the run completes) |
-| `<<"actor.task.completed">>` | same ids |
-
-A failed or timed-out task emits `<<"actor.task.failed">>` (payload carries
-`reason`); a cancelled one emits `<<"actor.task.cancelled">>`. The run's own
-`run.*` / `step.*` / `tool.*` events appear between accept and result, each
-stamped with the same `correlation_id`.
-
-### The whole task chain by correlation_id
-
-Because the run inherits the task's `correlation_id`, one query returns the
-actor.* and run.* events together — the event stream is the source of truth,
-and `ask`/polling are convenience reads over it:
-
-```erlang
-soma_event_store:by_correlation(StorePid, CorrelationId).
-%% actor.message.received -> actor.task.accepted -> run.started -> step.started
-%% -> tool.started -> tool.succeeded -> step.succeeded -> run.completed
-%% -> actor.result.created -> actor.task.completed
-```
-
-A runnable walkthrough of all of the above — `ask`, `send` + polling, the
-correlation chain, real cancel, and surviving a failure — is in
-`examples/soma_actor_demo.erl` (`c("examples/soma_actor_demo").` in `rebar3
-shell`).
-
-### Tracing: render a correlation chain as a readable timeline
-
-`by_correlation/2` hands back raw event maps in append order. To read a chain
-without eyeballing maps, `soma_trace:render/2` queries the store for one
-`correlation_id` and formats the result as a timeline — one line per event,
-ordered by ascending `timestamp`:
+For embedded/operator diagnostics, the same trace renderer is available below
+the CLI:
 
 ```erlang
 soma_trace:render(StorePid, CorrelationId).
-%% => iodata(), one line per event, e.g.
-%% actor.message.received task_id=... correlation_id=...
-%% actor.task.accepted    task_id=... correlation_id=...
-%% run.started            ...
-%% ...
-%% actor.task.completed   task_id=... correlation_id=...
 ```
 
-Each line names the event's `event_type` and appends whichever salient ids the
-event carries (`task_id`, `step_id`, and so on); a field the event does not
-carry is left off rather than printed empty. A failure line includes its
-`reason`, found either as a top-level key (actor events) or inside `payload`
-(run events). An unknown `correlation_id` renders empty iodata rather than
-crashing.
+## Ask The Model
 
-`soma_trace:timeline/1` is the underlying pure function — pass it a plain list
-of event maps to format them without touching the store.
+`soma run` needs no model. `soma ask` uses the daemon's configured model:
 
-## Agent decision layer (soma_actor, v0.5)
-
-v0.5 adds the agent's decision step in front of execution: instead of an envelope
-that already names `steps`, you send an envelope that carries an `llm` directive;
-the actor runs a call, gets back a **proposal**, runs the proposal through a
-**policy** gate, and only then executes — all under one `correlation_id`, all
-recorded as events. The test gate drives this path with a directive-based mock
-LLM, so tests decide exactly what the "model" returns and never open a provider
-socket. The same worker seam also supports an opt-in real provider when the actor
-is started with `model_config => #{provider => openai_compat, ...}`; see
-"Configuring a real LLM provider" below.
-
-The whole layer is data-then-execute, mirroring the rest of the runtime: an `llm`
-call returns opaque output or a raw proposal; `soma_proposal:normalize/1` turns a
-raw proposal into validated data; `soma_policy:check/2` gives that data a verdict;
-and only an *approved* proposal causes a `soma_run` to start.
-
-### The `llm` envelope and the mock directive
-
-An envelope carries **either** `steps` (the v0.4 path) **or** `llm` (the v0.5
-path) — never both. An envelope with both is rejected up front with
-`{error, steps_and_llm_mutually_exclusive}`, before any child starts.
-
-The `llm` field is a directive map read by the mock worker `soma_llm_call`:
-
-```erlang
-#{
-    type    => <<"chat">>,         %% required (envelope field)
-    payload => #{...},             %% required (envelope field)
-    llm     => #{
-        directive  => proposal,    %% proposal | success | slow | crash | hang
-        output     => RawProposal, %% for `proposal'/`success': returned verbatim
-        timeout_ms => 5000         %% optional; the actor-owned call timeout
-    },
-    task_id        => <<"task-1">>,  %% optional; minted if absent
-    correlation_id => <<"corr-1">>   %% optional; defaults to task_id
-}
+```bash
+$SOMA ask "summarize the build log"
 ```
 
-The `directive` selects mock behaviour. The same
-`soma_llm_call:perform_call/1` function routes real-provider opts when the actor
-model config selects `openai_compat`:
+Create `~/.soma/config`:
 
-| `directive` | What the mock does |
-|---|---|
-| `proposal` | Returns the `output` map verbatim; the actor runs it through `soma_proposal:normalize/1` and the policy gate |
-| `success` | Returns the `output` verbatim as **opaque** output (no proposal logic); the task completes with that output as its result |
-| `slow` | Blocks past the call timeout — proves the actor's timer (not the worker) enforces the bound; the task reaches `timeout` |
-| `hang` | Blocks until killed — models a call in flight when you `cancel/2` it; the task reaches `cancelled` |
-| `crash` | Exits abnormally — the crash reaches the actor as the worker monitor's `'DOWN'`; the task reaches `failed` |
-
-`timeout_ms` in the `llm` map is an **actor-owned** call timeout: the actor arms a
-timer when it starts the worker and, if the timer fires first, kills the worker
-itself (`exit(WorkerPid, kill)` — the bare worker is not a `gen_statem` that can
-drive its own teardown). With no `timeout_ms`, no timer is armed and the call
-waits indefinitely. The call worker runs in its own process; its pid is reported
-on the `llm.started` event as `llm_call_pid` and is distinct from the actor pid.
-
-### Proposals: `soma_proposal:normalize/1`
-
-A proposal is a raw map tagged by a `kind` field. `soma_proposal:normalize/1` is a
-pure validate/normalize boundary (like `soma_tool_manifest:normalize/1`) —
-no processes, no events:
-
-```erlang
-soma_proposal:normalize(Raw).
-%% => {ok, Proposal} | {error, [Diagnostic]}
+```toml
+[llm]
+provider = "openai_compat"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4.1-mini"
+# optional:
+# enable_thinking = false
+# max_tokens = 1024
 ```
 
-The five proposal forms and their required fields:
+Then export the API key in the environment that starts the daemon:
 
-| `kind` | Required fields | Normalized form |
-|---|---|---|
-| `reply` | `text` (binary) | `#{kind => reply, text => Text}` |
-| `run_steps` | `steps` (list; each step a map with `id` and `tool`) | `#{kind => run_steps, steps => Steps}` |
-| `reject` | `reason` (binary) | `#{kind => reject, reason => Reason}` |
-| `ask` | `question` (binary) | `#{kind => ask, question => Question}` |
-| `actor_message` | `to` (pid), `payload` (map) | `#{kind => actor_message, to => To, payload => Payload}` |
-
-A missing required field, a bad step, or an unknown `kind` returns
-`{error, [Diagnostic]}` (each diagnostic a map with `code`, `message`, and the
-offending `kind` / `field`). Proposals are **data, not execution** — normalizing a
-`run_steps` proposal does not start a run.
-
-When the mock returns a `proposal` directive, the actor decides what to do with
-the output:
-
-- a map carrying a `kind` tag is run through `normalize/1`; on success the
-  **normalized** proposal becomes the task result and the actor emits
-  `proposal.created`; on a normalize error the task is recorded `failed` carrying
-  the diagnostics (no `proposal.created`), and the actor stays alive;
-- any other output is **opaque** — stored verbatim as the result, no
-  `proposal.*` event (this is the `success`-directive contract).
-
-### The policy gate: `tool_policy` / `soma_policy:check/2`
-
-Every normalized proposal gets a verdict from `soma_policy:check/2`, a pure
-function over the actor's `tool_policy`:
-
-```erlang
-soma_policy:check(Proposal, Policy).
-%% => allow | {reject, Reason}
+```bash
+export SOMA_LLM_API_KEY="..."
+$SOMA stop 2>/dev/null || true
+$SOMA ask "say hello"
 ```
 
-The policy is a tool-name allowlist:
+The daemon reads config at boot. After changing `~/.soma/config` or
+`SOMA_LLM_API_KEY`, stop the daemon so the next client command starts a fresh one.
 
-```erlang
-#{allowed_tools => [echo, file_read]}   %% only these tools allowed
-#{allowed_tools => all}                 %% any tool allowed
-#{}                                     %% absent key => same as `all'
+To use a different config file:
+
+```bash
+SOMA_CONFIG=/path/to/config SOMA_LLM_API_KEY="..." $SOMA daemon
 ```
 
-A `run_steps` proposal is allowed only when **every** step's `tool` is in the
-allowlist; otherwise the verdict is `{reject, {tools_not_allowed, Disallowed}}`.
-The toolless kinds (`reply`, `reject`, `ask`, `actor_message`) carry no tool and
-are always allowed. Matching is a plain value comparison with **no
-binary↔atom coercion**: an allowlist of `[echo]` (atom) does not allow a step
-whose `tool` is `<<"echo">>` (binary). Use the same representation in both.
+Provider settings such as `base_url` and `model` live in config. Optional
+provider fields `enable_thinking` and `max_tokens` are passed through when set.
+The API key comes only from `SOMA_LLM_API_KEY`; do not put secrets in workflows
+or config files. Soma events must not contain provider secrets.
 
-On `allow` the actor emits `proposal.approved` and sets the task status
-`approved`; on `{reject, Reason}` it emits `proposal.rejected` (carrying the
-reason), sets the status terminal `rejected`, and starts nothing.
+### Ask With Policy And Budgets
 
-### The decision loop: what an approved proposal does
+`soma ask` can carry a tool allowlist and simple budgets. These are mainly useful
+when a model is allowed to propose tool-running work:
 
-`approved` is a transient step only for `run_steps`; for everything else the task
-moves straight to a terminal status:
-
-- **`run_steps`** → the actor emits `proposal.executed` and starts a `soma_run`
-  under `soma_run_sup` that it owns directly (the same machinery the v0.4 `steps`
-  path uses). The task tracks the run's outcome: `completed` (with the run's step
-  outputs as the result), `failed`, `timeout`, or `cancelled`.
-- **`reply` / `reject` / `ask`** → nothing to run, so the task goes straight to
-  `completed` with the normalized proposal as its result.
-- **`actor_message`** → the actor delivers the proposal's `payload` to the actor
-  named by its `to` pid (see "Actor-to-actor messages" below), then the sender
-  task reaches `completed` with the proposal as its result.
-
-The v0.4 direct `steps` path is untouched: it runs straight to a run and emits no
-`proposal.*` event.
-
-### New task statuses
-
-v0.5 adds `approved` and `rejected` to the status set. The full set
-`get_task_status/2` can report: `accepted`, `running`, `approved`, `rejected`,
-`completed`, `failed`, `timeout`, `cancelled` (and `not_found` for an unknown
-task). A terminal `failed`, `rejected`, or budget-failed task also carries a
-`reason` field in the status map.
-
-### Per-task budget
-
-`start_actor` takes an optional `budget` cap, default unlimited:
-
-```erlang
-{ok, A} = soma_actor_sup:start_actor(#{
-    actor_id    => <<"a1">>,
-    model_config => #{},
-    tool_policy => #{allowed_tools => [echo]},
-    budget      => #{max_llm_calls => 2, max_steps => 5},
-    event_store => Store
-}).
+```lisp
+(ask
+  (intent "summarize this")
+  (allow echo file_read)
+  (budget-llm 3)
+  (budget-steps 5))
 ```
 
-The cap is checked at the actor's two spend points:
+The packaged command builds the simple `(ask (intent "..."))` form for normal
+text prompts. Custom clients can send the richer Lisp form over the local socket.
 
-- `max_llm_calls` — before starting a call. Once the task's started-call count is
-  at the cap (`max_llm_calls => 0` hits this before the first call), the task is
-  failed with reason `{budget_exceeded, max_llm_calls}` and no call is made (no
-  `llm.started`).
-- `max_steps` — before starting a run for an approved `run_steps` proposal. A
-  proposal carrying more steps than the cap fails the task with reason
-  `{budget_exceeded, max_steps}` and no run is started (no `run.started`).
+### Real Provider Smoke Test
 
-An absent `budget` key (or an absent dimension) means no cap on that dimension.
-Either exhaustion fails the **task** as data — the **actor stays alive** for the
-next envelope — and a parked `ask/3` caller is released with `{error, Reason}`
-rather than blocking to its timeout.
-
-### Actor-to-actor messages
-
-An approved `actor_message` proposal delivers an envelope to another actor whose
-pid is the proposal's `to`. The sender builds a delivery envelope
-`#{type => <<"actor.message">>, payload => Payload, correlation_id => CorrelationId}`
-stamped with the **sender's** `correlation_id`, and hands it to the target through
-the normal `soma_actor:send/2` entry point (fire-and-forget — the sender does not
-wait on the receiver's result). The receiver's new task inherits that
-`correlation_id`, so `soma_event_store:by_correlation/2` for that one id returns
-**both** actors' events. A delivery to a dead receiver is task data, not a sender
-crash: the sender task is marked `failed` and the sender stays alive.
-
-### New events
-
-v0.5 adds two event families, both emitted by the actor (which holds the
-event-store handle) and both carrying the task's `correlation_id`:
-
-| event_type | Extra fields |
-|---|---|
-| `<<"llm.started">>` | `task_id`, `correlation_id`, `llm_call_id`, `llm_call_pid` |
-| `<<"llm.succeeded">>` | `task_id`, `correlation_id`, `llm_call_id` |
-| `<<"llm.failed">>` | `task_id`, `correlation_id`, `llm_call_id` |
-| `<<"llm.timeout">>` | `task_id`, `correlation_id`, `llm_call_id` |
-| `<<"llm.cancelled">>` | `task_id`, `correlation_id`, `llm_call_id` |
-| `<<"proposal.created">>` | `task_id`, `correlation_id`, `llm_call_id`, `kind` |
-| `<<"proposal.approved">>` | `task_id`, `correlation_id`, `llm_call_id`, `kind` |
-| `<<"proposal.rejected">>` | `task_id`, `correlation_id`, `llm_call_id`, `reason` |
-| `<<"proposal.executed">>` | `task_id`, `correlation_id`, `llm_call_id`, `kind` |
-
-For one `llm` envelope carrying a policy-approved `run_steps` proposal, the whole
-chain under one `correlation_id` reads:
-
-```text
-actor.message.received -> actor.task.accepted -> llm.started -> llm.succeeded
--> proposal.created -> proposal.approved -> proposal.executed -> run.started
--> step.started -> tool.started -> tool.succeeded -> step.succeeded
--> run.completed -> actor.result.created -> actor.task.completed
-```
-
-### End-to-end: drive the decision loop in `rebar3 shell`
-
-Start `rebar3 shell`, then:
-
-```erlang
-%% 1. Boot the runtime and the actor app (soma_actor declares soma_runtime, so
-%%    this one call brings up soma_run_sup and the event store too).
-application:ensure_all_started(soma_actor).
-
-%% 2. Locate the running event store so we can query it.
-{soma_event_store, Store, _, _} =
-    lists:keyfind(soma_event_store, 1, supervisor:which_children(soma_sup)).
-
-%% 3. Start an actor whose policy allows the `echo' tool.
-{ok, A} = soma_actor_sup:start_actor(#{actor_id => <<"a1">>,
-                                       model_config => #{},
-                                       tool_policy => #{allowed_tools => [echo]},
-                                       event_store => Store}).
-
-%% 4. Send an `llm' envelope whose mock returns a `run_steps' proposal.
-Proposal = #{kind => run_steps,
-             steps => [#{id => <<"s1">>, tool => echo,
-                         args => #{value => <<"hi">>}}]},
-Env = #{type => <<"chat">>, payload => #{text => <<"do it">>},
-        task_id => <<"t1">>, correlation_id => <<"c1">>,
-        llm => #{directive => proposal, output => Proposal}},
-{ok, <<"t1">>} = soma_actor:send(A, Env).
-
-%% 5. The decision loop runs asynchronously. Poll status, then read the result.
-soma_actor:get_task_status(A, <<"t1">>).
-%% => #{task_id => <<"t1">>, correlation_id => <<"c1">>, status => completed}
-soma_actor:get_task_result(A, <<"t1">>).
-%% => {ok, #{<<"s1">> => #{value => <<"hi">>}}}   (the run's step outputs)
-
-%% 6. The whole chain, actor + llm + proposal + run events, under one id:
-[maps:get(event_type, E) || E <- soma_event_store:by_correlation(Store, <<"c1">>)].
-%% => [<<"actor.message.received">>, <<"actor.task.accepted">>, <<"llm.started">>,
-%%     <<"llm.succeeded">>, <<"proposal.created">>, <<"proposal.approved">>,
-%%     <<"proposal.executed">>, <<"run.started">>, ..., <<"run.completed">>,
-%%     <<"actor.result.created">>, <<"actor.task.completed">>]
-```
-
-**Policy-reject variant.** Propose a step whose tool is not in the allowlist; the
-task ends `rejected` and starts no run:
-
-```erlang
-Reject = #{kind => run_steps,
-           steps => [#{id => <<"s1">>, tool => sleep, args => #{ms => 1}}]},
-REnv = #{type => <<"chat">>, payload => #{text => <<"do it">>},
-         task_id => <<"t2">>, correlation_id => <<"c2">>,
-         llm => #{directive => proposal, output => Reject}},
-{ok, <<"t2">>} = soma_actor:send(A, REnv).
-soma_actor:get_task_status(A, <<"t2">>).
-%% => #{..., status => rejected, reason => {tools_not_allowed, [sleep]}}
-```
-
-**Budget-exceeded variant.** Start an actor with `max_llm_calls => 0`; the `llm`
-envelope's task fails before any call is made, and the actor stays alive:
-
-```erlang
-{ok, B} = soma_actor_sup:start_actor(#{actor_id => <<"a2">>,
-                                       model_config => #{},
-                                       tool_policy => #{allowed_tools => [echo]},
-                                       budget => #{max_llm_calls => 0},
-                                       event_store => Store}).
-BEnv = #{type => <<"chat">>, payload => #{text => <<"do it">>},
-         task_id => <<"t3">>, correlation_id => <<"c3">>,
-         llm => #{directive => proposal,
-                  output => #{kind => reply, text => <<"hi">>}}},
-{ok, <<"t3">>} = soma_actor:send(B, BEnv).
-soma_actor:get_task_status(B, <<"t3">>).
-%% => #{..., status => failed, reason => {budget_exceeded, max_llm_calls}}
-true = is_process_alive(B).
-```
-
-The full v0.5 process-behaviour proofs — each property mapped to the suite and
-case that proves it — are in
-[contracts/v0.5-test-contract.md](contracts/v0.5-test-contract.md).
-
-## Configuring a real LLM provider (OpenAI-compatible)
-
-v0.6.x slots a real, OpenAI-compatible provider in behind the same
-`soma_llm_call:perform_call/1` seam the mock uses. The mock is still the default:
-a `directive`-keyed `llm` map (above) runs the mock unchanged. The real provider
-is selected by a different key — `provider => openai_compat` — which the mock
-directives never carry, so the two paths do not collide.
-
-The `soma_llm_openai` module shapes and parses the request:
-
-- `soma_llm_openai:build_request/1` is pure — it returns the pieces of the chat-
-  completions POST (`url`, `headers`, `body`) and opens no socket. The url is
-  `{base_url}/chat/completions`; the `Authorization` header is `Bearer <api_key>`;
-  the JSON body always carries `model` and `messages`, and carries `max_tokens`
-  and `enable_thinking` only when you supply them.
-- `soma_llm_openai:parse_response/1` is pure — it maps a `{Status, Body}` pair to
-  either `{ok, #{kind => reply, text => Content}}` (a `reply` proposal that
-  `soma_proposal:normalize/1` accepts) or a bounded, named `{error, Reason}`. A
-  non-200 status, an undecodable body, or a 200 body missing
-  `choices[0].message.content` all stay inside the function as a tagged error
-  rather than escaping as a crash; the raw provider blob is never returned.
-- `soma_llm_openai:chat/1` is the build-then-send-then-parse path. The live
-  variant runs `httpc:request/4`, so a release must have `inets` and `ssl`
-  started — they are declared in `soma_runtime.app.src`'s `applications` list.
-
-### Where the config and the secret come from
-
-The split is deliberate: the **base_url and model are config**, and the **API key
-is a secret read from the environment**, never hard-coded.
-
-```erlang
-Config = #{
-    base_url => <<"https://www.sophnet.com/api/open-apis/v1">>,  %% config
-    model    => <<"DeepSeek-V3">>,                               %% config
-    api_key  => list_to_binary(os:getenv("SOMA_LLM_API_KEY")),  %% secret, from env
-    messages => [#{role => <<"user">>, content => <<"Say hello.">>}],
-    max_tokens => 64                                             %% optional opt
-}.
-```
-
-The API key is read from the `SOMA_LLM_API_KEY` environment variable. The
-base_url and model in the example are the validated SophNet contract; any
-OpenAI-compatible endpoint that differs in request or response shape is out of
-scope for this slice.
-
-### Running the opt-in smoke test
-
-The real round trip is proven only by an opt-in smoke test, never by the gate —
-it opens a real socket and needs a real key, which `rebar3 eunit` and `rebar3 ct`
-must never do. The smoke test lives in `soma_llm_smoke` (a plain `src/` module,
-not a `*_test`/`*_SUITE`, so neither test runner picks it up). Run it by hand:
+The normal test gate never opens network sockets. To manually test the configured
+OpenAI-compatible path from this checkout:
 
 ```bash
 SOMA_LLM_API_KEY=sk-... rebar3 shell
@@ -818,116 +287,144 @@ SOMA_LLM_API_KEY=sk-... rebar3 shell
 
 ```erlang
 1> soma_llm_smoke:run().
-%% reply proposal: {ok, #{kind => reply, text => <<"Hello!">>}}
 ```
 
-`soma_llm_smoke:run/0` reads the key from `SOMA_LLM_API_KEY` (failing loudly if
-it is unset rather than sending an empty key), starts `inets`/`ssl` so the live
-`httpc` path works from a bare shell, takes the base_url and model from its own
-config (the SophNet defaults), sends one real chat-completions call through
-`soma_llm_openai`, and prints the `reply` proposal it gets back.
+The smoke module uses the same real provider path as `soma ask`: `openai_compat`
+request shaping, `base_url` and `model` from config/defaults, and the API key
+from `SOMA_LLM_API_KEY`.
 
-### Starting an actor with a real LLM provider
+### Advanced: actor with a real LLM provider
 
-The provider config above is what `soma_llm_openai` runs; an actor reaches it
-through its `model_config`. Where the v0.5 actor drives the mock (a
-`directive`-keyed `llm` map), a real-provider actor is configured once at start:
-its `model_config` carries `provider => openai_compat`, the `base_url`, the
-`model`, and the `api_key` (read from `SOMA_LLM_API_KEY`, never hard-coded). The
-actor then turns each incoming prompt envelope into a real chat-completions call
-— `soma_actor:build_call_opts/2` derives the `messages` list (one user message
-holding the prompt) from the envelope payload and threads the config's
-`provider` / `base_url` / `model` through to the worker, so
-`soma_llm_call:perform_call/1` routes to `soma_llm_openai`. The `api_key` rides
-in the call opts but is never written into any emitted event.
+Most users should use `soma ask`. Embedded callers can start an actor whose
+`model_config` carries `provider => openai_compat`; the prompt envelope must
+include `llm => #{}` so the actor takes the LLM-call path:
 
 ```erlang
-{ok, _} = application:ensure_all_started(soma_actor).
-{soma_event_store, Store, _, _} =
-    lists:keyfind(soma_event_store, 1, supervisor:which_children(soma_sup)).
-
-%% The real-provider model_config: provider => openai_compat selects the real
-%% path (the mock directives never carry this key, so the two never collide).
 ModelConfig = #{
     provider => openai_compat,
-    base_url => <<"https://www.sophnet.com/api/open-apis/v1">>,
-    model    => <<"DeepSeek-V3">>,
-    api_key  => list_to_binary(os:getenv("SOMA_LLM_API_KEY"))
+    base_url => <<"https://api.openai.com/v1">>,
+    model => <<"gpt-4.1-mini">>,
+    api_key => list_to_binary(os:getenv("SOMA_LLM_API_KEY"))
 },
 {ok, Actor} = soma_actor_sup:start_actor(#{
-    actor_id     => <<"actor-real">>,
+    actor_id => <<"actor-real">>,
     model_config => ModelConfig,
-    tool_policy  => #{},
-    event_store  => Store
-}).
-
-%% A prompt envelope with no mock `directive' and no `steps'. The `llm' key is
-%% still required — it is the field `maybe_start_llm_call/4' gates on to take the
-%% llm-call path — but it carries no directive: the actor's model_config selects
-%% the real provider and build_call_opts/2 turns the payload prompt into the
-%% real chat-completions call.
-Env = #{type => <<"chat">>, payload => #{prompt => <<"Say hello.">>},
-        task_id => <<"t1">>, correlation_id => <<"c1">>,
+    tool_policy => #{},
+    event_store => Store
+}),
+Env = #{type => <<"chat">>,
+        payload => #{prompt => <<"Say hello.">>},
+        task_id => <<"t1">>,
+        correlation_id => <<"c1">>,
         llm => #{}},
 {ok, <<"t1">>} = soma_actor:send(Actor, Env).
-soma_actor:get_task_result(Actor, <<"t1">>).
-%% => {ok, #{kind => reply, text => <<"Hello!">>}}   (the parsed reply proposal)
 ```
 
-This call opens a real socket and needs a real key, so the gate never runs it;
-the round trip is proven by the same opt-in smoke as above. From a bare shell
-with the key set:
+This opens a real provider socket unless the config carries a fixed test
+`response` seam. Use `soma_llm_smoke:run()` for the manual live smoke before
+embedding this path.
+
+## Reading events
+
+Most users read events through:
 
 ```bash
-SOMA_LLM_API_KEY=sk-... rebar3 shell
+$SOMA trace "corr-4"
 ```
+
+The daemon records a mandatory event trail for each task and run. A typical
+successful workflow includes:
+
+```text
+actor.message.received
+actor.task.accepted
+run.started
+step.started
+tool.started
+tool.succeeded
+step.succeeded
+run.completed
+actor.result.created
+actor.task.completed
+```
+
+Failed, timed-out, cancelled, model, proposal, and resumed runs add their own
+event types such as `run.failed`, `run.timeout`, `run.cancelled`,
+`llm.started`, `proposal.approved`, and `run.resumed`.
+
+By default the event store is in-memory, so events are available while the daemon
+is running and disappear when the node stops. For a trail that survives a
+restart, enable the durable `disk_log` store before the runtime starts.
+
+In a release, set the `soma_runtime` application environment in `sys.config`:
 
 ```erlang
-1> soma_llm_smoke:run().
-%% reply proposal: {ok, #{kind => reply, text => <<"Hello!">>}}
+[
+  {soma_runtime, [{event_store_log, "/var/lib/soma/events.log"}]}
+].
 ```
 
-## Local CLI server/client modules
+Start the release with that config:
 
-The task CLI path is implemented as Erlang modules today:
+```bash
+/opt/soma/bin/somad console -config /path/to/sys.config
+```
+
+When persistence is enabled, each event is appended to the on-disk `disk_log` and
+also indexed in memory for reads. On restart, Soma replays the log and rebuilds
+the in-memory index, so `trace`, status reconstruction, and event queries can see
+the earlier durable trail.
+
+Advanced embedding note: the lower-level event-store `start_link/1` form accepts
+a log path option such as:
 
 ```erlang
-{ok, SocketPath} = soma_cli:daemon(#{socket => "/tmp/soma-doc.sock"}).
-soma_cli:run(#{file => "/path/to/flow.lfe", socket => SocketPath}).
-soma_cli:ask(#{intent => "summarize this", socket => SocketPath}).
-soma_cli:status(#{task_id => <<"task-1">>, socket => SocketPath}).
-soma_cli:trace(#{correlation_id => <<"corr-1">>, socket => SocketPath}).
-soma_cli:cancel(#{task_id => <<"task-1">>, socket => SocketPath}).
+soma_event_store:start_link(#{log => "/var/lib/soma/events.log"}).
 ```
 
-The wire is length-prefixed Lisp s-expressions: `(run ...)`, `(ask ...)`,
-`(status ...)`, `(trace ...)`, and `(cancel ...)` requests, with `(result ...)`,
-`(accepted ...)`, `(status ...)`, or `(trace ...)` replies rendered by
-`soma_lisp`. Detached run support is a `(detach)` marker inside `(run ...)`;
-detached tasks live in `soma_cli_task_registry` and can be managed by id.
+That is the same opt-in durability mode: `log =>` selects an on-disk `disk_log`,
+and replay on restart rebuilds the query index from the durable log.
 
-These ship as the packaged **`soma`** task command in the release (`soma run` /
-`ask` / `status` / `cancel` / `trace` / `stop` / `daemon`). To avoid colliding
-with relx's node-control verbs, the release is named `somad`: `bin/somad` is the
-node-control script (`console`, `foreground`, `daemon`, `stop`, `status`, …) and
-`bin/soma` is the task client. See [`cli.md`](cli.md) and [`release.md`](release.md).
+## Common Failures
 
-## Failure reasons
+| Symptom | What to check |
+| --- | --- |
+| `unregistered_tool` | The workflow names a tool the daemon has not registered. Check spelling and installed tool manifests. |
+| `timeout` | A step exceeded its `(timeout_ms N)` budget, or a model call exceeded its call timeout. Increase the budget or inspect the tool/model. |
+| `failed` from `file_read` or `file_write` | Check `root`, relative `path`, permissions, and whether the parent directory exists. |
+| `ask` fails before calling a model | Check `~/.soma/config`, `provider = "openai_compat"`, `base_url`, `model`, and `SOMA_LLM_API_KEY`. |
+| `rejected` | The policy gate rejected a proposed tool or action. Check the allowlist. |
+| `budget_exceeded` | The task hit `budget-llm` or `budget-steps` before completion. |
+| `status unknown` | The task id is wrong, the daemon restarted without durable state, or the task belonged to another socket/daemon. |
 
-When any step fails, the `reason` in `tool.failed`'s payload is one of:
+When in doubt, use the `correlation-id` from the original reply:
 
-| Reason | Meaning |
-|---|---|
-| `{unregistered_tool, Name}` | The step's `tool` atom was not registered in the registry |
+```bash
+$SOMA trace "corr-4"
+```
 
-When a cli step fails, the reason is additionally one of:
+## Examples
 
-| Reason | Meaning |
-|---|---|
-| `{cli_executable_not_found, Path}` | `executable` path does not exist |
-| `{cli_executable_not_executable, Path}` | path exists but has no execute bit |
-| `{cli_exit_status, N, Excerpt}` | program exited with status N; `Excerpt` is the captured output (binary, may be empty) |
-| `{cli_output_limit_exceeded, 65536}` | stdout/stderr exceeded 64 KB before the program exited |
+The repository includes a CLI tour:
 
-In the `{cli_exit_status, N, Excerpt}` case, `Excerpt` is never larger than
-the 64 KB limit — the worker stops collecting as soon as the limit is hit.
+```bash
+rebar3 release
+examples/cli-demo/demo.sh
+```
+
+Useful workflow files:
+
+| File | What it shows |
+| --- | --- |
+| `examples/cli-demo/pipeline.lfe` | `file_read -> echo -> file_write`. |
+| `examples/cli-demo/slow.lfe` | Long-running task for detach and cancel. |
+| `examples/cli-demo/timeout.lfe` | A step timeout. |
+| `examples/cli-demo/crash.lfe` | A controlled tool crash that fails the run without killing the daemon. |
+
+## Next Docs
+
+- [`cli.md`](cli.md) - exact command and Lisp wire reference.
+- [`lfe-dsl.md`](lfe-dsl.md) - workflow language syntax and diagnostics.
+- [`release.md`](release.md) - building, unpacking, and operating a release.
+- [`tool-manifest.md`](tool-manifest.md) - registering additional tools.
+- [`design.md`](design.md) - architecture and non-negotiable runtime boundaries.

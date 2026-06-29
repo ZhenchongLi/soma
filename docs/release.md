@@ -7,7 +7,7 @@ with **no Erlang installed**.
 ## Bundled apps
 
 The relx release in `rebar.config` is the **execution core**. It bundles exactly
-these apps (the same set, in the same order, as the `{release, {soma, ...}, [...]}`
+these apps (the same set, in the same order, as the `{release, {somad, ...}, [...]}`
 list in `rebar.config`):
 
 - `soma_event_store`

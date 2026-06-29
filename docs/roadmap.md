@@ -3,20 +3,22 @@
 v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), v0.3 (LFE DSL
 compile-only layer), v0.4 (the `soma_actor` agent-entity skeleton), v0.5 (the
 agent decision layer — LLM-call worker, proposal schema, policy gate,
-decision-loop execution, budget, and actor-to-actor messages), and v0.6 (trace
-tooling + a durable, opt-in `disk_log` event store) are built and merged. The
-parallel tracks have also moved: **node B.1/B.2** landed the OpenAI-compatible
-provider and actor `model_config` wiring; the **CLI / daemon** modules now expose
-a single-user Unix-socket Lisp wire for run/ask/status/trace/cancel/detach; and
-the **Lisp s-expr message language** has L.1-L.5 tests for envelopes,
-actor-to-actor delivery, proposals, audit rendering, and bounded repair. The
-sequence below is what comes next.
+decision-loop execution, budget, and actor-to-actor messages), v0.6 (trace
+tooling + a durable, opt-in `disk_log` event store), and v0.7.1-v0.7.4
+(persistent resume journal, reconstruction, plan, and manual executor) are built
+and merged. The parallel tracks have also moved: **node B.1/B.2** landed the
+OpenAI-compatible provider and actor `model_config` wiring, with actor-level
+planning mode behind `plan => true`; the **CLI / daemon** modules now expose a
+single-user Unix-socket Lisp wire for run/ask/status/trace/cancel/detach; and the
+**Lisp s-expr message language** has L.1-L.5 tests for envelopes, actor-to-actor
+delivery, proposals, audit rendering, and bounded repair. The sequence below is
+the current state and remaining work.
 
 The important sequencing rule is unchanged: do not add a layer until the layer
 below it has test coverage for its failure semantics. With the actor contract
 closed, LLM planning landed as a supervised child operation, and the event stream
 now both readable (a trace view) and durable (it survives a restart), the next
-work is persistent run resume.
+resume work is v0.7.5 auto-resume on boot.
 
 ## Sequence
 
@@ -32,7 +34,7 @@ v0.7    persistent resume                              [done — journal + recon
 v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
-node B  real LLM provider behind the perform_call seam   [B.1/B.2 done; structured planning next]
+node B  real LLM provider behind the perform_call seam   [provider + actor planning done; product surface next]
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    s-expr actor/agent message language (soma_lfe)   [L.1-L.5 done]
 ```
@@ -151,8 +153,8 @@ contract's P12 and P13 are now delivered. The **one remaining deferred proof is
 P14** (the policy proactively asks a human before executing) — there is no
 human-in-the-loop ask path yet.
 
-Structured real-provider planning (`run_steps` / tool-use proposals from a real
-model) and an effect-aware policy gate remain future work beyond this layer.
+A human-in-the-loop ask path and an effect-aware policy gate remain future work
+beyond this layer.
 
 ## v0.6 — trace tooling + persistent event store [done]
 
@@ -264,14 +266,21 @@ the gate default; real calls are opt-in and **off the test gate** (no network in
   turns the model's text into a `reply` proposal; `perform_call/1` routes to it for
   real-provider opts. Pure request-build / response-parse tests on the gate; an
   opt-in `soma_llm_smoke:run/0` (key from `SOMA_LLM_API_KEY`) proves it live
-  against SophNet (validated: DeepSeek-V4, Qwen3.6 + the `enable_thinking` toggle).
+  against the configured SophNet default (`DeepSeek-V3` in the smoke module).
+  Optional `enable_thinking` and `max_tokens` fields are passed through when
+  configured.
 - `node B.2` — actor wiring [done] (#119): an actor's `model_config` can select
   `provider => openai_compat`; `soma_actor:build_call_opts/2` derives provider
   call opts from the envelope payload, routes through `soma_llm_call`, and keeps
   the API key out of emitted events. Gate tests use a fixed-response seam, not a
   real socket.
-- Later: structured proposals from the model (`run_steps` / tool-use planning, not
-  just `reply`) and an effect-aware policy gate.
+- actor-level planning mode [done]: a real-provider `model_config` carrying
+  `plan => true` adds a system instruction, reads the provider's reply content as
+  a Lisp `(run-steps ...)` proposal, sends it through `soma_lfe:compile/2`,
+  `soma_proposal:normalize/1`, policy, and budget, then runs approved steps. Gate
+  tests use fixed responses and open no model socket.
+- Later: productize the planning surface through config/CLI conventions and add
+  an effect-aware policy gate.
 
 Provider `base_url` / `model` live in local config; the **API key is only ever
 read from an env var / a gitignored file, never committed**.

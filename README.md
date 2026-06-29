@@ -30,12 +30,13 @@ values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 | **v0.7** · Persistent resume | `run.started` journal · read-only reconstruct · resume executor (`resume/3`, fail-safe on non-idempotent in-flight steps) |
 
 The real **OpenAI-compatible LLM provider** path is built (opt-in, off the
-gate), and the packaged **`soma` CLI / daemon** is built: `run` / `ask` /
+gate), including an actor-level planning mode that can parse model text as
+`run_steps`, and the packaged **`soma` CLI / daemon** is built: `run` / `ask` /
 `status` / `cancel` / `trace` / `stop` over a local Unix socket, Lisp on the
 wire, with `bin/soma` distinct from the `bin/somad` node-control script. Still
-open: v0.7.5 auto-resume on boot, structured real-model planning that emits
-tool-running proposals, effect-aware policy, and the **Linux x86_64 / arm64
-release artifacts** (macOS arm64 is done).
+open: v0.7.5 auto-resume on boot, productizing real-model planning at the CLI /
+config surface, effect-aware policy, and the **Linux x86_64 / arm64 release
+artifacts** (macOS arm64 is done).
 
 ## The idea
 
@@ -150,9 +151,9 @@ $SOMA cancel "<task-id-from-accepted>"
 
 `soma ask "..."` drives the actor decision path through the same daemon. It needs
 a model configured in `~/.soma/config` and `SOMA_LLM_API_KEY` exported in the
-daemon's environment; `soma run` needs no model. See [docs/cli.md](docs/cli.md)
-for the full command surface, and [docs/usage.md](docs/usage.md) for lower-level
-embedding APIs.
+daemon's environment; `soma run` needs no model. See [docs/usage.md](docs/usage.md)
+for the user manual, and [docs/cli.md](docs/cli.md) for the full command and Lisp
+wire reference.
 
 ## What it does
 
@@ -259,7 +260,7 @@ rebar3 as prod tar
 ```
 
 builds a self-contained release that bundles ERTS and runs without Erlang
-installed → `_build/prod/rel/soma/soma-0.1.0.tar.gz`. macOS arm64 is built and
+installed → `_build/prod/rel/somad/somad-0.1.0.tar.gz`. macOS arm64 is built and
 verified; the Linux x86_64 / arm64 artifacts build the same `prod` profile on
 those hosts and are the remaining packaging work. See
 **[docs/release.md](docs/release.md)**.
@@ -272,12 +273,13 @@ with an opt-in durable `disk_log` backend) and a read-only trace view
 (`soma_trace`), a compile-only LFE DSL layer (`soma_lfe`), the `soma_actor`
 agent-entity skeleton, the agent decision layer (`soma_llm_call` + proposal schema
 + policy gate + decision-loop execution + budgets + actor-to-actor), the
-OpenAI-compatible real-provider path, the Lisp message/proposal/trace/repair
-edge forms, manual persistent run resume (`soma_run_resume_executor:resume/3`),
-the packaged `bin/soma` Unix-socket task command, and a self-contained release.
+OpenAI-compatible real-provider path, actor-level real-provider planning mode,
+the Lisp message/proposal/trace/repair edge forms, manual persistent run resume
+(`soma_run_resume_executor:resume/3`), the packaged `bin/soma` Unix-socket task
+command, and a self-contained release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**): a
-structured real-model planner that emits tool-running proposals, an effect-aware
+productized CLI/config surface for real-model tool planning, an effect-aware
 policy gate, MCP, DAG parallelism, distributed Erlang, v0.7.5 auto-resume on
 boot, per-tool resume policy / compensation hooks for non-idempotent in-flight
 steps, and Linux x86_64 / arm64 release artifacts.
@@ -290,9 +292,9 @@ steps, and Linux x86_64 / arm64 release artifacts.
   the non-negotiable constraints. Where the implementation refined the design
   (e.g. step iteration lives inside `soma_run`, not a separate `soma_step`
   process), this README and the code are authoritative.
-- **[docs/usage.md](docs/usage.md)** — API reference: starting the runtime,
-  registering tools, starting runs, reading events, cancellation, actor messages,
-  and provider configuration.
+- **[docs/usage.md](docs/usage.md)** — user manual: getting the `soma` command,
+  running workflow files, managing task ids, tracing, cancellation, model
+  configuration, durable events, and troubleshooting.
 - **[docs/tool-manifest.md](docs/tool-manifest.md)** — tool manifest contract:
   the shape of a tool entry, which adapter runs it, and the cli execution
   protocol.

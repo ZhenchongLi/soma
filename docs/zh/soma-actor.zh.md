@@ -4,13 +4,16 @@
 > `gen_statem` 起来、收信封（`send`/`ask`）、建任务、跑自己拥有的 `soma_run`、
 > 出结果或在失败/超时/取消时存活，`by_correlation/2` 串起整条链。v0.5 又实现了
 > LLM call worker、proposal schema、policy gate、budget 和 actor-to-actor message；
-> v0.6 让事件流可读并可选持久化。测试契约见
+> v0.6 让事件流可读并可选持久化；v0.7.1-v0.7.4 加上了持久化 run journal、
+> reconstruct、resume plan 和手动 resume executor。测试契约见
 > [`../contracts/v0.4-test-contract.md`](../contracts/v0.4-test-contract.md)、
 > [`../contracts/v0.5-test-contract.md`](../contracts/v0.5-test-contract.md) 和
-> [`../contracts/v0.6-test-contract.md`](../contracts/v0.6-test-contract.md)。当前测试门禁
-> 使用 mock LLM；真实 OpenAI-compatible provider 已经通过 `model_config` 接入，live 调用
-> 是 opt-in。可运行示例见 `examples/soma_actor_demo.erl`，API 见
-> [`../usage.md`](../usage.md)。
+> [`../contracts/v0.6-test-contract.md`](../contracts/v0.6-test-contract.md)、
+> [`../contracts/v0.7-test-contract.md`](../contracts/v0.7-test-contract.md)。当前测试门禁
+> 使用 mock/fixed-response seams；真实 OpenAI-compatible provider 已经通过
+> `model_config` 接入，`plan => true` 可把 provider 回复解析成 `(run-steps ...)`
+> proposal，live 调用是 opt-in。可运行示例见 `examples/soma_actor_demo.erl`，
+> 用户手册见 [`../usage.md`](../usage.md)。
 
 本文是 `soma_actor` 的完整设计说明。它不替代已经实现的执行内核（session、run、tool call、manifest、CLI adapter、LFE DSL），而是说明这个执行内核在最终 agent runtime 里的位置，以及 `soma_actor` 这一层如何在它之上构建。
 
