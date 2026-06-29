@@ -61,7 +61,15 @@ validate_msg_required(Acc) ->
 %% @doc Parse a public (task ...) form into the same canonical run map as
 %% the older (run ...) form.
 -spec parse_task([term()]) -> {ok, map()} | {error, [diagnostic()]}.
-parse_task([task, ['let*', Bindings, [return, ReturnId]]])
+parse_task(Form) ->
+    case find_unsupported_task_control_form(Form) of
+        {ok, Head} ->
+            {error, [task_reserved_control_form_diag(Head)]};
+        none ->
+            parse_task_checked(Form)
+    end.
+
+parse_task_checked([task, ['let*', Bindings, [return, ReturnId]]])
         when is_list(Bindings), is_atom(ReturnId) ->
     case parse_task_bindings(Bindings, [], []) of
         {ok, Steps} ->
@@ -74,16 +82,16 @@ parse_task([task, ['let*', Bindings, [return, ReturnId]]])
         {error, Diags} ->
             {error, Diags}
     end;
-parse_task([task, ['let*', Bindings, [return, ReturnId] | _ExtraBody]])
+parse_task_checked([task, ['let*', Bindings, [return, ReturnId] | _ExtraBody]])
         when is_list(Bindings), is_atom(ReturnId) ->
     {error, [#{code => invalid_let_star,
                message => <<"task let* body must contain exactly one return form">>,
                line => 0}]};
-parse_task([task, ['let*', Bindings]]) when is_list(Bindings) ->
+parse_task_checked([task, ['let*', Bindings]]) when is_list(Bindings) ->
     {error, [#{code => invalid_return,
                message => <<"task let* body must include (return Name)">>,
                line => 0}]};
-parse_task([task | _]) ->
+parse_task_checked([task | _]) ->
     {error, [#{code => invalid_task_form,
                message => <<"task form must be (task (let* ((id (tool name ...))) (return id)))">>,
                line => 0}]}.
@@ -134,6 +142,44 @@ task_reserved_form_diag(Word) ->
     #{code => reserved_form,
       message => iolist_to_binary(
           io_lib:format("reserved task binding name: '~s'", [Word])),
+      line => 0}.
+
+find_unsupported_task_control_form([Head | Children]) when is_atom(Head) ->
+    case is_unsupported_task_control_head(Head) of
+        true ->
+            {ok, Head};
+        false ->
+            find_unsupported_task_control_form_children(Children)
+    end;
+find_unsupported_task_control_form([Child | Rest]) ->
+    case find_unsupported_task_control_form(Child) of
+        none ->
+            find_unsupported_task_control_form(Rest);
+        Found ->
+            Found
+    end;
+find_unsupported_task_control_form([]) ->
+    none;
+find_unsupported_task_control_form(_Other) ->
+    none.
+
+find_unsupported_task_control_form_children([]) ->
+    none;
+find_unsupported_task_control_form_children([Child | Rest]) ->
+    case find_unsupported_task_control_form(Child) of
+        none ->
+            find_unsupported_task_control_form_children(Rest);
+        Found ->
+            Found
+    end.
+
+is_unsupported_task_control_head(Head) ->
+    lists:member(Head, ['if', 'cond', 'loop', 'recur']).
+
+task_reserved_control_form_diag(Head) ->
+    #{code => reserved_form,
+      message => iolist_to_binary(
+          io_lib:format("unsupported task control form head: '~s'", [Head])),
       line => 0}.
 
 parse_task_tool_call(Id, Tool, ArgForms) ->
