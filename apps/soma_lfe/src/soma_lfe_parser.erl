@@ -101,16 +101,40 @@ parse_task_bindings([Binding | Rest], Acc, ErrAcc) ->
     end.
 
 parse_task_binding([Id, [tool | ToolTail]]) when is_atom(Id) ->
-    case ToolTail of
-        [Tool | ArgForms] when is_atom(Tool) ->
-            parse_task_tool_call(Id, Tool, ArgForms);
-        _ ->
-            {error, [task_invalid_tool_form_diag([tool | ToolTail])]}
+    case is_reserved_task_word(Id) of
+        true ->
+            {error, [task_reserved_form_diag(Id)]};
+        false ->
+            case ToolTail of
+                [Tool | ArgForms] when is_atom(Tool) ->
+                    parse_task_tool_call(Id, Tool, ArgForms);
+                _ ->
+                    {error, [task_invalid_tool_form_diag([tool | ToolTail])]}
+            end
+    end;
+parse_task_binding([Id, _ToolForm]) when is_atom(Id) ->
+    case is_reserved_task_word(Id) of
+        true ->
+            {error, [task_reserved_form_diag(Id)]};
+        false ->
+            {error, [#{code => invalid_binding,
+                       message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
+                       line => 0}]}
     end;
 parse_task_binding(_Other) ->
     {error, [#{code => invalid_binding,
                message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
                line => 0}]}.
+
+is_reserved_task_word(Word) ->
+    lists:member(Word, [task, 'let*', tool, from, 'timeout-ms', return,
+                        'if', 'cond', 'loop', 'recur']).
+
+task_reserved_form_diag(Word) ->
+    #{code => reserved_form,
+      message => iolist_to_binary(
+          io_lib:format("reserved task binding name: '~s'", [Word])),
+      line => 0}.
 
 parse_task_tool_call(Id, Tool, ArgForms) ->
     case extract_task_step_fields(ArgForms, #{}, [], []) of
