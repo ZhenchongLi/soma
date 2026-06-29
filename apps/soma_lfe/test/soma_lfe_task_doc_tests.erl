@@ -61,3 +61,13 @@ test_lfe_dsl_documents_run_as_compatibility_core_form() ->
 
 lfe_dsl_documents_run_as_compatibility_core_form_test() ->
     test_lfe_dsl_documents_run_as_compatibility_core_form().
+
+test_lfe_dsl_includes_dynamic_need_sentence() ->
+    Doc = read_doc("docs/lfe-dsl.md"),
+    ?assert(contains(
+        Doc,
+        <<"When a need is dynamic, keep the dynamic decision in the actor/planner layer and submit a new bounded static Soma Lisp task for each execution attempt.">>
+    )).
+
+lfe_dsl_includes_dynamic_need_sentence_test() ->
+    test_lfe_dsl_includes_dynamic_need_sentence().
