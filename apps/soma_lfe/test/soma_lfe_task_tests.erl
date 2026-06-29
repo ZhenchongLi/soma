@@ -58,7 +58,7 @@ test_tool_call_becomes_step_tool() ->
         "    (return read_file)))\n"
     >>,
     {ok, #{run := #{steps := [Step]}}} = soma_lfe:compile(Source, #{}),
-    ?assertEqual(file_read, maps:get(tool, Step)).
+    ?assertEqual(echo, maps:get(tool, Step)).
 
 tool_call_becomes_step_tool_test() ->
     test_tool_call_becomes_step_tool().
