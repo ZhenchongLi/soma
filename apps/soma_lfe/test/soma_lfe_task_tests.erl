@@ -150,7 +150,7 @@ test_forward_from_binding_returns_diagnostic() ->
         "    (return echoed)))\n"
     >>,
     {error, Diags} = soma_lfe:compile(Source, #{}),
-    ?assertEqual([invalid_from_step], [maps:get(code, Diag) || Diag <- Diags]).
+    ?assertEqual([invalid_from_binding], [maps:get(code, Diag) || Diag <- Diags]).
 
 forward_from_binding_returns_diagnostic_test() ->
     test_forward_from_binding_returns_diagnostic().
