@@ -10,6 +10,7 @@
 -export([test_run_lisp_echo_returns_completed_result/1]).
 -export([test_run_lisp_result_carries_correlation_id/1]).
 -export([test_run_lisp_failed_returns_error_result/1]).
+-export([test_run_crash_lfe_body_returns_kaboom_error_result/1]).
 -export([test_run_timeout_returns_result_with_status_timeout/1]).
 -export([test_server_serves_after_failed_lisp_run/1]).
 -export([test_malformed_request_returns_error_sexpr/1]).
@@ -48,6 +49,7 @@ all() ->
      test_run_lisp_echo_returns_completed_result,
      test_run_lisp_result_carries_correlation_id,
      test_run_lisp_failed_returns_error_result,
+     test_run_crash_lfe_body_returns_kaboom_error_result,
      test_run_timeout_returns_result_with_status_timeout,
      test_server_serves_after_failed_lisp_run,
      test_malformed_request_returns_error_sexpr,
@@ -189,6 +191,19 @@ test_run_lisp_failed_returns_error_result(Config) ->
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     nomatch = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Reply, "\\(error ", [{capture, none}]),
+    ok = gen_tcp:close(Client).
+
+test_run_crash_lfe_body_returns_kaboom_error_result(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    {ok, Client} = connect(Path),
+    {ok, Request} = file:read_file("examples/cli-demo/crash.lfe"),
+    ok = gen_tcp:send(Client, Request),
+    {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+    match = re:run(Reply, "^\\(result ", [{capture, none}]),
+    match = re:run(Reply, "\\(status failed\\)", [{capture, none}]),
+    match = re:run(Reply, "kaboom", [{capture, none}]),
+    nomatch = re:run(Reply, "noproc", [{capture, none}]),
     ok = gen_tcp:close(Client).
 
 %% Criterion 1 (#179): a framed Lisp `(run (step ...))' request whose only step
