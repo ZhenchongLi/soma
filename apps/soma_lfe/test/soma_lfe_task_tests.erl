@@ -32,7 +32,7 @@ test_let_star_bindings_preserve_order() ->
         "    (return third)))\n"
     >>,
     {ok, #{run := #{steps := Steps}}} = soma_lfe:compile(Source, #{}),
-    ?assertEqual([first, third, second], [maps:get(id, Step) || Step <- Steps]).
+    ?assertEqual([first, second, third], [maps:get(id, Step) || Step <- Steps]).
 
 let_star_bindings_preserve_order_test() ->
     test_let_star_bindings_preserve_order().
