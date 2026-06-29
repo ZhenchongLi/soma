@@ -113,7 +113,7 @@ parse_task_binding([Id, [tool, Tool | ArgForms]]) when is_atom(Id), is_atom(Tool
             {error, Diags}
     end;
 parse_task_binding(_Other) ->
-    {error, [#{code => malformed_task,
+    {error, [#{code => invalid_binding,
                message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
                line => 0}]}.
 
