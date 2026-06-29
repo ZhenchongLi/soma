@@ -125,7 +125,7 @@ rewrite_task_from_values([]) ->
     [].
 
 validate_task_steps(Steps) ->
-    check_duplicate_bindings(Steps) ++ check_from_step_refs(Steps).
+    check_duplicate_bindings(Steps) ++ check_task_from_binding_refs(Steps).
 
 check_duplicate_bindings(Steps) ->
     Ids = [maps:get(id, S) || S <- Steps],
@@ -141,6 +141,9 @@ check_duplicate_bindings(Steps) ->
           message => iolist_to_binary(io_lib:format("duplicate binding: '~s'", [Id])),
           line => 0}
     end, sets:to_list(DupIds)).
+
+check_task_from_binding_refs(Steps) ->
+    [Diag#{code => invalid_from_binding} || Diag <- check_from_step_refs(Steps)].
 
 validate_task_return(ReturnId, Steps) ->
     case lists:any(fun(Step) -> maps:get(id, Step) =:= ReturnId end, Steps) of
