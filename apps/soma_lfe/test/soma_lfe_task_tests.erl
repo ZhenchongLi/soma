@@ -140,6 +140,21 @@ test_duplicate_binding_returns_diagnostic() ->
 duplicate_binding_returns_diagnostic_test() ->
     test_duplicate_binding_returns_diagnostic().
 
+test_forward_from_binding_returns_diagnostic() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((echoed (tool echo\n"
+        "                   (from later)))\n"
+        "         (later (tool echo\n"
+        "                  (value \"done\"))))\n"
+        "    (return echoed)))\n"
+    >>,
+    {error, Diags} = soma_lfe:compile(Source, #{}),
+    ?assertEqual([invalid_from_step], [maps:get(code, Diag) || Diag <- Diags]).
+
+forward_from_binding_returns_diagnostic_test() ->
+    test_forward_from_binding_returns_diagnostic().
+
 test_unknown_from_binding_returns_diagnostic() ->
     Source = <<
         "(task\n"
