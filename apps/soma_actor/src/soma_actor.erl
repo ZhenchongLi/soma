@@ -104,8 +104,17 @@ init(Opts) ->
                  budget = maps:get(budget, Opts, #{}),
                  repair = maps:get(repair, Opts, auto),
                  max_repairs = maps:get(max_repairs, Opts, 1)},
+    maybe_register_stable_name(Opts),
     emit(Data, <<"actor.started">>, #{}),
     {ok, idle, Data}.
+
+maybe_register_stable_name(Opts) ->
+    case maps:get(stable_name, Opts, undefined) of
+        StableName when is_binary(StableName) ->
+            ok = soma_actor_registry:register(StableName, self());
+        undefined ->
+            ok
+    end.
 
 idle({call, From}, {send, Envelope}, Data) ->
     case validate_envelope(Envelope) of
