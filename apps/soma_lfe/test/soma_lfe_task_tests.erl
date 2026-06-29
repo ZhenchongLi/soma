@@ -19,3 +19,20 @@ test_task_compiles_to_run_steps() ->
 
 task_compiles_to_run_steps_test() ->
     test_task_compiles_to_run_steps().
+
+test_let_star_bindings_preserve_order() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((first (tool echo\n"
+        "                    (value \"one\")))\n"
+        "         (second (tool echo\n"
+        "                     (value \"two\")))\n"
+        "         (third (tool echo\n"
+        "                    (value \"three\"))))\n"
+        "    (return third)))\n"
+    >>,
+    {ok, #{run := #{steps := Steps}}} = soma_lfe:compile(Source, #{}),
+    ?assertEqual([first, third, second], [maps:get(id, Step) || Step <- Steps]).
+
+let_star_bindings_preserve_order_test() ->
+    test_let_star_bindings_preserve_order().
