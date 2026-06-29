@@ -228,3 +228,16 @@ test_malformed_let_star_returns_diagnostic() ->
 
 malformed_let_star_returns_diagnostic_test() ->
     test_malformed_let_star_returns_diagnostic().
+
+test_malformed_binding_returns_diagnostic() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((123 (tool echo\n"
+        "                  (value \"done\"))))\n"
+        "    (return echoed)))\n"
+    >>,
+    {error, Diags} = soma_lfe:compile(Source, #{}),
+    ?assertEqual([invalid_binding], [maps:get(code, Diag) || Diag <- Diags]).
+
+malformed_binding_returns_diagnostic_test() ->
+    test_malformed_binding_returns_diagnostic().
