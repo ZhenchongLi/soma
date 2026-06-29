@@ -206,3 +206,11 @@ test_invalid_timeout_ms_returns_diagnostic() ->
 
 invalid_timeout_ms_returns_diagnostic_test() ->
     test_invalid_timeout_ms_returns_diagnostic().
+
+test_malformed_task_root_returns_diagnostic() ->
+    Source = <<"(task)">>,
+    {error, Diags} = soma_lfe:compile(Source, #{}),
+    ?assertEqual([invalid_task_form], [maps:get(code, Diag) || Diag <- Diags]).
+
+malformed_task_root_returns_diagnostic_test() ->
+    test_malformed_task_root_returns_diagnostic().
