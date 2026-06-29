@@ -97,6 +97,7 @@ real-provider seam, Lisp edge language, and the packaged local CLI / daemon.
 - readable trace views (`soma_trace`, including Lisp rendering);
 - a compile-only LFE DSL layer (`soma_lfe`) that now parses run, message,
   proposal, ask, trace, status, and cancel edge forms;
+  The public boundary is `Soma Lisp source -> soma_lfe:compile/2 -> validated maps -> OTP execution`.
 - the `soma_actor` agent entity (`gen_statem`, its own app): `send`/`ask`, a task
   table, `task_id` / `correlation_id`, and `actor.*` events;
 - fixed-rule run integration — a steps envelope starts a `soma_run` the actor
