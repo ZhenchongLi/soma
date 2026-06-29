@@ -154,7 +154,7 @@ validate_task_return(ReturnId, Steps) ->
         true ->
             [];
         false ->
-            [#{code => invalid_task_return,
+            [#{code => invalid_return,
                message => iolist_to_binary(
                    io_lib:format("task return references unknown binding: '~s'", [ReturnId])),
                line => 0}]
