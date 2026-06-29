@@ -38,7 +38,6 @@ test_all_routes_present() {
     "guides/usage/index.html"
     "reference/erlang-otp-primer/index.html"
     "reference/roadmap/index.html"
-    "__tdd_red_missing_route__/index.html"
   )
 
   for route in "${expected_routes[@]}"; do
