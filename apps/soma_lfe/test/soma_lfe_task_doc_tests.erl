@@ -91,3 +91,13 @@ test_usage_doc_says_run_file_reads_soma_lisp_source() ->
 
 usage_doc_says_run_file_reads_soma_lisp_source_test() ->
     test_usage_doc_says_run_file_reads_soma_lisp_source().
+
+test_cli_doc_says_run_file_reads_soma_lisp_source() ->
+    Doc = read_doc("docs/cli.md"),
+    ?assert(contains(
+        Doc,
+        <<"soma run FILE reads Soma Lisp source">>
+    )).
+
+cli_doc_says_run_file_reads_soma_lisp_source_test() ->
+    test_cli_doc_says_run_file_reads_soma_lisp_source().
