@@ -74,11 +74,11 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
   path `$XDG_RUNTIME_DIR/soma.sock`, else `/tmp/soma-$UID.sock` (mind the AF_UNIX
   path-length limit, ~104 chars on macOS). **Not** `/run` (needs root; absent on
   macOS, the verified target).
-- **Framing**: length-prefixed s-expr frames. The request frame carries the
-  workflow's Lisp s-expr — a `(run …)` form (the daemon parses it with
-  `soma_lfe`); the reply frame carries a rendered `(result …)` s-expr
-  (`soma_lisp:render/1`). No JSON on the wire — the same Lisp the workflows are
-  written in is the wire format.
+- **Framing**: length-prefixed s-expr frames. The request frame carries Soma
+  Lisp source: the public `(task ...)` form or the compatibility/core `(run …)`
+  form, parsed by the daemon with `soma_lfe`; the reply frame carries a rendered
+  `(result …)` s-expr (`soma_lisp:render/1`). No JSON on the wire — the same
+  Lisp the workflows are written in is the wire format.
 - **Access control**: filesystem permissions on the socket path (0600, owner-
   only). Single-user, so that is the whole boundary.
 
@@ -87,7 +87,7 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
 | Target command | Current module API | Needs LLM? | Role |
 |---|---|---|
 | `soma daemon` | `soma_cli:daemon/1` | no | Boot runtime + listener on the socket. |
-| `soma run <workflow>` | `soma_cli:run/1` | no | Run an LFE workflow under supervision; return result. |
+| `soma run FILE` | `soma_cli:run/1` | no | Run Soma Lisp source under supervision; return result. |
 | `soma ask "<intent>"` | `soma_cli:ask/1` | yes | Intent → LLM → proposal → policy → result. |
 | `soma status <task-id>` / `soma cancel <task-id>` | `soma_cli:status/1`, `cancel/1` | no | Poll / cancel a task by id. |
 | `soma trace <correlation_id>` | `soma_cli:trace/1` | no | Render a stored correlation chain as Lisp events. |
@@ -99,20 +99,21 @@ as a packaged external task command without colliding with relx's existing
 ## `soma run` — deterministic supervised execution (client)
 
 ```
-soma run WORKFLOW [--detach]
+soma run FILE [--detach]
 ```
 
-- **WORKFLOW**: a file (or `-` for stdin) — an **LFE workflow** (a `(run …)`
-  s-expr, compiled via `soma_lfe:compile/2`).
-- The client reads the file's s-expr and sends it as the **`(run …)` request**
-  frame; the daemon parses it with `soma_lfe`, owns a supervised run, waits for
-  the terminal state, and frames back a rendered **`(result …)` reply** s-expr
-  (`soma_lisp:render/1`) which the client prints.
+- **FILE**: a file (or `-` for stdin). soma run FILE reads Soma Lisp source from
+  FILE and sends it to the daemon.
+- Public static tasks use `(task ...)`; `(run …)` remains the
+  compatibility/core run form. The daemon parses the source with
+  `soma_lfe:compile/2`, owns a supervised run, waits for the terminal state, and
+  frames back a rendered **`(result …)` reply** s-expr (`soma_lisp:render/1`)
+  which the client prints.
 - The `(result …)` s-expr carries the terminal `status`, the `outputs`, and the
   `task_id` / `correlation_id`. Exit `0` completed, non-zero otherwise.
-- With `--detach`, the client sends the same `(run …)` request with a `(detach)`
-  marker. The daemon starts the run under the live-task registry and immediately
-  replies with an accepted task handle:
+- With `--detach` on a `(run …)` source, the client sends the same request with a
+  `(detach)` marker. The daemon starts the run under the live-task registry and
+  immediately replies with an accepted task handle:
 
 ```
 (accepted (task-id "…") (correlation-id "…"))
@@ -333,7 +334,7 @@ documented now, fixed later, not v1 blockers:
 1. **CLI.1 / CLI.1b — daemon + Unix socket + run client.** `soma_cli:daemon/1`
    and `soma_cli:run/1` (the node +
    a socket listener: accept loop, one handler process per connection, length-
-   prefixed s-expr frames — the `(run …)` request parsed with `soma_lfe`, the
+   prefixed s-expr frames — Soma Lisp source parsed with `soma_lfe`, the
    `(result …)` reply rendered with `soma_lisp:render/1` — and cancel-on-
    disconnect) and a thin run client. No LLM. *Foundational.* Daemon-
    lifecycle acceptance items: an
@@ -363,5 +364,6 @@ documented now, fixed later, not v1 blockers:
 - **`soma ask` config file** (done): a small TOML at `~/.soma/config`
   (`provider` / `base_url` / `model`), the API key strictly from the daemon's
   `SOMA_LLM_API_KEY` env, never the file.
-- **Input formats for `soma run`**: an LFE workflow (a `(run …)` s-expr); the
-  same Lisp is the wire and the file format.
+- **Input formats for `soma run`**: Soma Lisp source. `(task ...)` is the public
+  static task form; `(run …)` remains the compatibility/core run form. The same
+  Lisp is the wire and the file format.
