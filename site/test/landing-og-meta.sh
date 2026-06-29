@@ -38,5 +38,14 @@ if ! grep -qF -- "${OG_TITLE}" "${EN_ROOT}"; then
   exit 1
 fi
 
-echo "PASS: #178 Criterion 7 — landing carries the og:title meta tag"
+# test_og_description: the landing's <head> must carry an Open Graph
+# description meta tag.
+OG_DESCRIPTION='property="og:description"'
+
+if ! grep -qF -- "${OG_DESCRIPTION}" "${EN_ROOT}"; then
+  echo "FAIL: #178 Criterion 8 — landing missing og:description meta tag (${OG_DESCRIPTION}) in ${EN_ROOT}" >&2
+  exit 1
+fi
+
+echo "PASS: #178 Criteria 7 and 8 — landing carries required Open Graph meta tags"
 exit 0
