@@ -124,3 +124,18 @@ test_timeout_ms_lowers_to_step_timeout_ms() ->
 
 timeout_ms_lowers_to_step_timeout_ms_test() ->
     test_timeout_ms_lowers_to_step_timeout_ms().
+
+test_duplicate_binding_returns_diagnostic() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((dup (tool echo\n"
+        "                 (value \"one\")))\n"
+        "         (dup (tool echo\n"
+        "                 (value \"two\"))))\n"
+        "    (return dup)))\n"
+    >>,
+    {error, Diags} = soma_lfe:compile(Source, #{}),
+    ?assertEqual([duplicate_binding], [maps:get(code, Diag) || Diag <- Diags]).
+
+duplicate_binding_returns_diagnostic_test() ->
+    test_duplicate_binding_returns_diagnostic().
