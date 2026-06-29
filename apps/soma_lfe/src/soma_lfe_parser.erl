@@ -100,7 +100,19 @@ parse_task_bindings([Binding | Rest], Acc, ErrAcc) ->
             parse_task_bindings(Rest, Acc, lists:reverse(Diags) ++ ErrAcc)
     end.
 
-parse_task_binding([Id, [tool, Tool | ArgForms]]) when is_atom(Id), is_atom(Tool) ->
+parse_task_binding([Id, [tool | ToolTail]]) when is_atom(Id) ->
+    case ToolTail of
+        [Tool | ArgForms] when is_atom(Tool) ->
+            parse_task_tool_call(Id, Tool, ArgForms);
+        _ ->
+            {error, [task_invalid_tool_form_diag([tool | ToolTail])]}
+    end;
+parse_task_binding(_Other) ->
+    {error, [#{code => invalid_binding,
+               message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
+               line => 0}]}.
+
+parse_task_tool_call(Id, Tool, ArgForms) ->
     case extract_task_step_fields(ArgForms, #{}, [], []) of
         {ok, StepFields, ToolArgForms} ->
             case parse_task_args(ToolArgForms, #{}) of
@@ -111,11 +123,12 @@ parse_task_binding([Id, [tool, Tool | ArgForms]]) when is_atom(Id), is_atom(Tool
             end;
         {error, Diags} ->
             {error, Diags}
-    end;
-parse_task_binding(_Other) ->
-    {error, [#{code => invalid_binding,
-               message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
-               line => 0}]}.
+    end.
+
+task_invalid_tool_form_diag(Form) ->
+    #{code => invalid_tool_form,
+      message => iolist_to_binary(io_lib:format("malformed task tool form: ~p", [Form])),
+      line => 0}.
 
 extract_task_step_fields([], StepFields, RevArgForms, []) ->
     {ok, StepFields, lists:reverse(RevArgForms)};
@@ -160,7 +173,23 @@ task_invalid_timeout_diag(Value) ->
 parse_task_args([[from, Id]], Acc) when map_size(Acc) =:= 0 ->
     {ok, #{from_step => Id}};
 parse_task_args(ArgForms, Acc) ->
-    parse_args(rewrite_task_from_values(ArgForms), Acc).
+    case task_args_have_mixed_bare_from(ArgForms) of
+        true ->
+            {error, [task_invalid_tool_form_diag(ArgForms)]};
+        false ->
+            case parse_args(rewrite_task_from_values(ArgForms), Acc) of
+                {ok, Args} ->
+                    {ok, Args};
+                {error, Diags} ->
+                    {error, [Diag#{code => invalid_tool_form} || Diag <- Diags]}
+            end
+    end.
+
+task_args_have_mixed_bare_from(ArgForms) ->
+    length(ArgForms) > 1 andalso lists:any(fun
+        ([from, _Id]) -> true;
+        (_Other) -> false
+    end, ArgForms).
 
 rewrite_task_from_values([[Key, [from, Id]] | Rest]) when is_atom(Key) ->
     [[Key, [from_step, Id]] | rewrite_task_from_values(Rest)];
