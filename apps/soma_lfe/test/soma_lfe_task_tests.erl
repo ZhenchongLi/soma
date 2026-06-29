@@ -267,3 +267,25 @@ test_reserved_binding_name_returns_diagnostic() ->
 
 reserved_binding_name_returns_diagnostic_test() ->
     test_reserved_binding_name_returns_diagnostic().
+
+test_unsupported_task_control_heads_return_diagnostic() ->
+    lists:foreach(
+        fun(Head) ->
+            Source = unsupported_task_control_source(Head),
+            {error, Diags} = soma_lfe:compile(Source, #{}),
+            ?assertEqual([reserved_form], [maps:get(code, Diag) || Diag <- Diags])
+        end,
+        ['if', 'cond', 'loop', 'recur']
+    ).
+
+unsupported_task_control_heads_return_diagnostic_test() ->
+    test_unsupported_task_control_heads_return_diagnostic().
+
+unsupported_task_control_source(Head) ->
+    HeadBin = atom_to_binary(Head, utf8),
+    iolist_to_binary([
+        "(task\n",
+        "  (let* ((blocked (tool echo\n",
+        "                     (value (", HeadBin, " true false)))))\n",
+        "    (return blocked)))\n"
+    ]).
