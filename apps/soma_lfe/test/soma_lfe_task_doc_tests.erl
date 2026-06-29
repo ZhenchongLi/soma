@@ -45,3 +45,11 @@ test_readme_quick_start_uses_task_example() ->
 
 readme_quick_start_uses_task_example_test() ->
     test_readme_quick_start_uses_task_example().
+
+test_lfe_dsl_documents_task_as_public_static_form() ->
+    Doc = read_doc("docs/lfe-dsl.md"),
+    ?assert(contains(Doc, <<"(task ...)">>)),
+    ?assert(contains(Doc, <<"public static task form">>)).
+
+lfe_dsl_documents_task_as_public_static_form_test() ->
+    test_lfe_dsl_documents_task_as_public_static_form().
