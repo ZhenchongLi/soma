@@ -56,93 +56,103 @@ for it. See [docs/design.md](docs/design.md) for the full thesis.
 
 ## Architecture
 
-![Soma supervision tree — soma_sup (apps/soma_runtime) supervises the in-memory event store, the tool registry, a session supervisor over the long-lived soma_agent_session (gen_server), and a run supervisor over soma_run (a per-run gen_statem) which spawns a disposable soma_tool_call worker per tool call; a cli tool's external OS process hangs off that worker. Below it, a separate app apps/soma_actor has its own soma_actor_sup over the soma_actor agent entity (gen_statem), which starts runs directly under soma_run_sup.](docs/diagrams/supervision-tree.svg)
+![Soma runtime topology: the runtime supervises sessions, runs, tool-call workers, and the event store; actors, LLM-call workers, resume readers, and the local CLI sit around that core while preserving process boundaries.](docs/diagrams/supervision-tree.svg)
 
-- **`soma_agent_session`** (`gen_server`) owns a `session_id`, accepts run
-  requests, starts runs, tracks them, and **survives any run's failure**. It
-  never executes tools itself.
-- **`soma_run`** (`gen_statem`) owns one run. Terminal states are explicit:
-  `completed | failed | timeout | cancelled`. It iterates the steps internally
-  (its `executing` / `waiting_tool` states are the step cursor) and starts each
-  tool call as a **monitored** worker.
-- **`soma_tool_call`** runs exactly one tool invocation in its own process and
-  exits. It dispatches on the tool's adapter: an `erlang_module` tool runs
-  in-BEAM via `invoke/2`; a `cli` tool launches an external executable through a
-  port. Every tool call crosses a process boundary; a tool crash arrives at the
-  run as a monitor `'DOWN'` — **data for the run, not a crash of the session**.
-- **`soma_actor`** (`gen_statem`, the v0.4 agent-entity layer) is a separate
-  OTP app (`apps/soma_actor`) that sits *above* the execution core — one-way
-  dependency, the runtime never imports it. Its own root supervisor
-  (`soma_actor_sup`, `simple_one_for_one`) starts actor instances. An actor
-  takes work as a **message** (`send/2`, `ask/3`), mints `task_id` /
-  `correlation_id`, and on a steps envelope starts a `soma_run` **directly**
-  (it owns the run as `session_pid => self()`, no session in its path). It
-  observes the run's terminal message, records the result, and survives a
-  failed / timed-out / cancelled run as data — the actor never executes tool
-  logic itself.
+The execution core is deliberately small and sequential. **`soma_agent_session`**
+(`gen_server`) owns a `session_id`, accepts run requests, starts runs, tracks
+terminal status, and **survives any run's failure**. It never executes tools.
 
-![soma_run state machine — executing and waiting_tool form the step loop (a successful tool result advances to the next step); the explicit terminal states are completed, failed, timeout, and cancelled.](docs/diagrams/run-states.svg)
+**`soma_run`** (`gen_statem`) owns one run: step cursor, prior outputs, timers,
+active tool-call worker, cancellation, resume metadata, and event emission.
+Terminal states are explicit: `completed | failed | timeout | cancelled`. A
+resumed run starts from a reconstructed suffix of the original step list and
+emits `run.resumed` rather than re-journaling `run.started`.
+
+**`soma_tool_call`** runs exactly one tool invocation in its own process and
+exits. It dispatches on the tool's adapter: an `erlang_module` tool runs in-BEAM
+via `invoke/2`; a `cli` tool launches an external executable through a port.
+Every tool call crosses a process boundary; a crash or nonzero CLI exit becomes
+bounded run data, not a session crash.
+
+The event store is part of the runtime boundary. It is in-memory by default and
+can be backed by `disk_log` for durable replay. The same event trail powers
+`soma_trace` and persistent resume: `soma_run_resume:reconstruct/2` rebuilds run
+progress, `soma_run_resume_plan:plan/2` decides whether replay is safe, and
+`soma_run_resume_executor:resume/3` starts the resumed run under `soma_run_sup`
+or fails clearly when an in-flight stateful step is unsafe to repeat.
+
+**`soma_actor`** (`gen_statem`) is the long-lived agent entity above the
+execution core. It receives messages through `send/2` and `ask/3`, owns
+`task_id` / `correlation_id`, starts LLM-call workers and runs, applies proposal
+normalization, policy, and budget checks, and records task results. It starts
+owned `soma_run` processes directly under `soma_run_sup`, observes their terminal
+messages, and treats failure, timeout, cancellation, rejection, and budget
+exhaustion as task data.
+
+The local daemon and packaged CLI sit at the edge. `soma_cli_server` exposes the
+actor/runtime path over a local Unix socket with Lisp on the wire, while
+`bin/soma` is the user-facing task command (`run`, `ask`, `status`, `trace`,
+`cancel`, `stop`, `daemon`). The release node-control script is `bin/somad`.
+
+![soma_actor message-driven workflow: messages enter the actor, LLM calls produce proposals, policy gates execution, approved work starts runs or actor messages, and the event stream ties the whole result trail together.](docs/diagrams/soma-actor-flow.svg)
 
 ## Quick start
 
-Prerequisites: Erlang/OTP 29 and rebar3.
+Use the packaged `soma` command. It speaks Lisp at the edge and auto-starts the
+local daemon on the first client command.
+
+From a release, put `bin/soma` on your `PATH`. From this checkout, build the
+local release once and point `SOMA` at the bundled command:
 
 ```bash
-rebar3 compile
-rebar3 eunit && rebar3 ct      # 259 EUnit + 350 Common Test, all green
+rebar3 release
+SOMA="_build/default/rel/somad/bin/soma"
 ```
 
-Drive a run in the shell:
+Write a small workflow. This Lisp-flavored workflow language is the public run
+format: Lisp at the edge, validated data inside the runtime. Syntax reference:
+[docs/lfe-dsl.md](docs/lfe-dsl.md); CLI wire and command behavior:
+[docs/cli.md](docs/cli.md).
 
 ```bash
-rebar3 shell
+mkdir -p /tmp/soma-demo
+printf 'hi soma\n' > /tmp/soma-demo/input.txt
+
+cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
+(run
+  (step read file_read
+    (args (path "input.txt") (root "/tmp/soma-demo")))
+  (step process echo
+    (args (from_step read)))
+  (step write file_write
+    (args (path "output.txt") (root "/tmp/soma-demo") (bytes (from_step process)))))
+EOF
+
+$SOMA run /tmp/soma-demo/pipeline.lfe
+cat /tmp/soma-demo/output.txt
 ```
 
-```erlang
-{ok, S} = soma_agent_session:start_link(#{}).
-{ok, RunId} = soma_agent_session:start_run(S, [
-    #{id => greet, tool => echo, args => #{value => <<"hello">>}}
-]).
-soma_agent_session:get_status(S).
-%% => #{session_id => <<"sess-1">>, runs => #{<<"run-1">> => completed}}
+The result is printed as a Lisp `(result ...)` form carrying a `task-id` and
+`correlation-id`. Use those ids to inspect or manage work:
+
+```bash
+$SOMA trace "<correlation-id-from-result>"
+$SOMA status "<task-id-from-result>"
+$SOMA stop
 ```
 
-### The demo: `file_read -> echo -> file_write`
+Detached tasks outlive the client that started them:
 
-```erlang
-file:make_dir("/tmp/somademo"), file:write_file("/tmp/somademo/in.txt", <<"hi soma">>).
-{ok, S} = soma_agent_session:start_link(#{}).
-Steps = [#{id => read,  tool => file_read,  args => #{path => <<"in.txt">>,  root => "/tmp/somademo"}},
-         #{id => echo,  tool => echo,       args => #{from_step => read}},
-         #{id => write, tool => file_write, args => #{path => <<"out.txt">>, root => "/tmp/somademo", bytes => {from_step, echo}}}].
-{ok, _RunId} = soma_agent_session:start_run(S, Steps).
-file:read_file("/tmp/somademo/out.txt").   %% => {ok, <<"hi soma">>}
+```bash
+$SOMA run examples/cli-demo/slow.lfe --detach
+$SOMA cancel "<task-id-from-accepted>"
 ```
 
-A run executes asynchronously; `get_status/1` reflects its terminal status once
-it finishes.
-
-### Drive an actor (v0.4)
-
-The `soma_actor` layer takes a message and runs it for you. `ask/3` blocks for
-the result:
-
-```erlang
-application:ensure_all_started(soma_actor).
-{ok, Store} = soma_event_store:start_link().
-{ok, A} = soma_actor_sup:start_actor(#{actor_id => <<"a1">>,
-                                       model_config => #{}, tool_policy => #{},
-                                       event_store => Store}).
-soma_actor:ask(A, #{type => <<"chat">>, payload => #{},
-                    steps => [#{id => s1, tool => echo,
-                                args => #{value => <<"hello">>}}]}, 5000).
-%% => {ok, #{s1 => #{value => <<"hello">>}}}
-```
-
-`examples/soma_actor_demo.erl` walks the rest — `send` + polling, the
-`by_correlation/2` event chain, real mid-run cancellation, and surviving a
-failure (`c("examples/soma_actor_demo").` in the shell). The full actor API is
-in [docs/usage.md](docs/usage.md).
+`soma ask "..."` drives the actor decision path through the same daemon. It needs
+a model configured in `~/.soma/config` and `SOMA_LLM_API_KEY` exported in the
+daemon's environment; `soma run` needs no model. See [docs/cli.md](docs/cli.md)
+for the full command surface, and [docs/usage.md](docs/usage.md) for lower-level
+embedding APIs.
 
 ## What it does
 
@@ -172,19 +182,21 @@ in [docs/usage.md](docs/usage.md).
   into named, bounded `{error, _}` data. Through all of it the session keeps
   serving: it runs again after any terminal state.
 - **An LFE DSL compile-only layer** (`soma_lfe`). `soma_lfe:compile(Source, #{})` parses a small Lisp-flavored grammar into the exact step-list maps `start_run/2` accepts — no processes started, no events emitted, no runtime dependency. This is a constrained intent language for agents and humans to author runs; it is not a Lisp evaluator. Compilation returns `{ok, #{run => #{steps => Steps}}}` or `{error, [Diagnostic]}` with structured diagnostic codes. See [docs/lfe-dsl.md](docs/lfe-dsl.md).
-- **An agent-entity layer** (`soma_actor`, v0.4). A long-lived `gen_statem`
+- **An agent entity** (`soma_actor`). A long-lived `gen_statem`
   takes a message envelope through `send/2` (async, returns `{ok, TaskId}`) or
   `ask/3` (blocks the caller for the result), mints `task_id` / `correlation_id`,
-  and emits `actor.message.received` / `actor.task.accepted`. A fixed rule —
-  envelope carries `steps` → validate → start a `soma_run` the actor owns —
-  drives execution; on the run's terminal message the actor records the result
-  (`actor.result.created` / `actor.task.completed`) or the failure
+  and emits `actor.message.received` / `actor.task.accepted`. If the envelope
+  carries `steps`, the actor validates them and starts a `soma_run` it owns; if
+  it carries `llm`, the decision path below produces and gates a proposal first.
+  On terminal child messages the actor records the result
+  (`actor.result.created` / `actor.task.completed`) or failure
   (`actor.task.failed` / `actor.task.cancelled`) and stays alive. Results are
   available three ways: `ask/3` reply, `get_task_status/2` + `get_task_result/2`
   polling, and the event stream — `soma_event_store:by_correlation/2` returns the
-  whole task chain (actor *and* run events) under one `correlation_id`.
+  whole task chain (actor, LLM, proposal, and run events) under one
+  `correlation_id`.
   `cancel/2` cancels a task's active run for real (the tool worker is killed).
-- **An agent decision layer** (`soma_actor`, v0.5). An envelope can carry an
+- **Agent decisions.** An envelope can carry an
   `llm` directive instead of `steps`: the actor starts a **supervised, monitored,
   cancellable LLM-call worker** (`soma_llm_call`, owned directly — no
   `soma_llm_call_sup`, mirroring `soma_run → soma_tool_call`), which returns a
@@ -205,7 +217,7 @@ in [docs/usage.md](docs/usage.md).
   `run.cancelled`), and a resumed run emits `run.resumed`. Actor-layer events add `actor.*` types and an
   `actor_id` / `task_id` / `correlation_id` extension; a `soma_run` started by an
   actor stamps the `correlation_id` onto every run event too.
-- **A durable event store, opt-in** (v0.6). The store also has a `disk_log`
+- **A durable event store, opt-in.** The store also has a `disk_log`
   backend: start it with a log path and `append/2` writes each event to the
   durable log *and* the in-memory index, replaying the log on boot to rebuild the
   index — so events survive a BEAM restart. The in-memory store stays the default;
@@ -213,7 +225,7 @@ in [docs/usage.md](docs/usage.md).
   (`event_store_log`), and the `by_*` query API does not change. The principle is
   **the durable log is the source of truth, the in-memory index is a rebuildable
   cache**.
-- **A readable trace view** (v0.6). `soma_trace:render/2` takes one
+- **A readable trace view.** `soma_trace:render/2` takes one
   `correlation_id` and renders the whole chain as a timestamp-ordered timeline,
   one line per event (`actor.* -> llm.* -> run.* -> step.* -> tool.* ->
   actor.*`); `soma_trace:timeline/1` is the pure renderer over a list of event
@@ -335,10 +347,9 @@ steps, and Linux x86_64 / arm64 release artifacts.
 - **[docs/zh/soma-actor.zh.md](docs/zh/soma-actor.zh.md)** — soma_actor complete
   design: actor entity, message-driven trigger, actor loop, decision frame,
   policy gate, LLM call, result model, event contract, memory model, and
-  minimum scope. The v0.4 build implemented the minimal fixed-rule slice; v0.5
-  added the LLM call, proposal schema, policy gate, budgets, and actor-to-actor
-  messaging, and the current provider path can call an OpenAI-compatible endpoint
-  when configured.
+  minimum scope. The current actor path supports direct step runs, LLM-call
+  proposals, policy gating, budgets, actor-to-actor messaging, and an
+  OpenAI-compatible endpoint when configured.
 - **[docs/zh/erlang-otp-primer.zh.md](docs/zh/erlang-otp-primer.zh.md)** —
   Erlang/OTP primer (BEAM, process, mailbox, gen_server, gen_statem, supervisor,
   port, release) for readers unfamiliar with Erlang.

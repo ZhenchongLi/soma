@@ -1,41 +1,61 @@
 ---
 title: Quick start
-description: Build Soma, run the test contract, and drive the file_read → echo → file_write demo.
+description: Run Soma through the packaged CLI and Lisp workflow format.
 ---
 
-Soma is an Erlang/OTP umbrella. You build it, run its test contract, and drive a
-run from the shell. Everything below assumes Erlang/OTP 29 and rebar3 are on your
-path.
+Soma's public edge is the `soma` command plus Lisp workflow files. The first
+client command auto-starts the local daemon; you do not need a separate server
+ritual.
 
-## Build and test
+## Get the command
 
-Compile the umbrella, then run both gates. The merge gate is exactly these two
-commands — EUnit for the unit layer, Common Test for the process-behaviour layer.
-
-```bash
-rebar3 compile      # build the umbrella
-rebar3 eunit        # unit tests
-rebar3 ct           # process-behaviour / end-to-end tests
-```
-
-`rebar3 ct` is the one that matters: its proofs assert process survival, not just
-return values — a crashed tool must not kill the session, a hanging tool must time
-out, a cancelled run must really stop its active tool call.
-
-## Drive a run in the shell
-
-Open an interactive runtime shell and start a session and a run:
+From a release, put `bin/soma` on your `PATH`. From this checkout, build the
+local release once:
 
 ```bash
-rebar3 shell
+rebar3 release
+SOMA="_build/default/rel/somad/bin/soma"
 ```
 
-The canonical demo is a three-step run — `file_read → echo → file_write` — wired
-so each step feeds the next through `from_step`. It exercises the whole tree:
-a long-lived session, a per-run `gen_statem`, and a disposable per-tool-call
-worker, with every step emitting events into the store.
+## Run a workflow
+
+A workflow is a Lisp s-expression — Soma's public run language. This one reads a
+file, passes the bytes through `echo`, and writes the result back out:
+
+```bash
+mkdir -p /tmp/soma-demo
+printf 'hi soma\n' > /tmp/soma-demo/input.txt
+
+cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
+(run
+  (step read file_read
+    (args (path "input.txt") (root "/tmp/soma-demo")))
+  (step process echo
+    (args (from_step read)))
+  (step write file_write
+    (args (path "output.txt") (root "/tmp/soma-demo") (bytes (from_step process)))))
+EOF
+
+$SOMA run /tmp/soma-demo/pipeline.lfe
+cat /tmp/soma-demo/output.txt
+```
+
+The CLI prints a Lisp `(result ...)` with a `task-id` and `correlation-id`.
+Use the task id for `status` / `cancel`; use the correlation id for `trace`:
+
+```bash
+$SOMA trace "<correlation-id-from-result>"
+$SOMA status "<task-id-from-result>"
+$SOMA stop
+```
+
+## Ask
+
+`soma ask "..."` drives the actor decision path through the same daemon. It needs
+`~/.soma/config` plus `SOMA_LLM_API_KEY`; deterministic `soma run` workflows need
+no model.
 
 ## Where to go next
 
-Read **Overview** for the mental model, then the Concepts pages for the
-supervision tree, tools, steps, and the event trail.
+Read the **LFE DSL** guide for workflow syntax, then the CLI guide for `run`,
+`ask`, `status`, `trace`, `cancel`, detached tasks, and daemon configuration.
