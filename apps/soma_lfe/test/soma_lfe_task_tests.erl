@@ -95,3 +95,18 @@ test_bare_from_lowers_to_from_step() ->
 
 bare_from_lowers_to_from_step_test() ->
     test_bare_from_lowers_to_from_step().
+
+test_field_from_lowers_to_from_step_tuple() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((read (tool file_read\n"
+        "                  (path \"input.txt\")))\n"
+        "         (write (tool file_write\n"
+        "                   (bytes (from read)))))\n"
+        "    (return write)))\n"
+    >>,
+    {ok, #{run := #{steps := [_ReadStep, WriteStep]}}} = soma_lfe:compile(Source, #{}),
+    ?assertEqual(#{bytes => {from_step, read}}, maps:get(args, WriteStep)).
+
+field_from_lowers_to_from_step_tuple_test() ->
+    test_field_from_lowers_to_from_step_tuple().
