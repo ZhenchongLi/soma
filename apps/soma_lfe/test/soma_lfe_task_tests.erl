@@ -45,7 +45,7 @@ test_binding_name_becomes_step_id() ->
         "    (return named_step)))\n"
     >>,
     {ok, #{run := #{steps := [Step]}}} = soma_lfe:compile(Source, #{}),
-    ?assertEqual(wrong_step_id, maps:get(id, Step)).
+    ?assertEqual(named_step, maps:get(id, Step)).
 
 binding_name_becomes_step_id_test() ->
     test_binding_name_becomes_step_id().
