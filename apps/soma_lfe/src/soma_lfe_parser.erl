@@ -2,8 +2,8 @@
 %% run representation, or a list of structured diagnostics.
 -module(soma_lfe_parser).
 
--export([parse_run/1, parse_msg/1, parse_proposal/1, parse_ask/1, parse_trace/1,
-         parse_status/1, parse_cancel/1, parse_stop/1]).
+-export([parse_run/1, parse_task/1, parse_msg/1, parse_proposal/1, parse_ask/1,
+         parse_trace/1, parse_status/1, parse_cancel/1, parse_stop/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -57,6 +57,62 @@ validate_msg_required(Acc) ->
            io_lib:format("msg is missing required field: '~s'", [Field])),
        line => 0}
      || Field <- [type, payload], not maps:is_key(Field, Acc)].
+
+%% @doc Parse a public (task ...) form into the same canonical run map as
+%% the older (run ...) form.
+-spec parse_task([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_task([task, ['let*', Bindings, [return, ReturnId]]])
+        when is_list(Bindings), is_atom(ReturnId) ->
+    case parse_task_bindings(Bindings, [], []) of
+        {ok, Steps} ->
+            case validate_steps(Steps) ++ validate_task_return(ReturnId, Steps) of
+                [] ->
+                    {ok, #{run => #{steps => Steps}}};
+                Diags ->
+                    {error, Diags}
+            end;
+        {error, Diags} ->
+            {error, Diags}
+    end;
+parse_task([task | _]) ->
+    {error, [#{code => malformed_task,
+               message => <<"task form must be (task (let* ((id (tool name ...))) (return id)))">>,
+               line => 0}]}.
+
+parse_task_bindings([], Acc, []) ->
+    {ok, lists:reverse(Acc)};
+parse_task_bindings([], _Acc, ErrAcc) ->
+    {error, lists:reverse(ErrAcc)};
+parse_task_bindings([Binding | Rest], Acc, ErrAcc) ->
+    case parse_task_binding(Binding) of
+        {ok, Step} ->
+            parse_task_bindings(Rest, [Step | Acc], ErrAcc);
+        {error, Diags} ->
+            parse_task_bindings(Rest, Acc, lists:reverse(Diags) ++ ErrAcc)
+    end.
+
+parse_task_binding([Id, [tool, Tool | ArgForms]]) when is_atom(Id), is_atom(Tool) ->
+    case parse_args(ArgForms, #{}) of
+        {ok, Args} ->
+            {ok, #{id => Id, tool => Tool, args => Args}};
+        {error, Diags} ->
+            {error, Diags}
+    end;
+parse_task_binding(_Other) ->
+    {error, [#{code => malformed_task,
+               message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
+               line => 0}]}.
+
+validate_task_return(ReturnId, Steps) ->
+    case lists:any(fun(Step) -> maps:get(id, Step) =:= ReturnId end, Steps) of
+        true ->
+            [];
+        false ->
+            [#{code => invalid_task_return,
+               message => iolist_to_binary(
+                   io_lib:format("task return references unknown binding: '~s'", [ReturnId])),
+               line => 0}]
+    end.
 
 parse_msg_steps([], Acc) ->
     {ok, lists:reverse(Acc)};
