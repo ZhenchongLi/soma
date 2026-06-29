@@ -47,5 +47,14 @@ if ! grep -qF -- "${OG_DESCRIPTION}" "${EN_ROOT}"; then
   exit 1
 fi
 
-echo "PASS: #178 Criteria 7 and 8 — landing carries required Open Graph meta tags"
+# test_og_type: the landing's <head> must carry an Open Graph type meta tag
+# identifying the page as a website.
+OG_TYPE='property="og:type" content="website"'
+
+if ! grep -qF -- "${OG_TYPE}" "${EN_ROOT}"; then
+  echo "FAIL: #178 Criterion 9 — landing missing og:type website meta tag (${OG_TYPE}) in ${EN_ROOT}" >&2
+  exit 1
+fi
+
+echo "PASS: #178 Criteria 7, 8, and 9 — landing carries required Open Graph meta tags"
 exit 0
