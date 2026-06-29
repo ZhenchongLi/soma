@@ -7,7 +7,7 @@
 # pattern as the existing site/test/build-clean.sh and guides-reference-build-clean.sh.
 #
 # The build is run (clean install then build) and its combined stdout+stderr is
-# captured, then scanned for any line matching `error` or `warning`
+# captured, then scanned for any line matching `error` or `warn`
 # (case-insensitive). A clean build emits none; a Soma-caused misconfiguration
 # (a sidebar link to a missing 404/quick-start page, a broken internal link) would
 # surface as a warning/error line, and a build failure would make the
@@ -35,7 +35,7 @@ fi
 
 # Scan for any line matching the pattern (case-insensitive). A clean build has
 # none.
-SCAN_PATTERN='error|warning'
+SCAN_PATTERN='error|warn'
 
 if printf '%s\n' "${log}" | grep -niE "${SCAN_PATTERN}" >&2; then
   echo "FAIL: Criterion 1 — build output contains error/warning line(s) (shown above)" >&2
