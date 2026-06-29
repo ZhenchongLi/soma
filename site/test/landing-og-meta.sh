@@ -56,5 +56,14 @@ if ! grep -qF -- "${OG_TYPE}" "${EN_ROOT}"; then
   exit 1
 fi
 
-echo "PASS: #178 Criteria 7, 8, and 9 — landing carries required Open Graph meta tags"
+# test_og_url: the landing's <head> must carry an Open Graph URL meta tag
+# identifying the canonical public root URL.
+OG_URL='property="og:url" content="https://soma.fists.cc/"'
+
+if ! grep -qF -- "${OG_URL}" "${EN_ROOT}"; then
+  echo "FAIL: #178 Criterion 10 — landing missing og:url meta tag (${OG_URL}) in ${EN_ROOT}" >&2
+  exit 1
+fi
+
+echo "PASS: #178 Criteria 7, 8, 9, and 10 — landing carries required Open Graph meta tags"
 exit 0
