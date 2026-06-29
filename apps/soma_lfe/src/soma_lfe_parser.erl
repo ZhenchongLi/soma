@@ -92,9 +92,10 @@ parse_task_bindings([Binding | Rest], Acc, ErrAcc) ->
     end.
 
 parse_task_binding([Id, [tool, Tool | ArgForms]]) when is_atom(Id), is_atom(Tool) ->
-    case parse_task_args(ArgForms, #{}) of
+    {StepFields, ToolArgForms} = extract_task_step_fields(ArgForms, #{}, []),
+    case parse_task_args(ToolArgForms, #{}) of
         {ok, Args} ->
-            {ok, #{id => Id, tool => Tool, args => Args}};
+            {ok, StepFields#{id => Id, tool => Tool, args => Args}};
         {error, Diags} ->
             {error, Diags}
     end;
@@ -102,6 +103,14 @@ parse_task_binding(_Other) ->
     {error, [#{code => malformed_task,
                message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
                line => 0}]}.
+
+extract_task_step_fields([], StepFields, RevArgForms) ->
+    {StepFields, lists:reverse(RevArgForms)};
+extract_task_step_fields([['timeout-ms', N] | Rest], StepFields, RevArgForms)
+        when is_integer(N), N > 0 ->
+    extract_task_step_fields(Rest, StepFields#{timeout_ms => N}, RevArgForms);
+extract_task_step_fields([ArgForm | Rest], StepFields, RevArgForms) ->
+    extract_task_step_fields(Rest, StepFields, [ArgForm | RevArgForms]).
 
 parse_task_args([[from, Id]], Acc) when map_size(Acc) =:= 0 ->
     {ok, #{from_step => Id}};
