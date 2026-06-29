@@ -29,7 +29,12 @@ start_link(Opts) when is_map(Opts) ->
 %% envelope is invalid. The work runs inside the actor via `idle/3', so the
 %% actor is never bypassed.
 send(ActorRef, Envelope) when is_map(Envelope) ->
-    gen_statem:call(ActorRef, {send, Envelope});
+    case resolve_actor_ref(ActorRef) of
+        {ok, Pid} ->
+            gen_statem:call(Pid, {send, Envelope});
+        {error, Reason} ->
+            {error, Reason}
+    end;
 send(ActorRef, Source) when is_binary(Source); is_list(Source) ->
     %% A Lisp `(msg ...)' string (binary or iolist) is parsed at the wrapper,
     %% before the actor is touched, into the exact map envelope the map path
@@ -42,6 +47,11 @@ send(ActorRef, Source) when is_binary(Source); is_list(Source) ->
         {error, Diagnostics} ->
             {error, Diagnostics}
     end.
+
+resolve_actor_ref(ActorRef) when is_binary(ActorRef) ->
+    soma_actor_registry:lookup(ActorRef);
+resolve_actor_ref(ActorRef) ->
+    {ok, ActorRef}.
 
 %% @doc Synchronous submit-and-wait entry point. Hands the envelope to the actor
 %% and blocks the caller inside the `gen_statem:call' until the run completes,
