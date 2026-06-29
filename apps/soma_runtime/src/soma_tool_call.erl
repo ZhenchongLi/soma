@@ -16,8 +16,8 @@
 %% Spawn the worker for one invocation. `Opts' carries the tool `module', the
 %% resolved `input', the `ctx', the `tool_call_id', and the `reply_to' pid.
 start(Opts) when is_map(Opts) ->
-    Pid = spawn(fun() -> run(Opts) end),
-    {ok, Pid}.
+    {Pid, MRef} = spawn_monitor(fun() -> run(Opts) end),
+    {ok, Pid, MRef}.
 
 %% Branch on which adapter opts the worker received. With a `module' it runs the
 %% in-BEAM tool. With an `executable' and `argv' it runs an external program

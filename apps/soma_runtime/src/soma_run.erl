@@ -120,17 +120,13 @@ start_tool_call(Data, Step, StepId, ToolCallId, Descriptor, Input, CtxExtra) ->
                               ctx => Ctx,
                               tool_call_id => ToolCallId,
                               reply_to => self()},
-    {ok, WorkerPid} = soma_tool_call:start(WorkerOpts),
+    {ok, WorkerPid, MRef} = soma_tool_call:start(WorkerOpts),
     %% Record `tool.started' after the worker is spawned so the event carries the
     %% worker pid: the run can prove each invocation ran in its own process, and
     %% the timeout/cancel paths give a test the pid to confirm the worker died.
     emit(Data, <<"tool.started">>,
          #{step_id => StepId, tool_call_id => ToolCallId,
            tool_call_pid => WorkerPid}),
-    %% Monitor the worker so a crash (the tool raises, the worker dies without
-    %% replying) reaches the run as a `'DOWN'' message rather than hanging the
-    %% wait forever.
-    MRef = erlang:monitor(process, WorkerPid),
     %% Arm a per-step timer when the step asks for one. A `gen_statem' state
     %% timeout fits: if the reply comes first, leaving `waiting_tool' cancels
     %% the timer; if the timer fires first, `waiting_tool' gets `step_timeout'
