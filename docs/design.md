@@ -81,9 +81,9 @@ disposable worker that `soma_actor` spawns and monitors directly (mirroring
 
 ## Scope
 
-**Built (v0.1–v0.6 plus active edge tracks):** the execution core, actor layer,
-decision layer, durable traceable event stream, real-provider seam, Lisp edge
-language, and local CLI server/client modules.
+**Built (v0.1–v0.7 plus active edge tracks):** the execution core, actor layer,
+decision layer, durable traceable event stream, manual persistent resume,
+real-provider seam, Lisp edge language, and the packaged local CLI / daemon.
 
 - session process (`soma_agent_session`);
 - run process (`soma_run`, `gen_statem`);
@@ -109,19 +109,21 @@ language, and local CLI server/client modules.
   `#{provider => openai_compat}`, opt-in and off the hermetic test gate;
 - Lisp message/proposal/trace/repair edge forms, with repaired proposals
   re-entering the normal policy and budget path;
+- manual persistent resume: journal + reconstruction + resume seam + plan +
+  executor, with a fail-safe stop on non-idempotent in-flight state steps;
 - local single-user Unix-socket CLI server/client modules (`soma_cli_server`,
   `soma_cli`) using a Lisp wire for run/ask/status/trace/cancel/detach;
+- packaged `bin/soma` task command, with the release node-control script named
+  `bin/somad`;
 - end-to-end tests around process behavior;
 - a self-contained release.
 
-**Next:** the persistent-resume executor. v0.7.1 landed the run journal and
-read-only progress reconstruction (`soma_run_resume:reconstruct/2` rebuilds
-steps, durable options, committed outputs, next step, and terminal status from
-the event trail), so the remaining work is replaying a run from that snapshot.
-Plus productizing the external task CLI entrypoint and, later, structured
-real-model planning that emits tool-running proposals.
+**Next:** v0.7.5 auto-resume on boot (interrupted-run discovery from the event
+store), structured real-model planning that emits tool-running proposals, and an
+effect-aware policy gate.
 
-**Later:** DAG parallelism and distributed Erlang. See [roadmap.md](roadmap.md).
+**Later:** DAG parallelism, distributed Erlang, and per-tool resume policy /
+compensation hooks. See [roadmap.md](roadmap.md).
 
 ## Done Means
 

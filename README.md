@@ -16,7 +16,7 @@ syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `Lisp at the edge -> validated data -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 256, Common Test 378, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 259, Common Test 350, Erlang/OTP 29).
 Every layer is proven under test, asserting *process survival*, not just return
 values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 
@@ -29,10 +29,13 @@ values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 | **v0.6** · Durability + observability | `soma_trace` timelines · `disk_log` store, survives restart |
 | **v0.7** · Persistent resume | `run.started` journal · read-only reconstruct · resume executor (`resume/3`, fail-safe on non-idempotent in-flight steps) |
 
-Two tracks build in parallel: a real **OpenAI-compatible LLM provider** (opt-in, off the
-gate) and the **`soma` CLI / daemon** — `run` / `ask` / `status` / `cancel` / `trace` over a
-local Unix socket, Lisp on the wire. Not yet built: the **resume executor** (replay a run
-from its reconstructed snapshot) and the **Linux x86_64 / arm64 release** (macOS arm64 is done).
+The real **OpenAI-compatible LLM provider** path is built (opt-in, off the
+gate), and the packaged **`soma` CLI / daemon** is built: `run` / `ask` /
+`status` / `cancel` / `trace` / `stop` over a local Unix socket, Lisp on the
+wire, with `bin/soma` distinct from the `bin/somad` node-control script. Still
+open: v0.7.5 auto-resume on boot, structured real-model planning that emits
+tool-running proposals, effect-aware policy, and the **Linux x86_64 / arm64
+release artifacts** (macOS arm64 is done).
 
 ## The idea
 
@@ -86,7 +89,7 @@ Prerequisites: Erlang/OTP 29 and rebar3.
 
 ```bash
 rebar3 compile
-rebar3 eunit && rebar3 ct      # 256 EUnit + 378 Common Test, all green
+rebar3 eunit && rebar3 ct      # 259 EUnit + 350 Common Test, all green
 ```
 
 Drive a run in the shell:
@@ -258,15 +261,14 @@ with an opt-in durable `disk_log` backend) and a read-only trace view
 agent-entity skeleton, the agent decision layer (`soma_llm_call` + proposal schema
 + policy gate + decision-loop execution + budgets + actor-to-actor), the
 OpenAI-compatible real-provider path, the Lisp message/proposal/trace/repair
-edge forms, local Unix-socket CLI server/client modules, and a self-contained
-release.
+edge forms, manual persistent run resume (`soma_run_resume_executor:resume/3`),
+the packaged `bin/soma` Unix-socket task command, and a self-contained release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**): a
 structured real-model planner that emits tool-running proposals, an effect-aware
-policy gate, MCP, DAG parallelism, distributed Erlang, resuming a run's
-*execution* from its journal (v0.7.1's journal + read-only progress
-reconstruction are in; the resume executor is not), and a packaged external
-`soma run` / `soma ask` command distinct from the relx node control script.
+policy gate, MCP, DAG parallelism, distributed Erlang, v0.7.5 auto-resume on
+boot, per-tool resume policy / compensation hooks for non-idempotent in-flight
+steps, and Linux x86_64 / arm64 release artifacts.
 
 ## Docs
 

@@ -9,7 +9,7 @@ are built. `README.md` remains the authoritative high-level spec; read it before
 changing runtime behaviour. The docs under `docs/contracts/` map behavioural
 guarantees to the tests that prove them.
 
-Current local gate observed in this checkout: EUnit 227 and Common Test 313
+Current local gate observed in this checkout: EUnit 259 and Common Test 350
 green on Erlang/OTP 29. A self-contained macOS arm64 release is built and
 verified. Linux x86_64 and Linux arm64 release artifacts remain packaging/CI
 work, not runtime logic.
@@ -49,6 +49,12 @@ Layer status:
 - v0.6 durability and observability are built: `soma_trace`, durable
   `disk_log` event store, and app-env wiring through `soma_runtime`
   `event_store_log`.
+- v0.7 persistent resume is built through the manual executor: `run.started`
+  journals steps and durable options, `soma_run_resume:reconstruct/2` rebuilds
+  progress from the durable trail, `soma_run_resume_plan:plan/2` classifies the
+  restart decision, and `soma_run_resume_executor:resume/3` starts a resumed run
+  or fails clearly on a non-idempotent in-flight state step. Auto-resume on boot
+  remains deferred.
 - node B real-provider path is built: `soma_llm_openai` handles an
   OpenAI-compatible chat API behind `soma_llm_call:perform_call/1`; actor
   `model_config` can route to it. Gate tests use fixed response seams and do not
@@ -57,20 +63,18 @@ Layer status:
 - Lisp edge language L.1-L.5 is built: `(msg ...)` envelopes,
   actor-to-actor Lisp bodies, Lisp proposals, Lisp audit/trace rendering, and
   bounded self-repair that re-enters the normal normalize/policy/budget path.
-- Local CLI/daemon modules are built: `soma_cli_server`, `soma_cli`, and
-  `soma_cli_task_registry` support Lisp-wire run/ask/status/trace/cancel/detach
-  paths over a local Unix socket. The external shell command product surface is
-  not complete: relx `bin/soma` is still the OTP release control script, not the
-  final `soma run` / `soma ask` task-client parser.
+- Local CLI/daemon product surface is built: `soma_cli_server`, `soma_cli`,
+  `soma_cli_task_registry`, `soma_cli_main`, and the overlaid `scripts/soma`
+  wrapper support `soma run` / `ask` / `status` / `trace` / `cancel` / `stop` /
+  `daemon` over a local Unix socket, with Lisp on the wire, detach, cancellation
+  on disconnect, daemon auto-start, and the release's node-control script renamed
+  to `bin/somad`.
 
-Latest runtime layer: the first **v0.7.1 persistent-resume slice** (#129) is in —
-a run journals its steps and durable options into `run.started`, and
-`soma_run_resume:reconstruct/2` rebuilds run progress (steps, durable options,
-committed outputs, next uncommitted step, terminal status) read-only from the
-durable event trail. The resume *executor* (replaying a run from that snapshot)
-is the next slice. Other open tracks: external CLI productization, structured
-real-model planning that emits tool-running proposals, effect-aware policy,
-log/index compaction, and Linux release artifacts.
+Latest runtime layer: **v0.7 persistent resume** is in through v0.7.4 (#167).
+The next resume slice is v0.7.5 auto-resume on boot, which needs an event-store
+query for interrupted run discovery. Other open tracks: structured real-model
+planning that emits tool-running proposals, effect-aware policy, log/index
+compaction, and Linux release artifacts.
 
 ## What Soma Is
 
@@ -249,10 +253,11 @@ The wire is Lisp S-expressions, not JSON. The server parses request forms with
 on disconnect is real; detached runs outlive the client and can be queried or
 cancelled by task id.
 
-Do not confuse this module path with the release control script. The current
-relx `bin/soma` still means OTP node control (`console`, `foreground`, `daemon`,
-`stop`, etc.). A packaged external `soma run` / `soma ask` command parser remains
-product work.
+Do not confuse the task command with the release control script. The release is
+named `somad`, so `bin/somad` is the OTP node-control script (`console`,
+`foreground`, `daemon`, `stop`, etc.). The user-facing task command is the
+overlaid `bin/soma` wrapper, which dispatches `run` / `ask` / `status` /
+`cancel` / `trace` / `stop` / `daemon` to `soma_cli_main` over the local socket.
 
 ## Tests Are The Contract
 
@@ -321,7 +326,8 @@ In scope for the current core:
 - mock-gated LLM decision layer
 - OpenAI-compatible provider path
 - Lisp message/proposal/trace/repair edge forms
-- local Unix-socket CLI server/client modules
+- manual persistent run resume
+- packaged local Unix-socket `soma` task command
 - self-contained releases
 
 Out of scope for the current core unless explicitly requested:
@@ -332,10 +338,10 @@ Out of scope for the current core unless explicitly requested:
 - human-in-the-loop policy ask path
 - DAG parallelism
 - distributed Erlang
-- persistent run resume
+- auto-resume on boot
+- per-tool resume policy or compensation hooks
 - log rotation, compaction, or bounded task/event indexes
-- packaged external `soma run` / `soma ask` command separate from the relx node
-  control script
+- Linux x86_64 / Linux arm64 release artifacts
 
 Future layers should compile down to the canonical step-list contract instead of
 changing the runtime's execution semantics.
