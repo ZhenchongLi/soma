@@ -65,7 +65,7 @@ parse_task([task, ['let*', Bindings, [return, ReturnId]]])
         when is_list(Bindings), is_atom(ReturnId) ->
     case parse_task_bindings(Bindings, [], []) of
         {ok, Steps} ->
-            case validate_steps(Steps) ++ validate_task_return(ReturnId, Steps) of
+            case validate_task_steps(Steps) ++ validate_task_return(ReturnId, Steps) of
                 [] ->
                     {ok, #{run => #{steps => Steps}}};
                 Diags ->
@@ -123,6 +123,24 @@ rewrite_task_from_values([Arg | Rest]) ->
     [Arg | rewrite_task_from_values(Rest)];
 rewrite_task_from_values([]) ->
     [].
+
+validate_task_steps(Steps) ->
+    check_duplicate_bindings(Steps) ++ check_from_step_refs(Steps).
+
+check_duplicate_bindings(Steps) ->
+    Ids = [maps:get(id, S) || S <- Steps],
+    Seen = lists:foldl(fun(Id, {SeenSet, DupSet}) ->
+        case sets:is_element(Id, SeenSet) of
+            true  -> {SeenSet, sets:add_element(Id, DupSet)};
+            false -> {sets:add_element(Id, SeenSet), DupSet}
+        end
+    end, {sets:new(), sets:new()}, Ids),
+    {_, DupIds} = Seen,
+    lists:map(fun(Id) ->
+        #{code => duplicate_binding,
+          message => iolist_to_binary(io_lib:format("duplicate binding: '~s'", [Id])),
+          line => 0}
+    end, sets:to_list(DupIds)).
 
 validate_task_return(ReturnId, Steps) ->
     case lists:any(fun(Step) -> maps:get(id, Step) =:= ReturnId end, Steps) of
