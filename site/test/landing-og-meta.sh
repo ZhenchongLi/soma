@@ -65,5 +65,14 @@ if ! grep -qF -- "${OG_URL}" "${EN_ROOT}"; then
   exit 1
 fi
 
-echo "PASS: #178 Criteria 7, 8, 9, and 10 — landing carries required Open Graph meta tags"
+# test_twitter_card: the landing's <head> must carry a Twitter card meta tag
+# identifying the preview card type.
+TWITTER_CARD='name="twitter:card" content="summary"'
+
+if ! grep -qF -- "${TWITTER_CARD}" "${EN_ROOT}"; then
+  echo "FAIL: #178 Criterion 11 — landing missing twitter:card meta tag (${TWITTER_CARD}) in ${EN_ROOT}" >&2
+  exit 1
+fi
+
+echo "PASS: #178 Criteria 7, 8, 9, 10, and 11 — landing carries required social meta tags"
 exit 0
