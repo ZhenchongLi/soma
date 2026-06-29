@@ -76,6 +76,18 @@ test_actor_message_normalizes_ok() ->
 actor_message_normalizes_ok_test() ->
     test_actor_message_normalizes_ok().
 
+%% An actor_message proposal carrying a stable-name `to` and a map `payload`
+%% normalizes to {ok, Proposal} carrying that binary target unchanged.
+test_actor_message_stable_name_normalizes_ok() ->
+    StableName = <<"assistant">>,
+    Raw = #{kind => actor_message, to => StableName, payload => #{greeting => <<"hi">>}},
+    {ok, Proposal} = soma_proposal:normalize(Raw),
+    ?assertEqual(actor_message, maps:get(kind, Proposal)),
+    ?assertEqual(StableName, maps:get(to, Proposal)).
+
+actor_message_stable_name_normalizes_ok_test() ->
+    test_actor_message_stable_name_normalizes_ok().
+
 %% A reply proposal missing its required text field normalizes to
 %% {error, [Diagnostic]} with a non-empty diagnostic list reporting the missing
 %% required field (not an unknown_kind error).
