@@ -81,3 +81,13 @@ test_design_documents_soma_lisp_boundary() ->
 
 design_documents_soma_lisp_boundary_test() ->
     test_design_documents_soma_lisp_boundary().
+
+test_usage_doc_says_run_file_reads_soma_lisp_source() ->
+    Doc = read_doc("docs/usage.md"),
+    ?assert(contains(
+        Doc,
+        <<"soma run FILE reads Soma Lisp source">>
+    )).
+
+usage_doc_says_run_file_reads_soma_lisp_source_test() ->
+    test_usage_doc_says_run_file_reads_soma_lisp_source().
