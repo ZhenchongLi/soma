@@ -96,10 +96,14 @@ parse_task_bindings([Binding | Rest], Acc, ErrAcc) ->
     end.
 
 parse_task_binding([Id, [tool, Tool | ArgForms]]) when is_atom(Id), is_atom(Tool) ->
-    {StepFields, ToolArgForms} = extract_task_step_fields(ArgForms, #{}, []),
-    case parse_task_args(ToolArgForms, #{}) of
-        {ok, Args} ->
-            {ok, StepFields#{id => Id, tool => Tool, args => Args}};
+    case extract_task_step_fields(ArgForms, #{}, [], []) of
+        {ok, StepFields, ToolArgForms} ->
+            case parse_task_args(ToolArgForms, #{}) of
+                {ok, Args} ->
+                    {ok, StepFields#{id => Id, tool => Tool, args => Args}};
+                {error, Diags} ->
+                    {error, Diags}
+            end;
         {error, Diags} ->
             {error, Diags}
     end;
@@ -108,13 +112,45 @@ parse_task_binding(_Other) ->
                message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
                line => 0}]}.
 
-extract_task_step_fields([], StepFields, RevArgForms) ->
-    {StepFields, lists:reverse(RevArgForms)};
-extract_task_step_fields([['timeout-ms', N] | Rest], StepFields, RevArgForms)
+extract_task_step_fields([], StepFields, RevArgForms, []) ->
+    {ok, StepFields, lists:reverse(RevArgForms)};
+extract_task_step_fields([], _StepFields, _RevArgForms, ErrAcc) ->
+    {error, lists:reverse(ErrAcc)};
+extract_task_step_fields([['timeout-ms', N] | Rest], StepFields, RevArgForms, ErrAcc)
         when is_integer(N), N > 0 ->
-    extract_task_step_fields(Rest, StepFields#{timeout_ms => N}, RevArgForms);
-extract_task_step_fields([ArgForm | Rest], StepFields, RevArgForms) ->
-    extract_task_step_fields(Rest, StepFields, [ArgForm | RevArgForms]).
+    case maps:is_key(timeout_ms, StepFields) of
+        true ->
+            extract_task_step_fields(
+                Rest,
+                StepFields,
+                RevArgForms,
+                [task_invalid_timeout_diag(N) | ErrAcc]
+            );
+        false ->
+            extract_task_step_fields(Rest, StepFields#{timeout_ms => N}, RevArgForms, ErrAcc)
+    end;
+extract_task_step_fields([['timeout-ms', Value] | Rest], StepFields, RevArgForms, ErrAcc) ->
+    extract_task_step_fields(
+        Rest,
+        StepFields,
+        RevArgForms,
+        [task_invalid_timeout_diag(Value) | ErrAcc]
+    );
+extract_task_step_fields([['timeout-ms' | _] = Form | Rest], StepFields, RevArgForms, ErrAcc) ->
+    extract_task_step_fields(
+        Rest,
+        StepFields,
+        RevArgForms,
+        [task_invalid_timeout_diag(Form) | ErrAcc]
+    );
+extract_task_step_fields([ArgForm | Rest], StepFields, RevArgForms, ErrAcc) ->
+    extract_task_step_fields(Rest, StepFields, [ArgForm | RevArgForms], ErrAcc).
+
+task_invalid_timeout_diag(Value) ->
+    #{code => invalid_timeout,
+      message => iolist_to_binary(
+          io_lib:format("timeout-ms must be a positive integer, got: ~p", [Value])),
+      line => 0}.
 
 parse_task_args([[from, Id]], Acc) when map_size(Acc) =:= 0 ->
     {ok, #{from_step => Id}};
