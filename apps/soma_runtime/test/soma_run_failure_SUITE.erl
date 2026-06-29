@@ -6,6 +6,7 @@
 -export([test_error_return_reaches_failed_not_completed/1]).
 -export([test_error_trail_tool_step_run_failed_in_order/1]).
 -export([test_tool_crash_reaches_failed/1]).
+-export([test_repeated_immediate_tool_crash_preserves_real_reason/1]).
 -export([test_session_alive_after_tool_crash/1]).
 -export([test_overrun_reaches_timeout_records_run_timeout/1]).
 -export([test_hung_worker_dead_after_timeout/1]).
@@ -24,6 +25,7 @@ all() ->
     [test_error_return_reaches_failed_not_completed,
      test_error_trail_tool_step_run_failed_in_order,
      test_tool_crash_reaches_failed,
+     test_repeated_immediate_tool_crash_preserves_real_reason,
      test_session_alive_after_tool_crash,
      test_overrun_reaches_timeout_records_run_timeout,
      test_hung_worker_dead_after_timeout,
@@ -114,6 +116,26 @@ test_tool_crash_reaches_failed(_Config) ->
     Status = soma_agent_session:get_status(SessionPid),
     Runs = maps:get(runs, Status),
     failed = maps:get(RunId, Runs),
+    ok.
+
+%% Issue #182: repeated immediate tool crashes preserve the worker's real crash
+%% reason. A `fail' step in crash mode raises `error(kaboom)' immediately; every
+%% run.failed payload must carry a reason containing `kaboom', never `noproc'.
+test_repeated_immediate_tool_crash_preserves_real_reason(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => fail,
+               args => #{mode => crash, reason => kaboom}}],
+    lists:foreach(
+      fun(_N) ->
+              {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+              ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
+              Event = event_of_type(StorePid, RunId, <<"run.failed">>),
+              Payload = maps:get(payload, Event),
+              Reason = maps:get(reason, Payload),
+              assert_reason_contains_kaboom_not_noproc(RunId, Reason)
+      end,
+      lists:seq(1, 100)),
     ok.
 
 %% Criterion 4: the `soma_agent_session' process survives a run whose tool-call
@@ -471,6 +493,16 @@ event_of_type(StorePid, RunId, Type) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     [Event | _] = [E || E <- Events, maps:get(event_type, E) =:= Type],
     Event.
+
+assert_reason_contains_kaboom_not_noproc(RunId, Reason) ->
+    ReasonText = iolist_to_binary(io_lib:format("~p", [Reason])),
+    case {binary:match(ReasonText, <<"kaboom">>),
+          binary:match(ReasonText, <<"noproc">>)} of
+        {{_, _}, nomatch} ->
+            ok;
+        _ ->
+            ct:fail({unexpected_crash_reason, RunId, Reason})
+    end.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
