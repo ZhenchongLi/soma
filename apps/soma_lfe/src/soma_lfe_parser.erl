@@ -106,7 +106,14 @@ parse_task_binding(_Other) ->
 parse_task_args([[from, Id]], Acc) when map_size(Acc) =:= 0 ->
     {ok, #{from_step => Id}};
 parse_task_args(ArgForms, Acc) ->
-    parse_args(ArgForms, Acc).
+    parse_args(rewrite_task_from_values(ArgForms), Acc).
+
+rewrite_task_from_values([[Key, [from, Id]] | Rest]) when is_atom(Key) ->
+    [[Key, [from_step, Id]] | rewrite_task_from_values(Rest)];
+rewrite_task_from_values([Arg | Rest]) ->
+    [Arg | rewrite_task_from_values(Rest)];
+rewrite_task_from_values([]) ->
+    [].
 
 validate_task_return(ReturnId, Steps) ->
     case lists:any(fun(Step) -> maps:get(id, Step) =:= ReturnId end, Steps) of
