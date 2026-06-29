@@ -14,6 +14,8 @@ export default defineConfig({
       title: 'Soma',
       // English-only site — no i18n locales configured.
       customCss: ['./src/styles/custom.css'],
+      // The site owns a custom standalone 404 page under src/pages/404.astro.
+      disable404Route: true,
       // Header social links. Starlight renders these into every docs page's
       // header, so the GitHub repo link reaches all docs routes.
       social: [
