@@ -92,7 +92,7 @@ parse_task_bindings([Binding | Rest], Acc, ErrAcc) ->
     end.
 
 parse_task_binding([Id, [tool, Tool | ArgForms]]) when is_atom(Id), is_atom(Tool) ->
-    case parse_args(ArgForms, #{}) of
+    case parse_task_args(ArgForms, #{}) of
         {ok, Args} ->
             {ok, #{id => Id, tool => Tool, args => Args}};
         {error, Diags} ->
@@ -102,6 +102,9 @@ parse_task_binding(_Other) ->
     {error, [#{code => malformed_task,
                message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
                line => 0}]}.
+
+parse_task_args(ArgForms, Acc) ->
+    parse_args(ArgForms, Acc).
 
 validate_task_return(ReturnId, Steps) ->
     case lists:any(fun(Step) -> maps:get(id, Step) =:= ReturnId end, Steps) of
