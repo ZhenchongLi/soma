@@ -14,6 +14,9 @@ _checkouts/
 # relay per-run state (written into the worktree by the relay pipeline)
 .dispatcher-state.json
 
+# Local Cloudflare/Wrangler state
+.wrangler/
+
 # Local LLM credentials & config (SophNet) — never commit
 key-sophnet
 llmt-sophnet.toml

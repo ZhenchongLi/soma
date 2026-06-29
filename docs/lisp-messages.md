@@ -37,9 +37,8 @@ by the **term→Lisp renderer** (L.4), which also renders the audit trace. So
 terms stay Erlang.
 
 ```lisp
-(run (msg (type chat)
-          (steps (step (id s1) (tool echo) (args (value "hi"))))))        ; request
-(result (status completed) (outputs ((s1 (value "hi")))) (correlation-id "c-7")) ; response
+(run (step s1 echo (args (value "hi"))))                                       ; request
+(result (status completed) (task-id "t-7") (outputs ((s1 (value "hi")))) (correlation-id "c-7")) ; response
 ```
 
 `soma run` takes a `.lfe` workflow **only** — no JSON input. The trade: the wire
@@ -82,7 +81,7 @@ implemented top-level forms are:
 | `(step (id s1) (tool echo) (args (value "hi")))`, `(from-step s1)` | a step map (the existing v0.3 grammar) |
 | `(reply (text "…"))` / `(run-steps (step …) …)` / `(reject (reason "..."))` | a proposal `#{kind, …}` accepted by `soma_proposal:normalize/1` |
 | `(ask (intent "…") (allow echo) (budget-llm 1) (budget-steps 3))` | a CLI ask command map |
-| `(trace "corr")`, `(status "task")`, `(cancel "task")` | CLI read/manage command maps |
+| `(trace "corr")`, `(status "task")`, `(cancel "task")`, `(stop)` | CLI read/manage command maps |
 
 Lexical mapping: symbols/keywords → atoms, strings → binaries, nested forms →
 maps/lists. `soma_lfe:compile/2` returns `{ok, Map} | {error, [Diagnostic]}` as
@@ -91,7 +90,8 @@ today — the diagnostics are what the repair loop (below) feeds back to the LLM
 Actor-to-actor Lisp delivery is implemented through the existing `actor_message`
 proposal path: the delivered body can be a Lisp `(msg ...)` string that the
 receiving actor parses at its own boundary. A standalone top-level `(send ...)`
-command and Lisp forms for every proposal kind remain future language surface.
+command and Lisp forms for the remaining proposal kinds (`ask`, `actor_message`)
+remain future language surface.
 
 ## Self-repair (`L.5`) — the LLM fixes malformed Lisp
 

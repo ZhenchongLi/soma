@@ -1,38 +1,21 @@
-# LFE DSL
+# Soma Lisp / LFE DSL
 
-The LFE DSL is a compile-only layer above the Soma runtime. It started as a
-small Lisp-flavored syntax that translates into the step-list format
-`soma_agent_session:start_run/2` already accepts; it now also parses the Lisp
-edge forms used by actors and the local CLI wire. The compiler lives in the
-`soma_lfe` OTP application; the runtime (`soma_runtime`) has no dependency on it
-— the two applications are deliberately separate.
+Soma accepts a constrained Lisp syntax at its edges. This is the public language
+for `soma run` workflow files, actor message bodies, LLM proposal forms, and the
+local CLI wire.
 
-This DSL is Soma's first **agent intent language**. Its primary design target is
-not "make Lisp pleasant for humans"; it is "make operational intent easy for an
-agent to generate, validate, repair, diff, and audit." Lisp syntax is useful
-because it is a compact tree-shaped surface. The harder and more important work
-is deciding which forms Soma exposes.
+The compiler lives in `apps/soma_lfe`. It is compile-only:
 
-The language is intentionally constrained. It is closer to a UDF-style extension
-surface for a larger engine than to a general-purpose programming language: the
-DSL names safe hooks into the Soma runtime; Erlang/OTP supplies the execution
-semantics.
-
-## The compile-only contract
-
-```
-Lisp source  -->  soma_lfe:compile/2  -->  validated map  -->  caller/runtime boundary
-                      (compile layer)                         (runtime layer)
+```text
+Lisp source -> soma_lfe:compile/2 -> validated maps -> runtime / actor / CLI API
 ```
 
-`soma_lfe:compile/2` is a pure function that returns either `{ok, Map}` or
-`{error, [Diagnostic]}`. It starts no processes, emits no runtime events, and
-never touches the supervisor tree. If compilation fails, no run is started and
-no events appear in the event store.
+`soma_lfe:compile/2` starts no processes, emits no runtime events, opens no
+network sockets, and has no dependency on `soma_runtime`. If compilation fails,
+no run or task is started.
 
-The compiler may be fed by a human, an LLM planner, a UI, or another tool. That
-does not change the contract: source is parsed and validated into canonical
-maps, and only those maps enter the runtime or actor boundary.
+For command usage, see [cli.md](cli.md). For the runtime boundaries this language
+feeds, see [design.md](design.md).
 
 ## Public static task form
 
@@ -46,11 +29,55 @@ the preferred public static task surface.
 
 When a need is dynamic, keep the dynamic decision in the actor/planner layer and submit a new bounded static Soma Lisp task for each execution attempt.
 
-## v0.3 run syntax
+## Compile API
 
-A valid run workflow contains exactly one top-level `run` form. Inside `run`
-there are one or more `step` forms. This remains the form `soma_cli:run/1` sends
-over the local socket.
+```erlang
+soma_lfe:compile(Source, #{}) ->
+    {ok, Map} | {error, [Diagnostic]}.
+
+soma_lfe:compile_file(Path, #{}) ->
+    {ok, Map} | {error, [Diagnostic]}.
+```
+
+`Source` may be a binary or string. Strings in Lisp source compile to Erlang
+binaries; symbols compile to atoms; integers stay integers.
+
+The top-level form selects the result shape:
+
+| Form | Result |
+| --- | --- |
+| `(task ...)` | `#{run => #{steps => [...]}}` |
+| `(run ...)` | `#{run => #{steps => [...]}}` |
+| `(msg ...)` | actor message envelope map |
+| `(reply ...)`, `(reject ...)`, `(run-steps ...)` | proposal map |
+| `(ask ...)` | CLI ask command map |
+| `(trace ...)`, `(status ...)`, `(cancel ...)`, `(stop)` | CLI read/manage command map |
+
+## Task Workflows
+
+`soma run FILE` reads Soma Lisp source. Public static tasks use one `(task ...)`
+form:
+
+```lisp
+(task
+  (let* ((<id> (tool <tool>
+                 (<arg-key> <arg-value>)
+                 (timeout-ms <positive-integer>))))
+    (return <id>)))
+```
+
+- Each `let*` binding becomes one runtime step in binding order.
+- The binding name becomes the step `id`.
+- `(tool ToolName ...)` becomes the step `tool`.
+- Literal tool arguments become the step `args`.
+- `(from Name)` passes a prior step's whole output as `#{from_step => Name}`.
+- `(Key (from Name))` passes a prior step's output into one field.
+- `(return Name)` must reference a bound step.
+
+## Compatibility/Core Run Form
+
+`(run ...)` remains the compatibility/core run form for callers that need the
+canonical step-list syntax directly.
 
 ```lisp
 (run
@@ -60,158 +87,251 @@ over the local socket.
   ...)
 ```
 
-- `<id>` — atom; unique within the run.
-- `<tool>` — atom; must name a registered tool at runtime (the compiler does
-  not check registration; that is the runtime's job).
-- `(args ...)` — keyword-value pairs. See arg forms below.
-- `(timeout_ms N)` — optional; positive integer milliseconds. If absent the
-  step carries no `timeout_ms` key and the runtime uses its own default.
+- `<id>` is a unique symbol within the run.
+- `<tool>` names a registered tool. Tool registration is checked by the runtime,
+  not by the compiler.
+- `(args ...)` is optional; absent args compile to an empty map.
+- `(timeout_ms N)` is optional and must be a positive integer.
 
-## Arg forms
-
-Three arg forms are accepted inside `(args ...)`:
-
-**Literal key-value pair**
-
-```lisp
-(path "input.txt")
-```
-
-Compiles to `path => <<"input.txt">>` (strings become binaries; atoms and
-integers are passed through).
-
-**Bare `from_step` reference** — the entire args map becomes a reference to a
-prior step's output:
-
-```lisp
-(from_step <step-id>)
-```
-
-Compiles to `#{from_step => <step-id>}`. Must be the only entry in `(args ...)`.
-
-**Field-level `from_step` reference** — one arg value is a reference to a
-prior step's output:
-
-```lisp
-(bytes (from_step <step-id>))
-```
-
-Compiles to `bytes => {from_step, <step-id>}`. Other args can accompany it.
-
-In both `from_step` forms the referenced `<step-id>` must be a step that
-appears earlier in the same `run` form (forward references are rejected at
-compile time).
-
-## The `file_read -> echo -> file_write` demo
-
-This is the canonical end-to-end example. It reads a file, passes the bytes
-through echo, and writes them to a new path.
-
-DSL source:
+Detached runs use the same form with a `(detach)` marker. The packaged CLI adds
+this marker when you pass `--detach`:
 
 ```lisp
 (run
+  (detach)
+  (step slow sleep
+    (args (ms 5000))))
+```
+
+## Args
+
+Literal key/value pairs:
+
+```lisp
+(args
+  (path "input.txt")
+  (root "/tmp/soma-demo")
+  (count 3)
+  (mode append))
+```
+
+Compile to an Erlang map with atom keys. Strings become binaries.
+
+Use a prior step's whole output as the next step's args:
+
+```lisp
+(args (from_step read))
+```
+
+Use a prior step's output as one field:
+
+```lisp
+(args
+  (path "output.txt")
+  (bytes (from_step process)))
+```
+
+`from_step` may only reference an earlier step in the same run. Unknown or
+forward references are compile errors.
+
+## Workflow Example
+
+```bash
+mkdir -p /tmp/soma-demo
+printf 'hi soma\n' > /tmp/soma-demo/input.txt
+
+cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
+(run
   (step read file_read
-    (args (path "input.txt") (root "/tmp/sandbox")))
+    (args (path "input.txt") (root "/tmp/soma-demo")))
   (step process echo
     (args (from_step read)))
   (step write file_write
-    (args (path "output.txt") (root "/tmp/sandbox") (bytes (from_step process)))))
+    (args (path "output.txt") (root "/tmp/soma-demo") (bytes (from_step process)))))
+EOF
+
+soma run /tmp/soma-demo/pipeline.lfe
 ```
 
-Compiled steps (what `soma_lfe:compile/2` returns inside `#{run => #{steps => ...}}`):
+The compiled run contains the exact step-list maps accepted by `soma_run`:
 
 ```erlang
 [
-  #{id => read,    tool => file_read,
-    args => #{path => <<"input.txt">>, root => <<"/tmp/sandbox">>}},
+  #{id => read, tool => file_read,
+    args => #{path => <<"input.txt">>, root => <<"/tmp/soma-demo">>}},
   #{id => process, tool => echo,
     args => #{from_step => read}},
-  #{id => write,   tool => file_write,
-    args => #{path => <<"output.txt">>, root => <<"/tmp/sandbox">>,
+  #{id => write, tool => file_write,
+    args => #{path => <<"output.txt">>, root => <<"/tmp/soma-demo">>,
               bytes => {from_step, process}}}
 ]
 ```
 
-Passing these steps to `soma_agent_session:start_run/2` runs the three-step
-demo through the full runtime: distinct `soma_tool_call` worker processes, the
-normal event trail, and the `file_write` tool writing the bytes to disk.
+## Actor Messages
 
-## Calling the compiler
+`(msg ...)` compiles to an actor envelope. It is used at actor and Lisp-edge
+boundaries, not by `soma run`.
 
-```erlang
-Source = <<"(run (step greet echo (args (value \"hello\"))))">>,
-{ok, #{run := #{steps := Steps}}} = soma_lfe:compile(Source, #{}),
-{ok, S} = soma_agent_session:start_link(#{}),
-{ok, RunId} = soma_agent_session:start_run(S, Steps).
+```lisp
+(msg
+  (type "task")
+  (payload "copy a file")
+  (correlation-id "corr-1")
+  (steps
+    (step
+      (id echo-it)
+      (tool echo)
+      (args (value "hello")))))
 ```
 
-`compile_file/2` reads a file first, then calls `compile/2`:
+Required fields:
 
-```erlang
-{ok, #{run := #{steps := Steps}}} = soma_lfe:compile_file("/path/to/run.lfe", #{}).
+- `(type VALUE)`
+- `(payload VALUE)`
+
+Optional fields:
+
+- `(correlation-id "...")`
+- `(steps (step ...))`
+- `(llm ...)`
+
+Nested message steps use pair form, not the compact run-workflow form:
+
+```lisp
+(step
+  (id s1)
+  (tool echo)
+  (args (value "hi")))
 ```
 
-## Other edge forms
+## Proposal Forms
 
-`soma_lfe:compile/2` also accepts the Lisp forms used outside the sequential run
-executor:
+Proposal forms are data returned by a planner or model and then normalized,
+checked by policy, and executed only if approved.
 
-| Form | Result shape | Consumer |
-|---|---|---|
-| `(msg ...)` | `#{type := ..., payload := ..., steps? := ..., llm? := ...}` | `soma_actor:send/2` / `ask/3` string boundary |
-| `(reply (text "..."))` | `#{kind => reply, text => ...}` | LLM proposal boundary |
-| `(run-steps (step ...))` | `#{kind => run_steps, steps => [...]}` | LLM proposal boundary |
-| `(reject (reason "..."))` | `#{kind => reject, reason => ...}` | LLM proposal boundary |
-| `(ask (intent "...") ...)` | `#{ask => ...}` | `soma_cli_server` ask handler |
-| `(trace "...")`, `(status "...")`, `(cancel "...")` | command maps keyed by `trace`, `status`, or `cancel` | `soma_cli_server` read/manage handlers |
+Reply proposal:
 
-These are still compile-only boundaries. They start no processes and emit no
-runtime events by themselves.
+```lisp
+(reply (text "done"))
+```
 
-## Diagnostic codes
+Compiles to:
+
+```erlang
+#{kind => reply, text => <<"done">>}
+```
+
+Reject proposal:
+
+```lisp
+(reject (reason "..."))
+```
+
+Compiles to a reject-kind proposal:
+
+```erlang
+#{kind => reject, reason => <<"...">>}
+```
+
+The exact result shape includes `kind => reject`.
+
+Run-steps proposal:
+
+```lisp
+(run-steps
+  (step
+    (id s1)
+    (tool echo)
+    (args (value "hi"))))
+```
+
+Compiles to:
+
+```erlang
+#{kind => run_steps,
+  steps => [#{id => s1, tool => echo, args => #{value => <<"hi">>}}]}
+```
+
+The actor still normalizes the proposal, applies policy and budgets, and starts
+an owned `soma_run` only when the proposal is approved.
+
+## CLI Command Forms
+
+The local daemon wire also uses Lisp. `soma` builds these forms for you, but
+custom clients can send the same request shapes.
+
+Ask:
+
+```lisp
+(ask
+  (intent "summarize the build log")
+  (allow echo file_read)
+  (budget-llm 3)
+  (budget-steps 5))
+```
+
+Compiles to:
+
+```erlang
+#{ask => #{intent => <<"summarize the build log">>,
+           tool_policy => #{allowed_tools => [echo, file_read]},
+           budget => #{max_llm_calls => 3, max_steps => 5}}}
+```
+
+Read/manage commands:
+
+```lisp
+(trace "corr-1")
+(status "task-1")
+(cancel "task-1")
+(stop)
+```
+
+These compile to maps keyed by `trace`, `status`, `cancel`, or `stop`.
+
+## Diagnostics
+
+Compilation returns `{error, Diagnostics}`. Diagnostics are maps with at least a
+`code`, `message`, and `line`.
+
+Common diagnostic codes:
 
 | Code | Trigger |
-|------|---------|
-| `missing_run_form` | Source is empty (no forms). |
-| `multiple_run_forms` | More than one top-level form. |
-| `invalid_top_level_form` | Top-level form is not headed by `run`. |
-| `duplicate_step_id` | Two or more steps share the same `<id>`. |
-| `invalid_from_step` | `from_step` references a step id that does not exist or appears later in the run (forward reference). |
-| `invalid_timeout` | `timeout_ms` value is not a positive integer. |
-| `unknown_form` | A child form inside `run` or `step` is not recognized. |
-| `invalid_step` | A `step` form is missing its `<id>` or `<tool>`, or an arg pair is malformed. |
+| --- | --- |
+| `missing_run_form` | Empty source where a run form was expected. |
+| `multiple_run_forms` | More than one top-level run form. |
+| `invalid_top_level_form` | A run source is not headed by `run`. |
+| `duplicate_step_id` | Two run steps share an id. |
+| `invalid_from_step` | `from_step` points to an unknown or later step. |
+| `invalid_timeout` | `timeout_ms` is missing a positive integer. |
+| `invalid_step` | A step or arg pair is malformed. |
+| `unknown_form` | A child form is not recognized in that context. |
+| `missing_required_field` | A message or ask form is missing a required field. |
+| `malformed_form` | A CLI command form has the wrong shape. |
+| `malformed_proposal` | A proposal form has the wrong shape. |
 
-Errors are accumulated across all steps — a single compile call can return
-multiple diagnostics.
+Errors are accumulated where possible, especially across run steps.
 
 ## Non-goals
 
-The LFE DSL is intentionally minimal. These items are out of scope for this layer
-and must not be added to the compiler:
+The DSL is intentionally narrow:
 
-- **LLM execution or planner integration** — this layer is compiler-only. An LLM
-  or agent may author this syntax, but provider calls, repair loops, and policy
-  gates live outside this compiler.
-- **DAG execution** — steps run in list order; no parallel branches.
-- **Loops or branches** — no control flow beyond a flat step list.
-- **Variables or bindings** — `from_step` references are the only
-  data-threading mechanism.
-- **Arbitrary Lisp evaluation** — the reader produces Erlang terms from a
-  fixed grammar; it is not a general-purpose Lisp interpreter.
-- **Persistent resume** — compiled run steps are passed to `start_run/2` and run
-  to a terminal state; there is no checkpoint or resume mechanism.
-- **New runtime event semantics** — the compiler emits no events and adds no
-  new event types; the runtime event contract is unchanged.
+- No arbitrary Lisp evaluation.
+- No shell execution.
+- No model/provider calls.
+- No policy bypass.
+- No runtime event emission from the compiler.
+- No loops, branches, variables, or DAG scheduling inside `soma_run`.
+- No resume policy decisions in the compiler; resume is derived from the event
+  trail by the runtime resume modules.
 
-## Proof-to-test mapping
+## Proof-to-test Mapping
 
-The following table maps each property of the compile-only contract to the
-test that proves it. This mapping is the barrier that prevents future v0.4
-work from accidentally treating the DSL as a runtime component.
+These tests preserve the compile-only boundary and the runtime behavior of
+DSL-sourced runs:
 
 | Property | Test module | Test name |
-|----------|-------------|-----------|
+| --- | --- | --- |
 | DSL demo compiles and runs to `run.completed` | `soma_lfe_runtime_SUITE` | `test_dsl_demo_runs_to_completed` |
 | Compiled demo produces the normal event trail | `soma_lfe_runtime_SUITE` | `test_dsl_demo_event_trail` |
 | Each tool call has a distinct worker pid; DSL does not bypass `soma_tool_call` | `soma_lfe_runtime_SUITE` | `test_dsl_tool_calls_have_distinct_pids` |

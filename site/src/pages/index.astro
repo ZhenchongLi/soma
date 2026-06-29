@@ -8,10 +8,10 @@ import { Code } from 'astro:components';
 import '../styles/custom.css';
 import '../styles/landing.css';
 
-const quickStart = `# start the daemon, then run a step list
-soma daemon
+const quickStart = `# first client call auto-starts the daemon
 soma run ./pipeline.lfe
-soma status`;
+soma trace <correlation-id>
+soma stop`;
 ---
 
 <html lang="en">
