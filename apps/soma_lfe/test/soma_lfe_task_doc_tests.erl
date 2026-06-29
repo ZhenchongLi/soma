@@ -53,3 +53,11 @@ test_lfe_dsl_documents_task_as_public_static_form() ->
 
 lfe_dsl_documents_task_as_public_static_form_test() ->
     test_lfe_dsl_documents_task_as_public_static_form().
+
+test_lfe_dsl_documents_run_as_compatibility_core_form() ->
+    Doc = read_doc("docs/lfe-dsl.md"),
+    ?assert(contains(Doc, <<"(run ...)">>)),
+    ?assert(contains(Doc, <<"compatibility/core run form">>)).
+
+lfe_dsl_documents_run_as_compatibility_core_form_test() ->
+    test_lfe_dsl_documents_run_as_compatibility_core_form().
