@@ -2,8 +2,8 @@
 %% run representation, or a list of structured diagnostics.
 -module(soma_lfe_parser).
 
--export([parse_run/1, parse_msg/1, parse_proposal/1, parse_ask/1, parse_trace/1,
-         parse_status/1, parse_cancel/1, parse_stop/1]).
+-export([parse_run/1, parse_task/1, parse_msg/1, parse_proposal/1, parse_ask/1,
+         parse_trace/1, parse_status/1, parse_cancel/1, parse_stop/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -57,6 +57,248 @@ validate_msg_required(Acc) ->
            io_lib:format("msg is missing required field: '~s'", [Field])),
        line => 0}
      || Field <- [type, payload], not maps:is_key(Field, Acc)].
+
+%% @doc Parse a public (task ...) form into the same canonical run map as
+%% the older (run ...) form.
+-spec parse_task([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_task(Form) ->
+    case find_unsupported_task_control_form(Form) of
+        {ok, Head} ->
+            {error, [task_reserved_control_form_diag(Head)]};
+        none ->
+            parse_task_checked(Form)
+    end.
+
+parse_task_checked([task, ['let*', Bindings, [return, ReturnId]]])
+        when is_list(Bindings), is_atom(ReturnId) ->
+    case parse_task_bindings(Bindings, [], []) of
+        {ok, Steps} ->
+            case validate_task_steps(Steps) ++ validate_task_return(ReturnId, Steps) of
+                [] ->
+                    {ok, #{run => #{steps => Steps}}};
+                Diags ->
+                    {error, Diags}
+            end;
+        {error, Diags} ->
+            {error, Diags}
+    end;
+parse_task_checked([task, ['let*', Bindings, [return, ReturnId] | _ExtraBody]])
+        when is_list(Bindings), is_atom(ReturnId) ->
+    {error, [#{code => invalid_let_star,
+               message => <<"task let* body must contain exactly one return form">>,
+               line => 0}]};
+parse_task_checked([task, ['let*', Bindings]]) when is_list(Bindings) ->
+    {error, [#{code => invalid_return,
+               message => <<"task let* body must include (return Name)">>,
+               line => 0}]};
+parse_task_checked([task | _]) ->
+    {error, [#{code => invalid_task_form,
+               message => <<"task form must be (task (let* ((id (tool name ...))) (return id)))">>,
+               line => 0}]}.
+
+parse_task_bindings([], Acc, []) ->
+    {ok, lists:reverse(Acc)};
+parse_task_bindings([], _Acc, ErrAcc) ->
+    {error, lists:reverse(ErrAcc)};
+parse_task_bindings([Binding | Rest], Acc, ErrAcc) ->
+    case parse_task_binding(Binding) of
+        {ok, Step} ->
+            parse_task_bindings(Rest, [Step | Acc], ErrAcc);
+        {error, Diags} ->
+            parse_task_bindings(Rest, Acc, lists:reverse(Diags) ++ ErrAcc)
+    end.
+
+parse_task_binding([Id, [tool | ToolTail]]) when is_atom(Id) ->
+    case is_reserved_task_word(Id) of
+        true ->
+            {error, [task_reserved_form_diag(Id)]};
+        false ->
+            case ToolTail of
+                [Tool | ArgForms] when is_atom(Tool) ->
+                    parse_task_tool_call(Id, Tool, ArgForms);
+                _ ->
+                    {error, [task_invalid_tool_form_diag([tool | ToolTail])]}
+            end
+    end;
+parse_task_binding([Id, _ToolForm]) when is_atom(Id) ->
+    case is_reserved_task_word(Id) of
+        true ->
+            {error, [task_reserved_form_diag(Id)]};
+        false ->
+            {error, [#{code => invalid_binding,
+                       message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
+                       line => 0}]}
+    end;
+parse_task_binding(_Other) ->
+    {error, [#{code => invalid_binding,
+               message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
+               line => 0}]}.
+
+is_reserved_task_word(Word) ->
+    lists:member(Word, [task, 'let*', tool, from, 'timeout-ms', return,
+                        'if', 'cond', 'loop', 'recur']).
+
+task_reserved_form_diag(Word) ->
+    #{code => reserved_form,
+      message => iolist_to_binary(
+          io_lib:format("reserved task binding name: '~s'", [Word])),
+      line => 0}.
+
+find_unsupported_task_control_form([Head | Children]) when is_atom(Head) ->
+    case is_unsupported_task_control_head(Head) of
+        true ->
+            {ok, Head};
+        false ->
+            find_unsupported_task_control_form_children(Children)
+    end;
+find_unsupported_task_control_form([Child | Rest]) ->
+    case find_unsupported_task_control_form(Child) of
+        none ->
+            find_unsupported_task_control_form(Rest);
+        Found ->
+            Found
+    end;
+find_unsupported_task_control_form([]) ->
+    none;
+find_unsupported_task_control_form(_Other) ->
+    none.
+
+find_unsupported_task_control_form_children([]) ->
+    none;
+find_unsupported_task_control_form_children([Child | Rest]) ->
+    case find_unsupported_task_control_form(Child) of
+        none ->
+            find_unsupported_task_control_form_children(Rest);
+        Found ->
+            Found
+    end.
+
+is_unsupported_task_control_head(Head) ->
+    lists:member(Head, ['if', 'cond', 'loop', 'recur']).
+
+task_reserved_control_form_diag(Head) ->
+    #{code => reserved_form,
+      message => iolist_to_binary(
+          io_lib:format("unsupported task control form head: '~s'", [Head])),
+      line => 0}.
+
+parse_task_tool_call(Id, Tool, ArgForms) ->
+    case extract_task_step_fields(ArgForms, #{}, [], []) of
+        {ok, StepFields, ToolArgForms} ->
+            case parse_task_args(ToolArgForms, #{}) of
+                {ok, Args} ->
+                    {ok, StepFields#{id => Id, tool => Tool, args => Args}};
+                {error, Diags} ->
+                    {error, Diags}
+            end;
+        {error, Diags} ->
+            {error, Diags}
+    end.
+
+task_invalid_tool_form_diag(Form) ->
+    #{code => invalid_tool_form,
+      message => iolist_to_binary(io_lib:format("malformed task tool form: ~p", [Form])),
+      line => 0}.
+
+extract_task_step_fields([], StepFields, RevArgForms, []) ->
+    {ok, StepFields, lists:reverse(RevArgForms)};
+extract_task_step_fields([], _StepFields, _RevArgForms, ErrAcc) ->
+    {error, lists:reverse(ErrAcc)};
+extract_task_step_fields([['timeout-ms', N] | Rest], StepFields, RevArgForms, ErrAcc)
+        when is_integer(N), N > 0 ->
+    case maps:is_key(timeout_ms, StepFields) of
+        true ->
+            extract_task_step_fields(
+                Rest,
+                StepFields,
+                RevArgForms,
+                [task_invalid_timeout_diag(N) | ErrAcc]
+            );
+        false ->
+            extract_task_step_fields(Rest, StepFields#{timeout_ms => N}, RevArgForms, ErrAcc)
+    end;
+extract_task_step_fields([['timeout-ms', Value] | Rest], StepFields, RevArgForms, ErrAcc) ->
+    extract_task_step_fields(
+        Rest,
+        StepFields,
+        RevArgForms,
+        [task_invalid_timeout_diag(Value) | ErrAcc]
+    );
+extract_task_step_fields([['timeout-ms' | _] = Form | Rest], StepFields, RevArgForms, ErrAcc) ->
+    extract_task_step_fields(
+        Rest,
+        StepFields,
+        RevArgForms,
+        [task_invalid_timeout_diag(Form) | ErrAcc]
+    );
+extract_task_step_fields([ArgForm | Rest], StepFields, RevArgForms, ErrAcc) ->
+    extract_task_step_fields(Rest, StepFields, [ArgForm | RevArgForms], ErrAcc).
+
+task_invalid_timeout_diag(Value) ->
+    #{code => invalid_timeout,
+      message => iolist_to_binary(
+          io_lib:format("timeout-ms must be a positive integer, got: ~p", [Value])),
+      line => 0}.
+
+parse_task_args([[from, Id]], Acc) when map_size(Acc) =:= 0 ->
+    {ok, #{from_step => Id}};
+parse_task_args(ArgForms, Acc) ->
+    case task_args_have_mixed_bare_from(ArgForms) of
+        true ->
+            {error, [task_invalid_tool_form_diag(ArgForms)]};
+        false ->
+            case parse_args(rewrite_task_from_values(ArgForms), Acc) of
+                {ok, Args} ->
+                    {ok, Args};
+                {error, Diags} ->
+                    {error, [Diag#{code => invalid_tool_form} || Diag <- Diags]}
+            end
+    end.
+
+task_args_have_mixed_bare_from(ArgForms) ->
+    length(ArgForms) > 1 andalso lists:any(fun
+        ([from, _Id]) -> true;
+        (_Other) -> false
+    end, ArgForms).
+
+rewrite_task_from_values([[Key, [from, Id]] | Rest]) when is_atom(Key) ->
+    [[Key, [from_step, Id]] | rewrite_task_from_values(Rest)];
+rewrite_task_from_values([Arg | Rest]) ->
+    [Arg | rewrite_task_from_values(Rest)];
+rewrite_task_from_values([]) ->
+    [].
+
+validate_task_steps(Steps) ->
+    check_duplicate_bindings(Steps) ++ check_task_from_binding_refs(Steps).
+
+check_duplicate_bindings(Steps) ->
+    Ids = [maps:get(id, S) || S <- Steps],
+    Seen = lists:foldl(fun(Id, {SeenSet, DupSet}) ->
+        case sets:is_element(Id, SeenSet) of
+            true  -> {SeenSet, sets:add_element(Id, DupSet)};
+            false -> {sets:add_element(Id, SeenSet), DupSet}
+        end
+    end, {sets:new(), sets:new()}, Ids),
+    {_, DupIds} = Seen,
+    lists:map(fun(Id) ->
+        #{code => duplicate_binding,
+          message => iolist_to_binary(io_lib:format("duplicate binding: '~s'", [Id])),
+          line => 0}
+    end, sets:to_list(DupIds)).
+
+check_task_from_binding_refs(Steps) ->
+    [Diag#{code => invalid_from_binding} || Diag <- check_from_step_refs(Steps)].
+
+validate_task_return(ReturnId, Steps) ->
+    case lists:any(fun(Step) -> maps:get(id, Step) =:= ReturnId end, Steps) of
+        true ->
+            [];
+        false ->
+            [#{code => invalid_return,
+               message => iolist_to_binary(
+                   io_lib:format("task return references unknown binding: '~s'", [ReturnId])),
+               line => 0}]
+    end.
 
 parse_msg_steps([], Acc) ->
     {ok, lists:reverse(Acc)};

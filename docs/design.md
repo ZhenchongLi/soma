@@ -37,6 +37,8 @@ failure crosses boundaries as data.
 The runtime core is small and sequential. Higher layers compile intent into the
 same canonical run contract instead of turning `soma_run` into a workflow engine.
 
+Soma Lisp source -> soma_lfe:compile/2 -> validated maps -> OTP execution.
+
 ```mermaid
 flowchart TD
     subgraph runtime["apps/soma_runtime"]

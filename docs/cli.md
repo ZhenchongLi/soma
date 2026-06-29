@@ -23,7 +23,7 @@ From an installed release, put the release `bin/` directory on `PATH` and run
 
 | Command | Use |
 | --- | --- |
-| `soma run WORKFLOW [--detach] [--socket PATH]` | Run a Lisp workflow file, or `-` for stdin. |
+| `soma run FILE [--detach] [--socket PATH]` | Run Soma Lisp source from a file, or `-` for stdin. |
 | `soma ask "INTENT" [--socket PATH]` | Ask the configured model through the daemon. |
 | `soma status TASK_ID [--socket PATH]` | Read a task state. |
 | `soma cancel TASK_ID [--socket PATH]` | Cancel a live detached run by task id. |
@@ -38,27 +38,31 @@ uses `$XDG_RUNTIME_DIR/soma.sock`, or `/tmp/soma-$USER.sock` when
 `--detach` is for `soma run`: it returns a task handle immediately and leaves the
 run alive in the daemon.
 
-## Run A Workflow
+## Run A Task
 
-Workflows are Lisp forms. The main run form is `(run ...)`, with one or more
-sequential `(step ...)` entries. See [docs/lfe-dsl.md](lfe-dsl.md) for the
-workflow syntax.
+soma run FILE reads Soma Lisp source from FILE and sends it to the daemon.
+Public static tasks use `(task ...)`; `(run ...)` remains the compatibility/core
+run form. See [docs/lfe-dsl.md](lfe-dsl.md) for the language syntax.
 
 ```bash
 mkdir -p /tmp/soma-demo
 printf 'hi soma\n' > /tmp/soma-demo/input.txt
 
-cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
-(run
-  (step read file_read
-    (args (path "input.txt") (root "/tmp/soma-demo")))
-  (step process echo
-    (args (from_step read)))
-  (step write file_write
-    (args (path "output.txt") (root "/tmp/soma-demo") (bytes (from_step process)))))
+cat > /tmp/soma-demo/pipeline.lisp <<'EOF'
+(task
+  (let* ((read (tool file_read
+                 (path "input.txt")
+                 (root "/tmp/soma-demo")))
+         (process (tool echo
+                    (from read)))
+         (write (tool file_write
+                  (path "output.txt")
+                  (root "/tmp/soma-demo")
+                  (bytes (from process)))))
+    (return write)))
 EOF
 
-$SOMA run /tmp/soma-demo/pipeline.lfe
+$SOMA run /tmp/soma-demo/pipeline.lisp
 cat /tmp/soma-demo/output.txt
 ```
 
@@ -81,7 +85,7 @@ reply when one is available.
 Use `-` as the workflow path:
 
 ```bash
-printf '(run (step greet echo (args (value "hello"))))\n' | $SOMA run -
+printf '(task (let* ((greet (tool echo (value "hello")))) (return greet)))\n' | $SOMA run -
 ```
 
 ## Run In The Background
@@ -261,6 +265,9 @@ s-expression per reply. No JSON is used on this path.
 ## Operational Notes
 
 - The daemon is local and single-user. Socket file permissions are the boundary.
+- `soma run` input is Soma Lisp source. `(task ...)` is the public static task
+  form; `(run ...)` remains the compatibility/core run form. The same Lisp is
+  the wire and the file format.
 - Disconnecting a synchronous `soma run` client cancels that in-flight run.
 - Detached runs outlive the client and can be read or cancelled by id.
 - `soma stop` closes the listener, cancels live detached runs, and removes the

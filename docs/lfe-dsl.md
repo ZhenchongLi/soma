@@ -17,6 +17,18 @@ no run or task is started.
 For command usage, see [cli.md](cli.md). For the runtime boundaries this language
 feeds, see [design.md](design.md).
 
+## Public static task form
+
+`(task ...)` is the public static task form for bounded Soma Lisp workflows. It
+compiles through `soma_lfe:compile/2` into the same validated run-step map shape
+that enters the runtime boundary.
+
+`(run ...)` remains the compatibility/core run form. It exposes the canonical
+step-list syntax used by the runtime and older callers, while `(task ...)` is
+the preferred public static task surface.
+
+When a need is dynamic, keep the dynamic decision in the actor/planner layer and submit a new bounded static Soma Lisp task for each execution attempt.
+
 ## Compile API
 
 ```erlang
@@ -34,15 +46,38 @@ The top-level form selects the result shape:
 
 | Form | Result |
 | --- | --- |
+| `(task ...)` | `#{run => #{steps => [...]}}` |
 | `(run ...)` | `#{run => #{steps => [...]}}` |
 | `(msg ...)` | actor message envelope map |
 | `(reply ...)`, `(reject ...)`, `(run-steps ...)` | proposal map |
 | `(ask ...)` | CLI ask command map |
 | `(trace ...)`, `(status ...)`, `(cancel ...)`, `(stop)` | CLI read/manage command map |
 
-## Run Workflows
+## Task Workflows
 
-`soma run WORKFLOW` reads a file containing one `(run ...)` form.
+`soma run FILE` reads Soma Lisp source. Public static tasks use one `(task ...)`
+form:
+
+```lisp
+(task
+  (let* ((<id> (tool <tool>
+                 (<arg-key> <arg-value>)
+                 (timeout-ms <positive-integer>))))
+    (return <id>)))
+```
+
+- Each `let*` binding becomes one runtime step in binding order.
+- The binding name becomes the step `id`.
+- `(tool ToolName ...)` becomes the step `tool`.
+- Literal tool arguments become the step `args`.
+- `(from Name)` passes a prior step's whole output as `#{from_step => Name}`.
+- `(Key (from Name))` passes a prior step's output into one field.
+- `(return Name)` must reference a bound step.
+
+## Compatibility/Core Run Form
+
+`(run ...)` remains the compatibility/core run form for callers that need the
+canonical step-list syntax directly.
 
 ```lisp
 (run

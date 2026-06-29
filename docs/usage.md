@@ -47,17 +47,21 @@ Create a small file pipeline:
 mkdir -p /tmp/soma-demo
 printf 'hi soma\n' > /tmp/soma-demo/input.txt
 
-cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
-(run
-  (step read file_read
-    (args (path "input.txt") (root "/tmp/soma-demo")))
-  (step process echo
-    (args (from_step read)))
-  (step write file_write
-    (args (path "output.txt") (root "/tmp/soma-demo") (bytes (from_step process)))))
+cat > /tmp/soma-demo/pipeline.lisp <<'EOF'
+(task
+  (let* ((read (tool file_read
+                 (path "input.txt")
+                 (root "/tmp/soma-demo")))
+         (process (tool echo
+                    (from read)))
+         (write (tool file_write
+                  (path "output.txt")
+                  (root "/tmp/soma-demo")
+                  (bytes (from process)))))
+    (return write)))
 EOF
 
-$SOMA run /tmp/soma-demo/pipeline.lfe
+$SOMA run /tmp/soma-demo/pipeline.lisp
 cat /tmp/soma-demo/output.txt
 ```
 
@@ -76,24 +80,26 @@ Use the `task-id` for `status` and `cancel`. Use the `correlation-id` for
 
 ## Workflow Files
 
-`soma run WORKFLOW` reads one Lisp `(run ...)` form. Steps run strictly in the
+`soma run FILE` reads Soma Lisp source. Public static tasks use `(task ...)`;
+`(run ...)` remains the compatibility/core run form. Steps run strictly in the
 order they appear.
 
 ```lisp
-(run
-  (step greet echo
-    (args (value "hello"))
-    (timeout_ms 5000)))
+(task
+  (let* ((greet (tool echo
+                  (value "hello")
+                  (timeout-ms 5000))))
+    (return greet)))
 ```
 
-Each step has:
+In `(task ...)`, each `let*` binding creates one step:
 
 | Field | Meaning |
 | --- | --- |
 | Step id | A unique symbol inside this workflow, such as `greet` or `read`. |
 | Tool name | A registered tool, such as `echo`, `sleep`, `file_read`, or `file_write`. |
-| `(args ...)` | Input for the tool. Omit it for empty input. |
-| `(timeout_ms N)` | Optional per-step wall-clock budget. If it expires, the run times out and the active worker is stopped. |
+| Tool arguments | Input for the tool. Omit them for empty input. |
+| `(timeout-ms N)` | Optional per-step wall-clock budget. If it expires, the run times out and the active worker is stopped. |
 
 Internally, after the workflow is compiled, each step is a map with `id` and `tool`;
 the runtime rejects a bad step before starting the run. Duplicate step ids are
@@ -105,22 +111,21 @@ unique.
 Use a previous step's whole output as the next step's input:
 
 ```lisp
-(step process echo
-  (args (from_step read)))
+(process (tool echo
+           (from read)))
 ```
 
 Use a previous step's output as one field:
 
 ```lisp
-(step write file_write
-  (args
-    (path "output.txt")
-    (root "/tmp/soma-demo")
-    (bytes (from_step process))))
+(write (tool file_write
+         (path "output.txt")
+         (root "/tmp/soma-demo")
+         (bytes (from process))))
 ```
 
-`from_step` can only point to an earlier step in the same run. Unknown or
-forward references are compile errors.
+`from` can only point to an earlier binding in the same task. Unknown or forward
+references are compile errors.
 
 ### Run From Stdin
 
@@ -384,6 +389,15 @@ soma_event_store:start_link(#{log => "/var/lib/soma/events.log"}).
 
 That is the same opt-in durability mode: `log =>` selects an on-disk `disk_log`,
 and replay on restart rebuilds the query index from the durable log.
+
+At the packaged command surface, soma run FILE reads Soma Lisp source from
+FILE and submits it through the same local Lisp wire.
+
+The wire is length-prefixed Lisp s-expressions: `(run ...)`, `(ask ...)`,
+`(status ...)`, `(trace ...)`, and `(cancel ...)` requests, with `(result ...)`,
+`(accepted ...)`, `(status ...)`, or `(trace ...)` replies rendered by
+`soma_lisp`. Detached run support is a `(detach)` marker inside `(run ...)`;
+detached tasks live in `soma_cli_task_registry` and can be managed by id.
 
 ## Common Failures
 

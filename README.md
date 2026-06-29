@@ -110,7 +110,7 @@ rebar3 release
 SOMA="_build/default/rel/somad/bin/soma"
 ```
 
-Write a small workflow. This Lisp-flavored workflow language is the public run
+Write a small static task. This Lisp-flavored workflow language is the public run
 format: Lisp at the edge, validated data inside the runtime. Syntax reference:
 [docs/lfe-dsl.md](docs/lfe-dsl.md); CLI wire and command behavior:
 [docs/cli.md](docs/cli.md).
@@ -119,17 +119,21 @@ format: Lisp at the edge, validated data inside the runtime. Syntax reference:
 mkdir -p /tmp/soma-demo
 printf 'hi soma\n' > /tmp/soma-demo/input.txt
 
-cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
-(run
-  (step read file_read
-    (args (path "input.txt") (root "/tmp/soma-demo")))
-  (step process echo
-    (args (from_step read)))
-  (step write file_write
-    (args (path "output.txt") (root "/tmp/soma-demo") (bytes (from_step process)))))
+cat > /tmp/soma-demo/pipeline.lisp <<'EOF'
+(task
+  (let* ((read (tool file_read
+                 (path "input.txt")
+                 (root "/tmp/soma-demo")))
+         (process (tool echo
+                    (from read)))
+         (write (tool file_write
+                  (path "output.txt")
+                  (root "/tmp/soma-demo")
+                  (bytes (from process)))))
+    (return write)))
 EOF
 
-$SOMA run /tmp/soma-demo/pipeline.lfe
+$SOMA run /tmp/soma-demo/pipeline.lisp
 cat /tmp/soma-demo/output.txt
 ```
 
