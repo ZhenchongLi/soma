@@ -74,6 +74,11 @@ parse_task([task, ['let*', Bindings, [return, ReturnId]]])
         {error, Diags} ->
             {error, Diags}
     end;
+parse_task([task, ['let*', Bindings, [return, ReturnId] | _ExtraBody]])
+        when is_list(Bindings), is_atom(ReturnId) ->
+    {error, [#{code => invalid_let_star,
+               message => <<"task let* body must contain exactly one return form">>,
+               line => 0}]};
 parse_task([task, ['let*', Bindings]]) when is_list(Bindings) ->
     {error, [#{code => invalid_return,
                message => <<"task let* body must include (return Name)">>,
