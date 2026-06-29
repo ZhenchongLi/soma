@@ -103,6 +103,8 @@ parse_task_binding(_Other) ->
                message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
                line => 0}]}.
 
+parse_task_args([[from, Id]], Acc) when map_size(Acc) =:= 0 ->
+    {ok, #{from_step => Id}};
 parse_task_args(ArgForms, Acc) ->
     parse_args(ArgForms, Acc).
 
