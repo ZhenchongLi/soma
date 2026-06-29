@@ -36,3 +36,16 @@ test_let_star_bindings_preserve_order() ->
 
 let_star_bindings_preserve_order_test() ->
     test_let_star_bindings_preserve_order().
+
+test_binding_name_becomes_step_id() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((named_step (tool echo\n"
+        "                        (value \"hello\"))))\n"
+        "    (return named_step)))\n"
+    >>,
+    {ok, #{run := #{steps := [Step]}}} = soma_lfe:compile(Source, #{}),
+    ?assertEqual(wrong_step_id, maps:get(id, Step)).
+
+binding_name_becomes_step_id_test() ->
+    test_binding_name_becomes_step_id().
