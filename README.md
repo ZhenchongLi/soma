@@ -92,6 +92,19 @@ rebar3 compile
 rebar3 eunit && rebar3 ct      # 259 EUnit + 350 Common Test, all green
 ```
 
+Run a static task through the local CLI:
+
+```bash
+cat > /tmp/soma-hello.lisp <<'EOF'
+(task
+  (let* ((greet (tool echo
+                   (value "hello"))))
+    (return greet)))
+EOF
+
+scripts/soma run /tmp/soma-hello.lisp
+```
+
 Drive a run in the shell:
 
 ```bash
