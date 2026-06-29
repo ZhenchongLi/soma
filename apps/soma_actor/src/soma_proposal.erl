@@ -28,17 +28,17 @@ normalize(#{kind := reject, reason := Reason}) when is_binary(Reason) ->
 normalize(#{kind := ask, question := Question}) when is_binary(Question) ->
     {ok, #{kind => ask, question => Question}};
 normalize(#{kind := actor_message, to := To, payload := Payload})
-  when is_pid(To), is_map(Payload) ->
+  when is_pid(To), is_map(Payload); is_binary(To), is_map(Payload) ->
     {ok, #{kind => actor_message, to => To, payload => Payload}};
 %% An actor_message body may also be a Lisp `(msg ...)' string (binary or iolist)
 %% the receiver parses at its own send/2 string clause (L.2). The body shape --
 %% map vs Lisp string -- is decided downstream in the actor's delivery; here it is
 %% only validated as a non-empty string payload alongside a pid `to'.
 normalize(#{kind := actor_message, to := To, payload := Payload})
-  when is_pid(To), is_binary(Payload) ->
+  when is_pid(To), is_binary(Payload); is_binary(To), is_binary(Payload) ->
     {ok, #{kind => actor_message, to => To, payload => Payload}};
 normalize(#{kind := actor_message, to := To, payload := Payload})
-  when is_pid(To), is_list(Payload) ->
+  when is_pid(To), is_list(Payload); is_binary(To), is_list(Payload) ->
     {ok, #{kind => actor_message, to => To, payload => Payload}};
 normalize(#{kind := reply}) ->
     {error, [#{code => missing_required_field,
