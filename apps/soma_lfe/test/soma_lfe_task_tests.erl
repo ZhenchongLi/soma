@@ -214,3 +214,17 @@ test_malformed_task_root_returns_diagnostic() ->
 
 malformed_task_root_returns_diagnostic_test() ->
     test_malformed_task_root_returns_diagnostic().
+
+test_malformed_let_star_returns_diagnostic() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((echoed (tool echo\n"
+        "                   (value \"done\"))))\n"
+        "    (return echoed)\n"
+        "    (return echoed)))\n"
+    >>,
+    {error, Diags} = soma_lfe:compile(Source, #{}),
+    ?assertEqual([invalid_let_star], [maps:get(code, Diag) || Diag <- Diags]).
+
+malformed_let_star_returns_diagnostic_test() ->
+    test_malformed_let_star_returns_diagnostic().
