@@ -36,29 +36,33 @@ test_sup_registered_and_alive_test() ->
         application:unload(soma_actor)
     end.
 
-%% Criterion 5: `soma_actor_sup' uses the `simple_one_for_one' strategy. Boot
-%% the app and read the live supervisor's strategy off its internal state
-%% (`element(3, sys:get_state/1)' is the supervisor's `strategy' field).
-%% Stops/unloads the app afterward for a clean teardown.
-test_sup_strategy_simple_one_for_one_test() ->
+%% Criterion 5: `soma_actor_sup' uses `one_for_one' at the root so it can own
+%% both the registry and the dynamic actor child supervisor. The child supervisor
+%% keeps the actor instances on `simple_one_for_one'. Stops/unloads the app
+%% afterward for a clean teardown.
+test_sup_strategy_one_for_one_with_dynamic_child_sup_test() ->
     try
         {ok, _} = application:ensure_all_started(soma_actor),
         Strategy = element(3, sys:get_state(soma_actor_sup)),
-        ?assertEqual(simple_one_for_one, Strategy)
+        ?assertEqual(one_for_one, Strategy),
+        ChildStrategy = element(3, sys:get_state(soma_actor_child_sup)),
+        ?assertEqual(simple_one_for_one, ChildStrategy)
     after
         application:stop(soma_actor),
         application:stop(soma_runtime),
         application:unload(soma_actor)
     end.
 
-%% Criterion 6: `soma_actor_sup' has zero children immediately after boot. The
-%% `simple_one_for_one' child spec is only resolved on `start_child', which boot
-%% never calls, so `which_children/1' on the live supervisor is the empty list.
+%% Criterion 6: `soma_actor_sup' starts the actor-layer registry and the dynamic
+%% child supervisor at boot. No actor instance is started until `start_actor/1'.
 %% Stops/unloads the app afterward for a clean teardown.
-test_sup_zero_children_after_boot_test() ->
+test_sup_registry_and_child_sup_after_boot_test() ->
     try
         {ok, _} = application:ensure_all_started(soma_actor),
-        ?assertEqual([], supervisor:which_children(soma_actor_sup))
+        Children = supervisor:which_children(soma_actor_sup),
+        ChildIds = lists:sort([Id || {Id, _Pid, _Type, _Mods} <- Children]),
+        ?assertEqual([soma_actor_child_sup, soma_actor_registry], ChildIds),
+        ?assertEqual([], supervisor:which_children(soma_actor_child_sup))
     after
         application:stop(soma_actor),
         application:stop(soma_runtime),
