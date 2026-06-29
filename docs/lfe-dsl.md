@@ -44,6 +44,8 @@ that enters the runtime boundary.
 step-list syntax used by the runtime and older callers, while `(task ...)` is
 the preferred public static task surface.
 
+When a need is dynamic, keep the dynamic decision in the actor/planner layer and submit a new bounded static Soma Lisp task for each execution attempt.
+
 ## v0.3 run syntax
 
 A valid run workflow contains exactly one top-level `run` form. Inside `run`
