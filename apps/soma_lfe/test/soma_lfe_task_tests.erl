@@ -62,3 +62,21 @@ test_tool_call_becomes_step_tool() ->
 
 tool_call_becomes_step_tool_test() ->
     test_tool_call_becomes_step_tool().
+
+test_literal_task_args_use_existing_coercions() ->
+    Source = <<
+        "(task\n"
+        "  (let* ((configured (tool echo\n"
+        "                         (message \"hello\")\n"
+        "                         (mode dry_run)\n"
+        "                         (attempts 3))))\n"
+        "    (return configured)))\n"
+    >>,
+    {ok, #{run := #{steps := [Step]}}} = soma_lfe:compile(Source, #{}),
+    ?assertEqual(
+        #{message => <<"hello">>, mode => dry_run, attempts => 3},
+        maps:get(args, Step)
+    ).
+
+literal_task_args_use_existing_coercions_test() ->
+    test_literal_task_args_use_existing_coercions().
