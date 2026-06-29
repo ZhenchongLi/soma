@@ -71,3 +71,13 @@ test_lfe_dsl_includes_dynamic_need_sentence() ->
 
 lfe_dsl_includes_dynamic_need_sentence_test() ->
     test_lfe_dsl_includes_dynamic_need_sentence().
+
+test_design_documents_soma_lisp_boundary() ->
+    Doc = read_doc("docs/design.md"),
+    ?assert(contains(
+        Doc,
+        <<"Soma Lisp source -> soma_lfe:compile/2 -> validated maps -> OTP execution">>
+    )).
+
+design_documents_soma_lisp_boundary_test() ->
+    test_design_documents_soma_lisp_boundary().
