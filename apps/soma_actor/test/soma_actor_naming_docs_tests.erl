@@ -19,7 +19,7 @@ contains(Haystack, Needle) ->
 test_usage_documents_stable_name_start_option() ->
     Doc = read_usage_md(),
     %% `stable_name' is documented as a `soma_actor_sup:start_actor/1' option.
-    ?assert(contains(Doc, <<"DELIBERATELY_WRONG_stable_name_marker">>)),
+    ?assert(contains(Doc, <<"stable_name">>)),
     ?assert(contains(Doc, <<"start_actor">>)).
 
 usage_documents_stable_name_start_option_test() ->
