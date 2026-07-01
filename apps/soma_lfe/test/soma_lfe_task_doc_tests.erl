@@ -168,6 +168,32 @@ test_lfe_dsl_public_headings_use_task_wording() ->
 lfe_dsl_public_headings_use_task_wording_test() ->
     test_lfe_dsl_public_headings_use_task_wording().
 
+test_lfe_dsl_main_example_uses_task_form() ->
+    Source = extract_pipeline_lfe(
+        section(read_doc("docs/lfe-dsl.md"), <<"## Task Example">>)
+    ),
+    ?assert(starts_with(Source, <<"(task">>)),
+    {ok, #{run := #{steps := Steps}}} = soma_lfe:compile(Source, #{}),
+    ?assertEqual(
+        [
+            #{id => read,
+              tool => file_read,
+              args => #{path => <<"input.txt">>, root => <<"/tmp/soma-demo">>}},
+            #{id => process,
+              tool => echo,
+              args => #{from_step => read}},
+            #{id => write,
+              tool => file_write,
+              args => #{path => <<"output.txt">>,
+                        root => <<"/tmp/soma-demo">>,
+                        bytes => {from_step, process}}}
+        ],
+        Steps
+    ).
+
+lfe_dsl_main_example_uses_task_form_test() ->
+    test_lfe_dsl_main_example_uses_task_form().
+
 test_readme_links_task_form_contract() ->
     TestContracts = section(read_doc("README.md"), <<"**Test contracts**">>),
     ?assert(contains(
