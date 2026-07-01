@@ -1,25 +1,27 @@
 ---
 title: Roadmap
-description: Where Soma is and what comes next — the v0.1–v0.7 layers (all built and merged), the parallel real-provider, CLI, and Lisp-message tracks, and the sequencing rule that gates every new layer on the one below it having failure-semantics tests.
+description: Where Soma is and what comes next — the v0.1–v0.7 layers (all built and merged, including boot auto-resume), the parallel real-provider, CLI, and Lisp-message tracks, and the sequencing rule that gates every new layer on the one below it having failure-semantics tests.
 ---
 
 v0.1 (runtime core), v0.2 (tool manifests + CLI/port adapter), v0.3 (LFE DSL
 compile-only layer), v0.4 (the `soma_actor` agent-entity skeleton), v0.5 (the
 agent decision layer — LLM-call worker, proposal schema, policy gate,
-decision-loop execution, budget, and actor-to-actor messages), and v0.6 (trace
-tooling + a durable, opt-in `disk_log` event store) are built and merged. The
-parallel tracks have also moved: **node B.1/B.2** landed the OpenAI-compatible
-provider and actor `model_config` wiring; the **CLI / daemon** modules now expose
-a single-user Unix-socket Lisp wire for run/ask/status/trace/cancel/detach; and
-the **Lisp s-expr message language** has L.1-L.5 tests for envelopes,
-actor-to-actor delivery, proposals, audit rendering, and bounded repair. The
-sequence below is what comes next.
+decision-loop execution, budget, and actor-to-actor messages), v0.6 (trace
+tooling + a durable, opt-in `disk_log` event store), and v0.7.1-v0.7.5
+(persistent resume journal, reconstruction, plan, manual executor, and boot
+auto-resume) are built and merged. The parallel tracks have also moved:
+**node B.1/B.2** landed the OpenAI-compatible provider and actor `model_config`
+wiring, with actor-level planning mode behind `plan => true`; the **CLI /
+daemon** modules now expose a single-user Unix-socket Lisp wire for
+run/ask/status/trace/cancel/detach; and the **Lisp s-expr message language** has
+L.1-L.5 tests for envelopes, actor-to-actor delivery, proposals, audit rendering,
+and bounded repair. The sequence below is the current state and remaining work.
 
 The important sequencing rule is unchanged: do not add a layer until the layer
 below it has test coverage for its failure semantics. With the actor contract
-closed, LLM planning landed as a supervised child operation, and the event stream
-now both readable (a trace view) and durable (it survives a restart), the next
-work is persistent run resume.
+closed, LLM planning landed as a supervised child operation, and persistent
+resume now covers manual resume plus boot auto-resume, the next runtime work is
+outside the resume layer.
 
 ## Sequence
 
@@ -31,11 +33,11 @@ v0.4    soma_actor -- agent entity skeleton            [done]
 v0.4.1  actor hardening + release/docs alignment       [done]
 v0.5    LLM worker + proposal + policy + budget        [done]
 v0.6    trace tooling + persistent event store         [done]
-v0.7    persistent resume                              [done — journal + reconstruct + executor; v0.7.5 auto-scan deferred]
+v0.7    persistent resume                              [done — journal + reconstruct + executor + boot auto-resume]
 v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
-node B  real LLM provider behind the perform_call seam   [B.1/B.2 done; structured planning next]
+node B  real LLM provider behind the perform_call seam   [provider + actor planning done; product surface next]
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
 ```
@@ -225,12 +227,14 @@ event trail to the last committed step and continue from there.
   decided idempotency rule is fail-safe: never re-run a non-idempotent `state`
   step that was in flight** — the run fails clearly rather than risk doubling an
   irreversible side effect, and the fail-safe is sticky.
+- `v0.7.5` — auto-resume on boot [done] (#198): the durable event store exposes
+  interrupted run discovery (`run.started`, no terminal event), excludes terminal
+  runs, and `soma_runtime` boot hands interrupted runs to the existing resume
+  executor. A between-steps run resumes and emits `run.resumed`; a non-idempotent
+  in-flight `state` step fails clearly with `{resume_unsafe, StepId}`.
 
 Still open:
 
-- `v0.7.5` — auto-resume on boot: an auto-scan of interrupted runs (`run.started`,
-  no terminal event). Deferred — the event store has no by-event-type or
-  enumerate-run-ids query yet. The manual `resume/3` is the controlled first form.
 - Later relaxations of the fail-safe rule: a per-tool resume policy, or a
   compensate-then-retry hook for non-idempotent steps.
 

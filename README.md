@@ -16,7 +16,7 @@ syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `Lisp at the edge -> validated data -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 339, Common Test 351, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 342, Common Test 354, Erlang/OTP 29).
 Every layer is proven under test, asserting *process survival*, not just return
 values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 
@@ -27,16 +27,16 @@ values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 | **v0.4** · Agent entity | `soma_actor` (`gen_statem`): messages → tasks → runs |
 | **v0.5** · Decision layer | LLM-call worker · proposals · policy gate · budgets |
 | **v0.6** · Durability + observability | `soma_trace` timelines · `disk_log` store, survives restart |
-| **v0.7** · Persistent resume | `run.started` journal · read-only reconstruct · resume executor (`resume/3`, fail-safe on non-idempotent in-flight steps) |
+| **v0.7** · Persistent resume | `run.started` journal · read-only reconstruct · resume executor (`resume/3`, fail-safe on non-idempotent in-flight steps) · boot auto-resume |
 
 The real **OpenAI-compatible LLM provider** path is built (opt-in, off the
 gate), including an actor-level planning mode that can parse model text as
 `run_steps`, and the packaged **`soma` CLI / daemon** is built: `run` / `ask` /
 `status` / `cancel` / `trace` / `stop` over a local Unix socket, Lisp on the
 wire, with `bin/soma` distinct from the `bin/somad` node-control script. Still
-open: v0.7.5 auto-resume on boot, productizing real-model planning at the CLI /
-config surface, effect-aware policy, and the **Linux x86_64 / arm64 release
-artifacts** (macOS arm64 is done).
+open: productizing real-model planning at the CLI / config surface,
+effect-aware policy, and the **Linux x86_64 / arm64 release artifacts** (macOS
+arm64 is done).
 
 ## The idea
 
@@ -280,15 +280,16 @@ with an opt-in durable `disk_log` backend) and a read-only trace view
 agent-entity skeleton, the agent decision layer (`soma_llm_call` + proposal schema
 + policy gate + decision-loop execution + budgets + actor-to-actor), the
 OpenAI-compatible real-provider path, actor-level real-provider planning mode,
-the Lisp message/proposal/trace/repair edge forms, manual persistent run resume
-(`soma_run_resume_executor:resume/3`), the packaged `bin/soma` Unix-socket task
-command, and a self-contained release.
+the Lisp message/proposal/trace/repair edge forms, persistent run resume
+(`soma_run_resume_executor:resume/3`) plus boot auto-resume for interrupted
+durable runs, the packaged `bin/soma` Unix-socket task command, and a
+self-contained release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**): a
 productized CLI/config surface for real-model tool planning, an effect-aware
-policy gate, MCP, DAG parallelism, distributed Erlang, v0.7.5 auto-resume on
-boot, per-tool resume policy / compensation hooks for non-idempotent in-flight
-steps, and Linux x86_64 / arm64 release artifacts.
+policy gate, MCP, DAG parallelism, distributed Erlang, per-tool resume policy /
+compensation hooks for non-idempotent in-flight steps, and Linux x86_64 / arm64
+release artifacts.
 
 ## Docs
 

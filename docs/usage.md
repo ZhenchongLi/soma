@@ -241,6 +241,7 @@ model = "gpt-4.1-mini"
 # optional:
 # enable_thinking = false
 # max_tokens = 1024
+# plan = true
 ```
 
 Then export the API key in the environment that starts the daemon:
@@ -262,6 +263,9 @@ SOMA_CONFIG=/path/to/config SOMA_LLM_API_KEY="..." $SOMA daemon
 
 Provider settings such as `base_url` and `model` live in config. Optional
 provider fields `enable_thinking` and `max_tokens` are passed through when set.
+Set `plan = true` when the model should answer with a Soma Lisp
+`(run-steps ...)` plan that the actor normalizes, policy-checks, budget-checks,
+and runs through the normal supervised runtime.
 The API key comes only from `SOMA_LLM_API_KEY`; do not put secrets in tasks
 or config files. Soma events must not contain provider secrets.
 
@@ -280,6 +284,18 @@ when a model is allowed to propose tool-running work:
 
 The packaged command builds the simple `(ask (intent "..."))` form for normal
 text prompts. Custom clients can send the richer Lisp form over the local socket.
+When config sets `plan = true`, use `(allow ...)` to bound which tools a planned
+ask may run. A successful planned ask returns step outputs, for example:
+
+```lisp
+(result
+  (status completed)
+  (task-id "task-11")
+  (outputs ((s1 (value "planned"))))
+  (correlation-id "corr-12"))
+```
+
+If the model proposes a tool outside the allowlist, the result is `rejected`.
 
 ### Real Provider Smoke Test
 

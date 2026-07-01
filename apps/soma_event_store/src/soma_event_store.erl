@@ -3,7 +3,8 @@
 -behaviour(gen_server).
 
 %% Public API
--export([start_link/0, start_link/1, append/2, all/1, by_run/2, by_session/2, by_correlation/2]).
+-export([start_link/0, start_link/1, append/2, all/1, by_run/2, by_session/2,
+         by_correlation/2, interrupted_runs/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
@@ -39,6 +40,10 @@ by_session(Pid, SessionId) ->
 -spec by_correlation(pid(), term()) -> [map()].
 by_correlation(Pid, CorrelationId) ->
     gen_server:call(Pid, {by_correlation, CorrelationId}).
+
+-spec interrupted_runs(pid()) -> [term()].
+interrupted_runs(Pid) ->
+    gen_server:call(Pid, interrupted_runs).
 
 %%% gen_server callbacks
 
@@ -102,7 +107,10 @@ handle_call({by_session, SessionId}, _From, State = #state{events = Events}) ->
     {reply, Matching, State};
 handle_call({by_correlation, CorrelationId}, _From, State = #state{events = Events}) ->
     Matching = [E || E <- lists:reverse(Events), maps:get(correlation_id, E, undefined) =:= CorrelationId],
-    {reply, Matching, State}.
+    {reply, Matching, State};
+handle_call(interrupted_runs, _From, State = #state{events = Events}) ->
+    RunIds = interrupted_run_ids(lists:reverse(Events)),
+    {reply, RunIds, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -138,3 +146,41 @@ log_event(undefined, _Event) ->
     ok;
 log_event(Log, Event) ->
     disk_log:log(Log, Event).
+
+interrupted_run_ids(Events) ->
+    Started = started_run_ids(Events),
+    Terminal = terminal_run_ids(Events),
+    [RunId || RunId <- Started, not lists:member(RunId, Terminal)].
+
+started_run_ids(Events) ->
+    lists:reverse(lists:foldl(fun maybe_add_started_run/2, [], Events)).
+
+maybe_add_started_run(#{event_type := <<"run.started">>, run_id := RunId}, Acc)
+  when RunId =/= undefined ->
+    add_once(RunId, Acc);
+maybe_add_started_run(_Event, Acc) ->
+    Acc.
+
+terminal_run_ids(Events) ->
+    lists:foldl(fun maybe_add_terminal_run/2, [], Events).
+
+maybe_add_terminal_run(#{event_type := Type, run_id := RunId}, Acc)
+  when RunId =/= undefined ->
+    case is_terminal_run_event(Type) of
+        true -> add_once(RunId, Acc);
+        false -> Acc
+    end;
+maybe_add_terminal_run(_Event, Acc) ->
+    Acc.
+
+is_terminal_run_event(<<"run.completed">>) -> true;
+is_terminal_run_event(<<"run.failed">>) -> true;
+is_terminal_run_event(<<"run.timeout">>) -> true;
+is_terminal_run_event(<<"run.cancelled">>) -> true;
+is_terminal_run_event(_) -> false.
+
+add_once(Value, Values) ->
+    case lists:member(Value, Values) of
+        true -> Values;
+        false -> [Value | Values]
+    end.

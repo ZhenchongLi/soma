@@ -352,6 +352,73 @@ test_v0_6_contract_doc_maps_each_persistence_proof() ->
 v0_6_contract_doc_maps_each_persistence_proof_test() ->
     test_v0_6_contract_doc_maps_each_persistence_proof().
 
+%% v0.7.5 criterion 1: a restarted durable store reports a run whose replayed
+%% trail contains run.started and no terminal run event. Completed runs from the
+%% same replayed log must not be reported.
+test_restarted_disk_log_interrupted_runs_reports_started_without_terminal() ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    try
+        {ok, Pid1} = soma_event_store:start_link(#{log => Path}),
+        ok = soma_event_store:append(Pid1, #{run_id => interrupted_run,
+                                             session_id => sess_a,
+                                             correlation_id => corr_a,
+                                             event_type => <<"run.started">>}),
+        ok = soma_event_store:append(Pid1, #{run_id => completed_run,
+                                             session_id => sess_b,
+                                             correlation_id => corr_b,
+                                             event_type => <<"run.started">>}),
+        ok = soma_event_store:append(Pid1, #{run_id => completed_run,
+                                             session_id => sess_b,
+                                             correlation_id => corr_b,
+                                             event_type => <<"run.completed">>}),
+        ok = stop_store(Pid1),
+
+        {ok, Pid2} = soma_event_store:start_link(#{log => Path}),
+        Interrupted = soma_event_store:interrupted_runs(Pid2),
+        ok = stop_store(Pid2),
+
+        ?assertEqual([interrupted_run], Interrupted)
+    after
+        ok = del_tmp_dir(TmpDir)
+    end.
+
+restarted_disk_log_interrupted_runs_reports_started_without_terminal_test() ->
+    test_restarted_disk_log_interrupted_runs_reports_started_without_terminal().
+
+%% v0.7.5 criterion 2: a restarted durable store must exclude a run whose
+%% replayed trail contains a terminal run event.
+test_restarted_disk_log_interrupted_runs_excludes_terminal_run() ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    try
+        {ok, Pid1} = soma_event_store:start_link(#{log => Path}),
+        ok = soma_event_store:append(Pid1, #{run_id => interrupted_run,
+                                             session_id => sess_a,
+                                             correlation_id => corr_a,
+                                             event_type => <<"run.started">>}),
+        ok = soma_event_store:append(Pid1, #{run_id => terminal_run,
+                                             session_id => sess_b,
+                                             correlation_id => corr_b,
+                                             event_type => <<"run.started">>}),
+        ok = soma_event_store:append(Pid1, #{run_id => terminal_run,
+                                             session_id => sess_b,
+                                             correlation_id => corr_b,
+                                             event_type => <<"run.failed">>}),
+        ok = stop_store(Pid1),
+
+        {ok, Pid2} = soma_event_store:start_link(#{log => Path}),
+        Interrupted = soma_event_store:interrupted_runs(Pid2),
+        ok = stop_store(Pid2),
+
+        ?assertEqual([interrupted_run], Interrupted)
+    after
+        ok = del_tmp_dir(TmpDir)
+    end.
+
+restarted_disk_log_interrupted_runs_excludes_terminal_run_test() ->
+    test_restarted_disk_log_interrupted_runs_excludes_terminal_run().
+
 %%% Helpers
 
 %% Read docs/usage.md from the repo root. The test runs from the project root

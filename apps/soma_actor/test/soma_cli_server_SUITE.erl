@@ -40,6 +40,9 @@
 -export([test_daemon_real_provider_config_reaches_actor/1]).
 -export([test_ask_real_provider_returns_fixed_response_answer/1]).
 -export([test_real_provider_api_key_leaks_nowhere/1]).
+-export([test_ask_real_provider_plan_returns_step_outputs/1]).
+-export([test_ask_real_provider_plan_rejects_disallowed_tool/1]).
+-export([test_real_provider_plan_api_key_leaks_nowhere/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -78,7 +81,10 @@ all() ->
      test_ask_no_config_runs_mock,
      test_daemon_real_provider_config_reaches_actor,
      test_ask_real_provider_returns_fixed_response_answer,
-     test_real_provider_api_key_leaks_nowhere].
+     test_real_provider_api_key_leaks_nowhere,
+     test_ask_real_provider_plan_returns_step_outputs,
+     test_ask_real_provider_plan_rejects_disallowed_tool,
+     test_real_provider_plan_api_key_leaks_nowhere].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -1149,6 +1155,119 @@ test_real_provider_api_key_leaks_nowhere(Config) ->
         end
     end.
 
+%% Criterion (#199): a framed `(ask ...)' sent over the local socket to a daemon
+%% whose loaded config carries `plan => true' runs a fixed real-provider Lisp plan
+%% to completion. The config path supplies the real-provider map and planning
+%% switch; the test adds only the fixed `response' seam, so no provider socket is
+%% opened.
+test_ask_real_provider_plan_returns_step_outputs(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = planning_provider_config_file(Config),
+    KeyEnv = "SOMA_LLM_API_KEY",
+    Prev = os:getenv(KeyEnv),
+    os:putenv(KeyEnv, "sk-planning-real-137"),
+    Plan = <<"(run-steps (step (id s1) (tool echo) (args (value \"planned\"))))">>,
+    Body = provider_response_body(Plan),
+    try
+        Loaded = soma_config:load(#{config_path => ConfigPath}),
+        true = maps:get(plan, Loaded),
+        ModelConfig = Loaded#{response => {200, Body}},
+        {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                     model_config => ModelConfig}),
+        {ok, Client} = connect(Path),
+        Request = <<"(ask (intent \"make a plan\") (allow echo))">>,
+        ok = gen_tcp:send(Client, Request),
+        {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+        ok = gen_tcp:close(Client),
+        match = re:run(Reply, "^\\(result ", [{capture, none}]),
+        match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+        match = re:run(Reply, "\\(s1 \\(value \"planned\"\\)\\)",
+                       [{capture, none}])
+    after
+        case Prev of
+            false -> os:unsetenv(KeyEnv);
+            _ -> os:putenv(KeyEnv, Prev)
+        end
+    end.
+
+%% Criterion (#199): the same socket planning path routes model-authored steps
+%% through the normal proposal policy gate. A plan naming `file_read' while the
+%% request allows only `echo' returns a rejected result and starts no approved
+%% run.
+test_ask_real_provider_plan_rejects_disallowed_tool(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = planning_provider_config_file(Config),
+    KeyEnv = "SOMA_LLM_API_KEY",
+    Prev = os:getenv(KeyEnv),
+    os:putenv(KeyEnv, "sk-planning-real-137"),
+    Plan = <<"(run-steps (step (id s1) (tool file_read) (args (path \"x\"))))">>,
+    Body = provider_response_body(Plan),
+    try
+        Loaded = soma_config:load(#{config_path => ConfigPath}),
+        true = maps:get(plan, Loaded),
+        ModelConfig = Loaded#{response => {200, Body}},
+        {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                     model_config => ModelConfig}),
+        {ok, Client} = connect(Path),
+        Request = <<"(ask (intent \"make a plan\") (allow echo))">>,
+        ok = gen_tcp:send(Client, Request),
+        {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+        ok = gen_tcp:close(Client),
+        match = re:run(Reply, "^\\(result ", [{capture, none}]),
+        match = re:run(Reply, "\\(status rejected\\)", [{capture, none}]),
+        match = re:run(Reply, "tools_not_allowed", [{capture, none}]),
+        match = re:run(Reply, "file_read", [{capture, none}]),
+        nomatch = re:run(Reply, "\\(status completed\\)", [{capture, none}])
+    after
+        case Prev of
+            false -> os:unsetenv(KeyEnv);
+            _ -> os:putenv(KeyEnv, Prev)
+        end
+    end.
+
+%% Criterion (#199): a completed daemon planning ask leaks the
+%% `SOMA_LLM_API_KEY' sentinel neither into the rendered reply nor into any event
+%% under the task's correlation chain.
+test_real_provider_plan_api_key_leaks_nowhere(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = planning_provider_config_file(Config),
+    KeyEnv = "SOMA_LLM_API_KEY",
+    Sentinel = "sk-planning-secret-sentinel-do-not-leak",
+    SentinelBin = list_to_binary(Sentinel),
+    Prev = os:getenv(KeyEnv),
+    os:putenv(KeyEnv, Sentinel),
+    Plan = <<"(run-steps (step (id s1) (tool echo) (args (value \"safe\"))))">>,
+    Body = provider_response_body(Plan),
+    KeyKey = list_to_atom("api" ++ "_key"),
+    try
+        Loaded = soma_config:load(#{config_path => ConfigPath}),
+        true = maps:get(plan, Loaded),
+        SentinelBin = maps:get(KeyKey, Loaded),
+        ModelConfig = Loaded#{response => {200, Body}},
+        {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                     model_config => ModelConfig}),
+        {ok, Client} = connect(Path),
+        Request = <<"(ask (intent \"make a plan\") (allow echo))">>,
+        ok = gen_tcp:send(Client, Request),
+        {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+        ok = gen_tcp:close(Client),
+        match = re:run(Reply, "^\\(result ", [{capture, none}]),
+        match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
+        nomatch = binary:match(Reply, SentinelBin),
+        {match, [Corr]} =
+            re:run(Reply, "\\(correlation-id \"([^\"]+)\"\\)",
+                   [{capture, all_but_first, binary}]),
+        StorePid = event_store_pid(),
+        Events = soma_event_store:by_correlation(StorePid, Corr),
+        true = length(Events) > 0,
+        false = lists:any(fun(E) -> term_contains(E, SentinelBin) end, Events)
+    after
+        case Prev of
+            false -> os:unsetenv(KeyEnv);
+            _ -> os:putenv(KeyEnv, Prev)
+        end
+    end.
+
 %% True when the sentinel binary appears anywhere inside Term (a map's keys or
 %% values, a list, or a tuple, however nested).
 term_contains(Term, Sentinel) when is_binary(Term) ->
@@ -1179,6 +1298,26 @@ real_provider_config_file(Config) ->
               "model = \"deepseek-v4\"\n"]),
     ok = file:write_file(File, Toml),
     File.
+
+%% Same provider config as `real_provider_config_file/1', but with `plan = true'
+%% so `soma_config:load/1' productizes actor planning mode for the daemon.
+planning_provider_config_file(Config) ->
+    Dir = ?config(priv_dir, Config),
+    File = filename:join(Dir, "planning_provider.config"),
+    Toml = iolist_to_binary(
+             ["[llm]\n",
+              "provider = \"openai_compat\"\n",
+              "base", "_url = \"api.example/v1\"\n",
+              "model = \"deepseek-v4\"\n",
+              "plan = true\n"]),
+    ok = file:write_file(File, Toml),
+    File.
+
+provider_response_body(Content) ->
+    iolist_to_binary(
+      json:encode(#{<<"choices">> =>
+                        [#{<<"message">> =>
+                               #{<<"content">> => Content}}]})).
 
 %% Write a temp config file with comments but no `[llm]' table, so
 %% `soma_config:load/1' returns `undefined'.

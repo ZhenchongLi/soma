@@ -200,6 +200,7 @@ model = "gpt-4.1-mini"
 # optional:
 # enable_thinking = false
 # max_tokens = 1024
+# plan = true
 ```
 
 Then export the key in the environment that starts the daemon:
@@ -224,9 +225,24 @@ Provider modes:
 - `real-provider-by-config`: a real OpenAI-compatible provider is selected only
   by daemon config plus `SOMA_LLM_API_KEY`. Optional `enable_thinking` and
   `max_tokens` keys are passed through when present.
+- `real-provider-planning`: when `[llm]` sets `plan = true`, the provider's
+  message content is interpreted as a Soma Lisp `(run-steps ...)` proposal and
+  re-enters the normal normalize, policy, budget, and run path.
 
-Real-provider `ask` returns text replies. Use `soma run` tasks for
-deterministic tool work.
+By default, real-provider `ask` returns text replies. Use `soma run` tasks for
+deterministic tool work. With `plan = true`, a provider-authored plan can run
+tools, bounded by the `(allow ...)` list on the `(ask ...)` request. A completed
+planned ask returns the step outputs:
+
+```lisp
+(result
+  (status completed)
+  (task-id "task-11")
+  (outputs ((s1 (value "planned"))))
+  (correlation-id "corr-12"))
+```
+
+A plan that names a tool outside the allowlist returns `rejected`.
 
 ## Lisp Request Forms
 
