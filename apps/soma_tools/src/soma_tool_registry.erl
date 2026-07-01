@@ -15,10 +15,11 @@
 -behaviour(gen_server).
 
 %% Pure map API
--export([register/3, lookup/2, names/1]).
+-export([register/3, lookup/2, names/1, catalog/1]).
 
 %% Process API
--export([start_link/0, register_tool/1, resolve/1, resolve_descriptor/1]).
+-export([start_link/0, register_tool/1, resolve/1, resolve_descriptor/1,
+         catalog/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
@@ -28,22 +29,32 @@
 %% `argv'. `resolve/1' reads `module' out of a descriptor and so is only valid
 %% for `erlang_module' tools; `resolve_descriptor/1' hands the descriptor back
 %% whole and is the path a `cli' caller branches on `adapter' through.
+%% Both shapes may additionally carry the optional model-facing half:
+%% `description' (binary) and `params' (a list of param-spec maps). The
+%% catalog is built from those two fields alone.
 -type descriptor() :: #{name := atom(),
                         effect := atom(),
                         idempotent := boolean(),
                         timeout_ms := non_neg_integer(),
                         adapter := erlang_module,
-                        module := module()}
+                        module := module(),
+                        description => binary(),
+                        params => [map()]}
                     | #{name := atom(),
                         effect := atom(),
                         idempotent := boolean(),
                         timeout_ms := non_neg_integer(),
                         adapter := cli,
                         executable := string() | binary(),
-                        argv := [string() | binary()]}.
+                        argv := [string() | binary()],
+                        description => binary(),
+                        params => [map()]}.
 -type registry() :: #{atom() => descriptor()}.
+-type catalog_entry() :: #{name := atom(),
+                           description := binary(),
+                           params := [map()]}.
 
--export_type([descriptor/0, registry/0]).
+-export_type([descriptor/0, registry/0, catalog_entry/0]).
 
 %% The backing modules for the five built-in tools. Each one exports
 %% `manifest/0'; the seed is built by normalizing those manifests, so the
@@ -69,6 +80,27 @@ lookup(Registry, Name) ->
 names(Registry) ->
     maps:keys(Registry).
 
+%% @doc The model-facing catalog of a registry map: one entry per descriptor
+%% that carries a `description'. Each entry is constructed as exactly
+%% `#{name, description, params}' — never filtered down from the descriptor —
+%% so runtime internals (`module', `executable', `argv', `effect',
+%% `idempotent', `timeout_ms') cannot leak. `params' defaults to `[]' when the
+%% descriptor declares none. Entries are sorted by name.
+-spec catalog(registry()) -> [catalog_entry()].
+catalog(Registry) ->
+    Entries =
+        maps:fold(
+          fun(Name, #{description := Description} = Descriptor, Acc) ->
+                  [#{name => Name,
+                     description => Description,
+                     params => maps:get(params, Descriptor, [])} | Acc];
+             (_Name, _Descriptor, Acc) ->
+                  Acc
+          end,
+          [],
+          Registry),
+    lists:sort(fun(#{name := A}, #{name := B}) -> A =< B end, Entries).
+
 %%% Process API
 
 -spec start_link() -> {ok, pid()}.
@@ -92,6 +124,11 @@ resolve(Name) ->
 -spec resolve_descriptor(atom()) -> {ok, descriptor()} | {error, not_found}.
 resolve_descriptor(Name) ->
     gen_server:call(?MODULE, {resolve_descriptor, Name}).
+
+%% @doc The model-facing catalog of the running registry. See `catalog/1'.
+-spec catalog() -> [catalog_entry()].
+catalog() ->
+    gen_server:call(?MODULE, catalog).
 
 %%% gen_server callbacks
 
@@ -133,6 +170,8 @@ handle_call({resolve, Name}, _From, Registry) ->
     {reply, Reply, Registry};
 handle_call({resolve_descriptor, Name}, _From, Registry) ->
     {reply, lookup(Registry, Name), Registry};
+handle_call(catalog, _From, Registry) ->
+    {reply, catalog(Registry), Registry};
 handle_call(_Msg, _From, Registry) ->
     {reply, {error, unknown_call}, Registry}.
 
