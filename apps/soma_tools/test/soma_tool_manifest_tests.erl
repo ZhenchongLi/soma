@@ -254,9 +254,7 @@ test_normalize_rejects_invalid_model_facing_fields() ->
     lists:foreach(
         fun(Value) ->
             ?assertEqual(
-                %% Deliberately wrong tag (staged red): reality tags this
-                %% invalid_description, not invalid_params.
-                {error, {invalid_params, Value}},
+                {error, {invalid_description, Value}},
                 soma_tool_manifest:normalize(Base#{description => Value})
             )
         end,
