@@ -216,6 +216,16 @@ test_site_roadmap_marks_bounded_soma_lisp_v1_built() ->
 site_roadmap_marks_bounded_soma_lisp_v1_built_test() ->
     test_site_roadmap_marks_bounded_soma_lisp_v1_built().
 
+test_zh_overview_links_task_form_contract() ->
+    ReadingList = paragraph_starting_with(
+        read_doc("docs/zh/what-is-soma.zh.md"),
+        <<"- `../../README.md`">>
+    ),
+    ?assert(contains(ReadingList, <<"../contracts/task-form-test-contract.md">>)).
+
+zh_overview_links_task_form_contract_test() ->
+    test_zh_overview_links_task_form_contract().
+
 test_agents_names_public_task_surface() ->
     LispState = paragraph_starting_with(
         section(read_doc("AGENTS.md"), <<"## Current State">>),
