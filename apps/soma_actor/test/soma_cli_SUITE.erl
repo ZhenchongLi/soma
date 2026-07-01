@@ -12,6 +12,7 @@
 -export([test_status_prints_reply_exit_zero/1]).
 -export([test_cancel_sends_cancel_request_prints_reply_exit_zero/1]).
 -export([test_run_detach_sends_detach_marker/1]).
+-export([test_run_task_file_detach_returns_accepted/1]).
 -export([test_ask_detach_sends_detach_marker/1]).
 
 all() ->
@@ -24,6 +25,7 @@ all() ->
      test_status_prints_reply_exit_zero,
      test_cancel_sends_cancel_request_prints_reply_exit_zero,
      test_run_detach_sends_detach_marker,
+     test_run_task_file_detach_returns_accepted,
      test_ask_detach_sends_detach_marker].
 
 init_per_testcase(_Case, Config) ->
@@ -293,6 +295,29 @@ test_run_detach_sends_detach_marker(Config) ->
     0 = Exit,
     match = re:run(Request, "^\\(run ", [{capture, none}]),
     match = re:run(Request, "\\(detach\\)", [{capture, none}]).
+
+%% `soma run TASK_FILE --detach' must also detach when TASK_FILE is the public
+%% `(task ...)' form. The CLI rewrites only the source marker; the daemon proves
+%% the marker by returning `(accepted ...)' instead of blocking for a terminal
+%% `(result ...)'.
+test_run_task_file_detach_returns_accepted(Config) ->
+    Path = socket_path(Config),
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    File = filename:join(?config(priv_dir, Config), "detach_task.lfe"),
+    ok = file:write_file(
+           File,
+           <<"(task (let* ((wait (tool sleep (ms 25)))) (return wait)))">>),
+
+    ct:capture_start(),
+    _Exit = try soma_cli:run(#{file => File, socket => Path, detach => true})
+            after ct:capture_stop()
+            end,
+    Printed = iolist_to_binary(ct:capture_get()),
+
+    match = re:run(Printed, "^\\(accepted ", [{capture, none}]),
+    match = re:run(Printed, "\\(task-id \"[^\"]+\"\\)", [{capture, none}]),
+    match = re:run(Printed, "\\(correlation-id \"[^\"]+\"\\)",
+                   [{capture, none}]).
 
 %% Criterion #16 (CLI.4): `soma_cli:ask/1' with `detach => true' sends a request
 %% carrying the literal `(detach)' marker. The capture helper records only the
