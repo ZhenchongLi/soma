@@ -20,3 +20,14 @@ test_run_detach_marker_sets_detach_true() ->
 
 run_detach_marker_sets_detach_true_test() ->
     test_run_detach_marker_sets_detach_true().
+
+test_task_detach_marker_sets_detach_true() ->
+    Source = <<"(task (detach) (let* ((wait (tool sleep (ms 10)))) (return wait)))">>,
+    Expected = {ok, #{run => #{steps => [#{id => wait,
+                                           tool => sleep,
+                                           args => #{ms => 10}}],
+                                detach => true}}},
+    ?assertEqual(Expected, soma_lfe:compile(Source, #{})).
+
+task_detach_marker_sets_detach_true_test() ->
+    test_task_detach_marker_sets_detach_true().
