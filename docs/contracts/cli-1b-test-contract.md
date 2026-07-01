@@ -53,7 +53,7 @@ resolved socket path.
 | 7 | The server stays up after a malformed request and answers the next well-formed request | `soma_cli_server_SUITE` | `test_server_serves_after_malformed_request` |
 | 8 | `soma_cli:run/1` reads Soma Lisp task source from a `.lfe` file, prints the `(result ...)`, returns exit 0 | `soma_cli_SUITE` | `test_run_echo_file_prints_result_exit_zero` |
 | 9 | `soma_cli:run/1` returns non-zero when the run does not reach `completed` | `soma_cli_SUITE` | `test_run_failed_workflow_exit_nonzero` |
-| 10 | `soma_cli:run/1` reads Soma Lisp task source from stdin when the path arg is `-` | `soma_cli_SUITE` | `test_run_reads_workflow_from_stdin_dash` |
+| 10 | `soma_cli:run/1` reads Soma Lisp task source from stdin when the path arg is `-`; stdin `soma run` input is Soma Lisp task source | `soma_cli_SUITE` | `test_run_reads_workflow_from_stdin_dash` |
 | 11 | `soma_cli:daemon/1` boots the runtime + listener on a resolved path, a client connects | `soma_cli_SUITE` | `test_daemon_boots_listener_client_connects` |
 | 12 | This contract (`docs/contracts/cli-1b-test-contract.md`) names a suite + case for each CLI.1b proof | `soma_cli_1b_contract_tests` | `test_doc_names_cli_1b_suites_and_cases` (the mapping table above is the deliverable) |
 | 13 | Neither `docs/cli.md` nor `docs/contracts/cli-test-contract.md` describes a JSON wire for `soma run` | _docs deliverable_ | the prose in `docs/cli.md` and `docs/contracts/cli-test-contract.md` (Lisp `(run ...)` request / `(result ...)` reply; no test function) |
