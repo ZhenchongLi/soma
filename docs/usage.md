@@ -383,6 +383,10 @@ the same name after an earlier one has stopped (or restart it), the new actor
 registers its own pid under that name and replaces the registry entry: later
 name-based lookups and `actor_message.to` deliveries resolve to the new pid.
 
+A dead registered pid is treated the same as an unknown name: if the actor
+registered under a name has since stopped, looking that name up returns
+`{error, not_found}` rather than a stale pid.
+
 ## Reading events
 
 Most users read events through:
