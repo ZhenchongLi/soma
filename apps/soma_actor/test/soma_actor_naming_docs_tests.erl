@@ -92,3 +92,12 @@ test_usage_documents_dead_pid_lookup_not_found() ->
 
 usage_documents_dead_pid_lookup_not_found_test() ->
     test_usage_documents_dead_pid_lookup_not_found().
+
+test_usage_documents_pid_addressing_still_supported() ->
+    Doc = read_usage_md(),
+    %% Pid-based actor addressing is documented as still supported: a pid
+    %% remains an accepted actor reference alongside binary stable names.
+    ?assert(contains(Doc, <<"pid-based actor addressing remains supported">>)).
+
+usage_documents_pid_addressing_still_supported_test() ->
+    test_usage_documents_pid_addressing_still_supported().
