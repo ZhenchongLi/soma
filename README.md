@@ -299,7 +299,7 @@ steps, and Linux x86_64 / arm64 release artifacts.
   (e.g. step iteration lives inside `soma_run`, not a separate `soma_step`
   process), this README and the code are authoritative.
 - **[docs/usage.md](docs/usage.md)** — user manual: getting the `soma` command,
-  running workflow files, managing task ids, tracing, cancellation, model
+  running task files, managing task ids, tracing, cancellation, model
   configuration, durable events, and troubleshooting.
 - **[docs/tool-manifest.md](docs/tool-manifest.md)** — tool manifest contract:
   the shape of a tool entry, which adapter runs it, and the cli execution
