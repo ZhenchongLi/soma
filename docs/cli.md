@@ -225,7 +225,7 @@ Provider modes:
   by daemon config plus `SOMA_LLM_API_KEY`. Optional `enable_thinking` and
   `max_tokens` keys are passed through when present.
 
-Real-provider `ask` returns text replies. Use `soma run` workflows for
+Real-provider `ask` returns text replies. Use `soma run` tasks for
 deterministic tool work.
 
 ## Lisp Request Forms
