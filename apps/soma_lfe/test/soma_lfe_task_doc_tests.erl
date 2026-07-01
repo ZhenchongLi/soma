@@ -90,6 +90,28 @@ test_site_quick_start_task_example_compiles() ->
 site_quick_start_task_example_compiles_test() ->
     test_site_quick_start_task_example_compiles().
 
+test_site_quick_start_presents_soma_lisp_tasks() ->
+    Doc = read_doc("site/src/content/docs/start/quick-start.md"),
+    ?assert(contains(
+        Doc,
+        <<"description: Run Soma through the packaged CLI and Soma Lisp task files.">>
+    )),
+    ?assert(contains(
+        Doc,
+        <<"Soma's public edge is the `soma` command plus Soma Lisp task files.">>
+    )),
+    ?assert(contains(Doc, <<"## Run a task">>)),
+    ?assert(contains(
+        Doc,
+        <<"A Soma Lisp task is the public source form for `soma run`.">>
+    )),
+    ?assertNot(contains(Doc, <<"Lisp workflow">>)),
+    ?assertNot(contains(Doc, <<"Run a workflow">>)),
+    ?assertNot(contains(Doc, <<"workflow syntax">>)).
+
+site_quick_start_presents_soma_lisp_tasks_test() ->
+    test_site_quick_start_presents_soma_lisp_tasks().
+
 test_readme_quick_start_uses_task_example() ->
     QuickStart = section(read_doc("README.md"), <<"## Quick start">>),
     ?assert(contains(QuickStart, <<"soma run">>)),
