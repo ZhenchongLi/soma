@@ -494,3 +494,17 @@ test_cli_demo_readme_describes_inputs_as_task_files() ->
 
 cli_demo_readme_describes_inputs_as_task_files_test() ->
     test_cli_demo_readme_describes_inputs_as_task_files().
+
+test_cli_demo_script_describes_task_run() ->
+    Script = read_doc("examples/cli-demo/demo.sh"),
+    ?assert(contains(
+        Script,
+        <<"title \"1. run a task: file_read -> echo -> file_write\"">>
+    )),
+    ?assertNot(contains(
+        Script,
+        <<"title \"1. run a workflow: file_read -> echo -> file_write\"">>
+    )).
+
+cli_demo_script_describes_task_run_test() ->
+    test_cli_demo_script_describes_task_run().
