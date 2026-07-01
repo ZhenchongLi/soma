@@ -84,6 +84,39 @@ test_daemon_missing_api_key_prints_diagnostic_nonzero() ->
 daemon_missing_api_key_prints_diagnostic_nonzero_test() ->
     test_daemon_missing_api_key_prints_diagnostic_nonzero().
 
+%% Issue #196 criterion 1: a socket path containing shell metacharacters must
+%% not be interpreted by the daemon auto-start path. This exercises the real
+%% `main_argv/0' auto-start entry in a child BEAM with `SOMA_SELF=/bin/true';
+%% if the socket path is interpolated into a shell command, the embedded `touch'
+%% creates `Marker'.
+test_daemon_autostart_socket_metacharacters_do_not_execute_command() ->
+    Marker = filename:join("/tmp",
+                           "soma_cli_main_injected_"
+                           ++ os:getpid() ++ "_"
+                           ++ integer_to_list(erlang:unique_integer([positive]))),
+    Socket = filename:join("/tmp",
+                           "soma_cli_main_sock_"
+                           ++ os:getpid() ++ "_"
+                           ++ integer_to_list(erlang:unique_integer([positive]))
+                           ++ "\"; touch " ++ Marker ++ "; #.sock"),
+    PrevSelf = os:getenv("SOMA_SELF"),
+    os:putenv("SOMA_SELF", "/bin/true"),
+    file:delete(Marker),
+    try
+        _ = run_main_argv_subprocess(["status", "missing",
+                                      "--socket", Socket]),
+        timer:sleep(100),
+        ?assertEqual({error, enoent}, file:read_file_info(Marker))
+    after
+        restore_env("SOMA_SELF", PrevSelf),
+        file:delete(Marker),
+        file:delete(Socket)
+    end.
+
+daemon_autostart_socket_metacharacters_do_not_execute_command_test_() ->
+    {timeout, 15,
+     fun test_daemon_autostart_socket_metacharacters_do_not_execute_command/0}.
+
 %% Criterion #16: `soma_cli_main:main(Argv)' halts the OS process with the
 %% `dispatch/1' integer as the exit status, and routes any diagnostics to
 %% stderr. A real `halt/1' would kill the test runner, so this is a
@@ -160,6 +193,31 @@ restore_env(Key, false) ->
     os:unsetenv(Key);
 restore_env(Key, Value) ->
     os:putenv(Key, Value).
+
+run_main_argv_subprocess(PlainArgv) ->
+    Erl = os:find_executable("erl"),
+    ?assert(is_list(Erl)),
+    Port = open_port({spawn_executable, Erl},
+                     [binary, exit_status, stderr_to_stdout, use_stdio,
+                      {args, erl_main_argv_args(PlainArgv)}]),
+    collect_port(Port, []).
+
+erl_main_argv_args(PlainArgv) ->
+    ["-noshell"] ++ code_path_args(code:get_path())
+        ++ ["-s", "soma_cli_main", "main_argv", "-extra"] ++ PlainArgv.
+
+code_path_args(Paths) ->
+    lists:append([["-pa", Path] || Path <- Paths]).
+
+collect_port(Port, Acc) ->
+    receive
+        {Port, {data, Data}} ->
+            collect_port(Port, [Data | Acc]);
+        {Port, {exit_status, Status}} ->
+            {Status, iolist_to_binary(lists:reverse(Acc))}
+    after 10000 ->
+        erlang:error(cli_subprocess_timeout)
+    end.
 
 %% Run `soma_cli_main:dispatch(Argv)' with stdout and stderr each routed to a
 %% recording IO server, returning `{Exit, StdoutBin, StderrBin}'. The group
