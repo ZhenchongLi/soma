@@ -469,3 +469,18 @@ test_agents_names_public_task_surface() ->
 
 agents_names_public_task_surface_test() ->
     test_agents_names_public_task_surface().
+
+test_cli_demo_lfe_files_compile_as_top_level_tasks() ->
+    Paths = lists:sort(filelib:wildcard("examples/cli-demo/*.lfe")),
+    ?assertMatch([_ | _], Paths),
+    lists:foreach(
+        fun(Path) ->
+            Source = read_doc(Path),
+            ?assertEqual({Path, true}, {Path, starts_with(Source, <<"(task">>)}),
+            {ok, #{run := #{steps := [_ | _]}}} = soma_lfe:compile(Source, #{})
+        end,
+        Paths
+    ).
+
+cli_demo_lfe_files_compile_as_top_level_tasks_test() ->
+    test_cli_demo_lfe_files_compile_as_top_level_tasks().
