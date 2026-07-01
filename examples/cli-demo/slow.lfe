@@ -1,4 +1,5 @@
-(run
-  (step wait sleep
-    (args (ms 60000))
-    (timeout_ms 120000)))
+(task
+  (let* ((wait (tool sleep
+                 (ms 60000)
+                 (timeout-ms 120000))))
+    (return wait)))
