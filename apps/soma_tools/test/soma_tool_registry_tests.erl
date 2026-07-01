@@ -182,7 +182,7 @@ test_register_tool_with_model_facing_fields_appears_in_catalog() ->
     Catalog = soma_tool_registry:catalog(),
     [Entry] = [E || E = #{name := model_facing_tool} <- Catalog],
     ?assertEqual(#{name => model_facing_tool,
-                   description => <<"WRONG — deliberately staged red">>,
+                   description => Description,
                    params => Params},
                  Entry).
 
