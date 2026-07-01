@@ -44,3 +44,13 @@ test_usage_documents_send_accepts_stable_name() ->
 
 usage_documents_send_accepts_stable_name_test() ->
     test_usage_documents_send_accepts_stable_name().
+
+test_usage_documents_send_unknown_name_not_found() ->
+    Doc = read_usage_md(),
+    %% An unknown stable name is documented as making `soma_actor:send/2'
+    %% return `{error, not_found}'.
+    ?assert(contains(Doc, <<"{error, not_found}">>)),
+    ?assert(contains(Doc, <<"unknown">>)).
+
+usage_documents_send_unknown_name_not_found_test() ->
+    test_usage_documents_send_unknown_name_not_found().
