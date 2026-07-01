@@ -155,6 +155,47 @@ test_tool_without_description_absent_from_catalog() ->
     Catalog = soma_tool_registry:catalog(),
     ?assertEqual([], [E || E = #{name := v1_only_tool} <- Catalog]).
 
+%% Registering a manifest carrying the model-facing half through the live
+%% register_tool/1 path makes the tool appear in catalog/0 with exactly the
+%% description and params that were registered — registration flows through
+%% normalize/1 into the registry map and out through the catalog unchanged.
+test_register_tool_with_model_facing_fields_appears_in_catalog() ->
+    Description = <<"Reverses the given text.">>,
+    Params = [#{name => <<"text">>,
+                type => string,
+                required => true,
+                doc => <<"The text to reverse.">>},
+              #{name => <<"limit">>,
+                type => integer,
+                required => false}],
+    Manifest = #{
+        name => model_facing_tool,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo,
+        description => Description,
+        params => Params
+    },
+    ok = soma_tool_registry:register_tool(Manifest),
+    Catalog = soma_tool_registry:catalog(),
+    [Entry] = [E || E = #{name := model_facing_tool} <- Catalog],
+    ?assertEqual(#{name => model_facing_tool,
+                   description => <<"WRONG — deliberately staged red">>,
+                   params => Params},
+                 Entry).
+
+register_tool_with_model_facing_fields_appears_in_catalog_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_register_tool_with_model_facing_fields_appears_in_catalog())
+     end}.
+
 tool_without_description_absent_from_catalog_test_() ->
     {setup,
      fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
