@@ -100,6 +100,16 @@ test_readme_quick_start_uses_task_example() ->
 readme_quick_start_uses_task_example_test() ->
     test_readme_quick_start_uses_task_example().
 
+test_readme_links_task_form_contract() ->
+    TestContracts = section(read_doc("README.md"), <<"**Test contracts**">>),
+    ?assert(contains(
+        TestContracts,
+        <<"[docs/contracts/task-form-test-contract.md](docs/contracts/task-form-test-contract.md)">>
+    )).
+
+readme_links_task_form_contract_test() ->
+    test_readme_links_task_form_contract().
+
 test_lfe_dsl_documents_task_as_public_static_form() ->
     Doc = read_doc("docs/lfe-dsl.md"),
     ?assert(contains(Doc, <<"(task ...)">>)),
