@@ -13,6 +13,14 @@ read_usage_md() ->
     {ok, Bin} = file:read_file(usage_md_path()),
     Bin.
 
+zh_actor_md_path() ->
+    filename:join([code:lib_dir(soma_actor), "..", "..", "..", "..",
+                   "docs", "zh", "soma-actor.zh.md"]).
+
+read_zh_actor_md() ->
+    {ok, Bin} = file:read_file(zh_actor_md_path()),
+    Bin.
+
 contains(Haystack, Needle) ->
     binary:match(Haystack, Needle) =/= nomatch.
 
@@ -101,3 +109,13 @@ test_usage_documents_pid_addressing_still_supported() ->
 
 usage_documents_pid_addressing_still_supported_test() ->
     test_usage_documents_pid_addressing_still_supported().
+
+test_zh_documents_stable_name_start_option() ->
+    Doc = read_zh_actor_md(),
+    %% The Chinese actor design doc documents `stable_name' as an actor start
+    %% option (启动选项).
+    ?assert(contains(Doc, <<"stable_name">>)),
+    ?assert(contains(Doc, <<"启动选项"/utf8>>)).
+
+zh_documents_stable_name_start_option_test() ->
+    test_zh_documents_stable_name_start_option().
