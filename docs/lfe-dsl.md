@@ -53,7 +53,7 @@ The top-level form selects the result shape:
 | `(ask ...)` | CLI ask command map |
 | `(trace ...)`, `(status ...)`, `(cancel ...)`, `(stop)` | CLI read/manage command map |
 
-## Task Workflows
+## Task Files
 
 `soma run FILE` reads Soma Lisp source. Public static tasks use one `(task ...)`
 form:
@@ -134,7 +134,7 @@ Use a prior step's output as one field:
 `from_step` may only reference an earlier step in the same run. Unknown or
 forward references are compile errors.
 
-## Workflow Example
+## Task Example
 
 ```bash
 mkdir -p /tmp/soma-demo
