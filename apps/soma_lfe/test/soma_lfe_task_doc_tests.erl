@@ -36,6 +36,18 @@ before(Haystack, Left, Right) ->
         _ -> false
     end.
 
+paragraph_starting_with(Doc, Anchor) ->
+    case binary:split(Doc, Anchor) of
+        [_Before, Rest] ->
+            ParagraphAndRest = <<Anchor/binary, Rest/binary>>,
+            case binary:split(ParagraphAndRest, <<"\n\n">>) of
+                [Paragraph, _After] -> Paragraph;
+                [Paragraph] -> Paragraph
+            end;
+        [_] ->
+            erlang:error({missing_paragraph, Anchor})
+    end.
+
 starts_with(Bin, Prefix) when byte_size(Bin) >= byte_size(Prefix) ->
     binary:part(Bin, 0, byte_size(Prefix)) =:= Prefix;
 starts_with(_Bin, _Prefix) ->
@@ -133,6 +145,18 @@ test_usage_doc_says_run_file_reads_soma_lisp_source() ->
 
 usage_doc_says_run_file_reads_soma_lisp_source_test() ->
     test_usage_doc_says_run_file_reads_soma_lisp_source().
+
+test_usage_wire_summary_names_task_run_requests() ->
+    Wire = paragraph_starting_with(
+        read_doc("docs/usage.md"),
+        <<"The wire is length-prefixed Lisp s-expressions:">>
+    ),
+    ?assert(contains(Wire, <<"(task ...)">>)),
+    ?assert(contains(Wire, <<"compatibility">>)),
+    ?assert(contains(Wire, <<"(run ...)">>)).
+
+usage_wire_summary_names_task_run_requests_test() ->
+    test_usage_wire_summary_names_task_run_requests().
 
 test_cli_request_reference_lists_task_before_run() ->
     Forms = section(read_doc("docs/cli.md"), <<"## Lisp Request Forms">>),
