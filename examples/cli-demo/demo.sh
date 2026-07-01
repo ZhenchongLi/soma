@@ -3,7 +3,7 @@
 # command. Every beat is one (or two) real CLI calls; nothing is faked.
 #
 # The point of the tour: an agent run on soma is a supervised OTP process tree,
-# not a while-loop. So you can watch it (1) run a multi-step workflow, (2) cancel
+# not a while-loop. So you can watch it (1) run a multi-step task, (2) cancel
 # a live task for real, (3) survive a crashing tool without taking the daemon
 # down, (4) replay the whole thing as an audit trace, and (5) answer an intent
 # through a real model.
@@ -56,8 +56,8 @@ rm -f "$ROOT/output.txt"
 note "wrote $ROOT/input.txt"
 pause
 
-# === BEAT 1: a supervised multi-step workflow ================================
-title "1. run a workflow: file_read -> echo -> file_write"
+# === BEAT 1: a supervised multi-step task run ================================
+title "1. run a task: file_read -> echo -> file_write"
 note "Three steps, run in order, each in its own supervised tool-call process."
 cmd "run pipeline.lfe"
 OUT=$("$SOMA" run pipeline.lfe); STATUS=$?
