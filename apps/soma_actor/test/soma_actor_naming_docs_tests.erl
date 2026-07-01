@@ -129,3 +129,13 @@ test_zh_documents_binary_name_target() ->
 
 zh_documents_binary_name_target_test() ->
     test_zh_documents_binary_name_target().
+
+test_zh_documents_unknown_name_not_found() ->
+    Doc = read_zh_actor_md(),
+    %% The Chinese actor design doc states that an unknown stable name
+    %% (找不到的名字) resolves to `{error, not_found}'.
+    ?assert(contains(Doc, <<"找不到的名字"/utf8>>)),
+    ?assert(contains(Doc, <<"{error, DELIBERATELY_WRONG}">>)).
+
+zh_documents_unknown_name_not_found_test() ->
+    test_zh_documents_unknown_name_not_found().
