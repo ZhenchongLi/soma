@@ -393,11 +393,13 @@ and replay on restart rebuilds the query index from the durable log.
 At the packaged command surface, soma run FILE reads Soma Lisp source from
 FILE and submits it through the same local Lisp wire.
 
-The wire is length-prefixed Lisp s-expressions: `(run ...)`, `(ask ...)`,
-`(status ...)`, `(trace ...)`, and `(cancel ...)` requests, with `(result ...)`,
-`(accepted ...)`, `(status ...)`, or `(trace ...)` replies rendered by
-`soma_lisp`. Detached run support is a `(detach)` marker inside `(run ...)`;
-detached tasks live in `soma_cli_task_registry` and can be managed by id.
+The wire is length-prefixed Lisp s-expressions: public run requests use
+`(task ...)`; `(run ...)` remains the compatibility/core run form. Other
+requests are `(ask ...)`, `(status ...)`, `(trace ...)`, and `(cancel ...)`,
+with `(result ...)`, `(accepted ...)`, `(status ...)`, or `(trace ...)` replies
+rendered by `soma_lisp`. Detached run support is a `(detach)` marker inside
+`(run ...)`; detached tasks live in `soma_cli_task_registry` and can be managed
+by id.
 
 ## Common Failures
 
