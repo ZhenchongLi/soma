@@ -4,7 +4,7 @@ A guided, screen-recordable walk through the soma daemon over the packaged
 `soma` command. Every beat is a real CLI call — nothing is staged.
 
 The thesis it shows: **an agent run on soma is a supervised OTP process tree, not
-a while-loop.** So you can run a workflow, *cancel a live one for real*, watch a
+a while-loop.** So you can run a task, *cancel a live one for real*, watch a
 crashing tool fail without taking the daemon down, replay the whole thing as an
 audit trace, and ask a real model — all through one small CLI over a local
 socket.
@@ -32,13 +32,13 @@ on your `PATH`). The first call **auto-starts the daemon** — there's no separa
 
 | # | Command | What it proves |
 |---|---------|----------------|
-| 1 | `soma run pipeline.lfe` | A 3-step workflow (`file_read → echo → file_write`) runs in order; each step gets its own supervised tool-call process. |
+| 1 | `soma run pipeline.lfe` | A 3-step task (`file_read → echo → file_write`) runs in order; each step gets its own supervised tool-call process. |
 | 2 | `soma run slow.lfe --detach` → `soma cancel <task>` | Cancellation is real — a live 60s task is stopped mid-flight; the daemon stays up. |
 | 3 | `soma run crash.lfe` then `soma run pipeline.lfe` | A crashing tool fails *its* run as data; the daemon keeps serving the next one. Isolation by process boundary, not `try/catch`. |
 | 4 | `soma trace <correlation-id>` | The whole run replayed as Lisp events — including a distinct `tool-call-pid` per step. |
 | 5 | `soma ask "..."` | The agent path: intent → model → answer. Needs a model configured (below). |
 
-The same Lisp you write workflows in is what comes back on the wire — no JSON
+The same Lisp you write task files in is what comes back on the wire — no JSON
 anywhere. `soma run` takes a `task-id` + `correlation-id`; `status`/`cancel` use
 the `task-id`, `trace` uses the `correlation-id`.
 
@@ -59,7 +59,7 @@ boot**, so after editing it you must `soma stop` (the next client call auto-star
 a fresh daemon that picks up the change). `SOMA_LLM_API_KEY` must be exported in
 the shell that triggers that auto-start.
 
-## The workflow files
+## The task files
 
 All five built-in tools the daemon seeds are fair game (`echo`, `sleep`, `fail`,
 `file_read`, `file_write`). The tour uses:
@@ -71,7 +71,7 @@ All five built-in tools the daemon seeds are fair game (`echo`, `sleep`, `fail`,
   arc; run it by hand to watch a hung step get timed out:
   `soma run examples/cli-demo/timeout.lfe`.
 
-Workflows are LFE s-exprs (`(run (step <id> <tool> (args ...) (timeout_ms N)))`).
+Task files are Soma Lisp s-exprs (`(task (step <id> <tool> (args ...) (timeout_ms N)))`).
 Note the LFE reader has **no `;` comments** — keep these files comment-free.
 
 ## Want the "external process actually dies" version?
