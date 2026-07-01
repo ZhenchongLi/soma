@@ -20,6 +20,9 @@
 -export([test_timeout_cancelled_carry_real_step_and_tool_call_ids/1]).
 -export([test_get_status_reports_terminal_outcome/1]).
 -export([test_unregistered_tool_reaches_failed_not_crash/1]).
+-export([test_non_map_step_fails_named_validation_session_alive/1]).
+-export([test_step_missing_id_fails_named_validation_session_alive/1]).
+-export([test_step_missing_tool_fails_named_validation_session_alive/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
@@ -38,7 +41,10 @@ all() ->
      test_failure_events_carry_eight_mandatory_fields,
      test_timeout_cancelled_carry_real_step_and_tool_call_ids,
      test_get_status_reports_terminal_outcome,
-     test_unregistered_tool_reaches_failed_not_crash].
+     test_unregistered_tool_reaches_failed_not_crash,
+     test_non_map_step_fails_named_validation_session_alive,
+     test_step_missing_id_fails_named_validation_session_alive,
+     test_step_missing_tool_fails_named_validation_session_alive].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -481,6 +487,38 @@ test_unregistered_tool_reaches_failed_not_crash(_Config) ->
     true = is_process_alive(RunPid),
     %% and the session reports the run as failed
     ok = wait_for_run_status(SessionPid, RunId, failed, 50),
+    ok.
+
+%% Issue #196 criterion 6: a malformed non-map step submitted through the
+%% session entry point fails as named validation data, not as a run crash, and
+%% the session stays alive.
+test_non_map_step_fails_named_validation_session_alive(_Config) ->
+    assert_malformed_step_validation([not_a_map], {invalid_step, non_map}).
+
+%% Issue #196 criterion 6: a malformed step map missing `id' fails with a named
+%% validation reason that distinguishes the missing field, and the session stays
+%% alive.
+test_step_missing_id_fails_named_validation_session_alive(_Config) ->
+    assert_malformed_step_validation([#{tool => echo, args => #{}}],
+                                     {invalid_step, missing_id}).
+
+%% Issue #196 criterion 6: a malformed step map missing `tool' fails with a
+%% named validation reason that distinguishes the missing field, and the session
+%% stays alive.
+test_step_missing_tool_fails_named_validation_session_alive(_Config) ->
+    assert_malformed_step_validation([#{id => s1, args => #{}}],
+                                     {invalid_step, missing_tool}).
+
+assert_malformed_step_validation(Steps, ExpectedReason) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
+    FailEvent = event_of_type(StorePid, RunId, <<"run.failed">>),
+    Payload = maps:get(payload, FailEvent),
+    ExpectedReason = maps:get(reason, Payload),
+    ok = wait_for_run_status(SessionPid, RunId, failed, 50),
+    true = is_process_alive(SessionPid),
     ok.
 
 %% The single run process under soma_run_sup for the current session.
