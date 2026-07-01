@@ -134,6 +134,14 @@ test_usage_doc_says_run_file_reads_soma_lisp_source() ->
 usage_doc_says_run_file_reads_soma_lisp_source_test() ->
     test_usage_doc_says_run_file_reads_soma_lisp_source().
 
+test_cli_request_reference_lists_task_before_run() ->
+    Forms = section(read_doc("docs/cli.md"), <<"## Lisp Request Forms">>),
+    ?assert(before(Forms, <<"(task">>, <<"(run">>)),
+    ?assert(before(Forms, <<"(task">>, <<"(ask">>)).
+
+cli_request_reference_lists_task_before_run_test() ->
+    test_cli_request_reference_lists_task_before_run().
+
 test_cli_doc_says_run_file_reads_soma_lisp_source() ->
     Doc = read_doc("docs/cli.md"),
     ?assert(contains(
