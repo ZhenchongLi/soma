@@ -5,9 +5,11 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_boot_with_event_store_log_resumes_between_steps_interrupted_run/1]).
+-export([test_boot_auto_resume_emits_run_resumed_for_first_pending_step/1]).
 
 all() ->
-    [test_boot_with_event_store_log_resumes_between_steps_interrupted_run].
+    [test_boot_with_event_store_log_resumes_between_steps_interrupted_run,
+     test_boot_auto_resume_emits_run_resumed_for_first_pending_step].
 
 init_per_testcase(_Case, Config) ->
     _ = application:stop(soma_runtime),
@@ -47,6 +49,34 @@ test_boot_with_event_store_log_resumes_between_steps_interrupted_run(Config) ->
             maps:get(event_type, E, undefined) =:= <<"step.succeeded">>,
             maps:get(step_id, E, undefined) =:= s2],
     ?assertEqual([#{value => <<"pending">>}], PendingOutputs).
+
+%% v0.7.5 criterion 4: an auto-resumed run emits `run.resumed' for the first
+%% pending step, so the boot-resume trail names that step on the event.
+test_boot_auto_resume_emits_run_resumed_for_first_pending_step(Config) ->
+    Path = ?config(log_path, Config),
+    RunId = <<"run-auto-resume-resumed-event-1">>,
+    SessionId = <<"sess-auto-resume-resumed-event-1">>,
+    S1 = #{id => s1, tool => echo, args => #{value => <<"committed">>}},
+    S2 = #{id => s2, tool => echo, args => #{value => <<"pending">>}},
+    Steps = [S1, S2],
+
+    ok = seed_between_steps_log(Path, RunId, SessionId, Steps),
+
+    application:set_env(soma_runtime, event_store_log, Path),
+    {ok, _Started} = application:ensure_all_started(soma_runtime),
+    StorePid = event_store_pid(),
+
+    ?assertEqual(ok, wait_for_event(StorePid, RunId, <<"run.resumed">>, 50)),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    ResumedEvents =
+        [E || E <- Events,
+              maps:get(event_type, E, undefined) =:= <<"run.resumed">>],
+    ?assertMatch([_], ResumedEvents),
+    [Resumed] = ResumedEvents,
+    ?assertEqual(RunId, maps:get(run_id, Resumed)),
+    ?assertEqual(SessionId, maps:get(session_id, Resumed)),
+    ?assertEqual(s2, maps:get(step_id, Resumed)),
+    ?assertEqual(#{first_pending_step => s2}, maps:get(payload, Resumed)).
 
 seed_between_steps_log(Path, RunId, SessionId, Steps) ->
     [S1 | _] = Steps,
