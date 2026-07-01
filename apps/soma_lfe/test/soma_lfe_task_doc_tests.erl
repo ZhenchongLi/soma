@@ -522,8 +522,13 @@ test_cli_demo_readme_describes_inputs_as_task_files() ->
     Doc = read_doc("examples/cli-demo/README.md"),
     ?assert(contains(Doc, <<"## The task files">>)),
     ?assert(contains(Doc, <<"Task files are Soma Lisp s-exprs">>)),
+    ?assert(contains(
+        Doc,
+        <<"(task (let* ((id (tool name ...))) (return id)))">>
+    )),
     ?assertNot(contains(Doc, <<"## The workflow files">>)),
-    ?assertNot(contains(Doc, <<"Workflows are LFE s-exprs">>)).
+    ?assertNot(contains(Doc, <<"Workflows are LFE s-exprs">>)),
+    ?assertNot(contains(Doc, <<"(task (step <id> <tool>">>)).
 
 cli_demo_readme_describes_inputs_as_task_files_test() ->
     test_cli_demo_readme_describes_inputs_as_task_files().
