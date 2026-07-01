@@ -119,3 +119,13 @@ test_zh_documents_stable_name_start_option() ->
 
 zh_documents_stable_name_start_option_test() ->
     test_zh_documents_stable_name_start_option().
+
+test_zh_documents_binary_name_target() ->
+    Doc = read_zh_actor_md(),
+    %% The Chinese actor design doc states that binary stable names are accepted
+    %% actor targets (二进制稳定名 ... 目标).
+    ?assert(contains(Doc, <<"二进制稳定名"/utf8>>)),
+    ?assert(contains(Doc, <<"寻址目标"/utf8>>)).
+
+zh_documents_binary_name_target_test() ->
+    test_zh_documents_binary_name_target().
