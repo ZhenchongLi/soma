@@ -1,9 +1,9 @@
 ---
 title: Quick start
-description: Run Soma through the packaged CLI and Lisp workflow format.
+description: Run Soma through the packaged CLI and Soma Lisp task files.
 ---
 
-Soma's public edge is the `soma` command plus Lisp workflow files. The first
+Soma's public edge is the `soma` command plus Soma Lisp task files. The first
 client command auto-starts the local daemon; you do not need a separate server
 ritual.
 
@@ -17,10 +17,10 @@ rebar3 release
 SOMA="_build/default/rel/somad/bin/soma"
 ```
 
-## Run a workflow
+## Run a task
 
-A workflow is a Lisp s-expression — Soma's public run language. This one reads a
-file, passes the bytes through `echo`, and writes the result back out:
+A Soma Lisp task is the public source form for `soma run`. This one reads a file,
+passes the bytes through `echo`, and writes the result back out:
 
 ```bash
 mkdir -p /tmp/soma-demo
@@ -56,10 +56,10 @@ $SOMA stop
 ## Ask
 
 `soma ask "..."` drives the actor decision path through the same daemon. It needs
-`~/.soma/config` plus `SOMA_LLM_API_KEY`; deterministic `soma run` workflows need
+`~/.soma/config` plus `SOMA_LLM_API_KEY`; deterministic `soma run` task files need
 no model.
 
 ## Where to go next
 
-Read the **LFE DSL** guide for workflow syntax, then the CLI guide for `run`,
+Read the **LFE DSL** guide for task syntax, then the CLI guide for `run`,
 `ask`, `status`, `trace`, `cancel`, detached tasks, and daemon configuration.
