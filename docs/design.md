@@ -110,8 +110,8 @@ Soma currently includes:
 - mandatory event emission, in-memory event store, durable `disk_log` event
   store, and Lisp trace rendering;
 - persistent resume from the event trail: journal, read-only reconstruction,
-  planning, and a manual resume executor with fail-safe handling for unsafe
-  in-flight state steps;
+  planning, a manual resume executor, and boot auto-resume with fail-safe
+  handling for unsafe in-flight state steps;
 - compile-only Lisp forms for runs, messages, proposals, ask/status/trace/cancel
   commands, and audit rendering;
 - long-lived `soma_actor` task ownership with proposal normalization, policy,
@@ -125,7 +125,6 @@ Soma currently includes:
 
 Still open:
 
-- auto-resume on daemon boot;
 - productizing real-model planning through CLI/config conventions;
 - effect-aware policy;
 - log/index compaction;
@@ -302,8 +301,9 @@ emits `run.resumed`, not another `run.started`.
 
 The fail-safe rule is conservative: if a crash happened while a non-idempotent
 `state` step was in flight, resume does not silently re-run it. It records a
-clear failed terminal event instead. Auto-resume on daemon boot remains future
-work.
+clear failed terminal event instead. On boot, a durable event store can report
+interrupted run ids (`run.started` with no terminal run event), and
+`soma_runtime` auto-resumes those runs through the same resume executor.
 
 ## Cancellation And Timeout
 
