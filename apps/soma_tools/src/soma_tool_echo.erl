@@ -14,7 +14,9 @@ describe() ->
 
 -spec manifest() -> map().
 manifest() ->
-    (describe())#{adapter => erlang_module, module => ?MODULE}.
+    (describe())#{adapter => erlang_module,
+                  module => ?MODULE,
+                  description => <<"Returns its input unchanged.">>}.
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
     {ok, soma_tool:output()}.

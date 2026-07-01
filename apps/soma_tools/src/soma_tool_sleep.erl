@@ -15,7 +15,15 @@ describe() ->
 
 -spec manifest() -> map().
 manifest() ->
-    (describe())#{adapter => erlang_module, module => ?MODULE}.
+    (describe())#{adapter => erlang_module,
+                  module => ?MODULE,
+                  description =>
+                      <<"Waits the requested number of milliseconds, "
+                        "then returns its input unchanged.">>,
+                  params => [#{name => <<"ms">>,
+                               type => integer,
+                               required => true,
+                               doc => <<"Milliseconds to sleep.">>}]}.
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
     {ok, soma_tool:output()}.
