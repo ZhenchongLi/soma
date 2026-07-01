@@ -183,12 +183,10 @@ socket_opts([_ | Rest]) ->
 socket_opts([]) ->
     #{}.
 
-%% The production launch seam for auto-start: spawn a DETACHED `soma daemon' so it
-%% outlives this short-lived client process. A detached background spawn needs a
-%% shell `&', so this is the one irreducibly-shell step -- isolated here, never on
-%% the tool-execution path (which stays executable+args, no shell). `SOMA_SELF' is
-%% the `soma' wrapper's own path, published by the wrapper; the path values are
-%% quoted so a directory with spaces still launches.
+%% The production launch seam for auto-start: spawn a `soma daemon' process so it
+%% outlives this short-lived client process. `SOMA_SELF' is the `soma' wrapper's
+%% own path, published by the wrapper; the executable and socket path are passed
+%% as argv, never interpolated through a shell.
 launch_daemon(Sock) ->
     case os:getenv("SOMA_SELF") of
         false ->
@@ -198,9 +196,15 @@ launch_daemon(Sock) ->
         "" ->
             ok;
         Self ->
-            Cmd = "nohup \"" ++ Self ++ "\" daemon --socket \"" ++ Sock
-                  ++ "\" >/dev/null 2>&1 &",
-            _ = os:cmd(Cmd),
+            try
+                _Port = open_port({spawn_executable, Self},
+                                  [nouse_stdio, exit_status,
+                                   {args, ["daemon", "--socket", Sock]}]),
+                ok
+            catch
+                error:badarg ->
+                    ok
+            end,
             ok
     end.
 
