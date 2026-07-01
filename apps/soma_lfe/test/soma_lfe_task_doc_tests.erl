@@ -100,6 +100,15 @@ test_readme_quick_start_uses_task_example() ->
 readme_quick_start_uses_task_example_test() ->
     test_readme_quick_start_uses_task_example().
 
+test_readme_quick_start_names_soma_run_input_task_source() ->
+    QuickStart = section(read_doc("README.md"), <<"## Quick start">>),
+    ?assert(contains(QuickStart, <<"soma run">>)),
+    ?assert(contains(QuickStart, <<"Soma Lisp task source">>)),
+    ?assertNot(contains(QuickStart, <<"workflow language">>)).
+
+readme_quick_start_names_soma_run_input_task_source_test() ->
+    test_readme_quick_start_names_soma_run_input_task_source().
+
 test_readme_links_task_form_contract() ->
     TestContracts = section(read_doc("README.md"), <<"**Test contracts**">>),
     ?assert(contains(
