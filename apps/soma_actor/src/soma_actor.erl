@@ -16,6 +16,8 @@
 -export([callback_mode/0, init/1]).
 -export([idle/3]).
 
+-define(DEFAULT_LLM_TIMEOUT_MS, 1000).
+
 -record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
                runs = #{}, waiters = #{}, monitors = #{}, llm_calls = #{},
                budget = #{}, llm_call_counts = #{}, repair = auto,
@@ -1002,7 +1004,9 @@ start_llm_call(Llm, TaskId, CorrelationId, Data) ->
     %% `timeout'. The owner enforces the bound, mirroring soma_run's
     %% per-step state_timeout -- a `slow' mock that ignores the timer is
     %% exactly the case this proves. The timer carries the llm_call_id so
-    %% the firing maps back to its task. With no timeout_ms, no timer.
+    %% the firing maps back to its task. With no timeout_ms, the actor still
+    %% arms a bounded default so a hanging provider cannot leave the task
+    %% running forever.
     TimerRef = arm_llm_timeout(maps:get(timeout_ms, Llm, undefined),
                                LlmCallId),
     LlmCalls = maps:put(LlmCallId, TaskId, Data#data.llm_calls),
@@ -1117,10 +1121,10 @@ clear_llm_monitor(TaskId, Data) ->
     end.
 
 %% Arm the actor-owned call-timeout timer, keyed by the llm_call_id so its firing
-%% message maps back to the task. With no timeout_ms there is no bound to enforce,
-%% so no timer is armed and the ref is `undefined'.
-arm_llm_timeout(undefined, _LlmCallId) ->
-    undefined;
+%% message maps back to the task. With no timeout_ms, use the fixed default so
+%% every LLM worker is owner-bounded.
+arm_llm_timeout(undefined, LlmCallId) ->
+    arm_llm_timeout(?DEFAULT_LLM_TIMEOUT_MS, LlmCallId);
 arm_llm_timeout(TimeoutMs, LlmCallId) when is_integer(TimeoutMs) ->
     erlang:start_timer(TimeoutMs, self(), {llm_timeout, LlmCallId}).
 
