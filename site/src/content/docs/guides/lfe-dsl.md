@@ -43,7 +43,10 @@ maps, and only those maps enter the runtime or actor boundary.
 compiles through `soma_lfe:compile/2` into the same validated run-step map shape
 that enters the runtime boundary.
 
-## v0.3 run syntax
+## Compatibility/Core Run Form
+
+`(run ...)` remains the compatibility/core run form. It exposes the canonical
+step-list shape directly for callers that already target the runtime boundary.
 
 A valid run workflow contains exactly one top-level `run` form. Inside `run`
 there are one or more `step` forms. This remains the form `soma_cli:run/1` sends

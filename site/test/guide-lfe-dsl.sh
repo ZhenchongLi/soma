@@ -25,7 +25,7 @@ npm ci && npm run build || {
 }
 
 LFE_DSL_HTML="${SITE_DIR}/dist/guides/lfe-dsl/index.html"
-EXPECTED_TOKENS=("soma_lfe" "public static task form")
+EXPECTED_TOKENS=("soma_lfe" "public static task form" "compatibility/core run form")
 
 if [ ! -f "${LFE_DSL_HTML}" ]; then
   echo "FAIL: lfe-dsl guide — page missing (expected ${LFE_DSL_HTML})" >&2
