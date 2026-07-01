@@ -1,10 +1,10 @@
 # Soma User Manual
 
-This guide is for using Soma from the packaged `soma` command: running workflow
-files, asking a configured model, checking task status, cancelling work, and
+This guide is for using Soma from the packaged `soma` command: running task files,
+asking a configured model, checking task status, cancelling work, and
 reading traces. For architecture and implementation boundaries, see
 [`README.md`](../README.md). For the full CLI protocol reference, see
-[`cli.md`](cli.md). For workflow syntax details, see [`lfe-dsl.md`](lfe-dsl.md).
+[`cli.md`](cli.md). For task syntax details, see [`lfe-dsl.md`](lfe-dsl.md).
 
 ## Get The Command
 
@@ -39,7 +39,7 @@ Stop it with:
 $SOMA stop
 ```
 
-## Quick Start: Run A Workflow
+## Quick Start: Run A Task
 
 Create a small file pipeline:
 
@@ -78,11 +78,11 @@ The command prints a Lisp `(result ...)` form. The important fields are:
 Use the `task-id` for `status` and `cancel`. Use the `correlation-id` for
 `trace`.
 
-## Workflow Files
+## Task Files
 
-`soma run FILE` reads Soma Lisp source. Public static tasks use `(task ...)`;
-`(run ...)` remains the compatibility/core run form. Steps run strictly in the
-order they appear.
+`soma run FILE` reads Soma Lisp source. Public `soma run` input is Soma Lisp task source.
+Public static tasks use `(task ...)`; `(run ...)` remains the
+compatibility/core run form. Steps run strictly in the order they appear.
 
 ```lisp
 (task
@@ -96,12 +96,12 @@ In `(task ...)`, each `let*` binding creates one step:
 
 | Field | Meaning |
 | --- | --- |
-| Step id | A unique symbol inside this workflow, such as `greet` or `read`. |
+| Step id | A unique symbol inside this task, such as `greet` or `read`. |
 | Tool name | A registered tool, such as `echo`, `sleep`, `file_read`, or `file_write`. |
 | Tool arguments | Input for the tool. Omit them for empty input. |
 | `(timeout-ms N)` | Optional per-step wall-clock budget. If it expires, the run times out and the active worker is stopped. |
 
-Internally, after the workflow is compiled, each step is a map with `id` and `tool`;
+Internally, after the task is compiled, each step is a map with `id` and `tool`;
 the runtime rejects a bad step before starting the run. Duplicate step ids are
 not useful because later references need a single prior output, so keep ids
 unique.
@@ -129,7 +129,7 @@ references are compile errors.
 
 ### Run From Stdin
 
-Use `-` as the workflow path:
+Use `-` as the task source path:
 
 ```bash
 printf '(run (step greet echo (args (value "hello"))))\n' | $SOMA run -
@@ -155,8 +155,8 @@ that root:
   (args (root "/tmp/soma-demo") (path "input.txt")))
 ```
 
-Operators can register additional in-BEAM or external CLI tools. Workflow users
-still call them by tool name; workflows do not contain shell command strings.
+Operators can register additional in-BEAM or external CLI tools. Task users still call them by tool name;
+task sources do not contain shell command strings.
 
 ## Manage Tasks
 
@@ -184,7 +184,7 @@ Common states:
 | State | Meaning |
 | --- | --- |
 | `running` | Work is still active. |
-| `completed` | The workflow finished successfully. |
+| `completed` | The task finished successfully. |
 | `failed` | A tool or task failed. The reply usually carries an error reason. |
 | `timeout` | A step or model call exceeded its timeout. |
 | `cancelled` | The task was cancelled. |
