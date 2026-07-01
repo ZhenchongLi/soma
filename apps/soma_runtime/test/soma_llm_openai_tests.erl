@@ -71,6 +71,20 @@ test_build_request_body_omits_optional_opts() ->
 build_request_body_omits_optional_opts_test() ->
     test_build_request_body_omits_optional_opts().
 
+test_request_http_options_bounded_timeout_default_and_override() ->
+    DefaultOptions = soma_llm_openai:request_http_options(#{}),
+    {timeout, DefaultTimeout} = lists:keyfind(timeout, 1, DefaultOptions),
+    ?assert(is_integer(DefaultTimeout)),
+    ?assert(DefaultTimeout > 0),
+
+    OverrideOptions =
+        soma_llm_openai:request_http_options(#{request_timeout_ms => 1234}),
+    ?assertEqual({timeout, 1234},
+                 lists:keyfind(timeout, 1, OverrideOptions)).
+
+request_http_options_bounded_timeout_default_and_override_test() ->
+    test_request_http_options_bounded_timeout_default_and_override().
+
 test_parse_response_success_to_reply() ->
     Body = <<"{\"id\":\"chatcmpl-abc123\","
              "\"object\":\"chat.completion\","
