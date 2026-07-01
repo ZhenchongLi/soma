@@ -1,7 +1,7 @@
 # Soma Lisp / LFE DSL
 
 Soma accepts a constrained Lisp syntax at its edges. This is the public language
-for `soma run` workflow files, actor message bodies, LLM proposal forms, and the
+for `soma run` task files, actor message bodies, LLM proposal forms, and the
 local CLI wire.
 
 The compiler lives in `apps/soma_lfe`. It is compile-only:
@@ -19,7 +19,7 @@ feeds, see [design.md](design.md).
 
 ## Public static task form
 
-`(task ...)` is the public static task form for bounded Soma Lisp workflows. It
+`(task ...)` is the public static task form for bounded Soma Lisp tasks. It
 compiles through `soma_lfe:compile/2` into the same validated run-step map shape
 that enters the runtime boundary.
 
@@ -199,7 +199,7 @@ Optional fields:
 - `(steps (step ...))`
 - `(llm ...)`
 
-Nested message steps use pair form, not the compact run-workflow form:
+Nested message steps use pair form, not the compact run-step form:
 
 ```lisp
 (step

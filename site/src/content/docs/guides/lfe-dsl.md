@@ -39,7 +39,7 @@ maps, and only those maps enter the runtime or actor boundary.
 
 ## Public static task form
 
-`(task ...)` is the public static task form for bounded Soma Lisp workflows. It
+`(task ...)` is the public static task form for bounded Soma Lisp tasks. It
 compiles through `soma_lfe:compile/2` into the same validated run-step map shape
 that enters the runtime boundary.
 

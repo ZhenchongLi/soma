@@ -262,7 +262,7 @@ SOMA_CONFIG=/path/to/config SOMA_LLM_API_KEY="..." $SOMA daemon
 
 Provider settings such as `base_url` and `model` live in config. Optional
 provider fields `enable_thinking` and `max_tokens` are passed through when set.
-The API key comes only from `SOMA_LLM_API_KEY`; do not put secrets in workflows
+The API key comes only from `SOMA_LLM_API_KEY`; do not put secrets in tasks
 or config files. Soma events must not contain provider secrets.
 
 ### Ask With Policy And Budgets
@@ -402,7 +402,7 @@ $SOMA trace "corr-4"
 ```
 
 The daemon records a mandatory event trail for each task and run. A typical
-successful workflow includes:
+successful task includes:
 
 ```text
 actor.message.received
@@ -469,7 +469,7 @@ by id.
 
 | Symptom | What to check |
 | --- | --- |
-| `unregistered_tool` | The workflow names a tool the daemon has not registered. Check spelling and installed tool manifests. |
+| `unregistered_tool` | The task source names a tool the daemon has not registered. Check spelling and installed tool manifests. |
 | `timeout` | A step exceeded its `(timeout_ms N)` budget, or a model call exceeded its call timeout. Increase the budget or inspect the tool/model. |
 | `failed` from `file_read` or `file_write` | Check `root`, relative `path`, permissions, and whether the parent directory exists. |
 | `ask` fails before calling a model | Check `~/.soma/config`, `provider = "openai_compat"`, `base_url`, `model`, and `SOMA_LLM_API_KEY`. |
@@ -492,7 +492,7 @@ rebar3 release
 examples/cli-demo/demo.sh
 ```
 
-Useful workflow files:
+Useful task files:
 
 | File | What it shows |
 | --- | --- |
@@ -504,7 +504,7 @@ Useful workflow files:
 ## Next Docs
 
 - [`cli.md`](cli.md) - exact command and Lisp wire reference.
-- [`lfe-dsl.md`](lfe-dsl.md) - workflow language syntax and diagnostics.
+- [`lfe-dsl.md`](lfe-dsl.md) - task source syntax and diagnostics.
 - [`release.md`](release.md) - building, unpacking, and operating a release.
 - [`tool-manifest.md`](tool-manifest.md) - registering additional tools.
 - [`design.md`](design.md) - architecture and non-negotiable runtime boundaries.
