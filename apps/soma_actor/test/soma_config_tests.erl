@@ -71,6 +71,33 @@ test_load_carries_optional_keys_and_omits_absent() ->
 load_carries_optional_keys_and_omits_absent_test() ->
     test_load_carries_optional_keys_and_omits_absent().
 
+%% Criterion (#199): optional `plan = true' is carried into the daemon
+%% `model_config' so the CLI ask path can opt into real-provider planning mode
+%% from config without changing the runtime executor.
+test_load_carries_plan_true() ->
+    Toml =
+        "[llm]\n"
+        "provider = \"openai_compat\"\n"
+        "base_url = \"api.example/v1\"\n"
+        "model = \"deepseek-v4\"\n"
+        "plan = true\n",
+    Path = write_temp_config(Toml),
+    Prev = os:getenv("SOMA_LLM_API_KEY"),
+    os:putenv("SOMA_LLM_API_KEY", "sk-test-sentinel-137"),
+    try
+        Config = soma_config:load(#{config_path => Path}),
+        ?assertEqual(true, maps:get(plan, Config))
+    after
+        case Prev of
+            false -> os:unsetenv("SOMA_LLM_API_KEY");
+            _ -> os:putenv("SOMA_LLM_API_KEY", Prev)
+        end,
+        file:delete(Path)
+    end.
+
+load_carries_plan_true_test() ->
+    test_load_carries_plan_true().
+
 %% Criterion 3: load/1 reads SOMA_LLM_API_KEY and puts its value into the built
 %% map as api_key => <<value>>.
 test_load_reads_api_key_from_env() ->
@@ -155,6 +182,60 @@ test_load_no_api_key_raises() ->
 
 load_no_api_key_raises_test() ->
     test_load_no_api_key_raises().
+
+%% Criterion (#199): a non-empty `[llm]' table that omits `provider' fails with a
+%% named config error instead of a raw badkey.
+test_load_missing_provider_named_error() ->
+    Toml =
+        "[llm]\n"
+        "base_url = \"api.example/v1\"\n"
+        "model = \"deepseek-v4\"\n",
+    Path = write_temp_config(Toml),
+    try
+        ?assertError({config_error, missing_llm_provider},
+                     soma_config:load(#{config_path => Path}))
+    after
+        file:delete(Path)
+    end.
+
+load_missing_provider_named_error_test() ->
+    test_load_missing_provider_named_error().
+
+%% Criterion (#199): `openai_compat' requires `base_url' and reports a named
+%% config error when it is absent.
+test_load_missing_openai_base_url_named_error() ->
+    Toml =
+        "[llm]\n"
+        "provider = \"openai_compat\"\n"
+        "model = \"deepseek-v4\"\n",
+    Path = write_temp_config(Toml),
+    try
+        ?assertError({config_error, missing_openai_base_url},
+                     soma_config:load(#{config_path => Path}))
+    after
+        file:delete(Path)
+    end.
+
+load_missing_openai_base_url_named_error_test() ->
+    test_load_missing_openai_base_url_named_error().
+
+%% Criterion (#199): `openai_compat' requires `model' and reports a named config
+%% error when it is absent.
+test_load_missing_openai_model_named_error() ->
+    Toml =
+        "[llm]\n"
+        "provider = \"openai_compat\"\n"
+        "base_url = \"api.example/v1\"\n",
+    Path = write_temp_config(Toml),
+    try
+        ?assertError({config_error, missing_openai_model},
+                     soma_config:load(#{config_path => Path}))
+    after
+        file:delete(Path)
+    end.
+
+load_missing_openai_model_named_error_test() ->
+    test_load_missing_openai_model_named_error().
 
 %% Criterion 6: an absent config file, or a file with no [llm] table, makes
 %% load/1 return undefined.

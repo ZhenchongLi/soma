@@ -1,9 +1,9 @@
 %% @doc Reads the tiny `~/.soma/config' TOML subset and assembles the
 %% `model_config' map the actor consumes.
 %%
-%% This slice implements only the base provider map: an `[llm]' table with
-%% `provider', `base_url', and `model'. The path resolves from the `config_path'
-%% option when supplied (the hermetic-test seam).
+%% This slice implements the provider map from an `[llm]' table: `provider',
+%% `base_url', `model', and optional planning / provider knobs. The path resolves
+%% from the `config_path' option when supplied (the hermetic-test seam).
 %%
 %% The runtime never imports this module; the one-way dependency holds.
 -module(soma_config).
@@ -91,15 +91,21 @@ parse_value(Raw) ->
 build_model_config(Llm) when map_size(Llm) =:= 0 ->
     undefined;
 build_model_config(Llm) ->
-    Provider = provider_atom(maps:get("provider", Llm)),
+    Provider = provider_atom(require("provider", Llm, missing_llm_provider)),
     Base0 = #{
         provider => Provider,
-        base_url => maps:get("base_url", Llm),
-        model => maps:get("model", Llm)
+        base_url => require("base_url", Llm, missing_openai_base_url),
+        model => require("model", Llm, missing_openai_model)
     },
     Base = carry_api_key(Base0),
     lists:foldl(fun(Key, Acc) -> carry_optional(Key, Llm, Acc) end,
-                Base, ["enable_thinking", "max_tokens"]).
+                Base, ["enable_thinking", "max_tokens", "plan"]).
+
+require(Key, Llm, ErrorName) ->
+    case maps:find(Key, Llm) of
+        {ok, Value} -> Value;
+        error -> error({config_error, ErrorName})
+    end.
 
 carry_api_key(Acc) ->
     case os:getenv("SOMA_LLM_API_KEY") of
@@ -115,4 +121,6 @@ carry_optional(Key, Llm, Acc) ->
     end.
 
 provider_atom(<<"openai_compat">>) ->
-    openai_compat.
+    openai_compat;
+provider_atom(Other) ->
+    error({config_error, {unsupported_llm_provider, Other}}).

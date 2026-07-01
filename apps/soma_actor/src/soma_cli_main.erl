@@ -80,10 +80,13 @@ dispatch(["daemon" | Flags]) ->
     %% Boot the daemon in the foreground and block while it serves. Unlike the
     %% other verbs this one does not return until a `(stop)' tears the listener
     %% down; `daemon_foreground/1' returns `ok' on that clean stop, which maps to
-    %% exit code 0.
+    %% exit code 0. Startup config failures return `{error, _}' and are reported
+    %% to stderr with a non-zero exit code, before any listener is started.
     with_flags(Flags, fun(Opts) ->
-        ok = soma_cli:daemon_foreground(#{socket => socket(Opts)}),
-        0
+        case soma_cli:daemon_foreground(#{socket => socket(Opts)}) of
+            ok -> 0;
+            {error, Reason} -> daemon_error(Reason)
+        end
     end);
 dispatch(["__ping" | Flags]) ->
     %% Wrapper-internal liveness probe -- not a user-facing verb, so it stays out
@@ -107,6 +110,17 @@ usage() ->
     io:put_chars(standard_error,
                  "usage: soma <run|ask|status|trace|cancel|stop|daemon> ...\n"),
     2.
+
+daemon_error({missing_env, "SOMA_LLM_API_KEY"}) ->
+    io:put_chars(standard_error,
+                 "soma daemon: missing SOMA_LLM_API_KEY for configured LLM\n"),
+    1;
+daemon_error({config_error, Name}) ->
+    io:format(standard_error, "soma daemon: config error: ~p~n", [Name]),
+    1;
+daemon_error(Reason) ->
+    io:format(standard_error, "soma daemon: startup failed: ~p~n", [Reason]),
+    1.
 
 %% Parse the trailing flags, then run `Run(Opts)' for a well-formed flag list.
 %% A malformed flag list -- an unknown flag, or `--socket' with no following
