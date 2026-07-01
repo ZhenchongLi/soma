@@ -16,7 +16,20 @@ describe() ->
 
 -spec manifest() -> map().
 manifest() ->
-    (describe())#{adapter => erlang_module, module => ?MODULE}.
+    (describe())#{adapter => erlang_module,
+                  module => ?MODULE,
+                  description =>
+                      <<"Writes the given bytes to a file under the "
+                        "sandbox root.">>,
+                  params => [#{name => <<"path">>,
+                               type => string,
+                               required => true,
+                               doc => <<"File path, resolved against "
+                                        "the sandbox root.">>},
+                             #{name => <<"bytes">>,
+                               type => string,
+                               required => true,
+                               doc => <<"The bytes to write.">>}]}.
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
     {ok, soma_tool:output()} | {error, soma_tool:error()}.

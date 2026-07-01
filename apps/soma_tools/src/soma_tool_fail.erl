@@ -17,7 +17,11 @@ describe() ->
 
 -spec manifest() -> map().
 manifest() ->
-    (describe())#{adapter => erlang_module, module => ?MODULE}.
+    (describe())#{adapter => erlang_module,
+                  module => ?MODULE,
+                  description =>
+                      <<"Fails on purpose, for tests: returns an error "
+                        "in error mode or crashes in crash mode.">>}.
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
     {error, soma_tool:error()} | no_return().
