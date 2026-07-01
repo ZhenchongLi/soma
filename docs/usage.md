@@ -378,6 +378,11 @@ sender actor stays alive. The sender catches the delivery failure and marks the
 sending task `failed`; it does not crash, so it can go on handling later
 messages.
 
+Registration is last-writer-wins on the name. If you start another actor with
+the same name after an earlier one has stopped (or restart it), the new actor
+registers its own pid under that name and replaces the registry entry: later
+name-based lookups and `actor_message.to` deliveries resolve to the new pid.
+
 ## Reading events
 
 Most users read events through:
