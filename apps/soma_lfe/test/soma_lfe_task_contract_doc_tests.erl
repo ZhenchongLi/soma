@@ -97,3 +97,13 @@ test_contract_names_task_wording_doc_cases() ->
 
 contract_names_task_wording_doc_cases_test() ->
     test_contract_names_task_wording_doc_cases().
+
+test_contract_names_cli_demo_task_case() ->
+    Doc = read_doc("docs/contracts/task-form-test-contract.md"),
+    ?assert(contains(
+        Doc,
+        <<"| CLI demo `.lfe` files use top-level `(task ...)` forms. | `test_cli_demo_lfe_files_compile_as_top_level_tasks` |">>
+    )).
+
+contract_names_cli_demo_task_case_test() ->
+    test_contract_names_cli_demo_task_case().
