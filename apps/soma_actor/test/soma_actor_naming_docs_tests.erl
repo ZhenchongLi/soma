@@ -24,3 +24,13 @@ test_usage_documents_stable_name_start_option() ->
 
 usage_documents_stable_name_start_option_test() ->
     test_usage_documents_stable_name_start_option().
+
+test_usage_documents_registry_under_sup() ->
+    Doc = read_usage_md(),
+    %% `soma_actor_registry' is documented as the binary-name registry
+    %% supervised under `soma_actor_sup'.
+    ?assert(contains(Doc, <<"soma_actor_registry">>)),
+    ?assert(contains(Doc, <<"soma_actor_sup">>)).
+
+usage_documents_registry_under_sup_test() ->
+    test_usage_documents_registry_under_sup().
