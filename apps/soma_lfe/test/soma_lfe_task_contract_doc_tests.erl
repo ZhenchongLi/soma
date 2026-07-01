@@ -61,3 +61,39 @@ test_contract_names_task_doc_cases() ->
 
 contract_names_task_doc_cases_test() ->
     test_contract_names_task_doc_cases().
+
+test_contract_names_task_wording_doc_cases() ->
+    Doc = read_doc("docs/contracts/task-form-test-contract.md"),
+    lists:foreach(
+        fun(Token) ->
+            ?assert(contains(Doc, Token))
+        end,
+        [
+            <<"test_site_quick_start_presents_soma_lisp_tasks">>,
+            <<"test_readme_quick_start_names_soma_run_input_task_source">>,
+            <<"test_readme_docs_index_calls_usage_task_file_guide">>,
+            <<"test_usage_doc_uses_task_wording_for_public_run_sections">>,
+            <<"test_usage_stdin_example_uses_task_form">>,
+            <<"test_lfe_dsl_public_headings_use_task_wording">>,
+            <<"test_lfe_dsl_main_example_uses_task_form">>,
+            <<"test_readme_links_task_form_contract">>,
+            <<"test_site_lfe_dsl_documents_task_as_public_static_form">>,
+            <<"test_site_lfe_dsl_documents_run_as_compatibility_core_form">>,
+            <<"test_site_lfe_dsl_mirrors_task_first_wording">>,
+            <<"test_lisp_messages_soma_run_input_is_task_source">>,
+            <<"test_release_sample_run_command_is_task_execution">>,
+            <<"test_site_release_mirrors_task_wording">>,
+            <<"test_cli_opening_calls_input_task_files">>,
+            <<"test_cli_stdin_section_names_dash_task_source_path">>,
+            <<"test_site_cli_mirrors_task_first_wording">>,
+            <<"test_cli_demo_lfe_files_compile_as_top_level_tasks">>,
+            <<"test_cli_demo_readme_describes_inputs_as_task_files">>,
+            <<"test_cli_demo_script_describes_task_run">>,
+            <<"test_cli_contract_describes_run_request_as_task_source">>,
+            <<"test_cli_1b_contract_describes_file_run_input_as_task_source">>,
+            <<"test_cli_1b_contract_describes_stdin_run_input_as_task_source">>
+        ]
+    ).
+
+contract_names_task_wording_doc_cases_test() ->
+    test_contract_names_task_wording_doc_cases().
