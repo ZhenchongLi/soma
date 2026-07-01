@@ -411,7 +411,7 @@ test_restarted_disk_log_interrupted_runs_excludes_terminal_run() ->
         Interrupted = soma_event_store:interrupted_runs(Pid2),
         ok = stop_store(Pid2),
 
-        ?assertEqual([interrupted_run, terminal_run], Interrupted)
+        ?assertEqual([interrupted_run], Interrupted)
     after
         ok = del_tmp_dir(TmpDir)
     end.
