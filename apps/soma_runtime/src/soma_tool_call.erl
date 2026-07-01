@@ -28,7 +28,7 @@ run(#{module := Module} = Opts) ->
     Ctx = maps:get(ctx, Opts),
     ToolCallId = maps:get(tool_call_id, Opts),
     ReplyTo = maps:get(reply_to, Opts),
-    Result = Module:invoke(Input, Ctx),
+    Result = normalize_erlang_module_result(Module:invoke(Input, Ctx)),
     ReplyTo ! {tool_result, ToolCallId, self(), Result},
     ok;
 run(#{executable := Executable, argv := Argv} = Opts) ->
@@ -167,3 +167,10 @@ render_input(Input) when is_list(Input) ->
     Input;
 render_input(Input) ->
     lists:flatten(io_lib:format("~p", [Input])).
+
+normalize_erlang_module_result({ok, _Output} = Result) ->
+    Result;
+normalize_erlang_module_result({error, _Reason} = Result) ->
+    Result;
+normalize_erlang_module_result(_Other) ->
+    {error, invalid_tool_return}.
