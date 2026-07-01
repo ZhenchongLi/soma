@@ -132,7 +132,7 @@ references are compile errors.
 Use `-` as the task source path:
 
 ```bash
-printf '(run (step greet echo (args (value "hello"))))\n' | $SOMA run -
+printf '(task (let* ((greet (tool echo (value "hello")))) (return greet)))\n' | $SOMA run -
 ```
 
 ## Built-In Tools
