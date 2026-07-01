@@ -71,7 +71,7 @@ All five built-in tools the daemon seeds are fair game (`echo`, `sleep`, `fail`,
   arc; run it by hand to watch a hung step get timed out:
   `soma run examples/cli-demo/timeout.lfe`.
 
-Task files are Soma Lisp s-exprs (`(task (step <id> <tool> (args ...) (timeout_ms N)))`).
+Task files are Soma Lisp s-exprs (`(task (let* ((id (tool name ...))) (return id)))`).
 Note the LFE reader has **no `;` comments** — keep these files comment-free.
 
 ## Want the "external process actually dies" version?
