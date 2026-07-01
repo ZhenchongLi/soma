@@ -9,6 +9,8 @@
 %% same `(result ...)' form.
 -module(soma_cli_server).
 
+-include_lib("kernel/include/file.hrl").
+
 -export([start_link/1, frame/1, unframe/1]).
 -export([ask_envelope/4]).
 
@@ -43,13 +45,15 @@ listen(Parent, Path, ModelConfig) ->
             Parent ! {self(), {error, Reason}}
     end.
 
-%% Unlink only a *stale* leftover at Path -- a file no live server answers --
-%% so a restart after a crash that left a socket file still binds, while a live
-%% server's path is left alone (a second start_link then fails the bind rather
-%% than stealing the path). Probe by connecting: if a server answers, the path
-%% is live and untouched; if no file is there, or nothing answers, clear it.
+%% Unlink only a *stale* leftover at Path -- a non-regular file no live server
+%% answers -- so a restart after a crash that left a socket file still binds.
+%% Regular files are not stale sockets and are left in place so bind fails
+%% without data loss. Probe by connecting: if a server answers, the path is live
+%% and untouched; if no file is there, or nothing answers, clear it.
 unlink_stale(Path) ->
     case file:read_file_info(Path) of
+        {ok, #file_info{type = regular}} ->
+            ok;
         {ok, _} ->
             case gen_tcp:connect({local, Path}, 0,
                                  [binary, {active, false}], 200) of

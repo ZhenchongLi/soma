@@ -115,7 +115,15 @@ test_start_link_listens_and_accepts_connect(Config) ->
 %% so the listener binds and accepts a connect.
 test_start_link_unlinks_stale_socket_file(Config) ->
     Path = socket_path(Config),
-    ok = file:write_file(Path, <<"stale">>),
+    {ok, StaleServer} = soma_cli_server:start_link(#{socket => Path}),
+    unlink(StaleServer),
+    StaleMon = erlang:monitor(process, StaleServer),
+    exit(StaleServer, kill),
+    receive
+        {'DOWN', StaleMon, process, StaleServer, killed} -> ok
+    after 1000 ->
+        ct:fail(stale_server_not_stopped)
+    end,
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
     {ok, Client} = connect(Path),
     ok = gen_tcp:close(Client).
