@@ -9,7 +9,7 @@ are built. `README.md` remains the authoritative high-level spec; read it before
 changing runtime behaviour. The docs under `docs/contracts/` map behavioural
 guarantees to the tests that prove them.
 
-Current local gate observed in this checkout: EUnit 259 and Common Test 350
+Current local gate observed in this checkout: EUnit 339 and Common Test 351
 green on Erlang/OTP 29. A self-contained macOS arm64 release is built and
 verified. Linux x86_64 and Linux arm64 release artifacts remain packaging/CI
 work, not runtime logic.
@@ -61,7 +61,7 @@ Layer status:
   open network sockets. Live smoke is opt-in via `soma_llm_smoke:run/0` and
   `SOMA_LLM_API_KEY`.
 - Lisp edge language L.1-L.5 is built: the bounded Soma Lisp v1 public task surface
-  with `(task ...)` workflows, `(msg ...)` envelopes, actor-to-actor
+  with `(task ...)` task sources, `(msg ...)` envelopes, actor-to-actor
   Lisp bodies, Lisp proposals, Lisp audit/trace rendering, and bounded
   self-repair that re-enters the normal normalize/policy/budget path.
 - Local CLI/daemon product surface is built: `soma_cli_server`, `soma_cli`,
@@ -308,6 +308,22 @@ rebar3 dialyzer
 rebar3 shell
 rebar3 as prod tar
 ```
+
+## Development Workflow
+
+Use relay with the Codex source for substantive development in this repository.
+The normal path is:
+
+```bash
+relay run --project soma --issue <issue-number> --source codex
+```
+
+For new implementation work, first create or refine a GitHub `[cc]` issue with
+testable acceptance criteria, get approval, then let relay drive the
+requirements / architect / dev / review / PR flow. Keep manual edits limited to
+small repository hygiene, read-only investigation, or explicitly requested
+emergency fixes; do not hand-drive runtime, CLI, actor, Lisp, resume, or
+packaging slices when they can go through relay.
 
 ## Scope Discipline
 

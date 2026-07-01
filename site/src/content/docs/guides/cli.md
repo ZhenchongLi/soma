@@ -96,9 +96,9 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
 | `soma status <task-id>` / `soma cancel <task-id>` | `soma_cli:status/1`, `cancel/1` | no | Poll / cancel a task by id. |
 | `soma trace <correlation_id>` | `soma_cli:trace/1` | no | Render a stored correlation chain as Lisp events. |
 
-The module APIs above are what exists today. Product work remains to expose them
-as a packaged external task command without colliding with relx's existing
-`bin/soma` control script.
+The module APIs above back the packaged `bin/soma` task command. The release
+keeps `bin/soma` for user tasks and `bin/somad` for relx node control so the two
+surfaces do not collide.
 
 ## `soma run` — deterministic supervised execution (client)
 
