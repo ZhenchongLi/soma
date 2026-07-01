@@ -110,8 +110,8 @@ rebar3 release
 SOMA="_build/default/rel/somad/bin/soma"
 ```
 
-Write a small static task. This Lisp-flavored workflow language is the public run
-format: Lisp at the edge, validated data inside the runtime. Syntax reference:
+Write a small static task. Lisp stays at the edge and becomes validated data
+inside the runtime. Syntax reference:
 [docs/lfe-dsl.md](docs/lfe-dsl.md); CLI wire and command behavior:
 [docs/cli.md](docs/cli.md).
 
@@ -136,6 +136,8 @@ EOF
 $SOMA run /tmp/soma-demo/pipeline.lisp
 cat /tmp/soma-demo/output.txt
 ```
+
+That file is the public `soma run` input: a Soma Lisp task source.
 
 The result is printed as a Lisp `(result ...)` form carrying a `task-id` and
 `correlation-id`. Use those ids to inspect or manage work:
