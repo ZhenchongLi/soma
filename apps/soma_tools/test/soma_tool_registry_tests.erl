@@ -67,3 +67,69 @@ register_tool_rejects_missing_field_name_unresolvable_test_() ->
      fun(_Pid) ->
          ?_test(test_register_tool_rejects_missing_field_name_unresolvable())
      end}.
+
+%% A catalog entry is exactly the model-facing half — #{name, description,
+%% params} — with params defaulting to [] when the descriptor declared none.
+%% Runtime internals (module / executable / argv / effect / idempotent /
+%% timeout_ms) never appear in an entry.
+test_catalog_entry_is_exactly_name_description_params() ->
+    WithParams = #{
+        name => catalog_full_tool,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo,
+        description => <<"Echoes text back, params declared.">>,
+        params => [#{name => <<"text">>,
+                     type => string,
+                     required => true,
+                     doc => <<"The text to echo.">>}]
+    },
+    DescriptionOnly = #{
+        name => catalog_minimal_tool,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo,
+        description => <<"Has a description but declares no params.">>
+    },
+    ok = soma_tool_registry:register_tool(WithParams),
+    ok = soma_tool_registry:register_tool(DescriptionOnly),
+    Catalog = soma_tool_registry:catalog(),
+    %% Every entry's key set is exactly [name, description, params]; the
+    %% runtime-facing fields never leak into an entry.
+    Forbidden = [module, executable, argv, effect, idempotent, timeout_ms],
+    lists:foreach(
+      fun(Entry) ->
+          ?assertEqual([description, name, params],
+                       lists:sort(maps:keys(Entry))),
+          lists:foreach(
+            fun(Key) -> ?assertNot(maps:is_key(Key, Entry)) end,
+            Forbidden)
+      end,
+      Catalog),
+    [FullEntry] = [E || E = #{name := catalog_full_tool} <- Catalog],
+    [MinimalEntry] = [E || E = #{name := catalog_minimal_tool} <- Catalog],
+    ?assertEqual(#{name => catalog_full_tool,
+                   description => <<"Echoes text back, params declared.">>,
+                   params => [#{name => <<"text">>,
+                                type => string,
+                                required => true,
+                                doc => <<"The text to echo.">>}]},
+                 FullEntry),
+    ?assertEqual(#{name => catalog_minimal_tool,
+                   description => <<"Has a description but declares no params.">>,
+                   params => []},
+                 MinimalEntry).
+
+catalog_entry_is_exactly_name_description_params_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_catalog_entry_is_exactly_name_description_params())
+     end}.
