@@ -452,8 +452,10 @@ test_site_cli_mirrors_task_first_wording() ->
     ?assert(contains(Run, <<"soma run TASK_FILE [--detach]">>)),
     ?assert(contains(Run, <<"**TASK_FILE**: a task file, or `-` as the task source path">>)),
     ?assert(contains(Run, <<"Soma Lisp task source">>)),
+    ?assert(contains(Run, <<"task source with a `(detach)` marker">>)),
     ?assertNot(contains(Run, <<"soma run WORKFLOW [--detach]">>)),
-    ?assertNot(contains(Run, <<"**WORKFLOW**">>)).
+    ?assertNot(contains(Run, <<"**WORKFLOW**">>)),
+    ?assertNot(contains(Run, <<"same `(run …)` request">>)).
 
 site_cli_mirrors_task_first_wording_test() ->
     test_site_cli_mirrors_task_first_wording().
