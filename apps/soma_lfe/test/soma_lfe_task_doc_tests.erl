@@ -116,6 +116,14 @@ test_lisp_messages_grammar_lists_task_form() ->
 lisp_messages_grammar_lists_task_form_test() ->
     test_lisp_messages_grammar_lists_task_form().
 
+test_lisp_messages_records_bounded_soma_lisp_v1_slice() ->
+    Slices = section(read_doc("docs/lisp-messages.md"), <<"## Slices">>),
+    ?assert(contains(Slices, <<"bounded Soma Lisp v1">>)),
+    ?assert(contains(Slices, <<"[done]">>)).
+
+lisp_messages_records_bounded_soma_lisp_v1_slice_test() ->
+    test_lisp_messages_records_bounded_soma_lisp_v1_slice().
+
 test_lfe_dsl_documents_run_as_compatibility_core_form() ->
     Doc = read_doc("docs/lfe-dsl.md"),
     ?assert(contains(Doc, <<"(run ...)">>)),
