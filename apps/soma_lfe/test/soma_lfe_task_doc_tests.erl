@@ -313,6 +313,14 @@ test_cli_opening_calls_input_task_files() ->
 cli_opening_calls_input_task_files_test() ->
     test_cli_opening_calls_input_task_files().
 
+test_cli_stdin_section_names_dash_task_source_path() ->
+    Stdin = section(read_doc("docs/cli.md"), <<"## Read From Stdin">>),
+    ?assert(contains(Stdin, <<"Use `-` as the task source path">>)),
+    ?assertNot(contains(Stdin, <<"workflow path">>)).
+
+cli_stdin_section_names_dash_task_source_path_test() ->
+    test_cli_stdin_section_names_dash_task_source_path().
+
 test_cli_doc_says_run_file_reads_soma_lisp_source() ->
     Doc = read_doc("docs/cli.md"),
     ?assert(contains(
