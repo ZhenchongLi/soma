@@ -6,10 +6,12 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_boot_with_event_store_log_resumes_between_steps_interrupted_run/1]).
 -export([test_boot_auto_resume_emits_run_resumed_for_first_pending_step/1]).
+-export([test_boot_auto_resume_fails_unsafe_in_flight_state_step/1]).
 
 all() ->
     [test_boot_with_event_store_log_resumes_between_steps_interrupted_run,
-     test_boot_auto_resume_emits_run_resumed_for_first_pending_step].
+     test_boot_auto_resume_emits_run_resumed_for_first_pending_step,
+     test_boot_auto_resume_fails_unsafe_in_flight_state_step].
 
 init_per_testcase(_Case, Config) ->
     _ = application:stop(soma_runtime),
@@ -78,6 +80,39 @@ test_boot_auto_resume_emits_run_resumed_for_first_pending_step(Config) ->
     ?assertEqual(s2, maps:get(step_id, Resumed)),
     ?assertEqual(#{first_pending_step => s2}, maps:get(payload, Resumed)).
 
+%% v0.7.5 criterion 5: boot auto-resume must fail safe when discovery finds a
+%% run interrupted inside a non-idempotent state step. The runtime boot path
+%% should append a terminal run.failed event with {resume_unsafe, StepId} and
+%% keep that failure on the original durable run/session trail.
+test_boot_auto_resume_fails_unsafe_in_flight_state_step(Config) ->
+    Path = ?config(log_path, Config),
+    RunId = <<"run-auto-resume-unsafe-state-1">>,
+    SessionId = <<"sess-auto-resume-unsafe-state-1">>,
+    S1 = #{id => s1,
+           tool => file_write,
+           args => #{path => <<"out.txt">>,
+                     content => <<"unsafe bytes">>,
+                     root => list_to_binary(?config(tmp_dir, Config))}},
+    Steps = [S1],
+
+    ok = seed_unsafe_in_flight_state_log(Path, RunId, SessionId, Steps),
+
+    application:set_env(soma_runtime, event_store_log, Path),
+    {ok, _Started} = application:ensure_all_started(soma_runtime),
+    StorePid = event_store_pid(),
+
+    ?assertEqual(ok, wait_for_event(StorePid, RunId, <<"run.failed">>, 50)),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Failed = [E || E <- Events,
+                   maps:get(event_type, E, undefined) =:= <<"run.failed">>],
+    ?assertMatch([_], Failed),
+    [FailedEvent] = Failed,
+    ?assertEqual(RunId, maps:get(run_id, FailedEvent)),
+    ?assertEqual(SessionId, maps:get(session_id, FailedEvent)),
+    ?assertEqual(s1, maps:get(step_id, FailedEvent)),
+    ?assertEqual({resume_unsafe, s1},
+                 maps:get(reason, maps:get(payload, FailedEvent))).
+
 seed_between_steps_log(Path, RunId, SessionId, Steps) ->
     [S1 | _] = Steps,
     {ok, Pid} = soma_event_store:start_link(#{log => Path}),
@@ -94,6 +129,24 @@ seed_between_steps_log(Path, RunId, SessionId, Steps) ->
                                    step_id => maps:get(id, S1),
                                    event_type => <<"step.succeeded">>,
                                    payload => #{output => #{value => <<"committed">>}}}),
+    stop_store(Pid).
+
+seed_unsafe_in_flight_state_log(Path, RunId, SessionId, Steps) ->
+    [S1 | _] = Steps,
+    {ok, Pid} = soma_event_store:start_link(#{log => Path}),
+    ok = soma_event_store:append(Pid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   event_type => <<"run.started">>,
+                                   payload => #{steps => Steps,
+                                                run_options => #{run_id => RunId,
+                                                                 session_id => SessionId}}}),
+    ok = soma_event_store:append(Pid,
+                                 #{run_id => RunId,
+                                   session_id => SessionId,
+                                   step_id => maps:get(id, S1),
+                                   event_type => <<"tool.started">>,
+                                   payload => #{tool_call_pid => self()}}),
     stop_store(Pid).
 
 event_store_pid() ->
