@@ -77,6 +77,7 @@ implemented top-level forms are:
 
 | s-expr form | parses into |
 |---|---|
+| `(task ...)` | `#{run => #{steps => [...]}}` |
 | `(msg (type T) (payload …) (steps …) (llm …) (correlation-id "…"))` | an envelope `#{type, payload, steps?, llm?, correlation_id?}` |
 | `(step (id s1) (tool echo) (args (value "hi")))`, `(from-step s1)` | a step map (the existing v0.3 grammar) |
 | `(reply (text "…"))` / `(run-steps (step …) …)` / `(reject (reason "..."))` | a proposal `#{kind, …}` accepted by `soma_proposal:normalize/1` |
@@ -129,6 +130,9 @@ Safety constraints — without these it is dangerous:
 
 ## Slices
 
+- **bounded Soma Lisp v1** — public task surface [done]: `(task ...)` workflows
+  compile to the existing canonical run step-list map while Lisp remains bounded
+  to edge parsing, proposals, messages, audit rendering, and repair.
 - **L.1** — Lisp envelope [done]: extend `soma_lfe` to parse `(msg …)` → the internal
   envelope map; `soma_actor:send/2` & `ask/3` accept a Lisp string (additive —
   map envelopes still work). Proof: a Lisp message runs identically to the

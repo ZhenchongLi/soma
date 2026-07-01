@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Criterion 6 harness: the Roadmap reference page is built into site/dist/ and the
-# rendered HTML contains the literal token roadmap.
+# Criterion 5 harness: the Roadmap reference page is built into site/dist/ and the
+# rendered HTML contains the literal token for bounded Soma Lisp v1.
 #
 # Run from anywhere: this resolves site/ relative to its own location so the
 # assertion is about the build output, not the caller's cwd.
 #
 # The build is run (clean install then build) and then the Roadmap reference
-# route's built HTML file is asserted to exist and to contain roadmap.
+# route's built HTML file is asserted to exist and to contain bounded Soma Lisp v1.
 # Directory-format output emits the route as dist/reference/roadmap/index.html.
 set -uo pipefail
 
@@ -25,7 +25,7 @@ npm ci && npm run build || {
 }
 
 ROADMAP_HTML="${SITE_DIR}/dist/reference/roadmap/index.html"
-EXPECTED_TOKEN="roadmap"
+EXPECTED_TOKEN="bounded Soma Lisp v1"
 
 if [ ! -f "${ROADMAP_HTML}" ]; then
   echo "FAIL: roadmap reference — page missing (expected ${ROADMAP_HTML})" >&2

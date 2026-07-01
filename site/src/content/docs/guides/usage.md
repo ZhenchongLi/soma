@@ -902,9 +902,11 @@ soma_cli:trace(#{correlation_id => <<"corr-1">>, socket => SocketPath}).
 soma_cli:cancel(#{task_id => <<"task-1">>, socket => SocketPath}).
 ```
 
-The wire is length-prefixed Lisp s-expressions: `(run ...)`, `(ask ...)`,
-`(status ...)`, `(trace ...)`, and `(cancel ...)` requests, with `(result ...)`,
-`(accepted ...)`, `(status ...)`, or `(trace ...)` replies rendered by
+The wire is length-prefixed Lisp s-expressions. Run requests carry Soma Lisp
+source: `(task ...)` is the public static task form, while `(run ...)` remains
+the compatibility/core form. The other request forms are `(ask ...)`,
+`(status ...)`, `(trace ...)`, and `(cancel ...)`; replies are `(result ...)`,
+`(accepted ...)`, `(status ...)`, or `(trace ...)` forms rendered by
 `soma_lisp`. Detached run support is a `(detach)` marker inside `(run ...)`;
 detached tasks live in `soma_cli_task_registry` and can be managed by id.
 

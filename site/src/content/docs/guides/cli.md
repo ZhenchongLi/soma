@@ -78,8 +78,9 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
   path-length limit, ~104 chars on macOS). **Not** `/run` (needs root; absent on
   macOS, the verified target).
 - **Framing**: length-prefixed s-expr frames. The request frame carries the
-  workflow's Lisp s-expr — a `(run …)` form (the daemon parses it with
-  `soma_lfe`); the reply frame carries a rendered `(result …)` s-expr
+  workflow's Soma Lisp source. Public static tasks use `(task …)`; `(run …)`
+  remains the compatibility/core form. The daemon parses the source with
+  `soma_lfe`; the reply frame carries a rendered `(result …)` s-expr
   (`soma_lisp:render/1`). No JSON on the wire — the same Lisp the workflows are
   written in is the wire format.
 - **Access control**: filesystem permissions on the socket path (0600, owner-
@@ -105,11 +106,12 @@ as a packaged external task command without colliding with relx's existing
 soma run WORKFLOW [--detach]
 ```
 
-- **WORKFLOW**: a file (or `-` for stdin) — an **LFE workflow** (a `(run …)`
-  s-expr, compiled via `soma_lfe:compile/2`).
-- The client reads the file's s-expr and sends it as the **`(run …)` request**
-  frame; the daemon parses it with `soma_lfe`, owns a supervised run, waits for
-  the terminal state, and frames back a rendered **`(result …)` reply** s-expr
+- **WORKFLOW**: a file (or `-` for stdin) — Soma Lisp source compiled via
+  `soma_lfe:compile/2`. `(task …)` is the public static task form; `(run …)`
+  remains the compatibility/core run form.
+- The client reads the file's s-expr and sends it as the run request frame; the
+  daemon parses it with `soma_lfe`, owns a supervised run, waits for the terminal
+  state, and frames back a rendered **`(result …)` reply** s-expr
   (`soma_lisp:render/1`) which the client prints.
 - The `(result …)` s-expr carries the terminal `status`, the `outputs`, and the
   `task_id` / `correlation_id`. Exit `0` completed, non-zero otherwise.
@@ -366,5 +368,6 @@ documented now, fixed later, not v1 blockers:
 - **`soma ask` config file** (done): a small TOML at `~/.soma/config`
   (`provider` / `base_url` / `model`), the API key strictly from the daemon's
   `SOMA_LLM_API_KEY` env, never the file.
-- **Input formats for `soma run`**: an LFE workflow (a `(run …)` s-expr); the
-  same Lisp is the wire and the file format.
+- **Input formats for `soma run`**: Soma Lisp source. Public static tasks use
+  `(task …)`; `(run …)` remains the compatibility/core form. The same Lisp is
+  the wire and the file format.

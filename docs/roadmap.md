@@ -36,7 +36,7 @@ v0.8    DAG / parallel execution, only if still needed
 Active tracks (parallel to v0.7+, building now):
 node B  real LLM provider behind the perform_call seam   [provider + actor planning done; product surface next]
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
-Lisp    s-expr actor/agent message language (soma_lfe)   [L.1-L.5 done]
+Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
 ```
 
 ## v0.4 — soma_actor skeleton [done]

@@ -340,6 +340,9 @@ steps, and Linux x86_64 / arm64 release artifacts.
   through **[docs/contracts/L.5-test-contract.md](docs/contracts/L.5-test-contract.md)**
   — Lisp edge-language proofs: message envelopes, actor-to-actor Lisp delivery,
   Lisp proposals, Lisp trace/rendering, and bounded proposal repair.
+- **[docs/contracts/task-form-test-contract.md](docs/contracts/task-form-test-contract.md)**
+  — bounded Soma Lisp v1 public task surface proofs: `(task ...)` compilation
+  into canonical run maps and documentation alignment for the public task form.
 - **[docs/contracts/cli-1b-test-contract.md](docs/contracts/cli-1b-test-contract.md)**,
   **[docs/contracts/cli-2-test-contract.md](docs/contracts/cli-2-test-contract.md)**,
   and **[docs/contracts/cli-3-test-contract.md](docs/contracts/cli-3-test-contract.md)**

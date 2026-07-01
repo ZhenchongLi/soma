@@ -233,6 +233,11 @@ deterministic tool work.
 These are the forms a custom client would send over the local socket:
 
 ```lisp
+(task
+  (let* ((greet (tool echo
+                  (value "hello"))))
+    (return greet)))
+
 (run
   (step greet echo
     (args (value "hello"))))
