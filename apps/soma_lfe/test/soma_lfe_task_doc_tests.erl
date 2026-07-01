@@ -121,6 +121,35 @@ test_readme_docs_index_calls_usage_task_file_guide() ->
 readme_docs_index_calls_usage_task_file_guide_test() ->
     test_readme_docs_index_calls_usage_task_file_guide().
 
+test_usage_doc_uses_task_wording_for_public_run_sections() ->
+    Doc = read_doc("docs/usage.md"),
+    Intro = paragraph_starting_with(
+        Doc,
+        <<"This guide is for using Soma from the packaged `soma` command:">>
+    ),
+    QuickStart = section(Doc, <<"## Quick Start: Run A ">>),
+    RunFile = section(Doc, <<"`soma run FILE` reads Soma Lisp source">>),
+    BuiltInTools = section(Doc, <<"## Built-In Tools">>),
+    ManageTasks = section(Doc, <<"## Manage Tasks">>),
+    ?assert(contains(Intro, <<"running task files">>)),
+    ?assertNot(contains(Intro, <<"running workflow files">>)),
+    ?assert(contains(QuickStart, <<"## Quick Start: Run A Task">>)),
+    ?assertNot(contains(QuickStart, <<"Run A Workflow">>)),
+    ?assert(contains(Doc, <<"## Task Files">>)),
+    ?assertNot(contains(Doc, <<"## Workflow Files">>)),
+    ?assert(contains(RunFile, <<"Soma Lisp task source">>)),
+    ?assert(contains(RunFile, <<"inside this task">>)),
+    ?assertNot(contains(RunFile, <<"inside this workflow">>)),
+    ?assert(contains(RunFile, <<"after the task is compiled">>)),
+    ?assertNot(contains(RunFile, <<"after the workflow is compiled">>)),
+    ?assert(contains(BuiltInTools, <<"Task users still call them by tool name">>)),
+    ?assertNot(contains(BuiltInTools, <<"Workflow users still call them by tool name">>)),
+    ?assert(contains(ManageTasks, <<"The task finished successfully">>)),
+    ?assertNot(contains(ManageTasks, <<"The workflow finished successfully">>)).
+
+usage_doc_uses_task_wording_for_public_run_sections_test() ->
+    test_usage_doc_uses_task_wording_for_public_run_sections().
+
 test_readme_links_task_form_contract() ->
     TestContracts = section(read_doc("README.md"), <<"**Test contracts**">>),
     ?assert(contains(
