@@ -6,7 +6,9 @@
 %% are later cycles.
 -module(soma_llm_openai).
 
--export([build_request/1, parse_response/1, chat/1]).
+-export([build_request/1, request_http_options/1, parse_response/1, chat/1]).
+
+-define(DEFAULT_OPENAI_REQUEST_TIMEOUT_MS, 60000).
 
 %% Build the pieces of the chat-completions POST from a config map. Pure: it
 %% opens no socket. The url is the configured `base_url' with `/chat/completions'
@@ -33,6 +35,12 @@ add_optional_opts(BodyMap, Config) ->
       end,
       BodyMap,
       [enable_thinking, max_tokens]).
+
+request_http_options(Config) ->
+    TimeoutMs =
+        maps:get(request_timeout_ms, Config,
+                 ?DEFAULT_OPENAI_REQUEST_TIMEOUT_MS),
+    [{timeout, TimeoutMs}].
 
 %% Map a raw HTTP response (status plus body) to a reply proposal. On a 200 it
 %% decodes the body and pulls `choices[0].message.content' as the reply text,
@@ -69,10 +77,11 @@ chat(#{response := Response}) ->
     parse_response(Response);
 chat(Config) ->
     #{url := Url, headers := Headers, body := Body} = build_request(Config),
+    HttpOptions = request_http_options(Config),
     case httpc:request(post,
                        {binary_to_list(Url), Headers,
                         "application/json", Body},
-                       [], [{body_format, binary}]) of
+                       HttpOptions, [{body_format, binary}]) of
         {ok, {{_Version, Status, _Reason}, _RespHeaders, RespBody}} ->
             parse_response({Status, RespBody});
         {error, Reason} ->
