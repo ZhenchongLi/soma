@@ -63,3 +63,13 @@ test_usage_documents_actor_message_to_stable_name() ->
 
 usage_documents_actor_message_to_stable_name_test() ->
     test_usage_documents_actor_message_to_stable_name().
+
+test_usage_documents_unknown_to_fails_sender_task() ->
+    Doc = read_usage_md(),
+    %% An unknown `actor_message.to' name is documented as a delivery failure
+    %% that fails the sender's task while the sender actor stays alive.
+    ?assert(contains(Doc, <<"fails the sender's task">>)),
+    ?assert(contains(Doc, <<"sender actor stays alive">>)).
+
+usage_documents_unknown_to_fails_sender_task_test() ->
+    test_usage_documents_unknown_to_fails_sender_task().
