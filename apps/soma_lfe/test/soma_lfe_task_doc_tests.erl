@@ -199,3 +199,14 @@ test_site_roadmap_marks_bounded_soma_lisp_v1_built() ->
 
 site_roadmap_marks_bounded_soma_lisp_v1_built_test() ->
     test_site_roadmap_marks_bounded_soma_lisp_v1_built().
+
+test_agents_names_public_task_surface() ->
+    LispState = paragraph_starting_with(
+        section(read_doc("AGENTS.md"), <<"## Current State">>),
+        <<"- Lisp edge language L.1-L.5 is built:">>
+    ),
+    ?assert(contains(LispState, <<"bounded Soma Lisp v1">>)),
+    ?assert(contains(LispState, <<"public task surface">>)).
+
+agents_names_public_task_surface_test() ->
+    test_agents_names_public_task_surface().
