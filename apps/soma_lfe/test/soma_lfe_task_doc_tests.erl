@@ -307,6 +307,20 @@ test_release_sample_run_command_is_task_execution() ->
 release_sample_run_command_is_task_execution_test() ->
     test_release_sample_run_command_is_task_execution().
 
+test_site_release_mirrors_task_wording() ->
+    Run = section(read_doc("site/src/content/docs/guides/release.md"), <<"## Run">>),
+    ?assert(contains(
+        Run,
+        <<"/opt/soma/bin/soma run flow.lfe  # run a task under supervision">>
+    )),
+    ?assertNot(contains(
+        Run,
+        <<"/opt/soma/bin/soma run flow.lfe  # run a workflow under supervision">>
+    )).
+
+site_release_mirrors_task_wording_test() ->
+    test_site_release_mirrors_task_wording().
+
 test_lfe_dsl_documents_run_as_compatibility_core_form() ->
     Doc = read_doc("docs/lfe-dsl.md"),
     ?assert(contains(Doc, <<"(run ...)">>)),
