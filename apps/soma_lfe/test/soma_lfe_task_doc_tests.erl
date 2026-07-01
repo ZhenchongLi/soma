@@ -190,6 +190,39 @@ test_lfe_dsl_public_headings_use_task_wording() ->
 lfe_dsl_public_headings_use_task_wording_test() ->
     test_lfe_dsl_public_headings_use_task_wording().
 
+test_public_task_docs_do_not_call_soma_run_inputs_workflows() ->
+    Checks = [
+        {"docs/lfe-dsl.md",
+         <<"for `soma run` workflow files">>,
+         <<"for `soma run` task files">>},
+        {"docs/lfe-dsl.md",
+         <<"bounded Soma Lisp workflows">>,
+         <<"bounded Soma Lisp tasks">>},
+        {"docs/usage.md",
+         <<"Useful workflow files">>,
+         <<"Useful task files">>},
+        {"docs/usage.md",
+         <<"workflow language syntax and diagnostics">>,
+         <<"task source syntax and diagnostics">>},
+        {"docs/cli.md",
+         <<"Use `soma run` workflows for">>,
+         <<"Use `soma run` tasks for">>},
+        {"site/src/content/docs/guides/lfe-dsl.md",
+         <<"bounded Soma Lisp workflows">>,
+         <<"bounded Soma Lisp tasks">>}
+    ],
+    lists:foreach(
+        fun({Path, Forbidden, Required}) ->
+            Doc = read_doc(Path),
+            ?assertNot(contains(Doc, Forbidden)),
+            ?assert(contains(Doc, Required))
+        end,
+        Checks
+    ).
+
+public_task_docs_do_not_call_soma_run_inputs_workflows_test() ->
+    test_public_task_docs_do_not_call_soma_run_inputs_workflows().
+
 test_lfe_dsl_main_example_uses_task_form() ->
     Source = extract_pipeline_lfe(
         section(read_doc("docs/lfe-dsl.md"), <<"## Task Example">>)
