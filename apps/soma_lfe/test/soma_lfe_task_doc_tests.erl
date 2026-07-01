@@ -126,6 +126,14 @@ test_site_lfe_dsl_documents_task_as_public_static_form() ->
 site_lfe_dsl_documents_task_as_public_static_form_test() ->
     test_site_lfe_dsl_documents_task_as_public_static_form().
 
+test_site_lfe_dsl_documents_run_as_compatibility_core_form() ->
+    Doc = read_doc("site/src/content/docs/guides/lfe-dsl.md"),
+    ?assert(contains(Doc, <<"(run ...)">>)),
+    ?assert(contains(Doc, <<"compatibility/core run form">>)).
+
+site_lfe_dsl_documents_run_as_compatibility_core_form_test() ->
+    test_site_lfe_dsl_documents_run_as_compatibility_core_form().
+
 test_lisp_messages_grammar_lists_task_form() ->
     Grammar = section(read_doc("docs/lisp-messages.md"), <<"## Grammar">>),
     ?assert(contains(Grammar, <<"(task ...)">>)),
