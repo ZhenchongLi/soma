@@ -322,7 +322,7 @@ test_normalize_without_model_facing_fields_adds_no_keys() ->
     lists:foreach(
         fun(Manifest) ->
             ?assertEqual(
-                {ok, Manifest#{description => undefined}},
+                {ok, Manifest},
                 soma_tool_manifest:normalize(Manifest)
             ),
             {ok, Normalized} = soma_tool_manifest:normalize(Manifest),
