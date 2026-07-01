@@ -58,7 +58,7 @@ tar xzf somad-0.1.0.tar.gz -C /opt/soma
 
 # the task command — your agents talk to the daemon through this
 /opt/soma/bin/soma daemon        # boot the daemon (blocks until `soma stop`)
-/opt/soma/bin/soma run flow.lfe  # run a workflow under supervision
+/opt/soma/bin/soma run flow.lfe  # run a task under supervision
 /opt/soma/bin/soma stop          # stop the daemon
 
 # the node-control script — manage the BEAM node directly
