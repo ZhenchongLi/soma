@@ -533,3 +533,19 @@ test_cli_1b_contract_describes_file_run_input_as_task_source() ->
 
 cli_1b_contract_describes_file_run_input_as_task_source_test() ->
     test_cli_1b_contract_describes_file_run_input_as_task_source().
+
+test_cli_1b_contract_describes_stdin_run_input_as_task_source() ->
+    Doc = read_doc("docs/contracts/cli-1b-test-contract.md"),
+    [StdinRow] = [
+        Row
+     || Row <- binary:split(Doc, <<"\n">>, [global]),
+        starts_with(Row, <<"| 10 |">>)
+    ],
+    ?assert(contains(
+        StdinRow,
+        <<"stdin `soma run` input is Soma Lisp task source">>
+    )),
+    ?assertNot(contains(StdinRow, <<"workflow">>)).
+
+cli_1b_contract_describes_stdin_run_input_as_task_source_test() ->
+    test_cli_1b_contract_describes_stdin_run_input_as_task_source().
