@@ -37,6 +37,12 @@ The compiler may be fed by a human, an LLM planner, a UI, or another tool. That
 does not change the contract: source is parsed and validated into canonical
 maps, and only those maps enter the runtime or actor boundary.
 
+## Public static task form
+
+`(task ...)` is the public static task form for bounded Soma Lisp workflows. It
+compiles through `soma_lfe:compile/2` into the same validated run-step map shape
+that enters the runtime boundary.
+
 ## v0.3 run syntax
 
 A valid run workflow contains exactly one top-level `run` form. Inside `run`
