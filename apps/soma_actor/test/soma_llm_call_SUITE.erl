@@ -12,6 +12,7 @@
 -export([llm_worker_runs_in_distinct_pid/1]).
 -export([get_task_result_holds_llm_output/1]).
 -export([slow_call_times_out_worker_dead_actor_alive/1]).
+-export([default_timeout_without_timeout_ms_worker_dead_actor_alive/1]).
 -export([cancel_in_flight_call_worker_dead_actor_alive/1]).
 -export([crash_reaches_actor_as_failed_via_down/1]).
 -export([crash_with_timeout_ms_stays_failed_no_spurious_timeout/1]).
@@ -25,6 +26,7 @@ all() ->
     [llm_worker_runs_in_distinct_pid,
      get_task_result_holds_llm_output,
      slow_call_times_out_worker_dead_actor_alive,
+     default_timeout_without_timeout_ms_worker_dead_actor_alive,
      cancel_in_flight_call_worker_dead_actor_alive,
      crash_reaches_actor_as_failed_via_down,
      crash_with_timeout_ms_stays_failed_no_spurious_timeout,
@@ -136,6 +138,39 @@ slow_call_times_out_worker_dead_actor_alive(_Config) ->
     WorkerPid = maps:get(llm_call_pid, Started),
     true = is_pid(WorkerPid),
     ok = wait_for_status(ActorPid, TaskId, timeout, 100),
+    false = is_process_alive(WorkerPid),
+    true = is_process_alive(ActorPid),
+    ok.
+
+%% Issue #196 criterion 4: an LLM call started without an explicit `timeout_ms'
+%% still has an actor-owned default timeout. A hanging provider must become task
+%% data (`timeout'), the worker pid from `llm.started' must be dead, and the
+%% actor process must remain alive.
+default_timeout_without_timeout_ms_worker_dead_actor_alive(_Config) ->
+    Store = event_store_pid(),
+    Opts = #{actor_id => <<"actor-llm-default-timeout">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    Llm = #{directive => hang},
+    TaskId = <<"task-llm-default-timeout">>,
+    Envelope = #{type => <<"chat">>,
+                 payload => #{text => <<"hello">>},
+                 task_id => TaskId,
+                 llm => Llm},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    Started = wait_for_actor_event(Store, <<"llm.started">>, 100),
+    WorkerPid = maps:get(llm_call_pid, Started),
+    true = is_pid(WorkerPid),
+    try
+        ok = wait_for_status(ActorPid, TaskId, timeout, 100)
+    after
+        case is_process_alive(WorkerPid) of
+            true -> exit(WorkerPid, kill);
+            false -> ok
+        end
+    end,
     false = is_process_alive(WorkerPid),
     true = is_process_alive(ActorPid),
     ok.
