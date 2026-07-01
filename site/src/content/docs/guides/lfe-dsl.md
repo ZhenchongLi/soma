@@ -43,14 +43,37 @@ maps, and only those maps enter the runtime or actor boundary.
 compiles through `soma_lfe:compile/2` into the same validated run-step map shape
 that enters the runtime boundary.
 
+`(run ...)` remains the compatibility/core run form. It exposes the canonical
+step-list syntax used by the runtime and older callers, while `(task ...)` is
+the preferred public static task surface.
+
+When a need is dynamic, keep the dynamic decision in the actor/planner layer and submit a new bounded static Soma Lisp task for each execution attempt.
+
+## Task Files
+
+`soma run FILE` reads Soma Lisp source. Public static tasks use one `(task ...)`
+form:
+
+```lisp
+(task
+  (let* ((<id> (tool <tool>
+                 (<arg-key> <arg-value>)
+                 (timeout-ms <positive-integer>))))
+    (return <id>)))
+```
+
+- Each `let*` binding becomes one runtime step in binding order.
+- The binding name becomes the step `id`.
+- `(tool ToolName ...)` becomes the step `tool`.
+- Literal tool arguments become the step `args`.
+- `(from Name)` passes a prior step's whole output as `#{from_step => Name}`.
+- `(Key (from Name))` passes a prior step's output into one field.
+- `(return Name)` must reference a bound step.
+
 ## Compatibility/Core Run Form
 
 `(run ...)` remains the compatibility/core run form. It exposes the canonical
-step-list shape directly for callers that already target the runtime boundary.
-
-A valid run workflow contains exactly one top-level `run` form. Inside `run`
-there are one or more `step` forms. This remains the form `soma_cli:run/1` sends
-over the local socket.
+step-list syntax directly for callers that need it.
 
 ```lisp
 (run
@@ -102,33 +125,39 @@ In both `from_step` forms the referenced `<step-id>` must be a step that
 appears earlier in the same `run` form (forward references are rejected at
 compile time).
 
-## The `file_read -> echo -> file_write` demo
+## Task Example
 
-This is the canonical end-to-end example. It reads a file, passes the bytes
-through echo, and writes them to a new path.
+```bash
+mkdir -p /tmp/soma-demo
+printf 'hi soma\n' > /tmp/soma-demo/input.txt
 
-DSL source:
+cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
+(task
+  (let* ((read (tool file_read
+                 (path "input.txt")
+                 (root "/tmp/soma-demo")))
+         (process (tool echo
+                    (from read)))
+         (write (tool file_write
+                  (path "output.txt")
+                  (root "/tmp/soma-demo")
+                  (bytes (from process)))))
+    (return write)))
+EOF
 
-```lisp
-(run
-  (step read file_read
-    (args (path "input.txt") (root "/tmp/sandbox")))
-  (step process echo
-    (args (from_step read)))
-  (step write file_write
-    (args (path "output.txt") (root "/tmp/sandbox") (bytes (from_step process)))))
+soma run /tmp/soma-demo/pipeline.lfe
 ```
 
-Compiled steps (what `soma_lfe:compile/2` returns inside `#{run => #{steps => ...}}`):
+The compiled run contains the exact step-list maps accepted by `soma_run`:
 
 ```erlang
 [
-  #{id => read,    tool => file_read,
-    args => #{path => <<"input.txt">>, root => <<"/tmp/sandbox">>}},
+  #{id => read, tool => file_read,
+    args => #{path => <<"input.txt">>, root => <<"/tmp/soma-demo">>}},
   #{id => process, tool => echo,
     args => #{from_step => read}},
-  #{id => write,   tool => file_write,
-    args => #{path => <<"output.txt">>, root => <<"/tmp/sandbox">>,
+  #{id => write, tool => file_write,
+    args => #{path => <<"output.txt">>, root => <<"/tmp/soma-demo">>,
               bytes => {from_step, process}}}
 ]
 ```
