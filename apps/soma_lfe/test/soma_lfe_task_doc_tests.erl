@@ -109,6 +109,18 @@ test_readme_quick_start_names_soma_run_input_task_source() ->
 readme_quick_start_names_soma_run_input_task_source_test() ->
     test_readme_quick_start_names_soma_run_input_task_source().
 
+test_readme_docs_index_calls_usage_task_file_guide() ->
+    Docs = section(read_doc("README.md"), <<"## Docs">>),
+    Usage = paragraph_starting_with(
+        Docs,
+        <<"- **[docs/usage.md](docs/usage.md)**">>
+    ),
+    ?assert(contains(Usage, <<"running task files">>)),
+    ?assertNot(contains(Usage, <<"running workflow files">>)).
+
+readme_docs_index_calls_usage_task_file_guide_test() ->
+    test_readme_docs_index_calls_usage_task_file_guide().
+
 test_readme_links_task_form_contract() ->
     TestContracts = section(read_doc("README.md"), <<"**Test contracts**">>),
     ?assert(contains(
