@@ -1,6 +1,6 @@
 # Soma CLI
 
-`soma` is the user command. It reads Lisp workflow files, talks to the local Soma
+`soma` is the user command. It reads Soma Lisp task files, talks to the local Soma
 daemon, and prints Lisp replies. Client commands auto-start the daemon when it is
 not already listening.
 
