@@ -5,6 +5,7 @@
 -define(SHARED_FIELDS, [name, effect, idempotent, timeout_ms, adapter]).
 -define(EFFECTS, [identity, reader, state]).
 -define(ADAPTERS, [erlang_module, cli]).
+-define(PARAM_TYPES, [string, integer, boolean]).
 
 -spec normalize(map()) -> {ok, map()} | {error, term()}.
 normalize(Manifest) when is_map(Manifest) ->
@@ -45,7 +46,7 @@ check_adapter(#{adapter := Adapter} = Manifest) ->
 
 check_adapter_fields(#{adapter := erlang_module} = Manifest) ->
     case maps:is_key(module, Manifest) of
-        true -> normalize_complete(Manifest);
+        true -> check_model_facing(Manifest);
         false -> {error, {missing_field, module}}
     end;
 check_adapter_fields(#{adapter := cli, executable := Executable, argv := Argv} = Manifest) ->
@@ -53,31 +54,82 @@ check_adapter_fields(#{adapter := cli, executable := Executable, argv := Argv} =
         true -> {error, {invalid_executable, Executable}};
         false ->
             case is_list(Argv) of
-                true -> normalize_complete(Manifest);
+                true -> check_model_facing(Manifest);
                 false -> {error, {invalid_argv, Argv}}
             end
     end;
 check_adapter_fields(#{adapter := cli} = Manifest) ->
     case [K || K <- [executable, argv], not maps:is_key(K, Manifest)] of
         [Key | _] -> {error, {missing_field, Key}};
-        [] -> normalize_complete(Manifest)
+        [] -> check_model_facing(Manifest)
     end;
 check_adapter_fields(Manifest) ->
-    normalize_complete(Manifest).
+    check_model_facing(Manifest).
+
+%% Optional model-facing half: a binary description plus a params list of
+%% #{name (binary), type (string|integer|boolean), required (boolean)} specs,
+%% each optionally carrying a binary doc. Absent fields stay absent.
+check_model_facing(Manifest) ->
+    case check_description(Manifest) of
+        ok ->
+            case check_params(Manifest) of
+                ok -> normalize_complete(Manifest);
+                {error, _} = Error -> Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+check_description(#{description := Description}) when is_binary(Description) ->
+    ok;
+check_description(#{description := Description}) ->
+    {error, {invalid_description, Description}};
+check_description(_) ->
+    ok.
+
+check_params(#{params := Params}) when is_list(Params) ->
+    check_param_specs(Params);
+check_params(#{params := Params}) ->
+    {error, {invalid_params, Params}};
+check_params(_) ->
+    ok.
+
+check_param_specs([]) ->
+    ok;
+check_param_specs([Spec | Rest]) ->
+    case valid_param_spec(Spec) of
+        true -> check_param_specs(Rest);
+        false -> {error, {invalid_params, Spec}}
+    end.
+
+valid_param_spec(#{name := Name, type := Type, required := Required} = Spec) when is_map(Spec) ->
+    is_binary(Name) andalso
+        lists:member(Type, ?PARAM_TYPES) andalso
+        is_boolean(Required) andalso
+        valid_param_doc(Spec);
+valid_param_spec(_) ->
+    false.
+
+valid_param_doc(#{doc := Doc}) ->
+    is_binary(Doc);
+valid_param_doc(_) ->
+    true.
 
 has_internal_whitespace(Executable) when is_binary(Executable) ->
     has_internal_whitespace(binary_to_list(Executable));
 has_internal_whitespace(Executable) when is_list(Executable) ->
     lists:any(fun(C) -> C =:= $\s orelse C =:= $\t end, Executable).
 
-normalize_complete(#{
-    name := Name,
-    effect := Effect,
-    idempotent := Idempotent,
-    timeout_ms := TimeoutMs,
-    adapter := erlang_module,
-    module := Module
-}) ->
+normalize_complete(
+    #{
+        name := Name,
+        effect := Effect,
+        idempotent := Idempotent,
+        timeout_ms := TimeoutMs,
+        adapter := erlang_module,
+        module := Module
+    } = Input
+) ->
     Manifest = #{
         name => Name,
         effect => Effect,
@@ -86,16 +138,18 @@ normalize_complete(#{
         adapter => erlang_module,
         module => Module
     },
-    {ok, Manifest};
-normalize_complete(#{
-    name := Name,
-    effect := Effect,
-    idempotent := Idempotent,
-    timeout_ms := TimeoutMs,
-    adapter := cli,
-    executable := Executable,
-    argv := Argv
-}) ->
+    {ok, merge_model_facing(Input, Manifest)};
+normalize_complete(
+    #{
+        name := Name,
+        effect := Effect,
+        idempotent := Idempotent,
+        timeout_ms := TimeoutMs,
+        adapter := cli,
+        executable := Executable,
+        argv := Argv
+    } = Input
+) ->
     Manifest = #{
         name => Name,
         effect => Effect,
@@ -105,4 +159,28 @@ normalize_complete(#{
         executable => Executable,
         argv => Argv
     },
-    {ok, Manifest}.
+    {ok, merge_model_facing(Input, Manifest)}.
+
+%% Carry description/params into the rebuilt descriptor only when the input
+%% had them; a manifest without them gains no new keys. Param specs are rebuilt
+%% to exactly name/type/required (+ doc when present) so stray keys inside a
+%% spec are dropped, keeping normalize/1 idempotent.
+merge_model_facing(Input, Descriptor0) ->
+    Descriptor =
+        case Input of
+            #{description := Description} -> Descriptor0#{description => Description};
+            _ -> Descriptor0
+        end,
+    case Input of
+        #{params := Params} ->
+            Descriptor#{params => [rebuild_param_spec(Spec) || Spec <- Params]};
+        _ ->
+            Descriptor
+    end.
+
+rebuild_param_spec(#{name := Name, type := Type, required := Required} = Spec) ->
+    Base = #{name => Name, type => Type, required => Required},
+    case Spec of
+        #{doc := Doc} -> Base#{doc => Doc};
+        _ -> Base
+    end.
