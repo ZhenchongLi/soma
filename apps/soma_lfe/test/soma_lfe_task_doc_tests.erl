@@ -484,3 +484,13 @@ test_cli_demo_lfe_files_compile_as_top_level_tasks() ->
 
 cli_demo_lfe_files_compile_as_top_level_tasks_test() ->
     test_cli_demo_lfe_files_compile_as_top_level_tasks().
+
+test_cli_demo_readme_describes_inputs_as_task_files() ->
+    Doc = read_doc("examples/cli-demo/README.md"),
+    ?assert(contains(Doc, <<"## The task files">>)),
+    ?assert(contains(Doc, <<"Task files are Soma Lisp s-exprs">>)),
+    ?assertNot(contains(Doc, <<"## The workflow files">>)),
+    ?assertNot(contains(Doc, <<"Workflows are LFE s-exprs">>)).
+
+cli_demo_readme_describes_inputs_as_task_files_test() ->
+    test_cli_demo_readme_describes_inputs_as_task_files().
