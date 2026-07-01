@@ -133,3 +133,34 @@ catalog_entry_is_exactly_name_description_params_test_() ->
      fun(_Pid) ->
          ?_test(test_catalog_entry_is_exactly_name_description_params())
      end}.
+
+%% A registered tool whose descriptor carries no `description' (a v1
+%% manifest) still resolves through resolve_descriptor/1 but is absent from
+%% catalog/0: the catalog is the model-facing half, and a tool that declared
+%% none has nothing to show a model.
+test_tool_without_description_absent_from_catalog() ->
+    V1Manifest = #{
+        name => v1_only_tool,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo
+    },
+    ok = soma_tool_registry:register_tool(V1Manifest),
+    %% The tool is registered and resolvable as a runtime descriptor...
+    ?assertMatch({ok, #{name := v1_only_tool}},
+                 soma_tool_registry:resolve_descriptor(v1_only_tool)),
+    %% ...but appears in no catalog entry.
+    Catalog = soma_tool_registry:catalog(),
+    ?assertMatch([_], [E || E = #{name := v1_only_tool} <- Catalog]).
+
+tool_without_description_absent_from_catalog_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_tool_without_description_absent_from_catalog())
+     end}.
