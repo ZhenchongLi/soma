@@ -54,3 +54,12 @@ test_usage_documents_send_unknown_name_not_found() ->
 
 usage_documents_send_unknown_name_not_found_test() ->
     test_usage_documents_send_unknown_name_not_found().
+
+test_usage_documents_actor_message_to_stable_name() ->
+    Doc = read_usage_md(),
+    %% Binary stable names are documented as valid `actor_message.to' values.
+    ?assert(contains(Doc, <<"actor_message.to">>)),
+    ?assert(contains(Doc, <<"stable name">>)).
+
+usage_documents_actor_message_to_stable_name_test() ->
+    test_usage_documents_actor_message_to_stable_name().
