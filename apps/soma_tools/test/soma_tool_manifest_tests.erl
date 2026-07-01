@@ -297,6 +297,44 @@ test_normalize_rejects_invalid_model_facing_fields() ->
 normalize_rejects_invalid_model_facing_fields_test() ->
     test_normalize_rejects_invalid_model_facing_fields().
 
+%% A v1 manifest — one without description/params — must normalize to exactly
+%% the descriptor it produced before the model-facing half existed: no new keys
+%% appear, for either adapter. Exact-map equality pins the full shape;
+%% the explicit is_key checks name the two keys that must stay absent.
+test_normalize_without_model_facing_fields_adds_no_keys() ->
+    ErlangManifest = #{
+        name => file_read,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_file_read
+    },
+    CliManifest = #{
+        name => echo,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => cli,
+        executable => "echo",
+        argv => ["hi"]
+    },
+    lists:foreach(
+        fun(Manifest) ->
+            ?assertEqual(
+                {ok, Manifest#{description => undefined}},
+                soma_tool_manifest:normalize(Manifest)
+            ),
+            {ok, Normalized} = soma_tool_manifest:normalize(Manifest),
+            ?assertNot(maps:is_key(description, Normalized)),
+            ?assertNot(maps:is_key(params, Normalized))
+        end,
+        [ErlangManifest, CliManifest]
+    ).
+
+normalize_without_model_facing_fields_adds_no_keys_test() ->
+    test_normalize_without_model_facing_fields_adds_no_keys().
+
 %% Every rejection's error reason must name the field it blames: the reason is a
 %% {Tag, ...} tuple whose tag (or payload, for missing_field) carries the
 %% offending field name. One malformed manifest per blamed field.
