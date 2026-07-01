@@ -508,3 +508,13 @@ test_cli_demo_script_describes_task_run() ->
 
 cli_demo_script_describes_task_run_test() ->
     test_cli_demo_script_describes_task_run().
+
+test_cli_contract_describes_run_request_as_task_source() ->
+    Builds = section(read_doc("docs/contracts/cli-test-contract.md"), <<"## What this slice builds">>),
+    ?assert(contains(
+        Builds,
+        <<"The `soma run` request source is Soma Lisp task source.">>
+    )).
+
+cli_contract_describes_run_request_as_task_source_test() ->
+    test_cli_contract_describes_run_request_as_task_source().
