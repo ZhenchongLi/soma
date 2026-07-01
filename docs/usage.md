@@ -361,6 +361,13 @@ pid: when the first argument is a binary, `send/2` looks it up in
 {ok, <<"t2">>} = soma_actor:send(<<"worker">>, Env).
 ```
 
+If the binary is an unknown stable name — no actor is registered under it —
+`soma_actor:send/2` returns `{error, not_found}`.
+
+```erlang
+{error, not_found} = soma_actor:send(<<"no-such-name">>, Env).
+```
+
 ## Reading events
 
 Most users read events through:
