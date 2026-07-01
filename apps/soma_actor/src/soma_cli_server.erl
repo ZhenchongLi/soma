@@ -45,11 +45,12 @@ listen(Parent, Path, ModelConfig) ->
             Parent ! {self(), {error, Reason}}
     end.
 
-%% Unlink only a *stale* leftover at Path -- a non-regular file no live server
-%% answers -- so a restart after a crash that left a socket file still binds.
-%% Regular files are not stale sockets and are left in place so bind fails
-%% without data loss. Probe by connecting: if a server answers, the path is live
-%% and untouched; if no file is there, or nothing answers, clear it.
+%% Unlink only a *stale* leftover AF_UNIX socket at Path -- a socket file no live
+%% server answers -- so a restart after a crash still binds. Ordinary files and
+%% non-socket special files are left in place so bind fails without data loss.
+%% Probe by connecting: a live server answers; a killed listener's socket path
+%% normally returns econnrefused and is safe to unlink; enotsock and other errors
+%% are preserved because they are not proof of a stale Soma socket.
 unlink_stale(Path) ->
     case file:read_file_info(Path) of
         {ok, #file_info{type = regular}} ->
@@ -59,8 +60,10 @@ unlink_stale(Path) ->
                                  [binary, {active, false}], 200) of
                 {ok, Probe} ->
                     gen_tcp:close(Probe);
-                {error, _} ->
-                    file:delete(Path)
+                {error, econnrefused} ->
+                    file:delete(Path);
+                {error, _Other} ->
+                    ok
             end;
         {error, _} ->
             ok

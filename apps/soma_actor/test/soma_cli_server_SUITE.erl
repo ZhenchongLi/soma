@@ -1,11 +1,13 @@
 -module(soma_cli_server_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("kernel/include/file.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_start_link_listens_and_accepts_connect/1]).
 -export([test_start_link_unlinks_stale_socket_file/1]).
 -export([test_start_link_preserves_regular_file_at_socket_path/1]).
+-export([test_start_link_preserves_fifo_at_socket_path/1]).
 -export([test_second_start_link_on_live_path_errors/1]).
 -export([test_first_server_survives_failed_second_start_link/1]).
 -export([test_run_lisp_echo_returns_completed_result/1]).
@@ -49,6 +51,7 @@ all() ->
     [test_start_link_listens_and_accepts_connect,
      test_start_link_unlinks_stale_socket_file,
      test_start_link_preserves_regular_file_at_socket_path,
+     test_start_link_preserves_fifo_at_socket_path,
      test_second_start_link_on_live_path_errors,
      test_first_server_survives_failed_second_start_link,
      test_run_lisp_echo_returns_completed_result,
@@ -143,6 +146,22 @@ test_start_link_preserves_regular_file_at_socket_path(Config) ->
     end,
     {ok, Bytes} = ReadResult,
     {error, _} = StartResult.
+
+test_start_link_preserves_fifo_at_socket_path(Config) ->
+    Path = socket_path(Config),
+    ok = make_fifo(Path),
+    StartResult = soma_cli_server:start_link(#{socket => Path}),
+    Info = file:read_file_info(Path),
+    case StartResult of
+        {ok, Server} ->
+            unlink(Server),
+            exit(Server, shutdown);
+        {error, _Reason} ->
+            ok
+    end,
+    {ok, #file_info{type = other}} = Info,
+    {error, _} = StartResult,
+    ok = file:delete(Path).
 
 %% Criterion 6: a second start_link on a Path already served by a live server
 %% returns an error (the bind cannot take the in-use address) and does not start
@@ -1419,6 +1438,23 @@ wait_for_registry_status(TaskId, Expected, N) ->
         {error, not_found} ->
             timer:sleep(20),
             wait_for_registry_status(TaskId, Expected, N - 1)
+    end.
+
+make_fifo(Path) ->
+    case os:find_executable("mkfifo") of
+        false ->
+            ct:skip(mkfifo_not_available);
+        Mkfifo ->
+            Port = open_port({spawn_executable, Mkfifo},
+                             [{args, [Path]}, exit_status]),
+            receive
+                {Port, {exit_status, 0}} ->
+                    ok;
+                {Port, {exit_status, Status}} ->
+                    ct:fail({mkfifo_failed, Status})
+            after 5000 ->
+                ct:fail(mkfifo_timeout)
+            end
     end.
 
 event_store_pid() ->
