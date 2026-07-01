@@ -302,6 +302,17 @@ test_cli_request_reference_lists_task_before_run() ->
 cli_request_reference_lists_task_before_run_test() ->
     test_cli_request_reference_lists_task_before_run().
 
+test_cli_opening_calls_input_task_files() ->
+    Opening = paragraph_starting_with(
+        read_doc("docs/cli.md"),
+        <<"`soma` is the user command.">>
+    ),
+    ?assert(contains(Opening, <<"Soma Lisp task files">>)),
+    ?assertNot(contains(Opening, <<"Lisp workflow files">>)).
+
+cli_opening_calls_input_task_files_test() ->
+    test_cli_opening_calls_input_task_files().
+
 test_cli_doc_says_run_file_reads_soma_lisp_source() ->
     Doc = read_doc("docs/cli.md"),
     ?assert(contains(
