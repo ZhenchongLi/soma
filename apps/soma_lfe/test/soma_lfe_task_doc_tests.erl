@@ -150,6 +150,14 @@ test_usage_doc_uses_task_wording_for_public_run_sections() ->
 usage_doc_uses_task_wording_for_public_run_sections_test() ->
     test_usage_doc_uses_task_wording_for_public_run_sections().
 
+test_usage_stdin_example_uses_task_form() ->
+    Stdin = section(read_doc("docs/usage.md"), <<"### Run From Stdin">>),
+    ?assert(contains(Stdin, <<"printf '(task">>)),
+    ?assertNot(contains(Stdin, <<"printf '(run">>)).
+
+usage_stdin_example_uses_task_form_test() ->
+    test_usage_stdin_example_uses_task_form().
+
 test_readme_links_task_form_contract() ->
     TestContracts = section(read_doc("README.md"), <<"**Test contracts**">>),
     ?assert(contains(
