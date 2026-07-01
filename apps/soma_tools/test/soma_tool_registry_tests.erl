@@ -153,7 +153,7 @@ test_tool_without_description_absent_from_catalog() ->
                  soma_tool_registry:resolve_descriptor(v1_only_tool)),
     %% ...but appears in no catalog entry.
     Catalog = soma_tool_registry:catalog(),
-    ?assertMatch([_], [E || E = #{name := v1_only_tool} <- Catalog]).
+    ?assertEqual([], [E || E = #{name := v1_only_tool} <- Catalog]).
 
 tool_without_description_absent_from_catalog_test_() ->
     {setup,
