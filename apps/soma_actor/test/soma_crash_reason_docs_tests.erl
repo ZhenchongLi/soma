@@ -26,3 +26,13 @@ test_claude_md_names_actor_registry() ->
 
 claude_md_names_actor_registry_test() ->
     test_claude_md_names_actor_registry().
+
+test_claude_md_names_spawn_monitor() ->
+    Doc = read_claude_md(),
+    %% `CLAUDE.md' names `spawn_monitor' as the `soma_tool_call:start/1'
+    %% worker-spawn mechanism.
+    ?assert(contains(Doc, <<"spawn_monitor">>)),
+    ?assert(contains(Doc, <<"soma_tool_call">>)).
+
+claude_md_names_spawn_monitor_test() ->
+    test_claude_md_names_spawn_monitor().
