@@ -158,6 +158,16 @@ test_usage_stdin_example_uses_task_form() ->
 usage_stdin_example_uses_task_form_test() ->
     test_usage_stdin_example_uses_task_form().
 
+test_lfe_dsl_public_headings_use_task_wording() ->
+    Doc = read_doc("docs/lfe-dsl.md"),
+    ?assert(contains(Doc, <<"## Task Files">>)),
+    ?assert(contains(Doc, <<"## Task Example">>)),
+    ?assertNot(contains(Doc, <<"## Task Workflows">>)),
+    ?assertNot(contains(Doc, <<"## Workflow Example">>)).
+
+lfe_dsl_public_headings_use_task_wording_test() ->
+    test_lfe_dsl_public_headings_use_task_wording().
+
 test_readme_links_task_form_contract() ->
     TestContracts = section(read_doc("README.md"), <<"**Test contracts**">>),
     ?assert(contains(
