@@ -34,3 +34,13 @@ test_usage_documents_registry_under_sup() ->
 
 usage_documents_registry_under_sup_test() ->
     test_usage_documents_registry_under_sup().
+
+test_usage_documents_send_accepts_stable_name() ->
+    Doc = read_usage_md(),
+    %% `soma_actor:send/2' is documented as accepting a binary stable name as
+    %% the actor reference.
+    ?assert(contains(Doc, <<"soma_actor:send">>)),
+    ?assert(contains(Doc, <<"stable name">>)).
+
+usage_documents_send_accepts_stable_name_test() ->
+    test_usage_documents_send_accepts_stable_name().
