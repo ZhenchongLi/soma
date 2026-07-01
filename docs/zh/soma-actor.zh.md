@@ -134,6 +134,10 @@ actor 的 `init/1` 就会把这个名字通过 `soma_actor_registry:register/2` 
 `二进制名字 => pid` 的映射）。之后 `soma_actor:send/2` 和 `actor_message.to`
 既接受 pid，也接受这个二进制稳定名。
 
+也就是说，**二进制稳定名是被接受的 actor 寻址目标**：凡是可以填 pid 的地方
+（`soma_actor:send/2` 的 actor 引用、`actor_message.to`），都可以改填对应的
+二进制稳定名，注册表会把它解析成活着的 pid；找不到的名字解析为 `{error, not_found}`。
+
 ```erlang
 %% stable_name 是一个启动选项
 {ok, ActorPid} = soma_actor_sup:start_actor(#{stable_name => <<"researcher">>}).
