@@ -115,8 +115,8 @@ soma run TASK_FILE [--detach]
   (`soma_lisp:render/1`) which the client prints.
 - The `(result …)` s-expr carries the terminal `status`, the `outputs`, and the
   `task_id` / `correlation_id`. Exit `0` completed, non-zero otherwise.
-- With `--detach`, the client sends the same `(run …)` request with a `(detach)`
-  marker. The daemon starts the run under the live-task registry and immediately
+- With `--detach`, the client sends the task source with a `(detach)` marker.
+  The daemon starts the run under the live-task registry and immediately
   replies with an accepted task handle:
 
 ```
