@@ -202,6 +202,39 @@ test_normalize_rejects_non_list_argv() ->
 normalize_rejects_non_list_argv_test() ->
     test_normalize_rejects_non_list_argv().
 
+%% A manifest may optionally carry the model-facing half: a binary description
+%% and a params list of #{name (binary), type (string|integer|boolean),
+%% required (boolean)} specs, each optionally with a binary doc. normalize/1
+%% must accept both and preserve them in the normalized descriptor.
+test_normalize_accepts_description_and_params() ->
+    Description = <<"Read a file from the sandboxed root.">>,
+    Params = [
+        #{
+            name => <<"path">>,
+            type => string,
+            required => true,
+            doc => <<"Path relative to the sandbox root.">>
+        },
+        #{name => <<"max_bytes">>, type => integer, required => false},
+        #{name => <<"binary_mode">>, type => boolean, required => false}
+    ],
+    Manifest = #{
+        name => file_read,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_file_read,
+        description => Description,
+        params => Params
+    },
+    {ok, Normalized} = soma_tool_manifest:normalize(Manifest),
+    ?assertEqual(Description, maps:get(description, Normalized, missing)),
+    ?assertEqual(Params, maps:get(params, Normalized, missing)).
+
+normalize_accepts_description_and_params_test() ->
+    test_normalize_accepts_description_and_params().
+
 %% Every rejection's error reason must name the field it blames: the reason is a
 %% {Tag, ...} tuple whose tag (or payload, for missing_field) carries the
 %% offending field name. One malformed manifest per blamed field.
