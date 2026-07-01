@@ -100,9 +100,13 @@ check_param_specs([Spec | Rest]) ->
     case valid_param_spec(Spec) of
         true -> check_param_specs(Rest);
         false -> {error, {invalid_params, Spec}}
-    end.
+    end;
+%% An improper tail ([Spec | garbage]) passes is_list/1's head cons-cell check;
+%% reject it here instead of crashing the caller with a function_clause.
+check_param_specs(ImproperTail) ->
+    {error, {invalid_params, ImproperTail}}.
 
-valid_param_spec(#{name := Name, type := Type, required := Required} = Spec) when is_map(Spec) ->
+valid_param_spec(#{name := Name, type := Type, required := Required} = Spec) ->
     is_binary(Name) andalso
         lists:member(Type, ?PARAM_TYPES) andalso
         is_boolean(Required) andalso

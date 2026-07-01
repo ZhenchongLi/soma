@@ -292,6 +292,12 @@ test_normalize_rejects_invalid_model_facing_fields() ->
             )
         end,
         BadSpecs
+    ),
+    %% An improper list ([GoodSpec | garbage]) passes is_list/1's head
+    %% cons-cell check; it must reject, not crash the caller.
+    ?assertEqual(
+        {error, {invalid_params, garbage}},
+        soma_tool_manifest:normalize(Base#{params => [GoodSpec | garbage]})
     ).
 
 normalize_rejects_invalid_model_facing_fields_test() ->

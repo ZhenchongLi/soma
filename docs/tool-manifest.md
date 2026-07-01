@@ -19,6 +19,32 @@ Every manifest carries five shared fields:
   kills the worker and fails the step if this expires.
 - `adapter` — one of `erlang_module` or `cli` (see below).
 
+## Optional model-facing fields
+
+A manifest may also carry a model-facing half — the part of the tool's
+self-description a planning model reads to decide what to call and how
+(`docs/tool-abstraction.md` §3). Both fields are optional and additive: a
+manifest without them normalizes to exactly the descriptor it produced
+before these fields existed, with no new keys.
+
+- `description` — a binary; one-paragraph prose for the model. A non-binary
+  value is rejected with `{error, {invalid_description, Value}}`.
+- `params` — a list of param specs, each
+  `#{name := binary(), type := string | integer | boolean, required := boolean()}`
+  plus an optional `doc` binary. Param `name` is a binary, not an atom —
+  param names arrive from external manifests and must not mint atoms. Any
+  malformed `params` value — a non-list (including an improper list tail), a
+  spec that is not a map, a spec missing `name`/`type`/`required`, a `type`
+  outside the closed set, or a non-binary `doc` — is rejected with
+  `{error, {invalid_params, Offending}}` carrying the offending value.
+
+Tools that declare a `description` appear in `soma_tool_registry:catalog/0`,
+which returns exactly the model-facing half per tool —
+`#{name, description, params}` with `params` defaulting to `[]` — and never
+exposes runtime-facing fields (`module`, `executable`, `argv`, `effect`,
+`idempotent`, `timeout_ms`). A tool without a `description` stays resolvable
+but is absent from the catalog.
+
 ## `erlang_module` adapter
 
 Runs a module that implements the `soma_tool` behaviour in-BEAM. One
