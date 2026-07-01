@@ -151,6 +151,50 @@ states.
 - External tools use executable plus argv, never shell command strings.
 - External executable release artifacts are per target architecture.
 
+## Erlang/OTP Project Practices
+
+- Model faults with OTP ownership: supervisors for long-lived services,
+  monitored disposable workers for per-run, per-tool, and per-LLM work, and
+  explicit terminal messages for outcomes. Do not hide cross-process failures
+  behind broad `catch` blocks.
+- Keep process ownership explicit. The process that starts a worker must hold
+  the monitor, timers, cancellation path, and any OS pid or port it may need to
+  tear down.
+- Validate and normalize data at every edge before it enters an execution state:
+  CLI forms, LFE output, proposals, manifests, runtime step lists, provider
+  responses, resume journals, and config. Fail closed with bounded `{error, _}`
+  data.
+- Treat timeouts and cancellation as owner-enforced behaviour. A timeout must
+  stop the active worker and any external port or OS process, emit the terminal
+  event, and leave the owning session or actor alive.
+- Use message protocols deliberately. Include enough ids to correlate replies
+  and `'DOWN'` messages; demonitor with `[flush]` after a normal result; ignore
+  stale worker messages that do not match the active pid or monitor ref.
+- Keep app dependencies one-way: `soma_runtime` must not import `soma_actor` or
+  edge layers; LFE compiles to maps and remains pure; higher layers compile down
+  to canonical step lists.
+- Avoid global mutable state and process dictionary state. Runtime state belongs
+  in the owning `gen_server` or `gen_statem`; shared indexes belong behind
+  supervised servers.
+- Do not create atoms from external input. Parse external names as binaries or
+  strings, then map them through allowlisted internal atom names.
+- Prefer pattern matching and small pure normalization functions over ad hoc
+  string parsing. Use structured APIs for TOML, Lisp forms, manifests, paths,
+  and provider JSON.
+- Never interpolate user or config input into shell command strings. Core
+  runtime and CLI tools use executable plus argv; any unavoidable release
+  wrapper shell seam must be isolated, escaped, and covered by tests.
+- Keep event payloads bounded and scrubbed. Do not emit API keys, raw provider
+  secrets, process-local refs, ports, or unbounded blobs; durable run options
+  must be allowlisted.
+- Clean up only resources Soma owns. Stale socket, log, pidfile, and release
+  cleanup code must prove ownership before deleting or replacing filesystem
+  paths.
+- Tests should prove process behaviour: worker boundaries, monitors, timeouts,
+  cancellation, external process teardown, owner survival, event trails, and
+  durable replay. Update the relevant `docs/contracts/` file with each new
+  behavioural guarantee.
+
 ## Tools
 
 A tool is an Erlang behaviour:
