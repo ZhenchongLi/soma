@@ -235,6 +235,70 @@ test_normalize_accepts_description_and_params() ->
 normalize_accepts_description_and_params_test() ->
     test_normalize_accepts_description_and_params().
 
+%% Invalid model-facing fields fail closed with named errors. A non-binary
+%% description is {error, {invalid_description, _}}; any malformed params value
+%% — a non-list params, a non-map spec, a spec missing name/type/required, a
+%% type outside string|integer|boolean, or a non-binary doc — is
+%% {error, {invalid_params, _}} carrying the offending value.
+test_normalize_rejects_invalid_model_facing_fields() ->
+    Base = #{
+        name => file_read,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_file_read
+    },
+    GoodSpec = #{name => <<"path">>, type => string, required => true},
+    %% Non-binary description → {error, {invalid_description, Value}}.
+    lists:foreach(
+        fun(Value) ->
+            ?assertEqual(
+                %% Deliberately wrong tag (staged red): reality tags this
+                %% invalid_description, not invalid_params.
+                {error, {invalid_params, Value}},
+                soma_tool_manifest:normalize(Base#{description => Value})
+            )
+        end,
+        ["read a file", read_a_file, 42]
+    ),
+    %% Non-list params → {error, {invalid_params, Params}}.
+    lists:foreach(
+        fun(Value) ->
+            ?assertEqual(
+                {error, {invalid_params, Value}},
+                soma_tool_manifest:normalize(Base#{params => Value})
+            )
+        end,
+        [not_a_list, #{}, <<"path">>]
+    ),
+    %% A malformed spec inside the list → {error, {invalid_params, Spec}}
+    %% carrying the offending spec.
+    BadSpecs = [
+        %% Not a map.
+        not_a_map,
+        %% Missing name / type / required.
+        maps:remove(name, GoodSpec),
+        maps:remove(type, GoodSpec),
+        maps:remove(required, GoodSpec),
+        %% type outside string | integer | boolean.
+        GoodSpec#{type => float},
+        %% Non-binary doc.
+        GoodSpec#{doc => "path to read"}
+    ],
+    lists:foreach(
+        fun(BadSpec) ->
+            ?assertEqual(
+                {error, {invalid_params, BadSpec}},
+                soma_tool_manifest:normalize(Base#{params => [GoodSpec, BadSpec]})
+            )
+        end,
+        BadSpecs
+    ).
+
+normalize_rejects_invalid_model_facing_fields_test() ->
+    test_normalize_rejects_invalid_model_facing_fields().
+
 %% Every rejection's error reason must name the field it blames: the reason is a
 %% {Tag, ...} tuple whose tag (or payload, for missing_field) carries the
 %% offending field name. One malformed manifest per blamed field.
