@@ -41,3 +41,33 @@ The public documentation behavior is proved by `soma_lfe_task_doc_tests`:
 | `docs/lisp-messages.md` records bounded Soma Lisp v1 as a built slice. | `test_lisp_messages_records_bounded_soma_lisp_v1_slice` |
 | The Chinese overview links the task-form contract. | `test_zh_overview_links_task_form_contract` |
 | `AGENTS.md` names the bounded Soma Lisp v1 public task surface. | `test_agents_names_public_task_surface` |
+
+## Task-Wording Documentation Contract
+
+The public task-wording alignment is proved by `soma_lfe_task_doc_tests`:
+
+| Documentation behavior | Proof |
+| --- | --- |
+| The site quick start presents Soma Lisp tasks, not Lisp workflows. | `test_site_quick_start_presents_soma_lisp_tasks` |
+| The README quick start names `soma run` input as Soma Lisp task source. | `test_readme_quick_start_names_soma_run_input_task_source` |
+| The README docs index calls usage a running task files guide. | `test_readme_docs_index_calls_usage_task_file_guide` |
+| `docs/usage.md` uses task wording for public run sections. | `test_usage_doc_uses_task_wording_for_public_run_sections` |
+| The usage stdin example uses `(task ...)`. | `test_usage_stdin_example_uses_task_form` |
+| `docs/lfe-dsl.md` public headings use task wording. | `test_lfe_dsl_public_headings_use_task_wording` |
+| The main LFE DSL example uses `(task ...)`. | `test_lfe_dsl_main_example_uses_task_form` |
+| The README links this task-form contract. | `test_readme_links_task_form_contract` |
+| The site LFE DSL guide names `(task ...)` as the public static task form. | `test_site_lfe_dsl_documents_task_as_public_static_form` |
+| The site LFE DSL guide names `(run ...)` as the compatibility/core run form. | `test_site_lfe_dsl_documents_run_as_compatibility_core_form` |
+| The site LFE DSL guide mirrors task-first wording. | `test_site_lfe_dsl_mirrors_task_first_wording` |
+| `docs/lisp-messages.md` says `soma run` takes Soma Lisp task source. | `test_lisp_messages_soma_run_input_is_task_source` |
+| The release run command is described as task execution. | `test_release_sample_run_command_is_task_execution` |
+| The site release guide mirrors task wording. | `test_site_release_mirrors_task_wording` |
+| `docs/cli.md` calls CLI input task files. | `test_cli_opening_calls_input_task_files` |
+| The CLI stdin section calls `-` the task source path. | `test_cli_stdin_section_names_dash_task_source_path` |
+| The site CLI guide mirrors task-first wording. | `test_site_cli_mirrors_task_first_wording` |
+| CLI demo `.lfe` files compile as top-level tasks. | `test_cli_demo_lfe_files_compile_as_top_level_tasks` |
+| The CLI demo README describes inputs as task files. | `test_cli_demo_readme_describes_inputs_as_task_files` |
+| The CLI demo script describes running a task. | `test_cli_demo_script_describes_task_run` |
+| The CLI contract describes run requests as task source. | `test_cli_contract_describes_run_request_as_task_source` |
+| The CLI 1b contract describes file run input as task source. | `test_cli_1b_contract_describes_file_run_input_as_task_source` |
+| The CLI 1b contract describes stdin run input as task source. | `test_cli_1b_contract_describes_stdin_run_input_as_task_source` |
