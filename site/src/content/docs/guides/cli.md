@@ -77,12 +77,12 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
   path `$XDG_RUNTIME_DIR/soma.sock`, else `/tmp/soma-$UID.sock` (mind the AF_UNIX
   path-length limit, ~104 chars on macOS). **Not** `/run` (needs root; absent on
   macOS, the verified target).
-- **Framing**: length-prefixed s-expr frames. The request frame carries the
-  workflow's Soma Lisp source. Public static tasks use `(task …)`; `(run …)`
+- **Framing**: length-prefixed s-expr frames. The request frame carries Soma
+  Lisp task source. Public static tasks use `(task …)`; `(run …)`
   remains the compatibility/core form. The daemon parses the source with
   `soma_lfe`; the reply frame carries a rendered `(result …)` s-expr
-  (`soma_lisp:render/1`). No JSON on the wire — the same Lisp the workflows are
-  written in is the wire format.
+  (`soma_lisp:render/1`). No JSON on the wire — task source and replies use the
+  same Lisp format.
 - **Access control**: filesystem permissions on the socket path (0600, owner-
   only). Single-user, so that is the whole boundary.
 
@@ -91,7 +91,7 @@ language-agnostic. (MCP could wrap the same daemon later if ever wanted.)
 | Target command | Current module API | Needs LLM? | Role |
 |---|---|---|
 | `soma daemon` | `soma_cli:daemon/1` | no | Boot runtime + listener on the socket. |
-| `soma run <workflow>` | `soma_cli:run/1` | no | Run an LFE workflow under supervision; return result. |
+| `soma run <task-file>` | `soma_cli:run/1` | no | Run a Soma Lisp task under supervision; return result. |
 | `soma ask "<intent>"` | `soma_cli:ask/1` | yes | Intent → LLM → proposal → policy → result. |
 | `soma status <task-id>` / `soma cancel <task-id>` | `soma_cli:status/1`, `cancel/1` | no | Poll / cancel a task by id. |
 | `soma trace <correlation_id>` | `soma_cli:trace/1` | no | Render a stored correlation chain as Lisp events. |
@@ -103,12 +103,12 @@ as a packaged external task command without colliding with relx's existing
 ## `soma run` — deterministic supervised execution (client)
 
 ```
-soma run WORKFLOW [--detach]
+soma run TASK_FILE [--detach]
 ```
 
-- **WORKFLOW**: a file (or `-` for stdin) — Soma Lisp source compiled via
-  `soma_lfe:compile/2`. `(task …)` is the public static task form; `(run …)`
-  remains the compatibility/core run form.
+- **TASK_FILE**: a task file, or `-` as the task source path — Soma Lisp task source
+  compiled via `soma_lfe:compile/2`. `(task …)` is the public static task form;
+  `(run …)` remains the compatibility/core run form.
 - The client reads the file's s-expr and sends it as the run request frame; the
   daemon parses it with `soma_lfe`, owns a supervised run, waits for the terminal
   state, and frames back a rendered **`(result …)` reply** s-expr
@@ -299,8 +299,7 @@ take the `task-id`, `soma trace` takes the `correlation-id`.
 **Erlang-term → Lisp rendering** (`soma_lisp:render/1`, the same renderer the
 audit trace uses): atoms → symbols, binaries → `"strings"`, integers/floats →
 numbers, maps → nested `(key value)` forms, lists → `(a b c)`, and a reason tuple
-`{Tag, Detail…}` → `(Tag Detail…)`. The same Lisp the workflows are written in is
-what comes back — no JSON anywhere.
+`{Tag, Detail…}` → `(Tag Detail…)`. Lisp is what comes back — no JSON anywhere.
 
 ## Connection / cancellation semantics
 
