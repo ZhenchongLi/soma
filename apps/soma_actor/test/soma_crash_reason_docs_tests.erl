@@ -36,3 +36,13 @@ test_claude_md_names_spawn_monitor() ->
 
 claude_md_names_spawn_monitor_test() ->
     test_claude_md_names_spawn_monitor().
+
+test_claude_md_immediate_crash_keeps_real_reason() ->
+    Doc = read_claude_md(),
+    %% `CLAUDE.md' states an immediate tool crash keeps the real exit reason
+    %% instead of `noproc'.
+    ?assert(contains(Doc, <<"real exit reason">>)),
+    ?assert(contains(Doc, <<"noproc">>)).
+
+claude_md_immediate_crash_keeps_real_reason_test() ->
+    test_claude_md_immediate_crash_keeps_real_reason().
