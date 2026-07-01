@@ -15,11 +15,12 @@ the design in [../cli.md](../cli.md).
 ## What this slice builds
 
 The server side of the soma daemon: a Unix-domain (`{local, Path}`) listener with
-a length-prefixed s-expr wire protocol and a handler that reads a `(run …)`
-request s-expr, parses it with `soma_lfe`, drives a supervised `soma_run` the
-handler owns directly (`session_pid => self()`), and frames a rendered
-`(result …)` reply s-expr (`soma_lisp:render/1`) back to the client. There is no
-JSON on the wire — the same Lisp the workflows are written in is the wire format.
+a length-prefixed s-expr wire protocol.
+The `soma run` request source is Soma Lisp task source.
+The handler reads that request s-expr, parses it with `soma_lfe`, drives a
+supervised `soma_run` the handler owns directly (`session_pid => self()`), and
+frames a rendered `(result …)` reply s-expr (`soma_lisp:render/1`) back to the
+client. There is no JSON on the wire — Soma Lisp task source is the wire format.
 `soma_cli_server` is in `apps/soma_runtime/src/`. Single-user / trusted-local — no
 cross-client auth (see [../cli.md](../cli.md)). Tested entirely in-BEAM: pure
 encode/frame as EUnit, the socket + run paths as Common Test with a real
