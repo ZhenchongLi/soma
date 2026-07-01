@@ -16,7 +16,7 @@ syntax for an agent to describe bounded operational intent. Lisp is not the
 runtime and the compiler does not evaluate arbitrary Lisp; the hard boundary is
 `Lisp at the edge -> validated data -> OTP execution`.
 
-**Status — built and green on `main`** (EUnit 259, Common Test 350, Erlang/OTP 29).
+**Status — built and green on `main`** (EUnit 339, Common Test 351, Erlang/OTP 29).
 Every layer is proven under test, asserting *process survival*, not just return
 values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 
