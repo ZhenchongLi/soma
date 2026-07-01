@@ -60,9 +60,10 @@ Layer status:
   `model_config` can route to it. Gate tests use fixed response seams and do not
   open network sockets. Live smoke is opt-in via `soma_llm_smoke:run/0` and
   `SOMA_LLM_API_KEY`.
-- Lisp edge language L.1-L.5 is built: `(msg ...)` envelopes,
-  actor-to-actor Lisp bodies, Lisp proposals, Lisp audit/trace rendering, and
-  bounded self-repair that re-enters the normal normalize/policy/budget path.
+- Lisp edge language L.1-L.5 is built: the bounded Soma Lisp v1 public task surface
+  with `(task ...)` workflows, `(msg ...)` envelopes, actor-to-actor
+  Lisp bodies, Lisp proposals, Lisp audit/trace rendering, and bounded
+  self-repair that re-enters the normal normalize/policy/budget path.
 - Local CLI/daemon product surface is built: `soma_cli_server`, `soma_cli`,
   `soma_cli_task_registry`, `soma_cli_main`, and the overlaid `scripts/soma`
   wrapper support `soma run` / `ask` / `status` / `trace` / `cancel` / `stop` /
