@@ -394,6 +394,23 @@ test_cli_doc_says_run_file_reads_soma_lisp_source() ->
 cli_doc_says_run_file_reads_soma_lisp_source_test() ->
     test_cli_doc_says_run_file_reads_soma_lisp_source().
 
+test_site_cli_mirrors_task_first_wording() ->
+    Doc = read_doc("site/src/content/docs/guides/cli.md"),
+    Commands = section(Doc, <<"## Commands">>),
+    Run = section(Doc, <<"## `soma run`">>),
+    ?assert(contains(Commands, <<"`soma run <task-file>`">>)),
+    ?assert(contains(Commands, <<"Run a Soma Lisp task under supervision">>)),
+    ?assertNot(contains(Commands, <<"`soma run <workflow>`">>)),
+    ?assertNot(contains(Commands, <<"Run an LFE workflow under supervision">>)),
+    ?assert(contains(Run, <<"soma run TASK_FILE [--detach]">>)),
+    ?assert(contains(Run, <<"**TASK_FILE**: a task file, or `-` as the task source path">>)),
+    ?assert(contains(Run, <<"Soma Lisp task source">>)),
+    ?assertNot(contains(Run, <<"soma run WORKFLOW [--detach]">>)),
+    ?assertNot(contains(Run, <<"**WORKFLOW**">>)).
+
+site_cli_mirrors_task_first_wording_test() ->
+    test_site_cli_mirrors_task_first_wording().
+
 test_roadmap_marks_bounded_soma_lisp_v1_built() ->
     Track = paragraph_starting_with(
         section(read_doc("docs/roadmap.md"), <<"## Sequence">>),
