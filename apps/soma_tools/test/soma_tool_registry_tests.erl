@@ -205,3 +205,28 @@ tool_without_description_absent_from_catalog_test_() ->
      fun(_Pid) ->
          ?_test(test_tool_without_description_absent_from_catalog())
      end}.
+
+%% Each of the five built-in tool manifests declares a `description', so a
+%% freshly seeded registry (start_link/0 runs the same init/seed the
+%% supervisor runs) lists all five built-ins in catalog/0, every entry
+%% carrying a non-empty binary description.
+test_seeded_catalog_lists_all_five_builtins() ->
+    Catalog = soma_tool_registry:catalog(),
+    ?assertEqual([echo, fail, file_read, file_write, sleep],
+                 lists:sort([Name || #{name := Name} <- Catalog])),
+    lists:foreach(
+      fun(#{description := Description}) ->
+          ?assert(is_binary(Description)),
+          ?assert(byte_size(Description) > 0)
+      end,
+      Catalog).
+
+seeded_catalog_lists_all_five_builtins_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_seeded_catalog_lists_all_five_builtins())
+     end}.
