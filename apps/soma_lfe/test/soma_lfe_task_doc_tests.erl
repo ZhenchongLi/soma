@@ -244,6 +244,14 @@ test_lisp_messages_records_bounded_soma_lisp_v1_slice() ->
 lisp_messages_records_bounded_soma_lisp_v1_slice_test() ->
     test_lisp_messages_records_bounded_soma_lisp_v1_slice().
 
+test_lisp_messages_soma_run_input_is_task_source() ->
+    Wire = section(read_doc("docs/lisp-messages.md"), <<"## The wire protocol speaks Lisp too">>),
+    ?assert(contains(Wire, <<"`soma run` takes Soma Lisp task source">>)),
+    ?assertNot(contains(Wire, <<".lfe` workflow">>)).
+
+lisp_messages_soma_run_input_is_task_source_test() ->
+    test_lisp_messages_soma_run_input_is_task_source().
+
 test_lfe_dsl_documents_run_as_compatibility_core_form() ->
     Doc = read_doc("docs/lfe-dsl.md"),
     ?assert(contains(Doc, <<"(run ...)">>)),
