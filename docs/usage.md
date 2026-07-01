@@ -348,6 +348,11 @@ When the started actor's `init/1` sees a binary `stable_name`, it registers
 itself under that name so other callers can address it by name instead of by
 pid.
 
+The binary-name registry is `soma_actor_registry`, a supervised worker started
+under `soma_actor_sup`. It holds a `binary name => pid` map: an actor started
+with a `stable_name` registers its pid there, and name-based lookups resolve
+through it.
+
 ## Reading events
 
 Most users read events through:
