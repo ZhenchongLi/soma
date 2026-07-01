@@ -23,6 +23,7 @@
 -export([test_non_map_step_fails_named_validation_session_alive/1]).
 -export([test_step_missing_id_fails_named_validation_session_alive/1]).
 -export([test_step_missing_tool_fails_named_validation_session_alive/1]).
+-export([test_invalid_in_beam_tool_return_fails_boundedly/1]).
 
 all() ->
     [test_error_return_reaches_failed_not_completed,
@@ -44,7 +45,8 @@ all() ->
      test_unregistered_tool_reaches_failed_not_crash,
      test_non_map_step_fails_named_validation_session_alive,
      test_step_missing_id_fails_named_validation_session_alive,
-     test_step_missing_tool_fails_named_validation_session_alive].
+     test_step_missing_tool_fails_named_validation_session_alive,
+     test_invalid_in_beam_tool_return_fails_boundedly].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -509,6 +511,27 @@ test_step_missing_tool_fails_named_validation_session_alive(_Config) ->
     assert_malformed_step_validation([#{id => s1, args => #{}}],
                                      {invalid_step, missing_tool}).
 
+%% Issue #196 criterion 7: an in-BEAM tool that returns neither `{ok, _}' nor
+%% `{error, _}' fails the run with bounded data instead of leaving the run
+%% waiting for a per-step timeout, and the owning session stays alive.
+test_invalid_in_beam_tool_return_fails_boundedly(_Config) ->
+    StorePid = event_store_pid(),
+    ok = soma_tool_registry:register_tool(soma_tool_bad_return:manifest()),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => bad_return, args => #{}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.failed">>, Types),
+    false = lists:member(<<"run.timeout">>, Types),
+    FailEvent = event_of_type(StorePid, RunId, <<"run.failed">>),
+    Payload = maps:get(payload, FailEvent),
+    assert_invalid_tool_return_reason(maps:get(reason, Payload)),
+    ok = wait_for_run_status(SessionPid, RunId, failed, 50),
+    true = is_process_alive(SessionPid),
+    ok.
+
 assert_malformed_step_validation(Steps, ExpectedReason) ->
     StorePid = event_store_pid(),
     {ok, SessionPid} = soma_agent_session:start_link(#{}),
@@ -541,6 +564,12 @@ assert_reason_contains_kaboom_not_noproc(RunId, Reason) ->
         _ ->
             ct:fail({unexpected_crash_reason, RunId, Reason})
     end.
+
+assert_invalid_tool_return_reason(Reason) ->
+    ReasonText = iolist_to_binary(io_lib:format("~p", [Reason])),
+    true = binary:match(ReasonText, <<"invalid_tool_return">>) =/= nomatch,
+    true = byte_size(ReasonText) =< 1024,
+    ok.
 
 %% Read the `tool_call_pid' carried on the first event of Type for RunId.
 tool_call_pid_from(StorePid, RunId, Type) ->
