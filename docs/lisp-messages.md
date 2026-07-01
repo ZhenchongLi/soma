@@ -77,6 +77,7 @@ implemented top-level forms are:
 
 | s-expr form | parses into |
 |---|---|
+| `(task ...)` | `#{run => #{steps => [...]}}` |
 | `(msg (type T) (payload …) (steps …) (llm …) (correlation-id "…"))` | an envelope `#{type, payload, steps?, llm?, correlation_id?}` |
 | `(step (id s1) (tool echo) (args (value "hi")))`, `(from-step s1)` | a step map (the existing v0.3 grammar) |
 | `(reply (text "…"))` / `(run-steps (step …) …)` / `(reject (reason "..."))` | a proposal `#{kind, …}` accepted by `soma_proposal:normalize/1` |
