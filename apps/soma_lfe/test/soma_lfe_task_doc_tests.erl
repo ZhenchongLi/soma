@@ -108,6 +108,14 @@ test_lfe_dsl_documents_task_as_public_static_form() ->
 lfe_dsl_documents_task_as_public_static_form_test() ->
     test_lfe_dsl_documents_task_as_public_static_form().
 
+test_lisp_messages_grammar_lists_task_form() ->
+    Grammar = section(read_doc("docs/lisp-messages.md"), <<"## Grammar">>),
+    ?assert(contains(Grammar, <<"(task ...)">>)),
+    ?assert(contains(Grammar, <<"#{run => #{steps => [...]}}">>)).
+
+lisp_messages_grammar_lists_task_form_test() ->
+    test_lisp_messages_grammar_lists_task_form().
+
 test_lfe_dsl_documents_run_as_compatibility_core_form() ->
     Doc = read_doc("docs/lfe-dsl.md"),
     ?assert(contains(Doc, <<"(run ...)">>)),
