@@ -372,6 +372,12 @@ The same names are valid `actor_message.to` values: when a proposal is an
 `actor_message`, its `to` field may be a binary stable name (not just a pid),
 and the sender resolves it through `soma_actor_registry` before delivery.
 
+If the `actor_message.to` name is unknown — no actor is registered under it —
+delivery is a failure that fails the sender's task, but the
+sender actor stays alive. The sender catches the delivery failure and marks the
+sending task `failed`; it does not crash, so it can go on handling later
+messages.
+
 ## Reading events
 
 Most users read events through:
