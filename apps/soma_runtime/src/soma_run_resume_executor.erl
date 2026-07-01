@@ -31,12 +31,7 @@ resume(RunId, Owner, Store) ->
                      outputs => Outputs},
             soma_run_sup:start_run(Opts);
         {unsafe, StepId} ->
-            soma_event_store:append(
-              Store,
-              #{run_id => RunId,
-                step_id => StepId,
-                event_type => <<"run.failed">>,
-                payload => #{reason => {resume_unsafe, StepId}}}),
+            soma_event_store:append(Store, unsafe_failed_event(Store, RunId, StepId)),
             {error, {resume_unsafe, StepId}};
         %% A terminal event is already on the trail (a run that finished, or one a
         %% prior unsafe resume already landed as failed): start no run, append no
@@ -56,3 +51,24 @@ resume(RunId, Owner, Store) ->
         {error, Reason} ->
             {error, Reason}
     end.
+
+unsafe_failed_event(Store, RunId, StepId) ->
+    Base = #{run_id => RunId,
+             step_id => StepId,
+             event_type => <<"run.failed">>,
+             payload => #{reason => {resume_unsafe, StepId}}},
+    case soma_run_resume:reconstruct(Store, RunId) of
+        {ok, #{run_options := RunOptions}} ->
+            with_optional(correlation_id,
+                          maps:get(correlation_id, RunOptions, undefined),
+                          with_optional(session_id,
+                                        maps:get(session_id, RunOptions, undefined),
+                                        Base));
+        {error, _} ->
+            Base
+    end.
+
+with_optional(_Key, undefined, Acc) ->
+    Acc;
+with_optional(Key, Value, Acc) ->
+    Acc#{Key => Value}.
