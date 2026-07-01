@@ -5,6 +5,7 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_start_link_listens_and_accepts_connect/1]).
 -export([test_start_link_unlinks_stale_socket_file/1]).
+-export([test_start_link_preserves_regular_file_at_socket_path/1]).
 -export([test_second_start_link_on_live_path_errors/1]).
 -export([test_first_server_survives_failed_second_start_link/1]).
 -export([test_run_lisp_echo_returns_completed_result/1]).
@@ -47,6 +48,7 @@
 all() ->
     [test_start_link_listens_and_accepts_connect,
      test_start_link_unlinks_stale_socket_file,
+     test_start_link_preserves_regular_file_at_socket_path,
      test_second_start_link_on_live_path_errors,
      test_first_server_survives_failed_second_start_link,
      test_run_lisp_echo_returns_completed_result,
@@ -117,6 +119,22 @@ test_start_link_unlinks_stale_socket_file(Config) ->
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
     {ok, Client} = connect(Path),
     ok = gen_tcp:close(Client).
+
+test_start_link_preserves_regular_file_at_socket_path(Config) ->
+    Path = socket_path(Config),
+    Bytes = <<"regular file at socket path">>,
+    ok = file:write_file(Path, Bytes),
+    StartResult = soma_cli_server:start_link(#{socket => Path}),
+    ReadResult = file:read_file(Path),
+    case StartResult of
+        {ok, Server} ->
+            unlink(Server),
+            exit(Server, shutdown);
+        {error, _Reason} ->
+            ok
+    end,
+    {ok, Bytes} = ReadResult,
+    {error, _} = StartResult.
 
 %% Criterion 6: a second start_link on a Path already served by a live server
 %% returns an error (the bind cannot take the in-use address) and does not start
