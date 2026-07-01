@@ -52,3 +52,18 @@ test_doc_names_resume_executor_suites_and_cases() ->
 
 doc_names_resume_executor_suites_and_cases_test() ->
     test_doc_names_resume_executor_suites_and_cases().
+
+%% v0.7.5 criterion 6: the contract names the auto-resume discovery and boot
+%% proof suites and each case that proves the auto-resume guarantees.
+test_doc_names_auto_resume_suite_and_cases() ->
+    Doc = read_doc(),
+    ?assert(contains(Doc, <<"soma_event_store_persist_tests">>)),
+    ?assert(contains(Doc, <<"test_restarted_disk_log_interrupted_runs_reports_started_without_terminal">>)),
+    ?assert(contains(Doc, <<"test_restarted_disk_log_interrupted_runs_excludes_terminal_run">>)),
+    ?assert(contains(Doc, <<"soma_run_auto_resume_SUITE">>)),
+    ?assert(contains(Doc, <<"test_boot_with_event_store_log_resumes_between_steps_interrupted_run">>)),
+    ?assert(contains(Doc, <<"test_boot_auto_resume_emits_run_resumed_for_first_pending_step">>)),
+    ?assert(contains(Doc, <<"test_boot_auto_resume_fails_unsafe_in_flight_state_step">>)).
+
+doc_names_auto_resume_suite_and_cases_test() ->
+    test_doc_names_auto_resume_suite_and_cases().
