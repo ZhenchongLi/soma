@@ -545,7 +545,7 @@ test_cli_1b_contract_describes_stdin_run_input_as_task_source() ->
         StdinRow,
         <<"stdin `soma run` input is Soma Lisp task source">>
     )),
-    ?assertNot(contains(StdinRow, <<"workflow">>)).
+    ?assertNot(contains(StdinRow, <<"reads the workflow from stdin">>)).
 
 cli_1b_contract_describes_stdin_run_input_as_task_source_test() ->
     test_cli_1b_contract_describes_stdin_run_input_as_task_source().
