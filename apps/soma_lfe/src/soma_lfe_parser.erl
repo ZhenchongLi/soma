@@ -69,29 +69,38 @@ parse_task(Form) ->
             parse_task_checked(Form)
     end.
 
-parse_task_checked([task, ['let*', Bindings, [return, ReturnId]]])
+parse_task_checked([task, [detach], LetStar]) ->
+    parse_task_let_star(LetStar, #{detach => true});
+parse_task_checked([task, LetStar]) ->
+    parse_task_let_star(LetStar, #{});
+parse_task_checked([task | _]) ->
+    {error, [#{code => invalid_task_form,
+               message => <<"task form must be (task (let* ((id (tool name ...))) (return id)))">>,
+               line => 0}]}.
+
+parse_task_let_star(['let*', Bindings, [return, ReturnId]], RunFields)
         when is_list(Bindings), is_atom(ReturnId) ->
     case parse_task_bindings(Bindings, [], []) of
         {ok, Steps} ->
             case validate_task_steps(Steps) ++ validate_task_return(ReturnId, Steps) of
                 [] ->
-                    {ok, #{run => #{steps => Steps}}};
+                    {ok, #{run => RunFields#{steps => Steps}}};
                 Diags ->
                     {error, Diags}
             end;
         {error, Diags} ->
             {error, Diags}
     end;
-parse_task_checked([task, ['let*', Bindings, [return, ReturnId] | _ExtraBody]])
+parse_task_let_star(['let*', Bindings, [return, ReturnId] | _ExtraBody], _RunFields)
         when is_list(Bindings), is_atom(ReturnId) ->
     {error, [#{code => invalid_let_star,
                message => <<"task let* body must contain exactly one return form">>,
                line => 0}]};
-parse_task_checked([task, ['let*', Bindings]]) when is_list(Bindings) ->
+parse_task_let_star(['let*', Bindings], _RunFields) when is_list(Bindings) ->
     {error, [#{code => invalid_return,
                message => <<"task let* body must include (return Name)">>,
                line => 0}]};
-parse_task_checked([task | _]) ->
+parse_task_let_star(_Other, _RunFields) ->
     {error, [#{code => invalid_task_form,
                message => <<"task form must be (task (let* ((id (tool name ...))) (return id)))">>,
                line => 0}]}.

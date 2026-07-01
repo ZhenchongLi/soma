@@ -1,4 +1,4 @@
-%% @doc CLI.1b thin client. `run/1' resolves a workflow source, sends it to a
+%% @doc CLI.1b thin client. `run/1' resolves a task source, sends it to a
 %% `soma_cli_server' over a local Unix socket, prints the `(result ...)' reply,
 %% and returns an exit code. The client does not parse Lisp; only the CLI.4
 %% detach flag mutates the request text to carry a `(detach)' marker.
@@ -7,7 +7,7 @@
 -export([run/1, ask/1, trace/1, status/1, cancel/1, stop/1, ping/1, daemon/1,
          daemon_foreground/1, ensure_daemon/2, resolve_socket/1]).
 
-%% Resolve the workflow source (a file path, or stdin when the path arg is `-'),
+%% Resolve the task source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
 %% bytes, read the framed `(result ...)' reply, print it to stdout, and return an
 %% exit code: 0 when the reply's status sub-form is `completed', non-zero otherwise.
@@ -266,7 +266,7 @@ per_user_id() ->
             end
     end.
 
-%% Resolve the workflow bytes from the path arg: `-' reads stdin (the process
+%% Resolve the task source bytes from the path arg: `-' reads stdin (the process
 %% group leader) to EOF, any other value reads that file. Detach handling is the
 %% only client-side source rewrite; parsing and validation remain in the daemon.
 read_source("-") ->
@@ -281,7 +281,7 @@ run_source(Source, _Args) ->
     Source.
 
 add_run_detach(Source) ->
-    case re:run(Source, "^(\\s*\\(run)(\\s|\\))", [{capture, [1], index}]) of
+    case re:run(Source, "^(\\s*\\((?:run|task))(\\s|\\))", [{capture, [1], index}]) of
         {match, [{Start, Len}]} ->
             Split = Start + Len,
             <<Prefix:Split/binary, Rest/binary>> = Source,
