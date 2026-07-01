@@ -130,6 +130,9 @@ Safety constraints — without these it is dangerous:
 
 ## Slices
 
+- **bounded Soma Lisp v1** — public task surface [done]: `(task ...)` workflows
+  compile to the existing canonical run step-list map while Lisp remains bounded
+  to edge parsing, proposals, messages, audit rendering, and repair.
 - **L.1** — Lisp envelope [done]: extend `soma_lfe` to parse `(msg …)` → the internal
   envelope map; `soma_actor:send/2` & `ask/3` accept a Lisp string (additive —
   map envelopes still work). Proof: a Lisp message runs identically to the
