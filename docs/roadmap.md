@@ -324,9 +324,9 @@ with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
   daemon wins the kernel bind and `daemon_foreground/1` returns on the others.
   The testable core went through relay — the probe and graceful lost-bind
   (`soma_cli:ping/1`, `daemon_foreground/1`), then the decide → launch → wait loop
-  (`soma_cli:ensure_daemon/2`), wired into `soma_cli_main:main_argv/0`; only the
-  irreducibly-shell detached launch (an isolated `os:cmd` seam) is direct, proven
-  by a release smoke test. **The CLI track is complete.**
+  (`soma_cli:ensure_daemon/2`), wired into `soma_cli_main:main_argv/0`; the
+  detached launch is shell-free and passes socket paths as argv, proven by a
+  release smoke test. **The CLI track is complete.**
 
 ## Lisp — s-expr actor/agent message language
 

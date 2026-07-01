@@ -41,7 +41,7 @@ libs="$rel/lib"
 # Publish this wrapper's own path so the Erlang auto-start (soma_cli_main's
 # `launch_daemon/1`) knows how to spawn a detached `soma daemon' when a client
 # command finds no daemon up. The decide/launch/wait logic lives in Erlang
-# (soma_cli:ensure_daemon/2); only the detached spawn itself is a shell step.
+# (soma_cli:ensure_daemon/2), and the detached spawn passes socket paths as argv.
 SOMA_SELF="$rel/bin/soma"
 [ -x "$SOMA_SELF" ] || SOMA_SELF="$0"
 export SOMA_SELF
