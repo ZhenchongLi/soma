@@ -518,3 +518,18 @@ test_cli_contract_describes_run_request_as_task_source() ->
 
 cli_contract_describes_run_request_as_task_source_test() ->
     test_cli_contract_describes_run_request_as_task_source().
+
+test_cli_1b_contract_describes_file_run_input_as_task_source() ->
+    Doc = read_doc("docs/contracts/cli-1b-test-contract.md"),
+    ?assert(contains(
+        Doc,
+        <<"| 8 | `soma_cli:run/1` reads Soma Lisp task source from a `.lfe` file">>
+    )),
+    ?assert(contains(
+        Doc,
+        <<"| 10 | `soma_cli:run/1` reads Soma Lisp task source from stdin when the path arg is `-`">>
+    )),
+    ?assertNot(contains(Doc, <<"reads the workflow from stdin">>)).
+
+cli_1b_contract_describes_file_run_input_as_task_source_test() ->
+    test_cli_1b_contract_describes_file_run_input_as_task_source().
