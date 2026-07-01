@@ -187,3 +187,15 @@ test_roadmap_marks_bounded_soma_lisp_v1_built() ->
 
 roadmap_marks_bounded_soma_lisp_v1_built_test() ->
     test_roadmap_marks_bounded_soma_lisp_v1_built().
+
+test_site_roadmap_marks_bounded_soma_lisp_v1_built() ->
+    Track = paragraph_starting_with(
+        section(read_doc("site/src/content/docs/reference/roadmap.md"), <<"## Sequence">>),
+        <<"Lisp    ">>
+    ),
+    ?assert(contains(Track, <<"bounded Soma Lisp v1">>)),
+    ?assert(contains(Track, <<"public task surface">>)),
+    ?assert(contains(Track, <<"[done]">>)).
+
+site_roadmap_marks_bounded_soma_lisp_v1_built_test() ->
+    test_site_roadmap_marks_bounded_soma_lisp_v1_built().
