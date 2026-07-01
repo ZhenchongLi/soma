@@ -51,6 +51,39 @@ test_dispatch_malformed_returns_integer() ->
 dispatch_malformed_returns_integer_test() ->
     test_dispatch_malformed_returns_integer().
 
+%% Criterion (#199): `soma daemon' must not crash when config selects a real
+%% provider but the daemon environment lacks `SOMA_LLM_API_KEY'. It returns a
+%% non-zero code and prints a stderr diagnostic naming the missing env var before
+%% any foreground listener can block the CLI.
+test_daemon_missing_api_key_prints_diagnostic_nonzero() ->
+    ConfigPath = write_temp_config(
+                   "[llm]\n"
+                   "provider = \"openai_compat\"\n"
+                   "base_url = \"api.example/v1\"\n"
+                   "model = \"deepseek-v4\"\n"),
+    SocketPath = temp_socket_path(),
+    PrevConfig = os:getenv("SOMA_CONFIG"),
+    PrevKey = os:getenv("SOMA_LLM_API_KEY"),
+    os:putenv("SOMA_CONFIG", ConfigPath),
+    os:unsetenv("SOMA_LLM_API_KEY"),
+    try
+        {Exit, Stdout, Stderr} =
+            capture_dispatch(["daemon", "--socket", SocketPath]),
+        ?assert(is_integer(Exit)),
+        ?assert(Exit =/= 0),
+        ?assertEqual(<<>>, Stdout),
+        ?assertMatch({match, _},
+                     re:run(Stderr, "SOMA_LLM_API_KEY", [{capture, first}]))
+    after
+        restore_env("SOMA_CONFIG", PrevConfig),
+        restore_env("SOMA_LLM_API_KEY", PrevKey),
+        file:delete(SocketPath),
+        file:delete(ConfigPath)
+    end.
+
+daemon_missing_api_key_prints_diagnostic_nonzero_test() ->
+    test_daemon_missing_api_key_prints_diagnostic_nonzero().
+
 %% Criterion #16: `soma_cli_main:main(Argv)' halts the OS process with the
 %% `dispatch/1' integer as the exit status, and routes any diagnostics to
 %% stderr. A real `halt/1' would kill the test runner, so this is a
@@ -99,6 +132,34 @@ collapse_ws(Src) ->
 
 count_src(Src, Needle) ->
     length(binary:matches(Src, Needle)).
+
+write_temp_config(Contents) ->
+    Path = filename:join(tmp_dir(),
+                         "soma_cli_main_config_"
+                         ++ os:getpid() ++ "_"
+                         ++ integer_to_list(erlang:unique_integer([positive]))
+                         ++ ".toml"),
+    ok = file:write_file(Path, Contents),
+    Path.
+
+temp_socket_path() ->
+    filename:join(tmp_dir(),
+                  "soma_cli_main_"
+                  ++ os:getpid() ++ "_"
+                  ++ integer_to_list(erlang:unique_integer([positive]))
+                  ++ ".sock").
+
+tmp_dir() ->
+    case os:getenv("TMPDIR") of
+        false -> "/tmp";
+        "" -> "/tmp";
+        Dir -> Dir
+    end.
+
+restore_env(Key, false) ->
+    os:unsetenv(Key);
+restore_env(Key, Value) ->
+    os:putenv(Key, Value).
 
 %% Run `soma_cli_main:dispatch(Argv)' with stdout and stderr each routed to a
 %% recording IO server, returning `{Exit, StdoutBin, StderrBin}'. The group

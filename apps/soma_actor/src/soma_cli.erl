@@ -184,11 +184,16 @@ poll_until_listening(Args, N) ->
 %% temp path; absent it, resolve `$XDG_RUNTIME_DIR/soma.sock', else
 %% `/tmp/soma-$UID.sock'. Returns `{ok, Path}' -- the listener runs in its own
 %% linked process, so the daemon stays up without blocking the caller.
--spec daemon(map()) -> {ok, file:filename_all()}.
+-spec daemon(map()) -> {ok, file:filename_all()} | {error, term()}.
 daemon(Args) ->
+    case load_model_config(Args) of
+        {ok, ModelConfig} -> daemon_with_model_config(Args, ModelConfig);
+        {error, Reason} -> {error, Reason}
+    end.
+
+daemon_with_model_config(Args, ModelConfig) ->
     {ok, _Started} = application:ensure_all_started(soma_runtime),
     Path = resolve_socket(Args),
-    ModelConfig = soma_config:load(Args),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
                                                  model_config => ModelConfig}),
     {ok, Path}.
@@ -203,20 +208,28 @@ daemon(Args) ->
 %% reaches the end of its work and halts. The `start_link' link stays: a listener
 %% crash propagates over it and takes the daemon process down rather than being
 %% turned into a clean return. The monitor is the additional handle for the
-%% normal-stop case. `soma_actor_sup' is a named singleton, so a second
+%% normal-stop case. Config is loaded before the listener is started: a provider
+%% config that cannot read `SOMA_LLM_API_KEY' returns `{error, Reason}' to the CLI
+%% entry point, so `soma daemon' can exit non-zero with a diagnostic instead of
+%% crashing. `soma_actor_sup' is a named singleton, so a second
 %% `start_link' returns `{error, {already_started, Pid}}', which we tolerate.
 %% When the listener `start_link/1' returns `{error, _}' -- the path is already
 %% bound by a live winner of an auto-start race -- this redundant daemon returns
 %% `ok' and exits cleanly rather than crashing on the lost bind.
--spec daemon_foreground(map()) -> ok.
+-spec daemon_foreground(map()) -> ok | {error, term()}.
 daemon_foreground(Args) ->
+    case load_model_config(Args) of
+        {ok, ModelConfig} -> daemon_foreground_with_model_config(Args, ModelConfig);
+        {error, Reason} -> {error, Reason}
+    end.
+
+daemon_foreground_with_model_config(Args, ModelConfig) ->
     {ok, _Started} = application:ensure_all_started(soma_runtime),
     case soma_actor_sup:start_link() of
         {ok, _Sup} -> ok;
         {error, {already_started, _Sup}} -> ok
     end,
     Path = resolve_socket(Args),
-    ModelConfig = soma_config:load(Args),
     case soma_cli_server:start_link(#{socket => Path,
                                       model_config => ModelConfig}) of
         {ok, Server} ->
@@ -231,6 +244,13 @@ daemon_foreground(Args) ->
             %% nothing to do -- return cleanly and let the process exit instead
             %% of crashing on the failed bind.
             ok
+    end.
+
+load_model_config(Args) ->
+    try soma_config:load(Args) of
+        ModelConfig -> {ok, ModelConfig}
+    catch
+        error:Reason -> {error, Reason}
     end.
 
 %% Shared socket-path resolver. Both `daemon/1' and `soma_cli_main' call this so
