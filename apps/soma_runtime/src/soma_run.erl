@@ -59,9 +59,10 @@ init(Opts) ->
     %% `run.started' with the same payload as before.
     case maps:is_key(pending, Opts) of
         true ->
+            FirstPendingStep = first_pending_step(Data#data.pending),
             emit(Data, <<"run.resumed">>,
-                 #{payload => #{first_pending_step =>
-                                    first_pending_step(Data#data.pending)}});
+                 #{step_id => FirstPendingStep,
+                   payload => #{first_pending_step => FirstPendingStep}});
         false ->
             emit(Data, <<"run.started">>,
                  #{payload => #{steps => Data#data.steps,
