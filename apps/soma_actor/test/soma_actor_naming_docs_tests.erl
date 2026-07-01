@@ -73,3 +73,12 @@ test_usage_documents_unknown_to_fails_sender_task() ->
 
 usage_documents_unknown_to_fails_sender_task_test() ->
     test_usage_documents_unknown_to_fails_sender_task().
+
+test_usage_documents_same_name_restart_replaces_entry() ->
+    Doc = read_usage_md(),
+    %% A same-name actor restart is documented as replacing the registry entry.
+    ?assert(contains(Doc, <<"same name">>)),
+    ?assert(contains(Doc, <<"replaces the registry entry">>)).
+
+usage_documents_same_name_restart_replaces_entry_test() ->
+    test_usage_documents_same_name_restart_replaces_entry().
