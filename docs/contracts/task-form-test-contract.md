@@ -65,7 +65,7 @@ The public task-wording alignment is proved by `soma_lfe_task_doc_tests`:
 | `docs/cli.md` calls CLI input task files. | `test_cli_opening_calls_input_task_files` |
 | The CLI stdin section calls `-` the task source path. | `test_cli_stdin_section_names_dash_task_source_path` |
 | The site CLI guide mirrors task-first wording. | `test_site_cli_mirrors_task_first_wording` |
-| CLI demo `.lfe` files compile as top-level tasks. | `test_cli_demo_lfe_files_compile_as_top_level_tasks` |
+| CLI demo `.lfe` files use top-level `(task ...)` forms. | `test_cli_demo_lfe_files_compile_as_top_level_tasks` |
 | The CLI demo README describes inputs as task files. | `test_cli_demo_readme_describes_inputs_as_task_files` |
 | The CLI demo script describes running a task. | `test_cli_demo_script_describes_task_run` |
 | The CLI contract describes run requests as task source. | `test_cli_contract_describes_run_request_as_task_source` |
