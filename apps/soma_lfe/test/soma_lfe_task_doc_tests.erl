@@ -175,3 +175,15 @@ test_cli_doc_says_run_file_reads_soma_lisp_source() ->
 
 cli_doc_says_run_file_reads_soma_lisp_source_test() ->
     test_cli_doc_says_run_file_reads_soma_lisp_source().
+
+test_roadmap_marks_bounded_soma_lisp_v1_built() ->
+    Track = paragraph_starting_with(
+        section(read_doc("docs/roadmap.md"), <<"## Sequence">>),
+        <<"Lisp    ">>
+    ),
+    ?assert(contains(Track, <<"bounded Soma Lisp v1">>)),
+    ?assert(contains(Track, <<"public task surface">>)),
+    ?assert(contains(Track, <<"[done]">>)).
+
+roadmap_marks_bounded_soma_lisp_v1_built_test() ->
+    test_roadmap_marks_bounded_soma_lisp_v1_built().
