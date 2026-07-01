@@ -36,6 +36,48 @@ before(Haystack, Left, Right) ->
         _ -> false
     end.
 
+starts_with(Bin, Prefix) when byte_size(Bin) >= byte_size(Prefix) ->
+    binary:part(Bin, 0, byte_size(Prefix)) =:= Prefix;
+starts_with(_Bin, _Prefix) ->
+    false.
+
+extract_pipeline_lfe(Doc) ->
+    Start = <<"cat > /tmp/soma-demo/pipeline.lfe <<'EOF'\n">>,
+    End = <<"\nEOF">>,
+    case binary:split(Doc, Start) of
+        [_Before, Rest] ->
+            case binary:split(Rest, End) of
+                [Source, _After] -> Source;
+                [_] -> erlang:error({missing_heredoc_end, End})
+            end;
+        [_] ->
+            erlang:error({missing_heredoc_start, Start})
+    end.
+
+test_site_quick_start_task_example_compiles() ->
+    Source = extract_pipeline_lfe(read_doc("site/src/content/docs/start/quick-start.md")),
+    ?assert(starts_with(Source, <<"(task">>)),
+    {ok, #{run := #{steps := Steps}}} = soma_lfe:compile(Source, #{}),
+    ?assertEqual(
+        [
+            #{id => read,
+              tool => file_read,
+              args => #{path => <<"input.txt">>, root => <<"/tmp/soma-demo">>}},
+            #{id => process,
+              tool => echo,
+              args => #{from_step => read}},
+            #{id => write,
+              tool => file_write,
+              args => #{path => <<"output.txt">>,
+                        root => <<"/tmp/soma-demo">>,
+                        bytes => {from_step, process}}}
+        ],
+        Steps
+    ).
+
+site_quick_start_task_example_compiles_test() ->
+    test_site_quick_start_task_example_compiles().
+
 test_readme_quick_start_uses_task_example() ->
     QuickStart = section(read_doc("README.md"), <<"## Quick start">>),
     ?assert(contains(QuickStart, <<"soma run">>)),
