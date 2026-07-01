@@ -8,16 +8,17 @@ v0.x contracts ([v0.3-test-contract.md](v0.3-test-contract.md),
 
 ## What this slice builds
 
-The CLI wire becomes Lisp end to end — no JSON. `soma run flow.lfe` sends the
-file's s-expr to the daemon; `soma_cli_server` parses it with `soma_lfe:compile/2`,
-runs it supervised under `soma_run_sup` (owning the run, `session_pid => self()`),
-renders the outcome with `soma_lisp:render/1` as a `(result ...)` s-expr, and the
-client prints it and picks an exit code from the `(status ...)` sub-form. A
-malformed request replies a defined `(result (status error) (error ...))` rather
-than crashing the handler; the server survives both failed runs and malformed
-requests and answers the next connection. `soma_cli:run/1` reads a `.lfe` file or
-stdin (`-`); `soma_cli:daemon/1` boots the runtime and the listener on a resolved
-socket path.
+The CLI wire becomes Lisp end to end — no JSON. `soma run flow.lfe` reads Soma
+Lisp task source from the file and sends the file's s-expr to the daemon;
+`soma_cli_server` parses it with `soma_lfe:compile/2`, runs it supervised under
+`soma_run_sup` (owning the run, `session_pid => self()`), renders the outcome
+with `soma_lisp:render/1` as a `(result ...)` s-expr, and the client prints it
+and picks an exit code from the `(status ...)` sub-form. A malformed request
+replies a defined `(result (status error) (error ...))` rather than crashing the
+handler; the server survives both failed runs and malformed requests and answers
+the next connection. `soma_cli:run/1` reads Soma Lisp task source from a `.lfe`
+file or stdin (`-`); `soma_cli:daemon/1` boots the runtime and the listener on a
+resolved socket path.
 
 ## Proving suites and modules
 
@@ -50,9 +51,9 @@ socket path.
 | 5 | The server stays up after a failed run and answers the next request on a new connection | `soma_cli_server_SUITE` | `test_server_serves_after_failed_lisp_run` |
 | 6 | A malformed Lisp request replies a defined error s-expr, no handler crash | `soma_cli_server_SUITE` | `test_malformed_request_returns_error_sexpr` |
 | 7 | The server stays up after a malformed request and answers the next well-formed request | `soma_cli_server_SUITE` | `test_server_serves_after_malformed_request` |
-| 8 | `soma_cli:run/1` reads a `.lfe` file, prints the `(result ...)`, returns exit 0 | `soma_cli_SUITE` | `test_run_echo_file_prints_result_exit_zero` |
+| 8 | `soma_cli:run/1` reads Soma Lisp task source from a `.lfe` file, prints the `(result ...)`, returns exit 0 | `soma_cli_SUITE` | `test_run_echo_file_prints_result_exit_zero` |
 | 9 | `soma_cli:run/1` returns non-zero when the run does not reach `completed` | `soma_cli_SUITE` | `test_run_failed_workflow_exit_nonzero` |
-| 10 | `soma_cli:run/1` reads the workflow from stdin when the path arg is `-` | `soma_cli_SUITE` | `test_run_reads_workflow_from_stdin_dash` |
+| 10 | `soma_cli:run/1` reads Soma Lisp task source from stdin when the path arg is `-` | `soma_cli_SUITE` | `test_run_reads_workflow_from_stdin_dash` |
 | 11 | `soma_cli:daemon/1` boots the runtime + listener on a resolved path, a client connects | `soma_cli_SUITE` | `test_daemon_boots_listener_client_connects` |
 | 12 | This contract (`docs/contracts/cli-1b-test-contract.md`) names a suite + case for each CLI.1b proof | `soma_cli_1b_contract_tests` | `test_doc_names_cli_1b_suites_and_cases` (the mapping table above is the deliverable) |
 | 13 | Neither `docs/cli.md` nor `docs/contracts/cli-test-contract.md` describes a JSON wire for `soma run` | _docs deliverable_ | the prose in `docs/cli.md` and `docs/contracts/cli-test-contract.md` (Lisp `(run ...)` request / `(result ...)` reply; no test function) |
