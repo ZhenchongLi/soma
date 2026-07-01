@@ -250,6 +250,25 @@ test_site_lfe_dsl_documents_run_as_compatibility_core_form() ->
 site_lfe_dsl_documents_run_as_compatibility_core_form_test() ->
     test_site_lfe_dsl_documents_run_as_compatibility_core_form().
 
+test_site_lfe_dsl_mirrors_task_first_wording() ->
+    Doc = read_doc("site/src/content/docs/guides/lfe-dsl.md"),
+    ?assert(contains(Doc, <<"## Task Files">>)),
+    ?assert(contains(Doc, <<"## Task Example">>)),
+    ?assert(contains(Doc, <<"the preferred public static task surface">>)),
+    ?assert(contains(
+        Doc,
+        <<"When a need is dynamic, keep the dynamic decision in the actor/planner layer and submit a new bounded static Soma Lisp task for each execution attempt.">>
+    )),
+    ?assert(contains(Doc, <<"cat > /tmp/soma-demo/pipeline.lfe <<'EOF'\n(task">>)),
+    ?assertNot(contains(
+        Doc,
+        <<"A valid run workflow contains exactly one top-level `run` form">>
+    )),
+    ?assertNot(contains(Doc, <<"DSL source:\n\n```lisp\n(run">>)).
+
+site_lfe_dsl_mirrors_task_first_wording_test() ->
+    test_site_lfe_dsl_mirrors_task_first_wording().
+
 test_lisp_messages_grammar_lists_task_form() ->
     Grammar = section(read_doc("docs/lisp-messages.md"), <<"## Grammar">>),
     ?assert(contains(Grammar, <<"(task ...)">>)),
