@@ -329,6 +329,25 @@ This opens a real provider socket unless the config carries a fixed test
 `response` seam. Use `soma_llm_smoke:run()` for the manual live smoke before
 embedding this path.
 
+### Advanced: stable-name actor addressing
+
+`soma_actor_sup:start_actor/1` accepts an optional `stable_name` option — a
+binary that names the actor in the actor registry:
+
+```erlang
+{ok, Actor} = soma_actor_sup:start_actor(#{
+    actor_id => <<"actor-worker">>,
+    stable_name => <<"worker">>,
+    model_config => ModelConfig,
+    tool_policy => #{},
+    event_store => Store
+}).
+```
+
+When the started actor's `init/1` sees a binary `stable_name`, it registers
+itself under that name so other callers can address it by name instead of by
+pid.
+
 ## Reading events
 
 Most users read events through:
