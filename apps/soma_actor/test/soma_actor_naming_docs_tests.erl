@@ -82,3 +82,13 @@ test_usage_documents_same_name_restart_replaces_entry() ->
 
 usage_documents_same_name_restart_replaces_entry_test() ->
     test_usage_documents_same_name_restart_replaces_entry().
+
+test_usage_documents_dead_pid_lookup_not_found() ->
+    Doc = read_usage_md(),
+    %% Looking up a dead registered pid is documented as returning
+    %% `{error, not_found}'.
+    ?assert(contains(Doc, <<"dead registered pid">>)),
+    ?assert(contains(Doc, <<"{error, not_found}">>)).
+
+usage_documents_dead_pid_lookup_not_found_test() ->
+    test_usage_documents_dead_pid_lookup_not_found().
