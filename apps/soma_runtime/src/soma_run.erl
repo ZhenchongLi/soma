@@ -83,6 +83,14 @@ executing(internal, next_step, Data = #data{pending = []}) ->
     notify_session(Data),
     {next_state, completed, Data};
 executing(internal, next_step, Data = #data{pending = [Step | _Rest]}) ->
+    case validate_step(Step) of
+        ok ->
+            execute_valid_step(Data, Step);
+        {error, Reason} ->
+            fail_invalid_step(Data, Step, Reason)
+    end.
+
+execute_valid_step(Data, Step) ->
     StepId = maps:get(id, Step),
     ToolName = maps:get(tool, Step),
     Resolved = resolve_args(maps:get(args, Step, #{}), Data#data.outputs),
@@ -267,6 +275,34 @@ add_optional(_Key, undefined, Acc) ->
     Acc;
 add_optional(Key, Value, Acc) ->
     Acc#{Key => Value}.
+
+validate_step(Step) when not is_map(Step) ->
+    {error, {invalid_step, non_map}};
+validate_step(Step) ->
+    case {maps:is_key(id, Step), maps:is_key(tool, Step)} of
+        {false, _} ->
+            {error, {invalid_step, missing_id}};
+        {_, false} ->
+            {error, {invalid_step, missing_tool}};
+        {true, true} ->
+            ok
+    end.
+
+%% A malformed step has not reached a tool-call boundary, so report a bounded
+%% run-level validation failure and leave worker fields unset.
+fail_invalid_step(Data, Step, Reason) ->
+    Extra = add_optional(step_id, invalid_step_id(Step),
+                         #{payload => #{reason => Reason}}),
+    emit(Data, <<"run.failed">>, Extra),
+    notify_session_failed(Data, Reason),
+    {next_state, failed, Data#data{current = undefined,
+                                   tool_call_id = undefined,
+                                   worker_mref = undefined}}.
+
+invalid_step_id(Step) when is_map(Step) ->
+    maps:get(id, Step, undefined);
+invalid_step_id(_Step) ->
+    undefined.
 
 %% Record the failure trail (`tool.failed', `step.failed', `run.failed'), tell
 %% the session, and move to the `failed' state. Shared by the `{error, _}'
