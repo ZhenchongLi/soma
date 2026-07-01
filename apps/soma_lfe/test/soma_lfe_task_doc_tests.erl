@@ -252,6 +252,20 @@ test_lisp_messages_soma_run_input_is_task_source() ->
 lisp_messages_soma_run_input_is_task_source_test() ->
     test_lisp_messages_soma_run_input_is_task_source().
 
+test_release_sample_run_command_is_task_execution() ->
+    Run = section(read_doc("docs/release.md"), <<"## Run">>),
+    ?assert(contains(
+        Run,
+        <<"/opt/soma/bin/soma run flow.lfe  # run a task under supervision">>
+    )),
+    ?assertNot(contains(
+        Run,
+        <<"/opt/soma/bin/soma run flow.lfe  # run a workflow under supervision">>
+    )).
+
+release_sample_run_command_is_task_execution_test() ->
+    test_release_sample_run_command_is_task_execution().
+
 test_lfe_dsl_documents_run_as_compatibility_core_form() ->
     Doc = read_doc("docs/lfe-dsl.md"),
     ?assert(contains(Doc, <<"(run ...)">>)),
