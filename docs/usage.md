@@ -353,6 +353,14 @@ under `soma_actor_sup`. It holds a `binary name => pid` map: an actor started
 with a `stable_name` registers its pid there, and name-based lookups resolve
 through it.
 
+`soma_actor:send/2` accepts a binary stable name as its `ActorRef`, not just a
+pid: when the first argument is a binary, `send/2` looks it up in
+`soma_actor_registry` and delivers to the registered actor.
+
+```erlang
+{ok, <<"t2">>} = soma_actor:send(<<"worker">>, Env).
+```
+
 ## Reading events
 
 Most users read events through:
