@@ -82,7 +82,7 @@ reply when one is available.
 
 ## Read From Stdin
 
-Use `-` as the workflow path:
+Use `-` as the task source path:
 
 ```bash
 printf '(task (let* ((greet (tool echo (value "hello")))) (return greet)))\n' | $SOMA run -
