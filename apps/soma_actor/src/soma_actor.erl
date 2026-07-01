@@ -16,7 +16,7 @@
 -export([callback_mode/0, init/1]).
 -export([idle/3]).
 
--define(DEFAULT_LLM_TIMEOUT_MS, 1000).
+-define(DEFAULT_LLM_TIMEOUT_MS, 60000).
 
 -record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
                runs = #{}, waiters = #{}, monitors = #{}, llm_calls = #{},
@@ -1121,12 +1121,21 @@ clear_llm_monitor(TaskId, Data) ->
     end.
 
 %% Arm the actor-owned call-timeout timer, keyed by the llm_call_id so its firing
-%% message maps back to the task. With no timeout_ms, use the fixed default so
-%% every LLM worker is owner-bounded.
+%% message maps back to the task. With no timeout_ms, use a production-sane fixed
+%% default so every LLM worker is owner-bounded without cutting off ordinary
+%% provider latency. Tests can lower the app env seam to keep hang proofs fast.
 arm_llm_timeout(undefined, LlmCallId) ->
-    arm_llm_timeout(?DEFAULT_LLM_TIMEOUT_MS, LlmCallId);
+    arm_llm_timeout(default_llm_timeout_ms(), LlmCallId);
 arm_llm_timeout(TimeoutMs, LlmCallId) when is_integer(TimeoutMs) ->
     erlang:start_timer(TimeoutMs, self(), {llm_timeout, LlmCallId}).
+
+default_llm_timeout_ms() ->
+    case application:get_env(soma_actor, llm_default_timeout_ms) of
+        {ok, TimeoutMs} when is_integer(TimeoutMs), TimeoutMs > 0 ->
+            TimeoutMs;
+        _ ->
+            ?DEFAULT_LLM_TIMEOUT_MS
+    end.
 
 %% On the worker's terminal result, cancel the call-timeout timer (the bound was
 %% met in time) so a stale timer never fires against a finished task. A flushed

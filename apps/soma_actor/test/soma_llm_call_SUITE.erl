@@ -148,32 +148,38 @@ slow_call_times_out_worker_dead_actor_alive(_Config) ->
 %% actor process must remain alive.
 default_timeout_without_timeout_ms_worker_dead_actor_alive(_Config) ->
     Store = event_store_pid(),
+    PrevDefault = application:get_env(soma_actor, llm_default_timeout_ms),
+    application:set_env(soma_actor, llm_default_timeout_ms, 50),
     Opts = #{actor_id => <<"actor-llm-default-timeout">>,
              model_config => #{},
              tool_policy => #{},
              event_store => Store},
-    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
-    Llm = #{directive => hang},
-    TaskId = <<"task-llm-default-timeout">>,
-    Envelope = #{type => <<"chat">>,
-                 payload => #{text => <<"hello">>},
-                 task_id => TaskId,
-                 llm => Llm},
-    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
-    Started = wait_for_actor_event(Store, <<"llm.started">>, 100),
-    WorkerPid = maps:get(llm_call_pid, Started),
-    true = is_pid(WorkerPid),
     try
-        ok = wait_for_status(ActorPid, TaskId, timeout, 100)
+        {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+        Llm = #{directive => hang},
+        TaskId = <<"task-llm-default-timeout">>,
+        Envelope = #{type => <<"chat">>,
+                     payload => #{text => <<"hello">>},
+                     task_id => TaskId,
+                     llm => Llm},
+        {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+        Started = wait_for_actor_event(Store, <<"llm.started">>, 100),
+        WorkerPid = maps:get(llm_call_pid, Started),
+        true = is_pid(WorkerPid),
+        try
+            ok = wait_for_status(ActorPid, TaskId, timeout, 100)
+        after
+            case is_process_alive(WorkerPid) of
+                true -> exit(WorkerPid, kill);
+                false -> ok
+            end
+        end,
+        false = is_process_alive(WorkerPid),
+        true = is_process_alive(ActorPid),
+        ok
     after
-        case is_process_alive(WorkerPid) of
-            true -> exit(WorkerPid, kill);
-            false -> ok
-        end
-    end,
-    false = is_process_alive(WorkerPid),
-    true = is_process_alive(ActorPid),
-    ok.
+        restore_llm_default_timeout(PrevDefault)
+    end.
 
 %% Criterion 5: cancelling an in-flight LLM call leaves the worker process dead,
 %% records the task as `cancelled', and keeps the actor pid alive. Enters through
@@ -604,6 +610,11 @@ wait_for_actor_event(Store, Type, N) ->
             timer:sleep(20),
             wait_for_actor_event(Store, Type, N - 1)
     end.
+
+restore_llm_default_timeout(undefined) ->
+    application:unset_env(soma_actor, llm_default_timeout_ms);
+restore_llm_default_timeout({ok, Value}) ->
+    application:set_env(soma_actor, llm_default_timeout_ms, Value).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
