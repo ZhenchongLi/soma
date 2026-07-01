@@ -125,6 +125,20 @@ soma_run_sup
 
 `soma_actor` 自身不阻塞在 LLM call 或 run 上。它启动并监控子操作，子操作结果作为 message 回到 actor mailbox。
 
+## 稳定名寻址
+
+除了 pid，`soma_actor` 还支持用一个稳定的二进制名字寻址。`soma_actor_sup:start_actor/1`
+接受 `stable_name` 这个**启动选项**：启动 actor 时传入一个二进制 `stable_name`，
+actor 的 `init/1` 就会把这个名字通过 `soma_actor_registry:register/2` 注册到
+`soma_actor_registry`（一个由 `soma_actor_sup` 监督的 `gen_server`，维护
+`二进制名字 => pid` 的映射）。之后 `soma_actor:send/2` 和 `actor_message.to`
+既接受 pid，也接受这个二进制稳定名。
+
+```erlang
+%% stable_name 是一个启动选项
+{ok, ActorPid} = soma_actor_sup:start_actor(#{stable_name => <<"researcher">>}).
+```
+
 ## Message 是入口
 
 `soma_actor` 的工作入口是 message。外部函数 API 只是 envelope 的包装，不绕过 actor mailbox：
