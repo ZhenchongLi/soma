@@ -387,6 +387,12 @@ A dead registered pid is treated the same as an unknown name: if the actor
 registered under a name has since stopped, looking that name up returns
 `{error, not_found}` rather than a stale pid.
 
+Stable names are additive: pid-based actor addressing remains supported. A pid
+is still an accepted `ActorRef`, so `soma_actor:send/2` and `actor_message.to`
+both take a pid exactly as before, and passing the pid returned by
+`start_actor/1` continues to work whether or not the actor was started with a
+`stable_name`.
+
 ## Reading events
 
 Most users read events through:
