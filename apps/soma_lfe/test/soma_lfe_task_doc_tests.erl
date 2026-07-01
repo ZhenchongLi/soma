@@ -118,6 +118,14 @@ test_lfe_dsl_documents_task_as_public_static_form() ->
 lfe_dsl_documents_task_as_public_static_form_test() ->
     test_lfe_dsl_documents_task_as_public_static_form().
 
+test_site_lfe_dsl_documents_task_as_public_static_form() ->
+    Doc = read_doc("site/src/content/docs/guides/lfe-dsl.md"),
+    ?assert(contains(Doc, <<"(task ...)">>)),
+    ?assert(contains(Doc, <<"public static task form">>)).
+
+site_lfe_dsl_documents_task_as_public_static_form_test() ->
+    test_site_lfe_dsl_documents_task_as_public_static_form().
+
 test_lisp_messages_grammar_lists_task_form() ->
     Grammar = section(read_doc("docs/lisp-messages.md"), <<"## Grammar">>),
     ?assert(contains(Grammar, <<"(task ...)">>)),
