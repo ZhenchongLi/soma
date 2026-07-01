@@ -41,7 +41,7 @@ terms stay Erlang.
 (result (status completed) (task-id "t-7") (outputs ((s1 (value "hi")))) (correlation-id "c-7")) ; response
 ```
 
-`soma run` takes a `.lfe` workflow **only** — no JSON input. The trade: the wire
+`soma run` takes Soma Lisp task source **only** — no JSON input. The trade: the wire
 is soma-Lisp, not universal JSON; fine for the single-user / own-agents scope,
 where agents emit Lisp and L.5 repairs imperfect Lisp.
 
