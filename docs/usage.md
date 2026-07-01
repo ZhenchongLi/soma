@@ -368,6 +368,10 @@ If the binary is an unknown stable name — no actor is registered under it —
 {error, not_found} = soma_actor:send(<<"no-such-name">>, Env).
 ```
 
+The same names are valid `actor_message.to` values: when a proposal is an
+`actor_message`, its `to` field may be a binary stable name (not just a pid),
+and the sender resolves it through `soma_actor_registry` before delivery.
+
 ## Reading events
 
 Most users read events through:
