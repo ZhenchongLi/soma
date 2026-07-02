@@ -898,10 +898,8 @@ test_tool_events_omit_sensitive_fields(Config) ->
           false = maps:is_key(module, Payload),
           false = maps:is_key(timeout_ms, Payload),
           %% The registered internals never appear as payload bytes either.
-          %% Deliberately wrong expectation (staged red): the executable path
-          %% is asserted to be *present* in the payload bytes.
           Rendered = iolist_to_binary(io_lib:format("~0p", [Payload])),
-          {_, _} = binary:match(Rendered, <<"/bin/echo">>),
+          nomatch = binary:match(Rendered, <<"/bin/echo">>),
           nomatch = binary:match(Rendered, <<"scrub-argv-value">>),
           nomatch = binary:match(Rendered, <<"4321">>)
       end,
