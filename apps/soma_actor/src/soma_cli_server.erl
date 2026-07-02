@@ -218,11 +218,26 @@ register_normalized_tool(Name, Manifest, ToolsDir) ->
     case soma_tool_registry:register_tool(Manifest) of
         ok ->
             ok = write_manifest_file(ToolsDir, Name, Manifest),
+            ok = append_tool_registered_event(Name, Manifest),
             ["(result (status registered) (tool-name ",
              soma_lisp:render(atom_to_binary(Name, utf8)), "))"];
         {error, Reason} ->
             soma_lisp:render(#{status => error, error => Reason})
     end.
+
+%% Append the one bounded `tool.registered' event for a successful register.
+%% `soma_event_store:append/2' fills the run/session/step ids with `undefined'
+%% (tool management belongs to no run); the payload is built from named safe
+%% fields alone -- the tool name plus `effect' / `idempotent' / `adapter' --
+%% never the executable path, argv values, pids, ports, or refs.
+append_tool_registered_event(Name, #{effect := Effect,
+                                     idempotent := Idempotent,
+                                     adapter := Adapter}) ->
+    soma_event_store:append(
+      event_store_pid(),
+      #{event_type => <<"tool.registered">>,
+        payload => #{tool_name => Name, effect => Effect,
+                     idempotent => Idempotent, adapter => Adapter}}).
 
 %% Persist the normalized manifest to `<ToolsDir>/<name>.lisp' so a restart
 %% re-registers the same descriptor from the boot-time `load_dir/1'. The path is
