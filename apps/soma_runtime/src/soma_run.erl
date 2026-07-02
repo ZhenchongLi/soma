@@ -119,11 +119,12 @@ execute_valid_step(Data, Step) ->
 %% Spawn the tool-call worker for a resolved tool, record `tool.started', arm the
 %% per-step timer, and move to `waiting_tool'.
 start_tool_call(Data, Step, StepId, ToolCallId, Descriptor, Input, CtxExtra) ->
-    Ctx = maps:merge(CtxExtra,
-                     #{session_id => Data#data.session_id,
-                       run_id => Data#data.run_id,
-                       step_id => StepId,
-                       tool_call_id => ToolCallId}),
+    BaseCtx = add_optional(correlation_id, Data#data.correlation_id,
+                           #{session_id => Data#data.session_id,
+                             run_id => Data#data.run_id,
+                             step_id => StepId,
+                             tool_call_id => ToolCallId}),
+    Ctx = maps:merge(CtxExtra, BaseCtx),
     AdapterOpts = adapter_opts(Descriptor),
     WorkerOpts = AdapterOpts#{input => Input,
                               ctx => Ctx,
