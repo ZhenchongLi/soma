@@ -13,14 +13,20 @@
          test_config_tool_description_in_catalog/1,
          test_invalid_field_surfaces_normalize_error/1,
          test_safety_defaults_and_declared_values/1,
-         test_non_cli_adapter_rejected/1]).
+         test_non_cli_adapter_rejected/1,
+         test_broken_file_skipped_daemon_serves/1]).
+
+%% Logger handler callback (the boot-log capture used by
+%% test_broken_file_skipped_daemon_serves).
+-export([log/2]).
 
 all() ->
     [test_daemon_boot_registers_config_tool,
      test_config_tool_description_in_catalog,
      test_invalid_field_surfaces_normalize_error,
      test_safety_defaults_and_declared_values,
-     test_non_cli_adapter_rejected].
+     test_non_cli_adapter_rejected,
+     test_broken_file_skipped_daemon_serves].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -171,6 +177,82 @@ test_non_cli_adapter_rejected(Config) ->
     %% The name never reached the registry.
     {error, not_found} =
         soma_tool_registry:resolve_descriptor(cfg_module_inject),
+    ok.
+
+%% Criterion 6 (#205): a file that fails to parse, compile, or normalize is
+%% skipped with a named, bounded diagnostic while the remaining valid tool
+%% files still register and the daemon serves requests. Entry point is
+%% `soma_cli:daemon/1' -- no layer bypassed, because the criterion is about
+%% boot surviving. The tools dir mixes an unparseable file, an
+%% invalid-manifest file, and a valid file; the boot-time skip diagnostics
+%% (one `logger:warning' per skipped file) are captured with a suite-local
+%% logger handler, since `daemon/1' deliberately discards the loader's
+%% result rather than letting it block boot.
+test_broken_file_skipped_daemon_serves(Config) ->
+    SocketPath = socket_path(Config),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_mixed"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    %% Unparseable: an unbalanced form the reader cannot parse.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_unparseable.lisp"),
+           <<"(tool (name \"cfg_unparseable\"">>),
+    %% Parses and compiles, but fails `soma_tool_manifest:normalize/1'.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_bad_manifest.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_bad_manifest\")\n"
+             "  (effect banana)\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    %% Valid: must register despite its broken neighbours.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_survivor.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_survivor\")\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    ok = logger:add_handler(soma_tool_config_suite_capture, ?MODULE,
+                            #{config => #{pid => self()}}),
+    try
+        {ok, SocketPath} =
+            soma_cli:daemon(#{socket => SocketPath,
+                              config_path => no_llm_config_file(Config),
+                              tools_dir => ToolsDir}),
+        %% The valid tool registered through the boot path.
+        {ok, #{adapter := cli}} =
+            soma_tool_registry:resolve_descriptor(cfg_survivor),
+        %% The broken files never reached the registry.
+        {error, not_found} =
+            soma_tool_registry:resolve_descriptor(cfg_unparseable),
+        {error, not_found} =
+            soma_tool_registry:resolve_descriptor(cfg_bad_manifest),
+        %% Each skipped file produced a named, bounded boot diagnostic.
+        {parse_error, [_ | _]} = receive_skip("cfg_unparseable.lisp"),
+        {invalid_effect, plantain} = receive_skip("cfg_bad_manifest.lisp"),
+        %% And the daemon serves requests over the socket.
+        0 = soma_cli:ping(#{socket => SocketPath})
+    after
+        _ = logger:remove_handler(soma_tool_config_suite_capture)
+    end,
+    ok.
+
+%% The captured skip reason for one file's boot diagnostic, or a failed case.
+receive_skip(File) ->
+    receive
+        {tool_skip, File, Reason} -> Reason
+    after 2000 ->
+        ct:fail({no_skip_diagnostic_for, File})
+    end.
+
+%% Logger handler callback: forward the loader's per-file skip warning to the
+%% test process as `{tool_skip, Basename, Reason}'; ignore everything else.
+%% Handler callbacks run in the logging client's process, so the forwards
+%% arrive before `soma_cli:daemon/1' returns.
+log(#{msg := {"soma tool config: skipped ~s: ~p", [File, Reason]}},
+    #{config := #{pid := Pid}}) ->
+    Pid ! {tool_skip, File, Reason},
+    ok;
+log(_LogEvent, _HandlerConfig) ->
     ok.
 
 %% A fresh temp tools directory under the case's priv_dir.
