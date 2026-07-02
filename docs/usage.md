@@ -158,6 +158,43 @@ that root:
 Operators can register additional in-BEAM or external CLI tools. Task users still call them by tool name;
 task sources do not contain shell command strings.
 
+## Register Your Own CLI Tools
+
+Wrap any external binary as a soma tool without writing Erlang: put one
+`(tool …)` form per `.lisp` file in `~/.soma/tools/`. The daemon loads the
+directory at boot and registers each valid file through the same manifest
+validation the built-ins use.
+
+```lisp
+(tool
+  (name "upper")
+  (description "Uppercase the final argv argument.")
+  (effect identity) (idempotent true) (timeout-ms 5000)
+  (adapter cli)
+  (executable "/usr/local/bin/soma_sample_upper")
+  (argv))
+```
+
+Rules that keep this safe:
+
+- **Config tools are `cli` only.** `executable` + `argv`, never a shell
+  string; a file declaring `(adapter erlang_module)` is rejected — config
+  files cannot inject code into the runtime.
+- **Safety metadata defaults conservatively.** Omit `effect` / `idempotent`
+  / `timeout-ms` and the tool registers as `(effect state)`,
+  `(idempotent false)`, 30000 ms — the runtime never guesses a tool is safe.
+  Declare them honestly (`reader` for read-only tools, `idempotent true`
+  where re-running converges) so resume classification treats the tool
+  correctly.
+- **A broken file never blocks the daemon.** A file that fails to parse or
+  validate is skipped with one named boot-log line; the other files still
+  register. A missing or empty `~/.soma/tools/` changes nothing.
+- Descriptions may contain any UTF-8 text; the file itself must be saved as
+  UTF-8.
+
+Changes take effect on the next daemon start (`soma stop`, then any client
+command auto-starts it again).
+
 ## Manage Tasks
 
 For short work, `soma run` waits and prints the final result. For long work, run

@@ -15,6 +15,7 @@
          test_safety_defaults_and_declared_values/1,
          test_non_cli_adapter_rejected/1,
          test_broken_file_skipped_daemon_serves/1,
+         test_non_ascii_and_invalid_utf8_files/1,
          test_missing_or_empty_dir_boot_unchanged/1,
          test_config_tool_runs_end_to_end/1]).
 
@@ -29,6 +30,7 @@ all() ->
      test_safety_defaults_and_declared_values,
      test_non_cli_adapter_rejected,
      test_broken_file_skipped_daemon_serves,
+     test_non_ascii_and_invalid_utf8_files,
      test_missing_or_empty_dir_boot_unchanged,
      test_config_tool_runs_end_to_end].
 
@@ -238,6 +240,42 @@ test_broken_file_skipped_daemon_serves(Config) ->
     after
         _ = logger:remove_handler(soma_tool_config_suite_capture)
     end,
+    ok.
+
+%% Review finding (#205): the two non-ASCII input classes a user's editor
+%% will produce must not crash the loader. Valid UTF-8 above code point 255
+%% (an em-dash, Chinese text) is *valid input* — it registers with the
+%% description intact in the catalog; invalid UTF-8 bytes (a Latin-1-saved
+%% file) skip with the reader's named diagnostic while the valid neighbour
+%% still registers. Before the reader fix both classes crashed
+%% `soma_lfe_reader:read_forms/1` and took `load_dir/1` — and daemon boot —
+%% down with them.
+test_non_ascii_and_invalid_utf8_files(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_unicode"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    %% Valid UTF-8, code points above 255 in the description.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_unicode.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_unicode\")\n"
+             "  (description \"Résumé formatter — 大写\")\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n"/utf8>>),
+    %% Invalid UTF-8 bytes inside the file.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_latin1.lisp"),
+           <<"(tool (name \"cfg_latin1", 16#ff, 16#fe, "\"))">>),
+    #{registered := [cfg_unicode], skipped := [SkipEntry]} =
+        soma_tool_config:load_dir(ToolsDir),
+    %% The non-ASCII description survived the whole chain into the catalog.
+    [#{description := <<"Résumé formatter — 大写"/utf8>>}] =
+        [E || #{name := cfg_unicode} = E <- soma_tool_registry:catalog()],
+    %% The invalid-UTF-8 file skipped with the reader's named diagnostic.
+    #{file := "cfg_latin1.lisp",
+      reason := {parse_error,
+                 [#{message := <<"source is not valid UTF-8">>}]}} =
+        SkipEntry,
     ok.
 
 %% Criterion 7 (#205): a missing or empty tools directory leaves daemon boot
