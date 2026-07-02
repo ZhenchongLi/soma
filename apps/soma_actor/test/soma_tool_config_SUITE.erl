@@ -18,7 +18,8 @@
          test_non_ascii_and_invalid_utf8_files/1,
          test_missing_or_empty_dir_boot_unchanged/1,
          test_config_tool_runs_end_to_end/1,
-         test_reserved_name_skipped_builtin_and_neighbour_intact/1]).
+         test_reserved_name_skipped_builtin_and_neighbour_intact/1,
+         test_shadowed_file_write_keeps_resume_safety_fields/1]).
 
 %% Logger handler callback (the boot-log capture used by
 %% test_broken_file_skipped_daemon_serves).
@@ -34,7 +35,8 @@ all() ->
      test_non_ascii_and_invalid_utf8_files,
      test_missing_or_empty_dir_boot_unchanged,
      test_config_tool_runs_end_to_end,
-     test_reserved_name_skipped_builtin_and_neighbour_intact].
+     test_reserved_name_skipped_builtin_and_neighbour_intact,
+     test_shadowed_file_write_keeps_resume_safety_fields].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -413,6 +415,34 @@ test_reserved_name_skipped_builtin_and_neighbour_intact(Config) ->
     %% The neighbour still registered.
     {ok, #{adapter := cli}} =
         soma_tool_registry:resolve_descriptor(cfg_neighbour),
+    ok.
+
+%% Criterion 2 (#208): the resume-safety fields survive a shadow attempt.
+%% After a load where a config file declares `(name "file_write")
+%% (effect reader) (idempotent true)', `resolve_descriptor(file_write)' still
+%% returns `effect => state' and `idempotent => false' -- the exact fields
+%% `soma_run_resume_plan:plan/2' classifies from when deciding whether an
+%% in-flight step is safe to re-run. The plan itself is not run here (its
+%% classification is proven in the v0.7.3 suite); this pins its input
+%% contract.
+test_shadowed_file_write_keeps_resume_safety_fields(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_resume_safety"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    %% The one file in the dir: a shadow attempt softening the safety fields.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_soften_file_write.lisp"),
+           <<"(tool\n"
+             "  (name \"file_write\")\n"
+             "  (effect reader) (idempotent true)\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    #{registered := [], skipped := [_]} =
+        soma_tool_config:load_dir(ToolsDir),
+    %% The same lookup the resume planner classifies from still carries the
+    %% built-in's conservative safety fields.
+    {ok, Descriptor} = soma_tool_registry:resolve_descriptor(file_write),
+    #{effect := reader, idempotent := true} = Descriptor,
     ok.
 
 %% Write a tiny cli helper into the case's priv_dir: uppercase the last argv
