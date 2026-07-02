@@ -873,8 +873,10 @@ build_call_opts(#{provider := openai_compat,
     case maps:get(plan, ModelConfig, false) of
         true ->
             AllowedTools = maps:get(allowed_tools, ModelConfig, all),
+            Catalog = soma_tool_registry:catalog(),
             System = #{role => <<"system">>,
-                       content => planning_system_prompt(AllowedTools)},
+                       content => planning_system_prompt(AllowedTools,
+                                                         Catalog)},
             UserMessages = maps:get(messages, Opts1),
             Opts1#{plan => true, messages => [System | UserMessages]};
         _ -> Opts1
@@ -903,17 +905,57 @@ copy_optional(Keys, Src, Dst) ->
 
 %% Build the planning-mode system prompt: plain text instructing the model to
 %% answer with a `(run-steps ...)' Lisp plan, listing the allowed tool names when
-%% the policy names concrete tools. An `all' policy has no concrete names, so the
-%% instruction text carries the `(run-steps ...)' directive without a tool list.
-%% Pure -- no call, no event.
-planning_system_prompt(AllowedTools) when is_list(AllowedTools) ->
+%% the policy names concrete tools, followed by one Lisp `(tool ...)' block per
+%% allowed tool that has a catalog entry (name, description, declared params).
+%% Catalog entries outside the allowlist are filtered out; an allowed tool
+%% without a catalog entry stays in the plain name list and gets no block. An
+%% `all' policy has no concrete names, so the instruction text carries the
+%% `(run-steps ...)' directive without a tool list. Pure -- the caller fetches
+%% the catalog; no call, no event here.
+planning_system_prompt(AllowedTools, Catalog) when is_list(AllowedTools) ->
     Names = [atom_to_binary(T, utf8) || T <- AllowedTools],
     Joined = iolist_to_binary(lists:join(<<", ">>, Names)),
+    Allowed = [Entry || Entry = #{name := Name} <- Catalog,
+                        lists:member(Name, AllowedTools)],
     iolist_to_binary(
       [<<"Answer with a Lisp plan of the form (run-steps ...) using only ">>,
-       <<"these tools: ">>, Joined, <<".">>]);
-planning_system_prompt(_All) ->
+       <<"these tools: ">>, Joined, <<".">>,
+       catalog_blocks(Allowed)]);
+planning_system_prompt(_All, _Catalog) ->
     <<"Answer with a Lisp plan of the form (run-steps ...).">>.
+
+%% Render catalog entries as newline-separated Lisp `(tool ...)' blocks,
+%% mirroring the `(tool ...)' config form from docs/tool-abstraction.md section 5.
+%% Tool names keep their registry spelling (atom_to_binary, underscores) -- never
+%% pushed through soma_lisp:render/1, whose symbol rendering maps `_' to `-' and
+%% would print a name the registry cannot resolve. String values (description,
+%% param names, param docs) do go through soma_lisp:render/1 for its exact
+%% quoting/escaping. Built from catalog/0 entries only, so runtime descriptor
+%% fields (module/executable/argv/effect/idempotent/timeout_ms) cannot appear.
+catalog_blocks(Entries) ->
+    [[<<"\n">>, tool_block(Entry)] || Entry <- Entries].
+
+tool_block(#{name := Name, description := Description, params := Params}) ->
+    [<<"(tool (name ">>, atom_to_binary(Name, utf8), <<")">>,
+     <<" (description ">>, soma_lisp:render(Description), <<")">>,
+     params_form(Params), <<")">>].
+
+params_form([]) ->
+    [];
+params_form(Params) ->
+    [<<" (params ">>,
+     lists:join(<<" ">>, [param_form(Param) || Param <- Params]),
+     <<")">>].
+
+param_form(#{name := Name, type := Type, required := Required} = Param) ->
+    Doc = case maps:find(doc, Param) of
+              {ok, DocText} -> [<<" (doc ">>, soma_lisp:render(DocText), <<")">>];
+              error -> []
+          end,
+    [<<"(param (name ">>, soma_lisp:render(Name), <<")">>,
+     <<" (type ">>, atom_to_binary(Type, utf8), <<")">>,
+     <<" (required ">>, atom_to_binary(Required, utf8), <<")">>,
+     Doc, <<")">>].
 
 %% Merge the actor's allowed-tools list (held on its tool_policy) into the
 %% model_config the builder reads, so planning mode can name the allowed tools.

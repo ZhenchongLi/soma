@@ -143,8 +143,19 @@ test_planning_mode_builds_run_steps_system_message_over_allowed_tools() ->
     ?assertEqual([#{role => <<"user">>, content => <<"summarize the file">>}],
                  Rest).
 
-planning_mode_builds_run_steps_system_message_over_allowed_tools_test() ->
-    test_planning_mode_builds_run_steps_system_message_over_allowed_tools().
+%% The planning branch now reads soma_tool_registry:catalog/0 on every build
+%% (#212), so this test runs under the same registry fixture the registry's own
+%% eunit tests use.
+planning_mode_builds_run_steps_system_message_over_allowed_tools_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(
+            test_planning_mode_builds_run_steps_system_message_over_allowed_tools())
+     end}.
 
 %% Criterion 1 (#212): with a concrete allowlist, the planning system prompt
 %% consumes the tool catalog. Each allowed tool that has a catalog entry gets a
