@@ -19,8 +19,8 @@
          builtin_names/0]).
 
 %% Process API
--export([start_link/0, register_tool/1, resolve/1, resolve_descriptor/1,
-         catalog/0, list_tools/0]).
+-export([start_link/0, register_tool/1, unregister_tool/1, resolve/1,
+         resolve_descriptor/1, catalog/0, list_tools/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
@@ -158,6 +158,13 @@ start_link() ->
 register_tool(Manifest) ->
     gen_server:call(?MODULE, {register_tool, Manifest}).
 
+%% @doc Remove a tool name from the running registry, so it no longer
+%% resolves. Admission (only a live config tool may be removed — never a
+%% built-in) is the caller's gate; this call only owns the live removal.
+-spec unregister_tool(atom()) -> ok.
+unregister_tool(Name) ->
+    gen_server:call(?MODULE, {unregister_tool, Name}).
+
 %% @doc Resolve a tool name to its module through the running registry.
 -spec resolve(atom()) -> {ok, module()} | {error, not_found}.
 resolve(Name) ->
@@ -208,6 +215,8 @@ handle_call({register_tool, Manifest}, _From, Registry) ->
         {error, _} = Error ->
             {reply, Error, Registry}
     end;
+handle_call({unregister_tool, Name}, _From, Registry) ->
+    {reply, ok, maps:remove(Name, Registry)};
 handle_call({resolve, Name}, _From, Registry) ->
     %% `resolve/1' keeps its bare-module shape by reading `module' out of the
     %% stored descriptor, so the seed map holds descriptors as the one source
