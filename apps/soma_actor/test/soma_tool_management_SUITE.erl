@@ -944,10 +944,11 @@ test_register_starts_no_actor_task(Config) ->
     RegReply = register_over_socket(SocketPath, Manifest),
     match = re:run(RegReply, "\\(status registered\\)", [{capture, none}]),
 
-    %% Deliberately wrong (staged red): expect the register to have started
-    %% exactly one actor task. The inline handler starts none, so this fires.
+    %% The register completed inline in the connection handler: no actor task
+    %% was started, so the live actor population is unchanged.
     ActorsAfter = actor_task_pids(),
-    [_OneActor] = ActorsAfter -- ActorsBefore,
+    [] = ActorsAfter -- ActorsBefore,
+    ActorsBefore = ActorsAfter,
     ok.
 
 %% The live actor instances under the dynamic actor supervisor, as pids.
