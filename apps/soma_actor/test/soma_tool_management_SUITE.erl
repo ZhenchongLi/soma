@@ -6,6 +6,7 @@
 -module(soma_tool_management_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("kernel/include/file.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_register_sends_manifest_over_socket/1,
@@ -27,7 +28,8 @@
          test_register_appends_bounded_event/1,
          test_remove_appends_bounded_event/1,
          test_tool_events_omit_sensitive_fields/1,
-         test_register_starts_no_actor_task/1]).
+         test_register_starts_no_actor_task/1,
+         test_harness_drives_real_socket_with_temp_dirs_and_stub/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -49,7 +51,8 @@ all() ->
      test_register_appends_bounded_event,
      test_remove_appends_bounded_event,
      test_tool_events_omit_sensitive_fields,
-     test_register_starts_no_actor_task].
+     test_register_starts_no_actor_task,
+     test_harness_drives_real_socket_with_temp_dirs_and_stub].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -949,6 +952,59 @@ test_register_starts_no_actor_task(Config) ->
     ActorsAfter = actor_task_pids(),
     [] = ActorsAfter -- ActorsBefore,
     ActorsBefore = ActorsAfter,
+    ok.
+
+%% Criterion 21 (#220): the tool-management cases drive the real socket surface
+%% with per-case temp tools directories and stub executables -- the harness
+%% invariant itself. `init_per_testcase' builds a fresh temp base dir for every
+%% case and writes an executable stub program into it, so no case ever needs a
+%% shared location or a system binary. This case proves the invariant end to
+%% end: the stub the harness provides is a real executable file living inside
+%% the same per-case temp dir as the socket path; a real daemon boots on that
+%% temp socket with a per-case temp tools dir; and a register over the real
+%% socket lands the stub-backed tool in the live registry with the harness
+%% stub as its executable.
+test_harness_drives_real_socket_with_temp_dirs_and_stub(Config) ->
+    _ = application:stop(soma_runtime),
+    Base = ?config(base_dir, Config),
+    SocketPath = ?config(socket_path, Config),
+    %% The harness provides a per-case stub executable in Config...
+    Stub = ?config(stub_executable, Config),
+    true = is_list(Stub),
+    %% ...that lives inside the same per-case temp dir as the socket path --
+    %% nothing points at a shared location.
+    true = filelib:is_dir(Base),
+    Base = filename:dirname(SocketPath),
+    Base = filename:dirname(Stub),
+    %% The stub is a real file with the executable bit set.
+    true = filelib:is_regular(Stub),
+    {ok, #file_info{mode = Mode}} = file:read_file_info(Stub),
+    true = (Mode band 8#111) =/= 0,
+
+    %% A real daemon boots on the temp socket with a per-case temp tools dir...
+    ToolsDir = filename:join(Base, "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(Base, "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+
+    %% ...and a register over the real socket lands a tool whose executable is
+    %% the harness stub -- not a system binary -- in the live registry.
+    Manifest = iolist_to_binary(
+                 ["(tool\n"
+                  "  (name \"mgmt_stub_backed\")\n"
+                  "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                  "  (adapter cli)\n"
+                  "  (executable \"", Stub, "\")\n"
+                  "  (argv \"hello\"))\n"]),
+    RegReply = register_over_socket(SocketPath, Manifest),
+    match = re:run(RegReply, "\\(status registered\\)", [{capture, none}]),
+    {ok, #{adapter := cli, executable := Executable}} =
+        soma_tool_registry:resolve_descriptor(mgmt_stub_backed),
+    StubBin = unicode:characters_to_binary(Stub),
+    StubBin = unicode:characters_to_binary(Executable),
     ok.
 
 %% The live actor instances under the dynamic actor supervisor, as pids.
