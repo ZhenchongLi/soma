@@ -23,7 +23,8 @@
          test_remove_deletes_only_owned_manifest_file/1,
          test_remove_builtin_not_config_tool/1,
          test_remove_never_deletes_outside_tools_dir/1,
-         test_restart_after_remove_stays_unresolved/1]).
+         test_restart_after_remove_stays_unresolved/1,
+         test_register_appends_bounded_event/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -41,7 +42,8 @@ all() ->
      test_remove_deletes_only_owned_manifest_file,
      test_remove_builtin_not_config_tool,
      test_remove_never_deletes_outside_tools_dir,
-     test_restart_after_remove_stays_unresolved].
+     test_restart_after_remove_stays_unresolved,
+     test_register_appends_bounded_event].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -751,6 +753,62 @@ test_restart_after_remove_stays_unresolved(Config) ->
                                          tools_dir => ToolsDir}),
     {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_purged),
     ok.
+
+%% Criterion 17 (#220): a successful register appends exactly one bounded
+%% `tool.registered' event through `soma_event_store:append/2'. The daemon
+%% boots with an empty tools dir, so the store holds no `tool.registered'
+%% event yet; after a valid register over the socket exactly one appears. It
+%% is bounded per the design: `append/2' fills the run/session/step ids with
+%% `undefined' (tool management belongs to no run), and the payload carries
+%% the tool name and the safe metadata alone -- `effect' / `idempotent' /
+%% `adapter' -- pinned as the exact key set so nothing else can ride along.
+test_register_appends_bounded_event(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Store = runtime_event_store_pid(),
+    %% No `tool.registered' event exists before the register.
+    [] = tool_registered_events(Store),
+
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_event\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    RegReply = register_over_socket(SocketPath, Manifest),
+    match = re:run(RegReply, "\\(status registered\\)", [{capture, none}]),
+
+    %% Exactly one `tool.registered' event was appended...
+    [Event] = tool_registered_events(Store),
+    %% ...with the run/session/step ids `undefined' (filled by `append/2' --
+    %% tool management belongs to no run)...
+    #{run_id := undefined, session_id := undefined, step_id := undefined,
+      payload := Payload} = Event,
+    %% ...and a bounded payload: the tool name plus the safe metadata, and
+    %% nothing else.
+    #{tool_name := mgmt_event, effect := reader, idempotent := true,
+      adapter := cli} = Payload,
+    [adapter, effect, idempotent, tool_name] = lists:sort(maps:keys(Payload)),
+    ok.
+
+%% The runtime's supervised event store -- the same pid the server handlers
+%% locate -- read directly so the test counts stored events, not wire bytes.
+runtime_event_store_pid() ->
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, supervisor:which_children(soma_sup)),
+    Pid.
+
+%% Every stored `tool.registered' event, oldest first.
+tool_registered_events(Store) ->
+    [E || E <- soma_event_store:all(Store),
+          maps:get(event_type, E, undefined) =:= <<"tool.registered">>].
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
 %% the way the `soma stop' client does, and return the reply bytes.
