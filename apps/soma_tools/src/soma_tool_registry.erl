@@ -15,7 +15,7 @@
 -behaviour(gen_server).
 
 %% Pure map API
--export([register/3, lookup/2, names/1, catalog/1]).
+-export([register/3, lookup/2, names/1, catalog/1, builtin_names/0]).
 
 %% Process API
 -export([start_link/0, register_tool/1, resolve/1, resolve_descriptor/1,
@@ -79,6 +79,14 @@ lookup(Registry, Name) ->
 -spec names(registry()) -> [atom()].
 names(Registry) ->
     maps:keys(Registry).
+
+%% @doc The names of the built-in tools, derived from the same
+%% `?BUILTIN_MODULES' seed list `seed/0' builds the registry from — one
+%% source of truth, so a new built-in extends the reserved set
+%% automatically. Read-only: no registry state is touched.
+-spec builtin_names() -> [atom()].
+builtin_names() ->
+    [maps:get(name, Module:manifest()) || Module <- ?BUILTIN_MODULES].
 
 %% @doc The model-facing catalog of a registry map: one entry per descriptor
 %% that carries a `description'. Each entry is constructed as exactly

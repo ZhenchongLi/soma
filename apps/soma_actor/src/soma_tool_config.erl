@@ -80,12 +80,26 @@ register_file(Path) ->
 compile_and_register(Form) ->
     case compile_tool(Form) of
         {ok, Manifest} ->
-            case soma_tool_registry:register_tool(Manifest) of
-                ok -> {ok, maps:get(name, Manifest)};
-                {error, _} = Error -> Error
-            end;
+            register_manifest(Manifest);
         {error, _} = Error ->
             Error
+    end.
+
+%% Admission gate in front of `register_tool/1': a config file may not
+%% declare a built-in tool's name — the registry overwrites by name, and the
+%% resume fail-safe reads `effect' / `idempotent' off exactly those
+%% descriptors, so a shadow would soften it. The reserved set comes from
+%% `soma_tool_registry:builtin_names/0' (the seed list's own names), never a
+%% retyped list here.
+register_manifest(#{name := Name} = Manifest) ->
+    case lists:member(Name, soma_tool_registry:builtin_names()) of
+        true ->
+            {error, {reserved_name, Name}};
+        false ->
+            case soma_tool_registry:register_tool(Manifest) of
+                ok -> {ok, Name};
+                {error, _} = Error -> Error
+            end
     end.
 
 %% Compile a parsed `(tool (key value...) ...)' form into the manifest map
