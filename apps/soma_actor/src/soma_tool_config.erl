@@ -142,9 +142,10 @@ collect_fields(_Improper, _Fields) ->
 
 %% One `(key value...)' entry compiled to its manifest field. `name',
 %% `description', and `executable' take one string; `argv' takes zero or more
-%% strings; `effect', `idempotent', and `adapter' take one value normalize
-%% (or the adapter gate) judges; `timeout-ms' takes one value and maps to the
-%% manifest key `timeout_ms'.
+%% strings; `params' takes the documented compact param rows and maps them to
+%% manifest param specs; `effect', `idempotent', and `adapter' take one value
+%% normalize (or the adapter gate) judges; `timeout-ms' takes one value and maps
+%% to the manifest key `timeout_ms'.
 compile_entry([name, Value]) when is_binary(Value) ->
     {ok, {name, Value}};
 compile_entry([description, Value]) when is_binary(Value) ->
@@ -156,6 +157,8 @@ compile_entry([argv | Values]) ->
         true -> {ok, {argv, Values}};
         false -> {error, {invalid_value, argv, Values}}
     end;
+compile_entry([params, Specs]) when is_list(Specs) ->
+    compile_params(Specs);
 compile_entry([effect, Value]) ->
     {ok, {effect, Value}};
 compile_entry([idempotent, Value]) ->
@@ -171,6 +174,7 @@ compile_entry([Key, _Value]) when Key =:= name;
 compile_entry([Key | Values]) when Key =:= name;
                                    Key =:= description;
                                    Key =:= executable;
+                                   Key =:= params;
                                    Key =:= effect;
                                    Key =:= idempotent;
                                    Key =:= adapter;
@@ -180,6 +184,38 @@ compile_entry([Key | _Values]) when is_atom(Key) ->
     {error, {unknown_key, Key}};
 compile_entry(Entry) ->
     {error, {invalid_entry, Entry}}.
+
+compile_params(Specs) ->
+    compile_params(Specs, []).
+
+compile_params([], Acc) ->
+    {ok, {params, lists:reverse(Acc)}};
+compile_params([Spec | Rest], Acc) ->
+    case compile_param_spec(Spec) of
+        {ok, Param} -> compile_params(Rest, [Param | Acc]);
+        {error, _} = Error -> Error
+    end;
+compile_params(ImproperTail, _Acc) ->
+    {error, {invalid_value, params, ImproperTail}}.
+
+compile_param_spec([Name, Type, Required]) ->
+    {ok, #{name => Name,
+           type => Type,
+           required => compile_param_required(Required)}};
+compile_param_spec([Name, Type, Required, Doc]) ->
+    {ok, #{name => Name,
+           type => Type,
+           required => compile_param_required(Required),
+           doc => Doc}};
+compile_param_spec(Spec) ->
+    {error, {invalid_value, params, Spec}}.
+
+compile_param_required(required) ->
+    true;
+compile_param_required(optional) ->
+    false;
+compile_param_required(Required) ->
+    Required.
 
 %% Assemble the manifest: require a name, gate the adapter to `cli' (config
 %% files cannot inject modules — `(adapter erlang_module)' must never fall
