@@ -26,7 +26,8 @@
          test_restart_after_remove_stays_unresolved/1,
          test_register_appends_bounded_event/1,
          test_remove_appends_bounded_event/1,
-         test_tool_events_omit_sensitive_fields/1]).
+         test_tool_events_omit_sensitive_fields/1,
+         test_register_starts_no_actor_task/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -47,7 +48,8 @@ all() ->
      test_restart_after_remove_stays_unresolved,
      test_register_appends_bounded_event,
      test_remove_appends_bounded_event,
-     test_tool_events_omit_sensitive_fields].
+     test_tool_events_omit_sensitive_fields,
+     test_register_starts_no_actor_task].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -905,6 +907,54 @@ test_tool_events_omit_sensitive_fields(Config) ->
       end,
       [RegEvent, RmEvent]),
     ok.
+
+%% Criterion 20 (#220): a `soma tool register' socket request completes without
+%% starting a `soma_actor' task -- the register handler runs inline in the
+%% connection handler, off the actor path (`soma_actor_sup:start_actor/1' is the
+%% ask verb's entry, never register's). The daemon boots with an empty tools
+%% dir; the test snapshots the live actor instances under
+%% `soma_actor_child_sup' (the dynamic supervisor every started actor lands
+%% under), performs a full successful register over the socket, and compares
+%% the actor population afterwards.
+test_register_starts_no_actor_task(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% Bring the actor supervisor up (as the standalone daemon boot does for
+    %% the ask path), so an actor started by the register would be observable.
+    case soma_actor_sup:start_link() of
+        {ok, _ActorSup} -> ok;
+        {error, {already_started, _ActorSup}} -> ok
+    end,
+    true = is_pid(whereis(soma_actor_child_sup)),
+    ActorsBefore = actor_task_pids(),
+
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_no_actor\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    RegReply = register_over_socket(SocketPath, Manifest),
+    match = re:run(RegReply, "\\(status registered\\)", [{capture, none}]),
+
+    %% Deliberately wrong (staged red): expect the register to have started
+    %% exactly one actor task. The inline handler starts none, so this fires.
+    ActorsAfter = actor_task_pids(),
+    [_OneActor] = ActorsAfter -- ActorsBefore,
+    ok.
+
+%% The live actor instances under the dynamic actor supervisor, as pids.
+actor_task_pids() ->
+    lists:sort([Pid || {_Id, Pid, _Type, _Mods}
+                       <- supervisor:which_children(soma_actor_child_sup),
+                       is_pid(Pid)]).
 
 %% Every pid / port / reference / fun found anywhere inside a term -- the
 %% process-local values a stored event must never carry.
