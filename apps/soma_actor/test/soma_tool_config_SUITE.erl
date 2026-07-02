@@ -14,7 +14,8 @@
          test_invalid_field_surfaces_normalize_error/1,
          test_safety_defaults_and_declared_values/1,
          test_non_cli_adapter_rejected/1,
-         test_broken_file_skipped_daemon_serves/1]).
+         test_broken_file_skipped_daemon_serves/1,
+         test_missing_or_empty_dir_boot_unchanged/1]).
 
 %% Logger handler callback (the boot-log capture used by
 %% test_broken_file_skipped_daemon_serves).
@@ -26,7 +27,8 @@ all() ->
      test_invalid_field_surfaces_normalize_error,
      test_safety_defaults_and_declared_values,
      test_non_cli_adapter_rejected,
-     test_broken_file_skipped_daemon_serves].
+     test_broken_file_skipped_daemon_serves,
+     test_missing_or_empty_dir_boot_unchanged].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -235,6 +237,58 @@ test_broken_file_skipped_daemon_serves(Config) ->
         _ = logger:remove_handler(soma_tool_config_suite_capture)
     end,
     ok.
+
+%% Criterion 7 (#205): a missing or empty tools directory leaves daemon boot
+%% byte-for-byte unchanged. Entry point is `soma_cli:daemon/1' with a
+%% `tools_dir' pointing at a path that does not exist: after boot the running
+%% registry holds exactly the built-in seed (no extra name, no missing name),
+%% no skip log line was emitted (same capture handler as criterion 6), and
+%% the daemon answers a ping. `soma_tool_config:load_dir/1' is then called
+%% directly on the missing path and on an empty directory to pin the empty
+%% result -- `#{registered => [], skipped => []}' -- and the registry is
+%% re-checked to prove neither call touched it.
+test_missing_or_empty_dir_boot_unchanged(Config) ->
+    SocketPath = socket_path(Config),
+    PrivDir = ?config(priv_dir, Config),
+    %% Deliberately never created.
+    MissingDir = filename:join(PrivDir, "tools_nonexistent"),
+    false = filelib:is_dir(MissingDir),
+    ok = logger:add_handler(soma_tool_config_suite_no_skip, ?MODULE,
+                            #{config => #{pid => self()}}),
+    try
+        {ok, SocketPath} =
+            soma_cli:daemon(#{socket => SocketPath,
+                              config_path => no_llm_config_file(Config),
+                              tools_dir => MissingDir}),
+        %% The registered tool names equal the built-in seed exactly.
+        SeedNames = [config_ghost, echo, fail, file_read, file_write, sleep],
+        SeedNames = registered_names(),
+        %% The loader returns the empty result for the missing path and for
+        %% an empty directory -- no skip entry, nothing registered.
+        Empty = #{registered => [], skipped => []},
+        Empty = soma_tool_config:load_dir(MissingDir),
+        EmptyDir = filename:join(PrivDir, "tools_empty"),
+        ok = filelib:ensure_dir(filename:join(EmptyDir, "x")),
+        Empty = soma_tool_config:load_dir(EmptyDir),
+        %% Neither call touched the registry.
+        SeedNames = registered_names(),
+        %% No skip diagnostic was logged anywhere along the way.
+        receive
+            {tool_skip, File, Reason} ->
+                ct:fail({unexpected_skip_diagnostic, File, Reason})
+        after 0 -> ok
+        end,
+        %% And the daemon serves requests over the socket.
+        0 = soma_cli:ping(#{socket => SocketPath})
+    after
+        _ = logger:remove_handler(soma_tool_config_suite_no_skip)
+    end,
+    ok.
+
+%% The sorted tool names of the running registry, via the pure `names/1' on
+%% the gen_server's registry-map state.
+registered_names() ->
+    lists:sort(soma_tool_registry:names(sys:get_state(soma_tool_registry))).
 
 %% The captured skip reason for one file's boot diagnostic, or a failed case.
 receive_skip(File) ->
