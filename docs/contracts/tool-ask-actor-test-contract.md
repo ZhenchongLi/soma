@@ -19,6 +19,7 @@ teardown stay inside `soma_actor`.
 | --- | --- |
 | A parent session run can invoke `ask_actor` by stable actor name; the call crosses a `soma_tool_call` worker process and returns the child actor's step outputs as the parent step output. | `soma_tool_ask_actor_SUITE:ask_actor_run_step_returns_target_result_and_uses_tool_worker` |
 | The parent run's `correlation_id` is stamped onto the child actor task, so `by_correlation/2` returns both the parent run/tool events and child actor task events. | `soma_tool_ask_actor_SUITE:ask_actor_propagates_parent_correlation_id` |
+| Naming an unknown or dead stable actor name fails the parent run with bounded `ask_actor_lookup_failed` data carrying the registry's `not_found`, while the session stays alive for a later run. | `soma_tool_ask_actor_SUITE:ask_actor_unknown_name_fails_run_session_alive`, `soma_tool_ask_actor_SUITE:ask_actor_dead_name_fails_run_session_alive` |
 
 ## Teardown Behavior
 

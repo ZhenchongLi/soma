@@ -28,11 +28,15 @@ invoke(Input, Ctx) ->
                 {ok, ActorPid} ->
                     ask_actor(ActorPid, with_parent_correlation(Envelope, Ctx));
                 {error, Reason} ->
-                    {error, {ask_actor_lookup_failed, Reason}}
+                    {error, ask_actor_lookup_error(Reason)}
             end;
         {error, Reason} ->
             {error, Reason}
     end.
+
+ask_actor_lookup_error(Reason) ->
+    #{error => ask_actor_lookup_failed,
+      registry_error => Reason}.
 
 normalize_input(#{target := StableName, envelope := Envelope})
   when is_binary(StableName), is_map(Envelope) ->
