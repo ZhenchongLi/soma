@@ -51,6 +51,7 @@
 -export([failed_run_sets_task_status_failed/1]).
 -export([actor_alive_after_owned_run_fails/1]).
 -export([tool_crash_isolated_by_process_boundary/1]).
+-export([cli_placeholder_missing_key_marks_task_failed_actor_alive/1]).
 -export([ask_failed_run_returns_error/1]).
 -export([timed_out_run_emits_task_failed_timeout/1]).
 -export([ask_timed_out_run_returns_error_timeout/1]).
@@ -114,6 +115,7 @@ all() ->
      failed_run_sets_task_status_failed,
      actor_alive_after_owned_run_fails,
      tool_crash_isolated_by_process_boundary,
+     cli_placeholder_missing_key_marks_task_failed_actor_alive,
      ask_failed_run_returns_error,
      timed_out_run_emits_task_failed_timeout,
      ask_timed_out_run_returns_error_timeout,
@@ -191,6 +193,7 @@ init_per_testcase(TestCase, Config)
        TestCase =:= failed_run_sets_task_status_failed;
        TestCase =:= actor_alive_after_owned_run_fails;
        TestCase =:= tool_crash_isolated_by_process_boundary;
+       TestCase =:= cli_placeholder_missing_key_marks_task_failed_actor_alive;
        TestCase =:= ask_failed_run_returns_error;
        TestCase =:= timed_out_run_emits_task_failed_timeout;
        TestCase =:= ask_timed_out_run_returns_error_timeout;
@@ -271,6 +274,7 @@ end_per_testcase(TestCase, Config)
        TestCase =:= failed_run_sets_task_status_failed;
        TestCase =:= actor_alive_after_owned_run_fails;
        TestCase =:= tool_crash_isolated_by_process_boundary;
+       TestCase =:= cli_placeholder_missing_key_marks_task_failed_actor_alive;
        TestCase =:= ask_failed_run_returns_error;
        TestCase =:= timed_out_run_emits_task_failed_timeout;
        TestCase =:= ask_timed_out_run_returns_error_timeout;
@@ -1492,6 +1496,74 @@ tool_crash_isolated_by_process_boundary(_Config) ->
     %% The crash arrived as a message, not a signal: the actor is still alive.
     true = is_process_alive(ActorPid),
     ok.
+
+%% Criterion 11 (issue #218): a steps envelope whose single cli step's argv
+%% placeholder names a key missing from the step's resolved args reaches the
+%% actor as {run_failed, RunId, {missing_cli_placeholder, <<"doc">>}} -- the same
+%% "fail before any tool.started" run-failure shape
+%% soma_cli_placeholder_SUITE:test_cli_argv_placeholder_missing_key_fails_before_tool_started/1
+%% proves at the runtime layer. This proves the actor-level analogue: the owned
+%% run's failure lands on the task as `failed' with that reason (readable through
+%% the real soma_actor:get_task_status/2 API), and the actor pid survives --
+%% mirroring `actor_alive_after_owned_run_fails/1' for the cli-placeholder
+%% failure mode specifically. A second, ordinary `echo' envelope on the same
+%% actor pid then proves the actor is not just alive but still able to accept and
+%% complete new work, mirroring `new_run_completes_after_failed_run/1'.
+cli_placeholder_missing_key_marks_task_failed_actor_alive(Config) ->
+    Store = event_store_pid(),
+    Helper = write_actor_cli_argv_helper(Config),
+    Manifest = #{name => cli_actor_missing_placeholder,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => ["--doc", "{doc}"],
+                 params => [#{name => <<"doc">>,
+                              type => string,
+                              required => true}]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    Opts = #{actor_id => <<"actor-cli-missing-placeholder">>,
+             model_config => #{},
+             tool_policy => #{},
+             event_store => Store},
+    {ok, Pid} = soma_actor_sup:start_actor(Opts),
+    TaskId1 = <<"task-cli-missing-placeholder">>,
+    Steps1 = [#{id => s1, tool => cli_actor_missing_placeholder, args => #{}}],
+    Envelope1 = #{type => <<"chat">>,
+                  payload => #{text => <<"hello">>},
+                  task_id => TaskId1,
+                  steps => Steps1},
+    {ok, TaskId1} = soma_actor:send(Pid, Envelope1),
+    failed = wait_for_task_status(Pid, TaskId1, failed, 100),
+    Status = soma_actor:get_task_status(Pid, TaskId1),
+    {missing_cli_placeholder, <<"doc">>} = maps:get(reason, Status),
+    true = is_process_alive(Pid),
+    %% The actor is not merely alive -- it still accepts and completes new work.
+    TaskId2 = <<"task-cli-missing-placeholder-second">>,
+    Steps2 = [#{id => s1, tool => echo, args => #{value => <<"still-alive">>}}],
+    Envelope2 = #{type => <<"chat">>,
+                  payload => #{text => <<"second">>},
+                  task_id => TaskId2,
+                  steps => Steps2},
+    {ok, TaskId2} = soma_actor:send(Pid, Envelope2),
+    failed = wait_for_task_status(Pid, TaskId2, failed, 100),
+    ok.
+
+write_actor_cli_argv_helper(Config) ->
+    Dir = filename:join(?config(priv_dir, Config), "actor_cli_placeholder_helpers"),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "print_argv.sh"),
+    Script = <<"#!/bin/sh\n"
+               "printf 'argc=%s\\n' \"$#\"\n"
+               "i=1\n"
+               "for arg in \"$@\"; do\n"
+               "  printf 'arg%s=%s\\n' \"$i\" \"$arg\"\n"
+               "  i=$((i + 1))\n"
+               "done\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 %% Criterion 5 (slice p8/p9/p15): an ask/3 whose run fails returns {error, Reason}
 %% instead of hanging, and the actor pid stays alive afterward. The runtime is
