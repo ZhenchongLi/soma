@@ -15,7 +15,8 @@
          test_safety_defaults_and_declared_values/1,
          test_non_cli_adapter_rejected/1,
          test_broken_file_skipped_daemon_serves/1,
-         test_missing_or_empty_dir_boot_unchanged/1]).
+         test_missing_or_empty_dir_boot_unchanged/1,
+         test_config_tool_runs_end_to_end/1]).
 
 %% Logger handler callback (the boot-log capture used by
 %% test_broken_file_skipped_daemon_serves).
@@ -28,7 +29,8 @@ all() ->
      test_safety_defaults_and_declared_values,
      test_non_cli_adapter_rejected,
      test_broken_file_skipped_daemon_serves,
-     test_missing_or_empty_dir_boot_unchanged].
+     test_missing_or_empty_dir_boot_unchanged,
+     test_config_tool_runs_end_to_end].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -284,6 +286,85 @@ test_missing_or_empty_dir_boot_unchanged(Config) ->
         _ = logger:remove_handler(soma_tool_config_suite_no_skip)
     end,
     ok.
+
+%% Criterion 8 (#205): a run whose step names a config-registered tool
+%% succeeds end-to-end through session -> run -> tool-call with the usual
+%% event trail, proving the registered descriptor drives the existing cli
+%% adapter unchanged. The tool file points at a real helper script (the
+%% `write_cli_helper' pattern from `soma_cli_adapter_SUITE': uppercase the
+%% final argv argument), `soma_tool_config:load_dir/1' registers it, and the
+%% run enters at `soma_agent_session:start_run/2' -- the same entry the v0.2
+%% cli proofs use, so no execution layer is bypassed. The step output being
+%% the helper's transform proves the external program really ran through the
+%% cli adapter driven by the loader's descriptor.
+test_config_tool_runs_end_to_end(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    Helper = write_upper_helper(Config),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_e2e"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ToolSource = io_lib:format(
+                   "(tool\n"
+                   "  (name \"cfg_e2e_upper\")\n"
+                   "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                   "  (executable \"~s\")\n"
+                   "  (argv))\n", [Helper]),
+    ok = file:write_file(filename:join(ToolsDir, "cfg_e2e_upper.lisp"),
+                         unicode:characters_to_binary(ToolSource)),
+    #{registered := [cfg_e2e_upper], skipped := []} =
+        soma_tool_config:load_dir(ToolsDir),
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1, tool => cfg_e2e_upper,
+               args => #{input => <<"hello">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    %% The usual event trail of a successful one-step run, in order.
+    [<<"run.accepted">>, <<"run.started">>, <<"step.started">>,
+     <<"tool.started">>, <<"tool.succeeded">>, <<"step.succeeded">>,
+     <<"run.completed">>] = [maps:get(event_type, E) || E <- Events],
+    %% The step output carries the helper's transform of the step input,
+    %% proving the external program ran through the cli adapter (the input
+    %% travels to the program inside the rendered args, and only the real
+    %% helper uppercases it).
+    [StepEvent] = [E || E <- Events,
+                        maps:get(event_type, E) =:= <<"step.succeeded">>],
+    Output = maps:get(output, maps:get(payload, StepEvent)),
+    {_, _} = binary:match(Output, <<"hello">>),
+    ok.
+
+%% Write a tiny cli helper into the case's priv_dir: uppercase the last argv
+%% argument and print it to stdout, exit 0 (the `write_cli_helper' pattern
+%% from `soma_cli_adapter_SUITE' -- input travels as the final argv argument,
+%% never stdin).
+write_upper_helper(Config) ->
+    Path = filename:join(?config(priv_dir, Config), "cfg_upper_helper.sh"),
+    Script = <<"#!/bin/sh\n"
+               "for a in \"$@\"; do last=\"$a\"; done\n"
+               "printf '%s' \"$last\" | tr '[:lower:]' '[:upper:]'\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
+
+%% The running runtime's event store pid, read from soma_sup.
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Mods} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
+
+%% Poll the run's event trail until `run.completed' appears.
+wait_for_run_completed(_StorePid, _RunId, 0) ->
+    {error, timeout};
+wait_for_run_completed(StorePid, RunId, N) ->
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    case lists:member(<<"run.completed">>, Types) of
+        true -> ok;
+        false ->
+            timer:sleep(20),
+            wait_for_run_completed(StorePid, RunId, N - 1)
+    end.
 
 %% The sorted tool names of the running registry, via the pure `names/1' on
 %% the gen_server's registry-map state.
