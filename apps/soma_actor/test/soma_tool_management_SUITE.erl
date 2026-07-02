@@ -304,7 +304,7 @@ test_failed_register_leaves_registry_clean(Config) ->
 
     %% The rejected tool never entered the live registry: a real resolve for its
     %% name still returns `not_found'.
-    {ok, _Descriptor} = soma_tool_registry:resolve_descriptor(mgmt_reject),
+    {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_reject),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
