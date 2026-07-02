@@ -128,7 +128,7 @@ test_cli_argv_placeholder_metacharacters_are_one_arg(Config) ->
     ?assertEqual(ok,
                  wait_for_event(StorePid, RunId, <<"run.completed">>, 100)),
     Events = soma_event_store:by_run(StorePid, RunId),
-    Expected = <<"argc=WRONG\n"
+    Expected = <<"argc=2\n"
                  "arg1=--payload\n"
                  "arg2=; rm -rf / && echo pwned | cat $(whoami) \"quoted arg\"\n">>,
     ?assertEqual(Expected, step_output_for(Events, s1)),
