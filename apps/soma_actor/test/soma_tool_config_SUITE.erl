@@ -12,13 +12,15 @@
 -export([test_daemon_boot_registers_config_tool/1,
          test_config_tool_description_in_catalog/1,
          test_invalid_field_surfaces_normalize_error/1,
-         test_safety_defaults_and_declared_values/1]).
+         test_safety_defaults_and_declared_values/1,
+         test_non_cli_adapter_rejected/1]).
 
 all() ->
     [test_daemon_boot_registers_config_tool,
      test_config_tool_description_in_catalog,
      test_invalid_field_surfaces_normalize_error,
-     test_safety_defaults_and_declared_values].
+     test_safety_defaults_and_declared_values,
+     test_non_cli_adapter_rejected].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -142,6 +144,33 @@ test_safety_defaults_and_declared_values(Config) ->
     #{effect := state, idempotent := false, timeout_ms := 30000} = Defaulted,
     {ok, Declared} = soma_tool_registry:resolve_descriptor(cfg_declared),
     #{effect := reader, idempotent := true, timeout_ms := 5000} = Declared,
+    ok.
+
+%% Criterion 5 (#205): a tool file declaring any adapter other than `cli' is
+%% skipped with a named diagnostic -- config files cannot inject modules. The
+%% rejection is deliberately at compile stage, in front of
+%% `soma_tool_manifest:normalize/1' (which would only complain about a missing
+%% `module' field, and a file that declared one would pass). The skip reason
+%% names the offending adapter, and the declared tool name never reaches the
+%% registry.
+test_non_cli_adapter_rejected(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_bad_adapter"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_module_inject.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_module_inject\")\n"
+             "  (adapter erlang_module)\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    #{registered := [], skipped := [SkipEntry]} =
+        soma_tool_config:load_dir(ToolsDir),
+    #{file := "cfg_module_inject.lisp",
+      reason := {adapter_not_allowed, wrong_adapter_value}} = SkipEntry,
+    %% The name never reached the registry.
+    {error, not_found} =
+        soma_tool_registry:resolve_descriptor(cfg_module_inject),
     ok.
 
 %% A fresh temp tools directory under the case's priv_dir.
