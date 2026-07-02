@@ -22,6 +22,26 @@ test_ensure_all_started_ok_test() ->
         application:unload(soma_actor)
     end.
 
+ask_actor_registered_after_app_boot_test() ->
+    try
+        {ok, _} = application:ensure_all_started(soma_actor),
+        {ok, #{name := ask_actor,
+               adapter := erlang_module,
+               module := soma_tool_ask_actor,
+               effect := state,
+               idempotent := false}} =
+            soma_tool_registry:resolve_descriptor(ask_actor),
+        Catalog = soma_tool_registry:catalog(),
+        [#{description := Desc}] =
+            [Entry || #{name := ask_actor, description := _} = Entry <- Catalog],
+        ?assert(is_binary(Desc)),
+        ?assert(byte_size(Desc) > 0)
+    after
+        application:stop(soma_actor),
+        application:stop(soma_runtime),
+        application:unload(soma_actor)
+    end.
+
 %% Criterion 4: after boot, `soma_actor_sup' is registered under that name and
 %% its pid is alive. Stops/unloads the app afterward for a clean teardown.
 test_sup_registered_and_alive_test() ->
