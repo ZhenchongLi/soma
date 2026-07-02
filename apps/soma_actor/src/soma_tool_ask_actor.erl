@@ -20,6 +20,46 @@ manifest() ->
                       <<"Ask a named Soma actor and return its task result.">>}.
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
-    {error, soma_tool:error()}.
-invoke(_Input, _Ctx) ->
-    {error, ask_actor_not_implemented}.
+    {ok, soma_tool:output()} | {error, soma_tool:error()}.
+invoke(Input, _Ctx) ->
+    case normalize_input(Input) of
+        {ok, StableName, Envelope} ->
+            case soma_actor_registry:lookup(StableName) of
+                {ok, ActorPid} ->
+                    ask_actor(ActorPid, Envelope);
+                {error, Reason} ->
+                    {error, {ask_actor_lookup_failed, Reason}}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+normalize_input(#{target := StableName, envelope := Envelope})
+  when is_binary(StableName), is_map(Envelope) ->
+    {ok, StableName, Envelope};
+normalize_input(#{target := StableName}) when not is_binary(StableName) ->
+    {error, {invalid_ask_actor_input, invalid_target}};
+normalize_input(#{envelope := Envelope}) when not is_map(Envelope) ->
+    {error, {invalid_ask_actor_input, invalid_envelope}};
+normalize_input(Input) when is_map(Input) ->
+    case maps:is_key(target, Input) of
+        false -> {error, {invalid_ask_actor_input, missing_target}};
+        true -> {error, {invalid_ask_actor_input, missing_envelope}}
+    end;
+normalize_input(_Input) ->
+    {error, {invalid_ask_actor_input, non_map}}.
+
+ask_actor(ActorPid, Envelope) ->
+    case soma_actor:ask(ActorPid, Envelope, ask_timeout_ms()) of
+        {ok, Result} ->
+            {ok, Result};
+        {error, Reason} ->
+            {error, Reason};
+        timeout ->
+            {error, timeout};
+        Reply ->
+            {ok, Reply}
+    end.
+
+ask_timeout_ms() ->
+    maps:get(timeout_ms, describe()).
