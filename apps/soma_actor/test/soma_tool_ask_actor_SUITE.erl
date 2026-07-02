@@ -6,6 +6,7 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([ask_actor_run_step_returns_target_result_and_uses_tool_worker/1,
+         ask_actor_shorthand_file_read_to_file_write_writes_reply_text/1,
          ask_actor_propagates_parent_correlation_id/1,
          ask_actor_step_timeout_cancels_child_task/1,
          ask_actor_parent_cancel_cancels_child_task/1,
@@ -15,6 +16,7 @@
 
 all() ->
     [ask_actor_run_step_returns_target_result_and_uses_tool_worker,
+     ask_actor_shorthand_file_read_to_file_write_writes_reply_text,
      ask_actor_propagates_parent_correlation_id,
      ask_actor_step_timeout_cancels_child_task,
      ask_actor_parent_cancel_cancels_child_task,
@@ -77,6 +79,52 @@ ask_actor_run_step_returns_target_result_and_uses_tool_worker(_Config) ->
         {completed, Events} ->
             Output = step_output(Events, s1),
             #{child_s1 := #{value := <<"ok">>}} = Output,
+            ok;
+        {failed, Reason} ->
+            ct:fail({run_failed, Reason});
+        Other ->
+            ct:fail(Other)
+    end.
+
+ask_actor_shorthand_file_read_to_file_write_writes_reply_text(Config) ->
+    StorePid = event_store_pid(),
+    Root = ?config(priv_dir, Config),
+    InputPath = "ask-actor-shorthand-input.txt",
+    OutputPath = "ask-actor-shorthand-output.txt",
+    ok = file:write_file(filename:join(Root, InputPath), <<"prompt body">>),
+    StableName = <<"shorthand-child">>,
+    {ok, _TargetPid} =
+        soma_actor_sup:start_actor(#{actor_id => <<"ask-actor-shorthand-child">>,
+                                     stable_name => StableName,
+                                     event_store => StorePid,
+                                     model_config =>
+                                         #{directive => proposal,
+                                           output => #{kind => reply,
+                                                       text => <<"model reply">>}},
+                                     tool_policy => #{}}),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    ParentSteps =
+        [#{id => read,
+           tool => file_read,
+           args => #{root => Root,
+                     path => InputPath}},
+         #{id => ask,
+           tool => ask_actor,
+           timeout_ms => 5000,
+           args => #{target => StableName,
+                     message => {from_step, read}}},
+         #{id => write,
+           tool => file_write,
+           args => #{root => Root,
+                     path => OutputPath,
+                     bytes => {from_step, ask}}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, ParentSteps),
+
+    case wait_for_terminal(StorePid, RunId, 100) of
+        {completed, _Events} ->
+            {ok, <<"model reply">>} =
+                file:read_file(filename:join(Root, OutputPath)),
+            true = is_process_alive(SessionPid),
             ok;
         {failed, Reason} ->
             ct:fail({run_failed, Reason});
