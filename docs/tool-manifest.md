@@ -136,6 +136,11 @@ the declared param `type`:
 - `integer` — rendered as base-10 decimal text (`42` becomes `"42"`).
 - `boolean` — `true` becomes `"true"` and `false` becomes `"false"`.
 
+A value whose shape does not match its declared type **fails closed**: the run
+fails with `{invalid_cli_placeholder_value, Name, Type}` before any worker is
+spawned. There is no fallback rendering, so Erlang term syntax can never leak
+into an external process's argv.
+
 Each rendered value stays a single argv element, including any shell
 metacharacters, because argv is never shell-parsed.
 

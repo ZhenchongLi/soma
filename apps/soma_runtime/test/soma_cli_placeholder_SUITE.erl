@@ -8,6 +8,7 @@
          test_cli_argv_placeholder_sends_no_trailing_input/1,
          test_cli_argv_placeholder_metacharacters_are_one_arg/1,
          test_cli_argv_placeholder_renders_string_integer_boolean/1,
+         test_cli_argv_placeholder_wrong_typed_value_fails_before_tool_started/1,
          test_cli_argv_placeholder_missing_key_fails_before_tool_started/1,
          test_session_alive_runs_new_run_after_cli_placeholder_missing_key/1]).
 
@@ -16,6 +17,7 @@ all() ->
      test_cli_argv_placeholder_sends_no_trailing_input,
      test_cli_argv_placeholder_metacharacters_are_one_arg,
      test_cli_argv_placeholder_renders_string_integer_boolean,
+     test_cli_argv_placeholder_wrong_typed_value_fails_before_tool_started,
      test_cli_argv_placeholder_missing_key_fails_before_tool_started,
      test_session_alive_runs_new_run_after_cli_placeholder_missing_key].
 
@@ -140,12 +142,14 @@ test_cli_argv_placeholder_metacharacters_are_one_arg(Config) ->
     ?assertEqual(Expected, step_output_for(Events, s1)),
     ok.
 
-%% Criterion 8: placeholder rendering follows the declared `string' /
-%% `integer' / `boolean' param types -- a string value stays literal text, an
-%% integer renders as base-10 decimal text, and a boolean renders as `"true"'
-%% or `"false"'. Driving all three through one cli manifest proves the
-%% rendering matches the declared type for each placeholder, not just an
-%% incidental Erlang term-printing fallback.
+%% Criterion 8 (happy path): placeholder rendering follows the declared
+%% `string' / `integer' / `boolean' param types -- a string value stays
+%% literal text, an integer renders as base-10 decimal text, and a boolean
+%% renders as `"true"' or `"false"'. The declared type is proven load-bearing
+%% (not an incidental value-shape fallback) by the companion case
+%% `test_cli_argv_placeholder_wrong_typed_value_fails_before_tool_started/1',
+%% where a value that does not match its declared type fails the run instead
+%% of rendering.
 test_cli_argv_placeholder_renders_string_integer_boolean(Config) ->
     StorePid = event_store_pid(),
     Helper = write_print_argv_helper(Config),
@@ -183,6 +187,46 @@ test_cli_argv_placeholder_renders_string_integer_boolean(Config) ->
                  "arg5=--verbose\n"
                  "arg6=true\n">>,
     ?assertEqual(Expected, step_output_for(Events, s1)),
+    ok.
+
+%% Criterion 8 (fail-closed): a placeholder value that does not match its
+%% declared param type must fail the run before any worker is spawned, with
+%% the named reason `{invalid_cli_placeholder_value, Name, Type}' -- never
+%% fall back to Erlang term printing into an external process's argv. Declare
+%% `count' as `integer' but supply a binary: the declared type, not the value
+%% shape, decides the outcome, which is what makes criterion 8's rendering
+%% property real. The session survives the failure like any other run failure.
+test_cli_argv_placeholder_wrong_typed_value_fails_before_tool_started(Config) ->
+    StorePid = event_store_pid(),
+    Helper = write_print_argv_helper(Config),
+    Manifest = #{name => cli_wrong_typed_placeholder,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => ["--count", "{count}"],
+                 params => [#{name => <<"count">>,
+                              type => integer,
+                              required => true}]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1,
+               tool => cli_wrong_typed_placeholder,
+               args => #{count => <<"42">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ?assertEqual(ok,
+                 wait_for_event(StorePid, RunId, <<"run.failed">>, 100)),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    ?assertNot(lists:member(<<"run.completed">>, Types)),
+    ?assertNot(lists:member(<<"tool.started">>, Types)),
+    [RunFailed] = [E || E <- Events,
+                        maps:get(event_type, E) =:= <<"run.failed">>],
+    Reason = maps:get(reason, maps:get(payload, RunFailed)),
+    ?assertEqual({invalid_cli_placeholder_value, <<"count">>, integer},
+                 Reason),
+    true = is_process_alive(SessionPid),
     ok.
 
 %% Criterion 9: a cli argv placeholder names a key the resolved step input does
