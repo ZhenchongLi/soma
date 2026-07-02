@@ -87,13 +87,82 @@ Example:
 }
 ```
 
+## `cli` argv placeholders
+
+A `cli` tool that needs dynamic values in more than one argument slot can
+declare **argv placeholders**. This is an additive feature: an `argv` list with
+no placeholders keeps the exact behavior described below (the resolved input is
+still appended as the final argument).
+
+### Syntax
+
+A placeholder is an argv element whose **whole text** is `"{name}"` — the
+element must be exactly an opening brace, a name, and a closing brace. It is a
+whole-argument substitution, not substring interpolation: `"prefix-{name}"` is
+treated as a literal argument, not a placeholder. The `name` inside the braces
+must match a declared `params` entry by its binary name.
+
+```erlang
+#{
+    name => edit,
+    effect => state,
+    idempotent => false,
+    timeout_ms => 5000,
+    adapter => cli,
+    executable => "/usr/local/bin/soma_edit",
+    argv => ["{doc}", "{changes}"],
+    params => [
+        #{name => <<"doc">>, type => string, required => true},
+        #{name => <<"changes">>, type => string, required => true}
+    ]
+}
+```
+
+### Validation
+
+`soma_tool_manifest:normalize/1` checks placeholders after `params` validation.
+Every `"{name}"` argv element must name a declared param. A placeholder with no
+matching param is rejected with `{error, {unknown_argv_placeholder, Name}}`, so
+the manifest never lands in the registry — the same fail-closed path config
+tools loaded from `~/.soma/tools/` travel through.
+
+### Type rendering
+
+Each placeholder value is rendered to argv text by the resolved step input and
+the declared param `type`:
+
+- `string` — the value stays literal text (a binary or Erlang string is used
+  as-is).
+- `integer` — rendered as base-10 decimal text (`42` becomes `"42"`).
+- `boolean` — `true` becomes `"true"` and `false` becomes `"false"`.
+
+Each rendered value stays a single argv element, including any shell
+metacharacters, because argv is never shell-parsed.
+
+### Missing key at runtime
+
+Placeholder substitution happens in `soma_run` after `from_step` resolution and
+**before** the tool-call worker starts. If a placeholder names a key absent from
+the resolved step input, the run fails with `{missing_cli_placeholder, Name}`
+before any `tool.started` event is emitted; the owning session (or actor) stays
+alive and can run again.
+
+### No-placeholder compatibility
+
+An `argv` list with **no placeholders** is unchanged: the resolved step input is
+appended as the final argv argument (`executable argv... <input>`). A templated
+`argv` (one that contains at least one placeholder) does **not** get the trailing
+input argument — its dynamic values arrive through the placeholders instead.
+
 ## CLI execution protocol
 
 ### Input
 
 The step's resolved input is appended as the **final argv argument**:
 `executable argv... <input>`. Stdin is not used — an Erlang port cannot
-half-close the child's stdin, so the input travels positionally.
+half-close the child's stdin, so the input travels positionally. This applies to
+`argv` lists with no placeholders; a templated `argv` receives no trailing input
+(see "`cli` argv placeholders" above).
 
 ### Output
 
