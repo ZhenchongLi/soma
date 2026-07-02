@@ -27,3 +27,4 @@ teardown stay inside `soma_actor`.
 | --- | --- |
 | A parent `ask_actor` step timeout kills the asker's tool worker; the target actor observes that asker death, cancels the child task, stays alive, and the parent session completes a later run. | `soma_tool_ask_actor_SUITE:ask_actor_step_timeout_cancels_child_task` |
 | Cancelling the parent run while `ask_actor` is parked kills the asker's tool worker; the target actor observes that asker death, cancels the child task, stays alive, and the parent session completes a later run. | `soma_tool_ask_actor_SUITE:ask_actor_parent_cancel_cancels_child_task` |
+| Once an ask has already been answered, the asker's later death does not change the completed child task: its status stays `completed`, no `actor.task.cancelled` event is emitted for that task, and the target actor stays alive. | `soma_tool_ask_actor_SUITE:asker_death_after_answer_does_not_cancel_completed_child` |
