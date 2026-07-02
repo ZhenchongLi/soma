@@ -19,7 +19,8 @@
          test_missing_or_empty_dir_boot_unchanged/1,
          test_config_tool_runs_end_to_end/1,
          test_reserved_name_skipped_builtin_and_neighbour_intact/1,
-         test_shadowed_file_write_keeps_resume_safety_fields/1]).
+         test_shadowed_file_write_keeps_resume_safety_fields/1,
+         test_duplicate_name_first_sorted_file_wins/1]).
 
 %% Logger handler callback (the boot-log capture used by
 %% test_broken_file_skipped_daemon_serves).
@@ -36,7 +37,8 @@ all() ->
      test_missing_or_empty_dir_boot_unchanged,
      test_config_tool_runs_end_to_end,
      test_reserved_name_skipped_builtin_and_neighbour_intact,
-     test_shadowed_file_write_keeps_resume_safety_fields].
+     test_shadowed_file_write_keeps_resume_safety_fields,
+     test_duplicate_name_first_sorted_file_wins].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -443,6 +445,44 @@ test_shadowed_file_write_keeps_resume_safety_fields(Config) ->
     %% built-in's conservative safety fields.
     {ok, Descriptor} = soma_tool_registry:resolve_descriptor(file_write),
     #{effect := state, idempotent := false} = Descriptor,
+    ok.
+
+%% Criterion 3 (#208): two config files in one directory declaring the same
+%% name — the first in sorted filename order registers, the later file is
+%% skipped with reason `{duplicate_name, Name}'. Today the fold silently
+%% last-write-wins (the registry overwrites by name), so the user never
+%% learns one of their files was shadowed. The duplicate check is per-load
+%% (the fold's registered-so-far accumulator), not against the live registry,
+%% so re-loading a directory keeps working. The resolved descriptor carrying
+%% the first file's executable proves which file won.
+test_duplicate_name_first_sorted_file_wins(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_dup"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    %% First in sorted filename order: must win.
+    ok = file:write_file(
+           filename:join(ToolsDir, "a_first.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_dup\")\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    %% Same declared name, different executable, later filename: must skip.
+    ok = file:write_file(
+           filename:join(ToolsDir, "b_second.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_dup\")\n"
+             "  (executable \"/bin/cat\")\n"
+             "  (argv))\n">>),
+    #{registered := [cfg_dup], skipped := [SkipEntry]} =
+        soma_tool_config:load_dir(ToolsDir),
+    %% The later file skipped with the named duplicate reason.
+    #{file := "b_second.lisp",
+      reason := {duplicate_name, cfg_dup}} = SkipEntry,
+    %% The resolved descriptor carries the first file's executable — the
+    %% second file never reached the registry.
+    {ok, #{executable := Executable}} =
+        soma_tool_registry:resolve_descriptor(cfg_dup),
+    <<"/bin/echo">> = unicode:characters_to_binary(Executable),
     ok.
 
 %% Write a tiny cli helper into the case's priv_dir: uppercase the last argv
