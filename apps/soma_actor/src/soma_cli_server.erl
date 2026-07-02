@@ -21,18 +21,20 @@
 %% mock (or, by config, a real provider) with; absent it, the ask path has no mock
 %% to drive and the run path is unchanged.
 -spec start_link(#{socket := file:filename_all(),
-                   model_config => term()}) ->
+                   model_config => term(),
+                   tools_dir => file:filename_all()}) ->
     {ok, pid()} | {error, term()}.
 start_link(#{socket := Path} = Opts) ->
     ModelConfig = maps:get(model_config, Opts, undefined),
+    ToolsDir = maps:get(tools_dir, Opts, undefined),
     Parent = self(),
-    Pid = spawn_link(fun() -> listen(Parent, Path, ModelConfig) end),
+    Pid = spawn_link(fun() -> listen(Parent, Path, ModelConfig, ToolsDir) end),
     receive
         {Pid, listening} -> {ok, Pid};
         {Pid, {error, Reason}} -> {error, Reason}
     end.
 
-listen(Parent, Path, ModelConfig) ->
+listen(Parent, Path, ModelConfig, ToolsDir) ->
     _ = unlink_stale(Path),
     case gen_tcp:listen(0, [{ifaddr, {local, Path}},
                             {packet, 4}, binary,
@@ -40,7 +42,7 @@ listen(Parent, Path, ModelConfig) ->
         {ok, ListenSocket} ->
             ok = ensure_task_registry(),
             Parent ! {self(), listening},
-            accept_loop(ListenSocket, Path, ModelConfig, self());
+            accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, self());
         {error, Reason} ->
             Parent ! {self(), {error, Reason}}
     end.
@@ -69,7 +71,7 @@ unlink_stale(Path) ->
             ok
     end.
 
-accept_loop(ListenSocket, Path, ModelConfig, Listener) ->
+accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener) ->
     %% Drain any pending teardown signal before each accept. A `(stop)' handler
     %% (which does not own the listen socket) sends `close_listen' to this
     %% listener -- the process that owns the listen socket -- and the listener
@@ -84,7 +86,7 @@ accept_loop(ListenSocket, Path, ModelConfig, Listener) ->
             %% listener owns the path -- once the socket is closed.
             gen_tcp:close(ListenSocket),
             _ = file:delete(Path),
-            accept_loop(ListenSocket, Path, ModelConfig, Listener)
+            accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener)
     after 0 ->
         %% A short accept timeout bounds the wait so the signal is observed even
         %% when no connection arrives.
@@ -101,21 +103,22 @@ accept_loop(ListenSocket, Path, ModelConfig, Listener) ->
                 %% request can signal teardown.
                 Handler = spawn(
                             fun() ->
-                                    wait_then_handle(Socket, ModelConfig, Listener)
+                                    wait_then_handle(Socket, ModelConfig,
+                                                     ToolsDir, Listener)
                             end),
                 ok = gen_tcp:controlling_process(Socket, Handler),
                 Handler ! proceed,
-                accept_loop(ListenSocket, Path, ModelConfig, Listener);
+                accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener);
             {error, timeout} ->
-                accept_loop(ListenSocket, Path, ModelConfig, Listener);
+                accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener);
             {error, closed} ->
                 ok
         end
     end.
 
-wait_then_handle(Socket, ModelConfig, Listener) ->
+wait_then_handle(Socket, ModelConfig, ToolsDir, Listener) ->
     receive
-        proceed -> handle(Socket, ModelConfig, Listener)
+        proceed -> handle(Socket, ModelConfig, ToolsDir, Listener)
     end.
 
 %% Per-connection handler, one process per accepted connection. It reads one
@@ -123,10 +126,11 @@ wait_then_handle(Socket, ModelConfig, Listener) ->
 %% the terminal `(result ...)' s-expr back, then closes. The socket is
 %% `{packet, 4}', so the driver strips the length prefix on recv and prepends it
 %% on send -- the payload here is the bare s-expr.
-handle(Socket, ModelConfig, Listener) ->
+handle(Socket, ModelConfig, ToolsDir, Listener) ->
     case gen_tcp:recv(Socket, 0, 60000) of
         {ok, Bytes} ->
-            case handle_lisp_request(Bytes, Socket, ModelConfig, Listener) of
+            case handle_lisp_request(Bytes, Socket, ModelConfig, ToolsDir,
+                                     Listener) of
                 noreply ->
                     gen_tcp:close(Socket);
                 Reply ->
@@ -142,14 +146,14 @@ handle(Socket, ModelConfig, Listener) ->
 %% `soma_lfe:compile/2' returning `{error, Diagnostics}', or the reader crashing
 %% on garbage bytes -- is not a handler crash: it renders a `(result ...)' with
 %% `status => error' and an `error' sub-form carrying the diagnostics.
-handle_lisp_request(Bytes, Socket, ModelConfig, Listener) ->
+handle_lisp_request(Bytes, Socket, ModelConfig, ToolsDir, Listener) ->
     %% Tool-management verbs are their own wire forms, not `soma_lfe' forms, so
     %% dispatch them before the `soma_lfe:compile/2' path. A `(tool-register
     %% (tool ...))' request compiles the inner `(tool ...)' body through the same
     %% compiler the boot loader uses and registers it in the live registry.
     case tool_register_form(Bytes) of
         {ok, ToolForm} ->
-            handle_tool_register(ToolForm);
+            handle_tool_register(ToolForm, ToolsDir);
         not_tool_register ->
             handle_lfe_request(Bytes, Socket, ModelConfig, Listener)
     end.
@@ -171,11 +175,12 @@ tool_register_form(Bytes) ->
 %% it), and render the terminal reply. A valid register makes the named tool
 %% resolve live on this daemon before any restart. A compile or registration
 %% error renders an `error' result carrying the reason verbatim.
-handle_tool_register(ToolForm) ->
+handle_tool_register(ToolForm, ToolsDir) ->
     case soma_tool_config:compile_form(ToolForm) of
         {ok, #{name := Name} = Manifest} ->
             case soma_tool_registry:register_tool(Manifest) of
                 ok ->
+                    ok = write_manifest_file(ToolsDir, Name, Manifest),
                     ["(result (status registered) (tool-name ",
                      soma_lisp:render(atom_to_binary(Name, utf8)), "))"];
                 {error, Reason} ->
@@ -184,6 +189,47 @@ handle_tool_register(ToolForm) ->
         {error, Reason} ->
             soma_lisp:render(#{status => error, error => Reason})
     end.
+
+%% Persist the normalized manifest to `<ToolsDir>/<name>.lisp' so a restart
+%% re-registers the same descriptor from the boot-time `load_dir/1'. The path is
+%% always the configured tools dir plus the tool name as a basename -- never a
+%% caller-supplied path.
+write_manifest_file(ToolsDir, Name, Manifest) ->
+    Path = filename:join(ToolsDir, atom_to_list(Name) ++ ".lisp"),
+    file:write_file(Path, render_tool_manifest(Manifest)).
+
+%% Render a normalized cli manifest back to a `(tool ...)' s-expr that
+%% `soma_tool_config:compile_form/1' re-reads to the same manifest -- the
+%% round-trip the boot loader depends on. Config tools are always `cli'
+%% (`compile_form/1' gates the adapter), so only the cli shape is rendered.
+render_tool_manifest(#{name := Name, effect := Effect,
+                       idempotent := Idempotent, timeout_ms := TimeoutMs,
+                       adapter := cli, executable := Executable,
+                       argv := Argv} = Manifest) ->
+    Fields =
+        [render_string_field(name, atom_to_binary(Name, utf8))]
+        ++ render_optional_description(Manifest)
+        ++ [render_atom_field(effect, Effect),
+            render_atom_field(idempotent, Idempotent),
+            ["(timeout-ms ", integer_to_list(TimeoutMs), ")"],
+            render_atom_field(adapter, cli),
+            render_string_field(executable, Executable),
+            render_argv_field(Argv)],
+    ["(tool ", lists:join(" ", Fields), ")\n"].
+
+render_optional_description(#{description := Description}) ->
+    [render_string_field(description, Description)];
+render_optional_description(_Manifest) ->
+    [].
+
+render_string_field(Key, Value) ->
+    ["(", atom_to_list(Key), " ", soma_lisp:render(Value), ")"].
+
+render_atom_field(Key, Value) ->
+    ["(", atom_to_list(Key), " ", atom_to_list(Value), ")"].
+
+render_argv_field(Argv) ->
+    ["(argv", [[" ", soma_lisp:render(Arg)] || Arg <- Argv], ")"].
 
 handle_lfe_request(Bytes, Socket, ModelConfig, Listener) ->
     Compiled = try soma_lfe:compile(Bytes, #{})
