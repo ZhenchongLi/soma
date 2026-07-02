@@ -79,6 +79,18 @@ dispatch(["tool", "register", File | Flags]) ->
     with_flags(Flags, fun(Opts) ->
         soma_cli:tool_register(#{file => File, socket => socket(Opts)})
     end);
+dispatch(["tool", "list" | Flags]) ->
+    %% Resolve the socket and drive `soma_cli:tool_list/1', which sends the
+    %% `(tool-list)' frame and prints the catalog projection reply.
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:tool_list(#{socket => socket(Opts)})
+    end);
+dispatch(["tool", "remove", Name | Flags]) ->
+    %% Resolve the socket and drive `soma_cli:tool_remove/1', which sends the
+    %% `(tool-remove "<name>")' frame for a config-registered tool.
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:tool_remove(#{name => Name, socket => socket(Opts)})
+    end);
 dispatch(["stop" | Flags]) ->
     with_flags(Flags, fun(Opts) ->
         soma_cli:stop(#{socket => socket(Opts)})
@@ -115,7 +127,8 @@ dispatch(_Argv) ->
 %% with a subcommand's reply.
 usage() ->
     io:put_chars(standard_error,
-                 "usage: soma <run|ask|status|trace|cancel|stop|daemon> ...\n"),
+                 "usage: soma <run|ask|status|trace|cancel|tool|stop|daemon> ...\n"
+                 "       soma tool <register <file>|list|remove <name>>\n"),
     2.
 
 daemon_error({missing_env, "SOMA_LLM_API_KEY"}) ->

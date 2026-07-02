@@ -210,19 +210,30 @@ handle_tool_register(ToolForm, ToolsDir) ->
             soma_lisp:render(#{status => error, error => Reason})
     end.
 
-%% Register the compiled manifest in the running registry (which normalizes it)
-%% and persist it, once the reserved-name gate has passed. A valid register
-%% makes the named tool resolve live on this daemon before any restart; a
-%% normalize error renders an `error' result carrying the reason verbatim.
+%% Persist the compiled manifest, then register it in the running registry
+%% (which normalizes it), once the reserved-name gate has passed. The file is
+%% written FIRST: a disk failure then leaves the registry untouched, so a
+%% caller told `error' never has a live-only registration that a restart would
+%% silently drop. A write failure (including a missing tools dir the daemon
+%% cannot create) is a named `error' reply, never a handler crash. If the
+%% registry rejects the manifest after a successful write, the file just
+%% written is deleted so a restart cannot load a manifest the caller was told
+%% failed.
 register_normalized_tool(Name, Manifest, ToolsDir) ->
-    case soma_tool_registry:register_tool(Manifest) of
+    case write_manifest_file(ToolsDir, Name, Manifest) of
         ok ->
-            ok = write_manifest_file(ToolsDir, Name, Manifest),
-            ok = append_tool_registered_event(Name, Manifest),
-            ["(result (status registered) (tool-name ",
-             soma_lisp:render(atom_to_binary(Name, utf8)), "))"];
+            case soma_tool_registry:register_tool(Manifest) of
+                ok ->
+                    ok = append_tool_registered_event(Name, Manifest),
+                    ["(result (status registered) (tool-name ",
+                     soma_lisp:render(atom_to_binary(Name, utf8)), "))"];
+                {error, Reason} ->
+                    _ = delete_manifest_file(ToolsDir, Name),
+                    soma_lisp:render(#{status => error, error => Reason})
+            end;
         {error, Reason} ->
-            soma_lisp:render(#{status => error, error => Reason})
+            soma_lisp:render(#{status => error,
+                               error => {manifest_write_failed, Reason}})
     end.
 
 %% Append the one bounded `tool.registered' event for a successful register.
@@ -245,7 +256,10 @@ append_tool_registered_event(Name, #{effect := Effect,
 %% caller-supplied path.
 write_manifest_file(ToolsDir, Name, Manifest) ->
     Path = filename:join(ToolsDir, atom_to_list(Name) ++ ".lisp"),
-    file:write_file(Path, render_tool_manifest(Manifest)).
+    case filelib:ensure_dir(Path) of
+        ok -> file:write_file(Path, render_tool_manifest(Manifest));
+        {error, _} = Error -> Error
+    end.
 
 %% Render a normalized cli manifest back to a `(tool ...)' s-expr that
 %% `soma_tool_config:compile_form/1' re-reads to the same manifest -- the

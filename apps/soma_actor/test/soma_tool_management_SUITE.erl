@@ -29,7 +29,9 @@
          test_remove_appends_bounded_event/1,
          test_tool_events_omit_sensitive_fields/1,
          test_register_starts_no_actor_task/1,
-         test_harness_drives_real_socket_with_temp_dirs_and_stub/1]).
+         test_harness_drives_real_socket_with_temp_dirs_and_stub/1,
+         test_register_into_missing_tools_dir_creates_it/1,
+         test_cli_client_tool_list_and_remove_reach_daemon/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -52,7 +54,9 @@ all() ->
      test_remove_appends_bounded_event,
      test_tool_events_omit_sensitive_fields,
      test_register_starts_no_actor_task,
-     test_harness_drives_real_socket_with_temp_dirs_and_stub].
+     test_harness_drives_real_socket_with_temp_dirs_and_stub,
+     test_register_into_missing_tools_dir_creates_it,
+     test_cli_client_tool_list_and_remove_reach_daemon].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -1063,6 +1067,68 @@ stop_over_socket(SocketPath) ->
 
 %% Poll until the daemon's listen socket at Path stops answering, so a reboot
 %% binds a fresh listener instead of racing the old one still closing.
+%% Review finding (#220): on a fresh install nothing has created the tools
+%% dir yet. A register must not crash the handler and must not leave a
+%% live-only registration -- the daemon creates the directory, persists the
+%% file FIRST, then registers, and replies `registered'. Boot the daemon with
+%% a tools dir path that does not exist and register through the real socket.
+test_register_into_missing_tools_dir_creates_it(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "never_created_tools"),
+    false = filelib:is_dir(ToolsDir),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_freshdir\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    Reply = register_over_socket(SocketPath, Manifest),
+    {match, _} = re:run(Reply, <<"registered">>),
+    %% The manifest file exists on disk (persisted, not live-only) and the
+    %% tool resolves in the running registry.
+    true = filelib:is_regular(filename:join(ToolsDir, "mgmt_freshdir.lisp")),
+    {ok, #{adapter := cli}} =
+        soma_tool_registry:resolve_descriptor(mgmt_freshdir),
+    ok.
+
+%% Review finding (#220): the list and remove verbs must be reachable through
+%% the client layer the `soma tool <verb>' commands drive -- not only by
+%% hand-rolled socket frames. `soma_cli:tool_list/1' returns the catalog
+%% projection reply and exit code 0; `soma_cli:tool_remove/1' removes a
+%% config-registered tool so it stops resolving.
+test_cli_client_tool_list_and_remove_reach_daemon(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_client_verbs\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    _ = register_over_socket(SocketPath, Manifest),
+    {ok, _} = soma_tool_registry:resolve_descriptor(mgmt_client_verbs),
+    %% The real client verbs, exactly as `soma tool list' / `soma tool remove'
+    %% dispatch them.
+    0 = soma_cli:tool_list(#{socket => SocketPath}),
+    0 = soma_cli:tool_remove(#{name => "mgmt_client_verbs",
+                               socket => SocketPath}),
+    {error, not_found} =
+        soma_tool_registry:resolve_descriptor(mgmt_client_verbs),
+    ok.
+
 wait_socket_gone(_Path, 0) ->
     {error, still_listening};
 wait_socket_gone(Path, N) ->
