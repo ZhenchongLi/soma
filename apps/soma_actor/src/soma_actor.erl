@@ -894,8 +894,15 @@ build_call_opts(#{provider := openai_compat,
             System = #{role => <<"system">>,
                        content => planning_system_prompt(AllowedTools,
                                                          Catalog)},
+            %% BaseMessages ends with the user message and, when a custom
+            %% system_prompt was set above, leads with that custom system
+            %% message. Insert the planning system message right before the
+            %% trailing user message so a custom system_prompt stays first.
             UserMessages = maps:get(messages, Opts1),
-            Opts1#{plan => true, messages => [System | UserMessages]};
+            {Leading, [LastMessage]} =
+                lists:split(length(UserMessages) - 1, UserMessages),
+            Opts1#{plan => true,
+                   messages => Leading ++ [System, LastMessage]};
         _ -> Opts1
     end;
 %% A non-real-provider `model_config' -- empty or carrying a `directive' (the
