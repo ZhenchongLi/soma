@@ -58,13 +58,10 @@ assert_no_quoted_system_path(File, Src) ->
 %% Every `executable => ...' manifest field in the source names the
 %% locally-bound `Helper' variable -- the return value of one of this file's
 %% own `write_*_helper/0,1' functions -- and nothing else.
-%%
-%% Staged red: deliberately assert there are zero `executable => ' fields at
-%% all, which is false (the suite declares six cli manifests) -- this fires
-%% for the right reason before the assertion is corrected below.
 assert_every_executable_is_helper(File, Src) ->
     All = count(Src, <<"executable => ">>),
-    ?assertEqual({File, 0}, {File, All}).
+    AsHelper = count(Src, <<"executable => Helper,">>),
+    ?assertEqual({File, All}, {File, AsHelper}).
 
 count(Src, Needle) ->
     length(binary:matches(Src, Needle)).
