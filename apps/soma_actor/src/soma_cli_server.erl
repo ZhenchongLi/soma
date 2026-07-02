@@ -143,6 +143,49 @@ handle(Socket, ModelConfig, Listener) ->
 %% on garbage bytes -- is not a handler crash: it renders a `(result ...)' with
 %% `status => error' and an `error' sub-form carrying the diagnostics.
 handle_lisp_request(Bytes, Socket, ModelConfig, Listener) ->
+    %% Tool-management verbs are their own wire forms, not `soma_lfe' forms, so
+    %% dispatch them before the `soma_lfe:compile/2' path. A `(tool-register
+    %% (tool ...))' request compiles the inner `(tool ...)' body through the same
+    %% compiler the boot loader uses and registers it in the live registry.
+    case tool_register_form(Bytes) of
+        {ok, ToolForm} ->
+            handle_tool_register(ToolForm);
+        not_tool_register ->
+            handle_lfe_request(Bytes, Socket, ModelConfig, Listener)
+    end.
+
+%% Peek at the request: return the inner `(tool ...)' form of a
+%% `(tool-register (tool ...))' request, or `not_tool_register' for anything
+%% else (including garbage the reader cannot parse -- that falls through to the
+%% existing `soma_lfe' path, which renders the malformed-request error).
+tool_register_form(Bytes) ->
+    try soma_lfe_reader:read_forms(Bytes) of
+        {ok, [['tool-register', ToolForm]]} -> {ok, ToolForm};
+        _ -> not_tool_register
+    catch
+        _:_ -> not_tool_register
+    end.
+
+%% Compile the `(tool ...)' body through the shared boot-loader compiler,
+%% register the resulting manifest in the running registry (which normalizes
+%% it), and render the terminal reply. A valid register makes the named tool
+%% resolve live on this daemon before any restart. A compile or registration
+%% error renders an `error' result carrying the reason verbatim.
+handle_tool_register(ToolForm) ->
+    case soma_tool_config:compile_form(ToolForm) of
+        {ok, #{name := Name} = Manifest} ->
+            case soma_tool_registry:register_tool(Manifest) of
+                ok ->
+                    ["(result (status registered) (tool-name ",
+                     soma_lisp:render(atom_to_binary(Name, utf8)), "))"];
+                {error, Reason} ->
+                    soma_lisp:render(#{status => error, error => Reason})
+            end;
+        {error, Reason} ->
+            soma_lisp:render(#{status => error, error => Reason})
+    end.
+
+handle_lfe_request(Bytes, Socket, ModelConfig, Listener) ->
     Compiled = try soma_lfe:compile(Bytes, #{})
                catch
                    Class:Reason ->

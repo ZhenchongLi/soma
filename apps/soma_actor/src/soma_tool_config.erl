@@ -22,7 +22,7 @@
 %% The runtime never imports this module; the one-way dependency holds.
 -module(soma_tool_config).
 
--export([load_dir/1]).
+-export([load_dir/1, compile_form/1]).
 
 %% Conservative defaults for the shared manifest fields a tool file may
 %% leave out. Declared values pass through untouched — including invalid
@@ -110,6 +110,14 @@ register_manifest(#{name := Name} = Manifest, Registered) ->
                     end
             end
     end.
+
+%% @doc Compile a parsed `(tool ...)' form into the manifest map
+%% `register_tool/1' normalizes -- the one shared compiler a socket register
+%% handler reuses so a socket register and a boot-file load validate the same
+%% `(tool ...)' grammar through one path (never a second copy of it).
+-spec compile_form(term()) -> {ok, map()} | {error, term()}.
+compile_form(Form) ->
+    compile_tool(Form).
 
 %% Compile a parsed `(tool (key value...) ...)' form into the manifest map
 %% `register_tool/1' normalizes. Grammar errors (unknown key, duplicate key,
