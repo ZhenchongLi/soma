@@ -184,11 +184,9 @@ test_restart_after_register_resolves_from_file(Config) ->
     {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
                                          config_path => ConfigPath,
                                          tools_dir => ToolsDir}),
-    %% Staged red: this expected value is deliberately wrong -- after the reboot
-    %% the persisted file re-registers the tool, so it DOES resolve. The
-    %% `{error, not_found}' below fires the assertion to prove the test exercises
-    %% the reboot resolve path; the `fix(test)' commit corrects it to `{ok, _}'.
-    {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_reboot),
+    {ok, Descriptor} = soma_tool_registry:resolve_descriptor(mgmt_reboot),
+    #{adapter := cli, executable := Executable} = Descriptor,
+    <<"/bin/echo">> = unicode:characters_to_binary(Executable),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
