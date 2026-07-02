@@ -259,7 +259,7 @@ test_session_alive_runs_new_run_after_cli_placeholder_missing_key(Config) ->
     %% a fresh, ordinary run on the same session runs to completion.
     Steps2 = [#{id => s1, tool => echo, args => #{value => <<"still-alive">>}}],
     {ok, RunId2} = soma_agent_session:start_run(SessionPid, Steps2),
-    ok = wait_for_event(StorePid, RunId2, <<"run.failed">>, 100),
+    ok = wait_for_event(StorePid, RunId2, <<"run.completed">>, 100),
     Events = soma_event_store:by_run(StorePid, RunId2),
     Types = [maps:get(event_type, E) || E <- Events],
     true = lists:member(<<"run.completed">>, Types),
