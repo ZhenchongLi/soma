@@ -73,7 +73,11 @@ check_model_facing(Manifest) ->
     case check_description(Manifest) of
         ok ->
             case check_params(Manifest) of
-                ok -> normalize_complete(Manifest);
+                ok ->
+                    case check_cli_argv_placeholders(Manifest) of
+                        ok -> normalize_complete(Manifest);
+                        {error, _} = Error -> Error
+                    end;
                 {error, _} = Error -> Error
             end;
         {error, _} = Error ->
@@ -118,6 +122,55 @@ valid_param_doc(#{doc := Doc}) ->
     is_binary(Doc);
 valid_param_doc(_) ->
     true.
+
+check_cli_argv_placeholders(#{adapter := cli, argv := Argv} = Manifest) ->
+    ParamNames = param_names(Manifest),
+    case first_unknown_argv_placeholder(Argv, ParamNames) of
+        none -> ok;
+        {unknown, Name} -> {error, {unknown_argv_placeholder, Name}}
+    end;
+check_cli_argv_placeholders(_) ->
+    ok.
+
+param_names(#{params := Params}) ->
+    [Name || #{name := Name} <- Params];
+param_names(_) ->
+    [].
+
+first_unknown_argv_placeholder([], _ParamNames) ->
+    none;
+first_unknown_argv_placeholder([Arg | Rest], ParamNames) ->
+    case argv_placeholder_name(Arg) of
+        {placeholder, Name} ->
+            case lists:member(Name, ParamNames) of
+                true -> first_unknown_argv_placeholder(Rest, ParamNames);
+                false -> {unknown, Name}
+            end;
+        none ->
+            first_unknown_argv_placeholder(Rest, ParamNames)
+    end;
+first_unknown_argv_placeholder(_ImproperTail, _ParamNames) ->
+    none.
+
+argv_placeholder_name(Arg) when is_binary(Arg) ->
+    Size = byte_size(Arg),
+    case Size >= 2 andalso
+        binary:at(Arg, 0) =:= ${ andalso
+        binary:at(Arg, Size - 1) =:= $} of
+        true ->
+            NameSize = Size - 2,
+            <<${, Name:NameSize/binary, $}>> = Arg,
+            {placeholder, Name};
+        false ->
+            none
+    end;
+argv_placeholder_name(Arg) when is_list(Arg) ->
+    case unicode:characters_to_binary(Arg) of
+        Bin when is_binary(Bin) -> argv_placeholder_name(Bin);
+        _ -> none
+    end;
+argv_placeholder_name(_) ->
+    none.
 
 has_internal_whitespace(Executable) when is_binary(Executable) ->
     has_internal_whitespace(binary_to_list(Executable));
