@@ -853,14 +853,24 @@ start_owned_run(Steps, TaskId, CorrelationId, Data) ->
 %% keys `soma_llm_call:perform_call/1' routes on to reach `soma_llm_openai'.
 %% The `messages' list is derived from the envelope payload: one user message
 %% holding the prompt the payload carries, so the provider has something to send.
+%% A binary `system_prompt' on the model_config prepends a `system' message
+%% ahead of that user message -- a caller-supplied instruction distinct from
+%% the planning-mode system message below.
 build_call_opts(#{provider := openai_compat,
                   base_url := BaseUrl,
                   model := Model} = ModelConfig, Envelope) ->
     Prompt = maps:get(prompt, maps:get(payload, Envelope, #{}), <<>>),
+    UserMessage = #{role => <<"user">>, content => Prompt},
+    BaseMessages = case maps:get(system_prompt, ModelConfig, undefined) of
+                       SystemPrompt when is_binary(SystemPrompt) ->
+                           [#{role => <<"system">>, content => SystemPrompt},
+                            UserMessage];
+                       _ -> [UserMessage]
+                   end,
     Opts = #{provider => openai_compat,
              base_url => BaseUrl,
              model => Model,
-             messages => [#{role => <<"user">>, content => Prompt}]},
+             messages => BaseMessages},
     %% Copy the provider-side fields the model_config carries through to the
     %% worker opts: the `api_key' soma_llm_openai:build_request/1 needs for the
     %% Authorization header, and the fixed `response' that short-circuits
