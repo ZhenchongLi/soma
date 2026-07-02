@@ -9,11 +9,13 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_register_sends_manifest_over_socket/1,
-         test_register_tool_resolves_before_restart/1]).
+         test_register_tool_resolves_before_restart/1,
+         test_register_writes_normalized_manifest_file/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
-     test_register_tool_resolves_before_restart].
+     test_register_tool_resolves_before_restart,
+     test_register_writes_normalized_manifest_file].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -98,6 +100,44 @@ test_register_tool_resolves_before_restart(Config) ->
     {ok, Descriptor} = soma_tool_registry:resolve_descriptor(mgmt_upper),
     #{adapter := cli, executable := Executable} = Descriptor,
     <<"/bin/echo">> = unicode:characters_to_binary(Executable),
+    ok.
+
+%% Criterion 3 (#220): a successful register writes exactly one normalized
+%% `(tool ...)' file to the configured tools directory as `<name>.lisp'. The
+%% daemon boots with an empty tools dir; after a valid register the tools dir
+%% holds one file `mgmt_writer.lisp' whose contents parse as a single
+%% `(tool ...)' form that compiles back to a manifest for the declared name --
+%% proving the handler rendered and persisted a normalized manifest file.
+test_register_writes_normalized_manifest_file(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% The tools dir is empty at boot -- no `.lisp' files yet.
+    [] = lists:sort(filelib:wildcard(filename:join(ToolsDir, "*.lisp"))),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_writer\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    _Reply = register_over_socket(SocketPath, Manifest),
+
+    %% Exactly one `.lisp' file was written, and it is `<name>.lisp'.
+    ExpectedFile = filename:join(ToolsDir, "mgmt_writer.lisp"),
+    [ExpectedFile] = lists:sort(filelib:wildcard(filename:join(ToolsDir, "*.lisp"))),
+
+    %% The file contents parse as a single normalized `(tool ...)' form that
+    %% compiles back to a manifest for the declared name.
+    {ok, Written} = file:read_file(ExpectedFile),
+    {ok, [ToolForm]} = soma_lfe_reader:read_forms(Written),
+    {ok, #{name := mgmt_writer, adapter := cli}} =
+        soma_tool_config:compile_form(ToolForm),
     ok.
 
 %% Wrap the manifest bytes as a `(tool-register (tool ...))' frame, send it over
