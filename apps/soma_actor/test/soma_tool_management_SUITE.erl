@@ -13,7 +13,8 @@
          test_register_writes_normalized_manifest_file/1,
          test_restart_after_register_resolves_from_file/1,
          test_register_invalid_manifest_returns_normalize_error/1,
-         test_failed_register_leaves_tools_dir_unchanged/1]).
+         test_failed_register_leaves_tools_dir_unchanged/1,
+         test_failed_register_leaves_registry_clean/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -21,7 +22,8 @@ all() ->
      test_register_writes_normalized_manifest_file,
      test_restart_after_register_resolves_from_file,
      test_register_invalid_manifest_returns_normalize_error,
-     test_failed_register_leaves_tools_dir_unchanged].
+     test_failed_register_leaves_tools_dir_unchanged,
+     test_failed_register_leaves_registry_clean].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -267,6 +269,42 @@ test_failed_register_leaves_tools_dir_unchanged(Config) ->
     After = lists:sort(filelib:wildcard(filename:join(ToolsDir, "*"))),
     Before = After,
     [] = filelib:wildcard(filename:join(ToolsDir, "mgmt_nowrite.lisp")),
+    ok.
+
+%% Criterion 7 (#220): a failed register leaves the running registry without the
+%% rejected tool. Validation (compile + normalize) runs before the tool enters
+%% the live registry, so a rejected request never registers the named tool. The
+%% daemon boots with an empty tools dir; the test sends a register whose manifest
+%% is rejected by `normalize/1' (`effect banana'), and asserts a real
+%% `soma_tool_registry:resolve_descriptor/1' for the rejected name still returns
+%% `{error, not_found}' -- the tool never entered the live registry.
+test_failed_register_leaves_registry_clean(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% Nothing named `mgmt_reject' is registered at boot (empty tools dir).
+    {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_reject),
+
+    %% An invalid manifest (`effect banana') is rejected before the tool enters
+    %% the live registry.
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_reject\")\n"
+                 "  (effect banana) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    Reply = register_over_socket(SocketPath, Manifest),
+    match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
+
+    %% The rejected tool never entered the live registry: a real resolve for its
+    %% name still returns `not_found'.
+    {ok, _Descriptor} = soma_tool_registry:resolve_descriptor(mgmt_reject),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
