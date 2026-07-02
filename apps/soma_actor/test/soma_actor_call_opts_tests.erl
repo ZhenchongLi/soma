@@ -312,11 +312,11 @@ test_registered_tool_appears_in_next_planning_prompt() ->
     OptsAfter = soma_actor:build_call_opts(ModelConfig, Envelope),
     [SystemAfter | _] = maps:get(messages, OptsAfter),
     ContentAfter = maps:get(content, SystemAfter),
-    ?assertEqual(nomatch,
-                 binary:match(ContentAfter, <<"late_registered_tool">>)),
-    ?assertEqual(nomatch,
-                 binary:match(ContentAfter,
-                              <<"Registered after the first prompt build.">>)).
+    ?assertNotEqual(nomatch,
+                    binary:match(ContentAfter, <<"late_registered_tool">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(ContentAfter,
+                                 <<"Registered after the first prompt build.">>)).
 
 registered_tool_appears_in_next_planning_prompt_test_() ->
     {setup,
