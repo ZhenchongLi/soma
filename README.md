@@ -30,12 +30,17 @@ values. Full layer-by-layer status: **[docs/roadmap.md](docs/roadmap.md)**.
 | **v0.7** · Persistent resume | `run.started` journal · read-only reconstruct · resume executor (`resume/3`, fail-safe on non-idempotent in-flight steps) · boot auto-resume |
 
 The real **OpenAI-compatible LLM provider** path is built (opt-in, off the
-gate), including an actor-level planning mode that can parse model text as
-`run_steps`, and the packaged **`soma` CLI / daemon** is built: `run` / `ask` /
-`status` / `cancel` / `trace` / `stop` over a local Unix socket, Lisp on the
-wire, with `bin/soma` distinct from the `bin/somad` node-control script. Still
-open: productizing real-model planning at the CLI / config surface,
-effect-aware policy, and the **Linux x86_64 / arm64 release artifacts** (macOS
+gate), including an actor-level planning mode — productized at the CLI /
+config surface — that can parse model text as `run_steps`, and the packaged
+**`soma` CLI / daemon** is built: `run` / `ask` / `status` / `cancel` /
+`trace` / `stop` over a local Unix socket, Lisp on the wire, with `bin/soma`
+distinct from the `bin/somad` node-control script. The **tool layer** now has
+a model-facing catalog (manifest `description`/`params` +
+`soma_tool_registry:catalog/0`) and **config-registered cli tools**: drop a
+`(tool …)` file in `~/.soma/tools/` and the daemon registers it at boot
+through the same validation as built-ins (see
+[docs/tool-abstraction.md](docs/tool-abstraction.md)). Still open:
+effect-aware policy and the **Linux x86_64 / arm64 release artifacts** (macOS
 arm64 is done).
 
 ## The idea
@@ -259,6 +264,18 @@ the `cli` adapter — executable + argv, never shell strings, with explicit `arg
 `apps/soma_tools/priv/cli/soma_sample_upper`. The manifest shape and the cli
 execution protocol are in **[docs/tool-manifest.md](docs/tool-manifest.md)**.
 
+A manifest may also carry an optional **model-facing half** — a prose
+`description` and a declared `params` list — and every described tool appears
+in `soma_tool_registry:catalog/0`, which exposes exactly that half and never
+the runtime internals. Users register their own external tools without
+writing Erlang: one `(tool …)` form per file in `~/.soma/tools/`, loaded at
+daemon boot through the same `normalize/1` path — cli-adapter only, built-in
+names reserved, conservative safety defaults, and a broken file skips with a
+named diagnostic instead of blocking boot. The full tool model and the
+third-party integration tiers are in
+**[docs/tool-abstraction.md](docs/tool-abstraction.md)**; the user-manual
+section is in [docs/usage.md](docs/usage.md).
+
 ## Release
 
 ```bash
@@ -282,12 +299,13 @@ agent-entity skeleton, the agent decision layer (`soma_llm_call` + proposal sche
 OpenAI-compatible real-provider path, actor-level real-provider planning mode,
 the Lisp message/proposal/trace/repair edge forms, persistent run resume
 (`soma_run_resume_executor:resume/3`) plus boot auto-resume for interrupted
-durable runs, the packaged `bin/soma` Unix-socket task command, and a
-self-contained release.
+durable runs, the packaged `bin/soma` Unix-socket task command, the
+model-facing tool catalog and config-registered cli tools (`~/.soma/tools`),
+and a self-contained release.
 
-Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**): a
-productized CLI/config surface for real-model tool planning, an effect-aware
-policy gate, MCP, DAG parallelism, distributed Erlang, per-tool resume policy /
+Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**):
+an effect-aware policy gate, memory tools (`soma_memory`), sub-agent-as-tool,
+MCP, DAG parallelism, distributed Erlang, per-tool resume policy /
 compensation hooks for non-idempotent in-flight steps, and Linux x86_64 / arm64
 release artifacts.
 
@@ -305,6 +323,10 @@ release artifacts.
 - **[docs/tool-manifest.md](docs/tool-manifest.md)** — tool manifest contract:
   the shape of a tool entry, which adapter runs it, and the cli execution
   protocol.
+- **[docs/tool-abstraction.md](docs/tool-abstraction.md)** — the tool model:
+  the effect-typed manifest with its runtime-facing and model-facing halves,
+  the capability-app integration pattern, config-registered cli tools, memory
+  as tools, and the T.1–T.5 sequencing.
 - **[docs/lfe-dsl.md](docs/lfe-dsl.md)** — LFE DSL: syntax reference,
   run step-list contract, Lisp edge forms, `from_step` forms, diagnostic codes,
   and explicit non-goals. The `soma_lfe` app is a compile-only layer with no
@@ -346,11 +368,27 @@ release artifacts.
 - **[docs/contracts/task-form-test-contract.md](docs/contracts/task-form-test-contract.md)**
   — bounded Soma Lisp v1 public task surface proofs: `(task ...)` compilation
   into canonical run maps and documentation alignment for the public task form.
+- **[docs/contracts/v0.7-test-contract.md](docs/contracts/v0.7-test-contract.md)**
+  — persistent-resume proofs: the `run.started` journal, read-only
+  reconstruction, the resume plan and executor with the fail-safe on
+  non-idempotent in-flight steps, and boot auto-resume.
 - **[docs/contracts/cli-1b-test-contract.md](docs/contracts/cli-1b-test-contract.md)**,
   **[docs/contracts/cli-2-test-contract.md](docs/contracts/cli-2-test-contract.md)**,
   and **[docs/contracts/cli-3-test-contract.md](docs/contracts/cli-3-test-contract.md)**
   — local Unix-socket Lisp-wire proofs for `soma_cli` / `soma_cli_server` run,
   ask, status, trace, cancel, and detach behavior.
+- **[docs/contracts/cli-real-planning-test-contract.md](docs/contracts/cli-real-planning-test-contract.md)**
+  — the productized real-provider planning surface: config and CLI proofs for
+  driving actor planning mode from `~/.soma/config`.
+- **[docs/contracts/tool-catalog-test-contract.md](docs/contracts/tool-catalog-test-contract.md)**
+  — manifest v2 proofs: the optional model-facing `description`/`params`
+  fields and the `catalog/0` guarantees (exact entry shape, no runtime-field
+  leaks, described built-ins).
+- **[docs/contracts/tool-config-test-contract.md](docs/contracts/tool-config-test-contract.md)**
+  — config-registered cli tool proofs: the `~/.soma/tools/` loader, one
+  validation path with built-ins, conservative defaults, reserved built-in
+  names, skip-with-diagnostic, reader unicode handling, and the end-to-end
+  run through the unchanged cli adapter.
 
 **Chinese docs**
 

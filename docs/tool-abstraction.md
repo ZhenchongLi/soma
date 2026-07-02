@@ -1,6 +1,7 @@
 # Soma tool abstraction and third-party integration
 
-> Status: design / proposal (not yet sliced into issues)
+> Status: design, partially shipped — T.1 (#203) and T.2 (#205, hardened by
+> #208) are built and merged; T.3–T.5 remain design
 > Related: `docs/tool-manifest.md` (the shipped v0.2 manifest contract),
 > `docs/roadmap.md` (node B planning, effect-aware policy, MCP),
 > issue #175 (the docmod scenario — the first consumer of this design),
@@ -236,12 +237,16 @@ tool.
 
 Each slice is independently green and contract-proven, in the usual order:
 
-1. **T.1 — manifest v2 + catalog**: optional `description` / `params`,
-   `catalog/0`, planning prompt consumes the catalog. Additive; existing
-   manifests unchanged.
-2. **T.2 — config-registered cli tools**: `~/.soma/tools/*.lisp` at daemon
-   boot, one validation path, skip-with-diagnostic. Unlocks #175's docmod
-   tools without hardcoding them into the release.
+1. **T.1 — manifest v2 + catalog** [done, #203]: optional `description` /
+   `params`, `catalog/0`. Additive; existing manifests unchanged. Proofs in
+   `docs/contracts/tool-catalog-test-contract.md`. (Planning-prompt
+   consumption of the catalog is still open — a follow-up slice.)
+2. **T.2 — config-registered cli tools** [done, #205 + #208]:
+   `~/.soma/tools/*.lisp` at daemon boot, one validation path,
+   skip-with-diagnostic, built-in names reserved (#208 — a config file must
+   not flip the `effect`/`idempotent` fields resume-safety classifies from).
+   Proofs in `docs/contracts/tool-config-test-contract.md`. Unlocks #175's
+   docmod tools without hardcoding them into the release.
 3. **T.3 — `soma_memory`**: the store server + the four tools (§6).
 4. **T.4 — `ask_actor`**: sub-agent as tool, cancel propagation proven.
 5. **T.5 — `soma_mcp`**: post-validation, per the roadmap; by then it is

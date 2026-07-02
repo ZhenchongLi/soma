@@ -218,6 +218,12 @@ config path:
 SOMA_CONFIG=/path/to/config SOMA_LLM_API_KEY="..." $SOMA daemon
 ```
 
+At the same boot the daemon also loads `~/.soma/tools/*.lisp` — one
+`(tool …)` form per file — registering each valid file as a `cli` tool and
+skipping broken ones with a named log line. See the "Register Your Own CLI
+Tools" section in [usage.md](usage.md) and the loader guarantees in
+[contracts/tool-config-test-contract.md](contracts/tool-config-test-contract.md).
+
 Provider modes:
 
 - `mock-on-gate`: the normal test gate uses a mock model config and opens no
