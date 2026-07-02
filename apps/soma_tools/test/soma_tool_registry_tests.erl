@@ -81,6 +81,63 @@ test_list_projection_includes_summary_fields() ->
 list_projection_includes_summary_fields_test() ->
     test_list_projection_includes_summary_fields().
 
+%% The list projection never carries runtime internals: `module' /
+%% `executable' / `argv' / `timeout_ms' from the descriptor, nor
+%% process-local values (pid / port / ref) even when a stored descriptor map
+%% happens to carry them. The projection constructs each entry from named
+%% safe fields, so a planted internal key simply never appears.
+test_list_projection_omits_internal_fields() ->
+    Cli = #{
+        name => scrub_cli_tool,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 4321,
+        adapter => cli,
+        executable => "/bin/echo",
+        argv => ["scrub-argv-value"],
+        description => <<"Scrub check.">>,
+        %% Process-local values planted directly in the stored map: the
+        %% projection must strip these by construction, whatever the value.
+        pid => self(),
+        ref => make_ref(),
+        port => not_a_real_port_but_the_key_is_what_matters
+    },
+    Emod = #{
+        name => scrub_mod_tool,
+        effect => state,
+        idempotent => false,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo
+    },
+    Registry0 = soma_tool_registry:register(#{}, scrub_cli_tool, Cli),
+    Registry1 = soma_tool_registry:register(Registry0, scrub_mod_tool, Emod),
+    Entries = soma_tool_registry:list_tools(Registry1),
+    Forbidden = [module, executable, argv, timeout_ms, pid, port, ref],
+    lists:foreach(
+      fun(Entry) ->
+          lists:foreach(
+            fun(Key) -> ?assertNot(maps:is_key(Key, Entry)) end,
+            Forbidden)
+      end,
+      Entries),
+    %% DELIBERATELY WRONG (staged red): expects the cli entry to leak its
+    %% executable, so the assertion fires against the real projection.
+    ?assertEqual([#{name => scrub_cli_tool,
+                    effect => reader,
+                    idempotent => true,
+                    adapter => cli,
+                    executable => "/bin/echo",
+                    description => <<"Scrub check.">>},
+                  #{name => scrub_mod_tool,
+                    effect => state,
+                    idempotent => false,
+                    adapter => erlang_module}],
+                 Entries).
+
+list_projection_omits_internal_fields_test() ->
+    test_list_projection_omits_internal_fields().
+
 %% A manifest missing a required field is rejected by register_tool/1 on the
 %% running registry, and the tool name it carried does not resolve afterwards:
 %% the registry was left unchanged, so resolve_descriptor/1 returns

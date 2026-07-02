@@ -17,7 +17,8 @@
          test_failed_register_leaves_registry_clean/1,
          test_register_builtin_name_reserved/1,
          test_register_existing_config_tool_already_registered/1,
-         test_list_returns_summary_fields/1]).
+         test_list_returns_summary_fields/1,
+         test_list_omits_internal_fields/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -29,7 +30,8 @@ all() ->
      test_failed_register_leaves_registry_clean,
      test_register_builtin_name_reserved,
      test_register_existing_config_tool_already_registered,
-     test_list_returns_summary_fields].
+     test_list_returns_summary_fields,
+     test_list_omits_internal_fields].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -469,6 +471,69 @@ test_list_returns_summary_fields(Config) ->
      [idempotent, EchoIdempotent],
      [adapter, erlang_module],
      [description, EchoDescription]] = EchoEntry,
+    ok.
+
+%% Criterion 11 (#220): the `(tool-list)' reply omits runtime internals --
+%% `module' / `executable' / `argv' / `timeout-ms' field forms never appear,
+%% and neither do pid / port / ref forms nor the registered executable path,
+%% argv values, or timeout value as bytes. A cli config tool carrying a
+%% distinctive executable / argv / timeout is registered first so there is a
+%% descriptor with something to leak; the reply bytes are then scanned for
+%% every forbidden form and value, and each parsed entry's field names are
+%% checked against the safe set (name / effect / idempotent / adapter /
+%% description) alone.
+test_list_omits_internal_fields(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% A cli tool with a distinctive executable path, argv value, and timeout,
+    %% so any leak of those internals into the list reply is detectable.
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_scrub\")\n"
+                 "  (description \"Scrub check.\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 4321)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"scrub-argv-value\"))\n">>,
+    RegReply = register_over_socket(SocketPath, Manifest),
+    match = re:run(RegReply, "\\(status registered\\)", [{capture, none}]),
+
+    Reply = request_over_socket(SocketPath, <<"(tool-list)">>),
+
+    %% Sanity: the registered tool is in the reply at all.
+    {_, _} = binary:match(Reply, <<"(name \"mgmt_scrub\")">>),
+
+    %% DELIBERATELY WRONG (staged red): expects the executable field form to
+    %% appear on the wire, so the match fires against the real scrubbed reply.
+    {_, _} = binary:match(Reply, <<"(executable">>),
+    nomatch = binary:match(Reply, <<"(module">>),
+    nomatch = binary:match(Reply, <<"(argv">>),
+    nomatch = binary:match(Reply, <<"(timeout-ms">>),
+    nomatch = binary:match(Reply, <<"(timeout_ms">>),
+    nomatch = binary:match(Reply, <<"(pid">>),
+    nomatch = binary:match(Reply, <<"(port">>),
+    nomatch = binary:match(Reply, <<"(ref">>),
+    %% The registered internals never reach the wire as values either.
+    nomatch = binary:match(Reply, <<"/bin/echo">>),
+    nomatch = binary:match(Reply, <<"scrub-argv-value">>),
+    nomatch = binary:match(Reply, <<"4321">>),
+
+    %% Structurally: every entry's field names come from the safe set alone.
+    {ok, [['tool-list' | Entries]]} = soma_lfe_reader:read_forms(Reply),
+    Allowed = [name, effect, idempotent, adapter, description],
+    lists:foreach(
+      fun([tool | Fields]) ->
+          lists:foreach(
+            fun([Key | _]) -> true = lists:member(Key, Allowed) end,
+            Fields)
+      end,
+      Entries),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
