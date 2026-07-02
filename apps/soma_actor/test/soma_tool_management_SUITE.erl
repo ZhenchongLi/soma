@@ -20,7 +20,8 @@
          test_list_returns_summary_fields/1,
          test_list_omits_internal_fields/1,
          test_remove_config_tool_unresolved/1,
-         test_remove_deletes_only_owned_manifest_file/1]).
+         test_remove_deletes_only_owned_manifest_file/1,
+         test_remove_builtin_not_config_tool/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -35,7 +36,8 @@ all() ->
      test_list_returns_summary_fields,
      test_list_omits_internal_fields,
      test_remove_config_tool_unresolved,
-     test_remove_deletes_only_owned_manifest_file].
+     test_remove_deletes_only_owned_manifest_file,
+     test_remove_builtin_not_config_tool].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -622,6 +624,38 @@ test_remove_deletes_only_owned_manifest_file(Config) ->
 
     %% ...and the unrelated neighbour file survives byte-for-byte.
     {ok, NeighbourBytes} = file:read_file(NeighbourFile),
+    ok.
+
+%% Criterion 14 (#220): a `(tool-remove "<name>")' request for a built-in tool
+%% is rejected with `{not_config_tool, Name}' -- a removable name must be a
+%% live *config* tool, and a built-in is not one. `echo' is a built-in, so
+%% removing it is a failed result whose reason is the exact rendering of
+%% `{not_config_tool, echo}' -- the name as the existing built-in atom, the
+%% same way the register gates carry `{reserved_name, echo}'. The built-in
+%% survives the rejected remove: `echo' still resolves on the same daemon.
+test_remove_builtin_not_config_tool(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% `echo' is a built-in and resolves live before the remove attempt.
+    true = lists:member(echo, soma_tool_registry:builtin_names()),
+    {ok, _Builtin} = soma_tool_registry:resolve_descriptor(echo),
+
+    %% The daemon rejects the remove with a failed result carrying the
+    %% not-config-tool reason -- the built-in atom name -- verbatim.
+    Expected = iolist_to_binary(soma_lisp:render({not_config_tool, echo})),
+    Reply = request_over_socket(SocketPath, <<"(tool-remove \"echo\")">>),
+    match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
+    {_, _} = binary:match(Reply, Expected),
+
+    %% The built-in was never unregistered: `echo' still resolves.
+    {ok, _StillThere} = soma_tool_registry:resolve_descriptor(echo),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
