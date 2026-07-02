@@ -157,19 +157,24 @@ handle_lisp_request(Bytes, Socket, ModelConfig, ToolsDir, Listener) ->
             handle_tool_register(ToolForm, ToolsDir);
         list ->
             handle_tool_list();
+        {remove, NameBin} ->
+            handle_tool_remove(NameBin);
         not_tool_management ->
             handle_lfe_request(Bytes, Socket, ModelConfig, Listener)
     end.
 
 %% Peek at the request: classify a tool-management wire form -- the inner
-%% `(tool ...)' body of a `(tool-register (tool ...))' request, or a bare
-%% `(tool-list)'. Anything else (including garbage the reader cannot parse)
-%% is `not_tool_management' and falls through to the existing `soma_lfe'
-%% path, which renders the malformed-request error.
+%% `(tool ...)' body of a `(tool-register (tool ...))' request, a bare
+%% `(tool-list)', or the name string of a `(tool-remove "<name>")'. Anything
+%% else (including garbage the reader cannot parse) is `not_tool_management'
+%% and falls through to the existing `soma_lfe' path, which renders the
+%% malformed-request error.
 tool_management_form(Bytes) ->
     try soma_lfe_reader:read_forms(Bytes) of
         {ok, [['tool-register', ToolForm]]} -> {register, ToolForm};
         {ok, [['tool-list']]} -> list;
+        {ok, [['tool-remove', NameBin]]} when is_binary(NameBin) ->
+            {remove, NameBin};
         _ -> not_tool_management
     catch
         _:_ -> not_tool_management
@@ -281,6 +286,38 @@ render_tool_summary(#{name := Name, effect := Effect,
         ++ [render_string_field(description, Description)
             || {ok, Description} <- [maps:find(description, Entry)]],
     ["(tool ", lists:join(" ", Fields), ")"].
+
+%% Remove a config tool from the running registry so its name no longer
+%% resolves on this daemon. The wire carries the name as a binary; it is mapped
+%% to an *existing* registry atom (never minted), and only a live non-built-in
+%% tool -- the definition of a config tool -- is removable. Any other name
+%% (built-in, unknown, or traversal-shaped) is rejected with
+%% `{not_config_tool, Name}' before anything is touched.
+handle_tool_remove(NameBin) ->
+    case config_tool_name(NameBin) of
+        {ok, Name} ->
+            ok = soma_tool_registry:unregister_tool(Name),
+            ["(result (status removed) (tool-name ",
+             soma_lisp:render(NameBin), "))"];
+        error ->
+            soma_lisp:render(#{status => error,
+                               error => {not_config_tool, NameBin}})
+    end.
+
+%% Map a wire name (binary) to the atom of a live config tool: a name that
+%% resolves in the running registry and is not a built-in. Matching against the
+%% live registry's own names -- rather than `binary_to_atom/2' -- means no new
+%% atom is ever minted from external input, and a bogus name simply fails to
+%% match.
+config_tool_name(NameBin) ->
+    Builtins = soma_tool_registry:builtin_names(),
+    Live = [maps:get(name, Entry) || Entry <- soma_tool_registry:list_tools()],
+    case [Name || Name <- Live,
+                  not lists:member(Name, Builtins),
+                  atom_to_binary(Name, utf8) =:= NameBin] of
+        [Name] -> {ok, Name};
+        [] -> error
+    end.
 
 handle_lfe_request(Bytes, Socket, ModelConfig, Listener) ->
     Compiled = try soma_lfe:compile(Bytes, #{})
