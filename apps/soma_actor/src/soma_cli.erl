@@ -193,6 +193,10 @@ daemon(Args) ->
 
 daemon_with_model_config(Args, ModelConfig) ->
     {ok, _Started} = application:ensure_all_started(soma_runtime),
+    %% Config-registered cli tools load after the runtime (the registry must
+    %% be up) and before the listener starts. The result is log lines + data;
+    %% a broken tool file never stops boot.
+    _ = soma_tool_config:load_dir(resolve_tools_dir(Args)),
     Path = resolve_socket(Args),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
                                                  model_config => ModelConfig}),
@@ -225,6 +229,9 @@ daemon_foreground(Args) ->
 
 daemon_foreground_with_model_config(Args, ModelConfig) ->
     {ok, _Started} = application:ensure_all_started(soma_runtime),
+    %% Same boot step as `daemon/1': config tools load after the runtime and
+    %% before the listener starts.
+    _ = soma_tool_config:load_dir(resolve_tools_dir(Args)),
     case soma_actor_sup:start_link() of
         {ok, _Sup} -> ok;
         {error, {already_started, _Sup}} -> ok
@@ -244,6 +251,16 @@ daemon_foreground_with_model_config(Args, ModelConfig) ->
             %% nothing to do -- return cleanly and let the process exit instead
             %% of crashing on the failed bind.
             ok
+    end.
+
+%% The tools-dir resolver, mirroring `soma_config''s path seam: a `tools_dir'
+%% key in `Args' wins (the hermetic-test seam), else `$HOME/.soma/tools'.
+resolve_tools_dir(#{tools_dir := Dir}) ->
+    Dir;
+resolve_tools_dir(_Args) ->
+    case os:getenv("HOME") of
+        false -> "/.soma/tools";
+        Home -> filename:join([Home, ".soma", "tools"])
     end.
 
 load_model_config(Args) ->
