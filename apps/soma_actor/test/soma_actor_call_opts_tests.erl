@@ -275,3 +275,55 @@ planning_prompt_all_policy_renders_full_catalog_test_() ->
      fun(_Pid) ->
          ?_test(test_planning_prompt_all_policy_renders_full_catalog())
      end}.
+
+%% Criterion 3 (#212): a tool registered through register_tool/1 with a
+%% description appears in the *next* planning prompt built after registration
+%% -- no code change, no actor restart. The builder must read
+%% soma_tool_registry:catalog/0 fresh on every planning build, never cache it:
+%% the same model_config builds a prompt without the tool before registration
+%% and a prompt carrying its name and description right after.
+test_registered_tool_appears_in_next_planning_prompt() ->
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    plan => true,
+                    allowed_tools => all},
+    Envelope = #{payload => #{prompt => <<"use the newest tool">>}},
+    OptsBefore = soma_actor:build_call_opts(ModelConfig, Envelope),
+    [SystemBefore | _] = maps:get(messages, OptsBefore),
+    ContentBefore = maps:get(content, SystemBefore),
+    %% Before registration the tool leaves no trace in the prompt.
+    ?assertEqual(nomatch,
+                 binary:match(ContentBefore, <<"late_registered_tool">>)),
+    ?assertEqual(nomatch,
+                 binary:match(ContentBefore,
+                              <<"Registered after the first prompt build.">>)),
+    Manifest = #{
+        name => late_registered_tool,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo,
+        description => <<"Registered after the first prompt build.">>
+    },
+    ok = soma_tool_registry:register_tool(Manifest),
+    %% Same config, next build: the fresh catalog read carries the new tool.
+    OptsAfter = soma_actor:build_call_opts(ModelConfig, Envelope),
+    [SystemAfter | _] = maps:get(messages, OptsAfter),
+    ContentAfter = maps:get(content, SystemAfter),
+    ?assertEqual(nomatch,
+                 binary:match(ContentAfter, <<"late_registered_tool">>)),
+    ?assertEqual(nomatch,
+                 binary:match(ContentAfter,
+                              <<"Registered after the first prompt build.">>)).
+
+registered_tool_appears_in_next_planning_prompt_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_registered_tool_appears_in_next_planning_prompt())
+     end}.
