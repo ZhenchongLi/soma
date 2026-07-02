@@ -10,7 +10,8 @@
          ask_actor_step_timeout_cancels_child_task/1,
          ask_actor_parent_cancel_cancels_child_task/1,
          ask_actor_unknown_name_fails_run_session_alive/1,
-         ask_actor_dead_name_fails_run_session_alive/1]).
+         ask_actor_dead_name_fails_run_session_alive/1,
+         asker_death_after_answer_does_not_cancel_completed_child/1]).
 
 all() ->
     [ask_actor_run_step_returns_target_result_and_uses_tool_worker,
@@ -18,7 +19,8 @@ all() ->
      ask_actor_step_timeout_cancels_child_task,
      ask_actor_parent_cancel_cancels_child_task,
      ask_actor_unknown_name_fails_run_session_alive,
-     ask_actor_dead_name_fails_run_session_alive].
+     ask_actor_dead_name_fails_run_session_alive,
+     asker_death_after_answer_does_not_cancel_completed_child].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -264,6 +266,53 @@ ask_actor_dead_name_fails_run_session_alive(_Config) ->
     ok = assert_session_completes_echo(StorePid, SessionPid, after_dead_name),
     ok.
 
+asker_death_after_answer_does_not_cancel_completed_child(_Config) ->
+    StorePid = event_store_pid(),
+    ChildTaskId = <<"task-ask-actor-completed-child">>,
+    {ok, TargetPid} =
+        soma_actor_sup:start_actor(#{actor_id => <<"ask-actor-completed-child">>,
+                                     stable_name => <<"completed-child">>,
+                                     event_store => StorePid,
+                                     model_config => #{},
+                                     tool_policy => #{}}),
+    Parent = self(),
+    HelperPid =
+        spawn(fun() ->
+                      Reply = soma_actor:ask(
+                                TargetPid,
+                                completed_child_envelope(ChildTaskId),
+                                5000),
+                      Parent ! {ask_returned, self(), Reply},
+                      receive
+                          stop ->
+                              ok
+                      end
+              end),
+
+    receive
+        {ask_returned, HelperPid, {ok, #{child_s1 := #{value := <<"ok">>}}}} ->
+            ok;
+        {ask_returned, HelperPid, Other} ->
+            ct:fail({unexpected_ask_reply, Other})
+    after 5000 ->
+        ct:fail(ask_did_not_return)
+    end,
+
+    ok = wait_for_task_status(TargetPid, ChildTaskId, completed, 100),
+    HelperRef = monitor(process, HelperPid),
+    exit(HelperPid, kill),
+    receive
+        {'DOWN', HelperRef, process, HelperPid, killed} ->
+            ok
+    after 2000 ->
+        ct:fail(helper_still_alive)
+    end,
+
+    ok = wait_for_task_status(TargetPid, ChildTaskId, completed, 100),
+    [] = task_cancelled_events(StorePid, ChildTaskId),
+    true = is_process_alive(TargetPid),
+    ok.
+
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
     {soma_event_store, Pid, _Type, _Mods} =
@@ -333,6 +382,13 @@ short_child_envelope() ->
       steps => [#{id => child_s1, tool => echo,
                   args => #{value => <<"unreached">>}}]}.
 
+completed_child_envelope(ChildTaskId) ->
+    #{type => <<"actor.message">>,
+      payload => #{},
+      task_id => ChildTaskId,
+      steps => [#{id => child_s1, tool => echo,
+                  args => #{value => <<"ok">>}}]}.
+
 assert_lookup_failed_not_found(#{error := ask_actor_lookup_failed,
                                  registry_error := not_found}) ->
     ok;
@@ -391,3 +447,8 @@ event_types(Events) ->
 
 events_for_actor(Events, ActorId) ->
     [E || E <- Events, maps:get(actor_id, E, undefined) =:= ActorId].
+
+task_cancelled_events(StorePid, TaskId) ->
+    [E || E <- soma_event_store:all(StorePid),
+          maps:get(event_type, E) =:= <<"actor.task.cancelled">>,
+          maps:get(task_id, maps:get(payload, E, #{}), undefined) =:= TaskId].
