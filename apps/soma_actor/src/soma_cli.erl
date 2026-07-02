@@ -20,7 +20,7 @@ run(#{file := File, socket := Path} = Args) ->
     ok = gen_tcp:send(Sock, Source),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
-    io:format("~s~n", [Reply]),
+    io:format("~ts~n", [Reply]),
     exit_code(Reply).
 
 %% Build the `(ask (intent "..."))' source from the intent string client-side --
@@ -37,16 +37,24 @@ ask(#{intent := Intent, socket := Path} = Args) ->
     ok = gen_tcp:send(Sock, Source),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
-    io:format("~s~n", [Reply]),
+    io:format("~ts~n", [Reply]),
     exit_code(Reply).
 
-%% Wrap the intent string in an `(ask (intent "..."))' s-expr. The intent is a
-%% quoted Lisp string, so it is the literal bytes between the quotes.
+%% Wrap the intent string in an `(ask (intent "..."))' s-expr, rendered through
+%% `soma_lisp:render/1' so it is escaped and quoted like any other Lisp string.
+%% The escript passes argv as a list of Unicode codepoints (not raw bytes), so
+%% a non-ASCII intent (e.g. Chinese) must go through `unicode:characters_to_binary/1'
+%% first -- splicing the codepoint list directly into an iolist crashes
+%% `iolist_to_binary/1' on any codepoint above 255.
 ask_source(Intent) ->
-    iolist_to_binary(["(ask (intent \"", Intent, "\"))"]).
+    iolist_to_binary(["(ask (intent ",
+                      soma_lisp:render(unicode:characters_to_binary(Intent)),
+                      "))"]).
 
 ask_source(Intent, #{detach := true}) ->
-    iolist_to_binary(["(ask (intent \"", Intent, "\") (detach))"]);
+    iolist_to_binary(["(ask (intent ",
+                      soma_lisp:render(unicode:characters_to_binary(Intent)),
+                      ") (detach))"]);
 ask_source(Intent, _Args) ->
     ask_source(Intent).
 
@@ -63,7 +71,7 @@ trace(#{correlation_id := CorrId, socket := Path}) ->
     ok = gen_tcp:send(Sock, Source),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
-    io:format("~s~n", [Reply]),
+    io:format("~ts~n", [Reply]),
     0.
 
 %% Wrap the correlation id in a `(trace "...")' s-expr -- the literal bytes between
@@ -84,7 +92,7 @@ status(#{task_id := TaskId, socket := Path}) ->
     ok = gen_tcp:send(Sock, Source),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
-    io:format("~s~n", [Reply]),
+    io:format("~ts~n", [Reply]),
     0.
 
 %% Wrap the task id in a `(status "...")' s-expr -- the literal bytes between the
@@ -103,7 +111,7 @@ cancel(#{task_id := TaskId, socket := Path}) ->
     ok = gen_tcp:send(Sock, Source),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
-    io:format("~s~n", [Reply]),
+    io:format("~ts~n", [Reply]),
     0.
 
 %% Wrap the task id in a `(cancel "...")' s-expr -- the literal bytes between the
@@ -122,7 +130,7 @@ stop(#{socket := Path}) ->
     ok = gen_tcp:send(Sock, <<"(stop)">>),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
-    io:format("~s~n", [Reply]),
+    io:format("~ts~n", [Reply]),
     stop_exit_code(Reply).
 
 %% Exit 0 when the rendered reply carries `(status stopped)', non-zero otherwise.
@@ -145,7 +153,7 @@ tool_register(#{file := File, socket := Path}) ->
     ok = gen_tcp:send(Sock, Source),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
-    io:format("~s~n", [Reply]),
+    io:format("~ts~n", [Reply]),
     0.
 
 %% Wrap the manifest file's `(tool ...)' bytes in a `(tool-register ...)' s-expr.
@@ -162,7 +170,7 @@ tool_list(#{socket := Path}) ->
     ok = gen_tcp:send(Sock, <<"(tool-list)">>),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
-    io:format("~s~n", [Reply]),
+    io:format("~ts~n", [Reply]),
     0.
 
 %% Send `(tool-remove "<name>")' for a config-registered tool and print the
@@ -178,7 +186,7 @@ tool_remove(#{name := Name, socket := Path}) ->
     ok = gen_tcp:send(Sock, Source),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
-    io:format("~s~n", [Reply]),
+    io:format("~ts~n", [Reply]),
     0.
 
 %% Liveness probe. Resolve the socket the same way the other client funcs do,

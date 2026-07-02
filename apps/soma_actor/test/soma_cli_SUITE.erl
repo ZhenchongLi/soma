@@ -14,6 +14,7 @@
 -export([test_run_detach_sends_detach_marker/1]).
 -export([test_run_task_file_detach_returns_accepted/1]).
 -export([test_ask_detach_sends_detach_marker/1]).
+-export([test_ask_non_ascii_intent_round_trips_reply/1]).
 
 all() ->
     [test_run_echo_file_prints_result_exit_zero,
@@ -26,7 +27,8 @@ all() ->
      test_cancel_sends_cancel_request_prints_reply_exit_zero,
      test_run_detach_sends_detach_marker,
      test_run_task_file_detach_returns_accepted,
-     test_ask_detach_sends_detach_marker].
+     test_ask_detach_sends_detach_marker,
+     test_ask_non_ascii_intent_round_trips_reply].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -132,7 +134,15 @@ test_daemon_boots_listener_client_connects(Config) ->
     Path = socket_path(Config),
     %% The daemon must boot the runtime: stop it first so the boot is observable.
     application:stop(soma_runtime),
-    {ok, Resolved} = soma_cli:daemon(#{socket => Path}),
+    %% This test only asserts the listener boots -- it does not exercise LLM
+    %% config resolution, so it must not accidentally read a real developer
+    %% machine's `~/.soma/config' (a real `[llm]' section without
+    %% `SOMA_LLM_API_KEY' set fails boot with `{missing_env, _}', an unrelated
+    %% failure this test should never surface). Point `config_path' at a
+    %% scratch path that is guaranteed absent instead of relying on default
+    %% resolution.
+    {ok, Resolved} = soma_cli:daemon(#{socket => Path,
+                                       config_path => scratch_config_path(Config)}),
     %% The daemon resolved the override path and started the runtime.
     Path = Resolved,
     true = is_pid(whereis(soma_sup)),
@@ -167,6 +177,36 @@ test_ask_prints_reply_result_exit_zero(Config) ->
     match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
     match = re:run(Printed, "the answer", [{capture, none}]),
     %% A completed ask returns exit code 0.
+    0 = Exit.
+
+%% Dogfooding regression (docmod integration, 2026-07-02): a non-ASCII intent
+%% (e.g. Chinese, as `soma_cli_main:dispatch/1' hands `soma_cli:ask/1' after
+%% escript argv decoding + `soma_cli_intent:escape/1') must round-trip intact
+%% through the wire AND through the client's own printed reply. Two bugs this
+%% pins: (1) `ask_source/1,2' used to splice the intent codepoint list directly
+%% into an iolist, crashing `iolist_to_binary/1' on any codepoint above 255;
+%% (2) the reply was printed with `io:format("~s~n", ...)', which treats a
+%% UTF-8 reply binary as raw latin1 bytes and double-encodes it on a unicode
+%% device. The intent here is passed as a plain Erlang string (a list of
+%% Unicode codepoints), matching what escript argv actually looks like for
+%% non-ASCII input -- not a binary, which would not have reproduced either bug.
+test_ask_non_ascii_intent_round_trips_reply(Config) ->
+    Path = socket_path(Config),
+    ReplyText = <<"你好，很高兴认识你"/utf8>>,
+    ModelConfig = #{directive => proposal,
+                    output => #{kind => reply, text => ReplyText}},
+    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
+                                                 model_config => ModelConfig}),
+    Intent = unicode:characters_to_list(<<"用一句话回复:你好"/utf8>>),
+    EscapedIntent = soma_cli_intent:escape(Intent),
+    ct:capture_start(),
+    Exit = soma_cli:ask(#{intent => EscapedIntent, socket => Path}),
+    ct:capture_stop(),
+    Printed = unicode:characters_to_binary(ct:capture_get()),
+    %% The reply text must appear byte-for-byte, not double-encoded: the
+    %% captured output binary must literally contain the original UTF-8 bytes.
+    match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
+    true = binary:match(Printed, ReplyText) =/= nomatch,
     0 = Exit.
 
 %% Criterion 7 (CLI.3): `soma_cli:trace/1', pointed at a `soma_cli_server' on a temp
@@ -415,3 +455,8 @@ socket_path(_Config) ->
     Path = filename:join(Tmp, Name),
     _ = file:delete(Path),
     Path.
+
+%% A guaranteed-absent config path, isolating a test from whatever
+%% `~/.soma/config' a real developer machine may carry.
+scratch_config_path(Config) ->
+    filename:join(?config(priv_dir, Config), "no_such_soma_config").

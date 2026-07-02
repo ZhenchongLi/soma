@@ -33,7 +33,8 @@
          test_register_into_missing_tools_dir_creates_it/1,
          test_cli_client_tool_list_and_remove_reach_daemon/1,
          test_register_missing_cli_fields_replies_error_no_crash/1,
-         test_remove_undeletable_manifest_replies_error_keeps_tool/1]).
+         test_remove_undeletable_manifest_replies_error_keeps_tool/1,
+         test_restart_after_register_with_params_resolves_placeholder_tool/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -60,7 +61,8 @@ all() ->
      test_register_into_missing_tools_dir_creates_it,
      test_cli_client_tool_list_and_remove_reach_daemon,
      test_register_missing_cli_fields_replies_error_no_crash,
-     test_remove_undeletable_manifest_replies_error_keeps_tool].
+     test_remove_undeletable_manifest_replies_error_keeps_tool,
+     test_restart_after_register_with_params_resolves_placeholder_tool].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -236,6 +238,58 @@ test_restart_after_register_resolves_from_file(Config) ->
     {ok, Descriptor} = soma_tool_registry:resolve_descriptor(mgmt_reboot),
     #{adapter := cli, executable := Executable} = Descriptor,
     <<"/bin/echo">> = unicode:characters_to_binary(Executable),
+    ok.
+
+%% Dogfooding regression (docmod integration, 2026-07-02): `render_tool_manifest/1'
+%% dropped a manifest's `params' entirely, so ANY templated tool (argv carrying
+%% `{name}' placeholders, #218) silently failed to reload after a restart --
+%% `load_dir/1' saw an argv placeholder with no matching declared param and
+%% skipped the file with `{unknown_argv_placeholder, _}'. This is exactly the
+%% shape a real cli tool with multi-arg argv (e.g. docmod's `edit <doc>
+%% <changes>') needs. Register a templated tool, restart, and assert it still
+%% resolves with its params and argv intact -- not skipped.
+test_restart_after_register_with_params_resolves_placeholder_tool(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_placeholder_reboot\")\n"
+                 "  (effect state) (idempotent false) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"edit\" \"{doc}\" \"{changes}\")\n"
+                 "  (params ((\"doc\" string required \"Document path\")\n"
+                 "           (\"changes\" string required \"Changes path\"))))\n">>,
+    Reply = register_over_socket(SocketPath, Manifest),
+    match = re:run(Reply, "\\(status registered\\)", [{capture, none}]),
+    {ok, LiveDescriptor} =
+        soma_tool_registry:resolve_descriptor(mgmt_placeholder_reboot),
+    #{params := LiveParams} = LiveDescriptor,
+    2 = length(LiveParams),
+
+    _ = stop_over_socket(SocketPath),
+    ok = wait_socket_gone(SocketPath, 50),
+    _ = application:stop(soma_runtime),
+
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% Before the fix this resolved `{error, not_found}': `load_dir/1' skipped
+    %% the file because the persisted manifest had lost its `params', so the
+    %% argv placeholders no longer named a declared param.
+    {ok, RebootDescriptor} =
+        soma_tool_registry:resolve_descriptor(mgmt_placeholder_reboot),
+    #{argv := [<<"edit">>, <<"{doc}">>, <<"{changes}">>],
+      params := RebootParams} = RebootDescriptor,
+    2 = length(RebootParams),
+    ParamNames = lists:sort([Name || #{name := Name} <- RebootParams]),
+    [<<"changes">>, <<"doc">>] = ParamNames,
     ok.
 
 %% Criterion 5 (#220): a register request carrying an invalid manifest returns

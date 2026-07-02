@@ -16,6 +16,13 @@
 %% output of its own.
 -spec main([string()]) -> no_return().
 main(Argv) ->
+    %% `standard_io' defaults to `latin1' encoding for an escript. Every
+    %% `soma_cli' reply is a UTF-8 binary (Lisp strings round-trip non-ASCII
+    %% content, e.g. a Chinese `ask' intent/reply); printing it through a
+    %% `latin1' device double-encodes each byte as its own codepoint. Set the
+    %% device to `unicode' before any subcommand prints, so `~ts' output is
+    %% the exact original bytes.
+    ok = io:setopts(standard_io, [{encoding, unicode}]),
     halt(dispatch(Argv)).
 
 %% Entry point for the packaged `soma' wrapper. The wrapper passes the user's
