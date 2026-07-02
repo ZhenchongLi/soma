@@ -217,10 +217,12 @@ daemon_with_model_config(Args, ModelConfig) ->
     %% Config-registered cli tools load after the runtime (the registry must
     %% be up) and before the listener starts. The result is log lines + data;
     %% a broken tool file never stops boot.
-    _ = soma_tool_config:load_dir(resolve_tools_dir(Args)),
+    ToolsDir = resolve_tools_dir(Args),
+    _ = soma_tool_config:load_dir(ToolsDir),
     Path = resolve_socket(Args),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
-                                                 model_config => ModelConfig}),
+                                                 model_config => ModelConfig,
+                                                 tools_dir => ToolsDir}),
     {ok, Path}.
 
 %% Boot the daemon and block until the listener exits -- the blocking sibling of
@@ -252,14 +254,16 @@ daemon_foreground_with_model_config(Args, ModelConfig) ->
     {ok, _Started} = application:ensure_all_started(soma_runtime),
     %% Same boot step as `daemon/1': config tools load after the runtime and
     %% before the listener starts.
-    _ = soma_tool_config:load_dir(resolve_tools_dir(Args)),
+    ToolsDir = resolve_tools_dir(Args),
+    _ = soma_tool_config:load_dir(ToolsDir),
     case soma_actor_sup:start_link() of
         {ok, _Sup} -> ok;
         {error, {already_started, _Sup}} -> ok
     end,
     Path = resolve_socket(Args),
     case soma_cli_server:start_link(#{socket => Path,
-                                      model_config => ModelConfig}) of
+                                      model_config => ModelConfig,
+                                      tools_dir => ToolsDir}) of
         {ok, Server} ->
             Ref = monitor(process, Server),
             receive
