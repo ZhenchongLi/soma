@@ -178,14 +178,27 @@ tool_register_form(Bytes) ->
 handle_tool_register(ToolForm, ToolsDir) ->
     case soma_tool_config:compile_form(ToolForm) of
         {ok, #{name := Name} = Manifest} ->
-            case soma_tool_registry:register_tool(Manifest) of
-                ok ->
-                    ok = write_manifest_file(ToolsDir, Name, Manifest),
-                    ["(result (status registered) (tool-name ",
-                     soma_lisp:render(atom_to_binary(Name, utf8)), "))"];
-                {error, Reason} ->
-                    soma_lisp:render(#{status => error, error => Reason})
+            case lists:member(Name, soma_tool_registry:builtin_names()) of
+                true ->
+                    soma_lisp:render(#{status => error,
+                                       error => {reserved_name, Name}});
+                false ->
+                    register_normalized_tool(Name, Manifest, ToolsDir)
             end;
+        {error, Reason} ->
+            soma_lisp:render(#{status => error, error => Reason})
+    end.
+
+%% Register the compiled manifest in the running registry (which normalizes it)
+%% and persist it, once the reserved-name gate has passed. A valid register
+%% makes the named tool resolve live on this daemon before any restart; a
+%% normalize error renders an `error' result carrying the reason verbatim.
+register_normalized_tool(Name, Manifest, ToolsDir) ->
+    case soma_tool_registry:register_tool(Manifest) of
+        ok ->
+            ok = write_manifest_file(ToolsDir, Name, Manifest),
+            ["(result (status registered) (tool-name ",
+             soma_lisp:render(atom_to_binary(Name, utf8)), "))"];
         {error, Reason} ->
             soma_lisp:render(#{status => error, error => Reason})
     end.
