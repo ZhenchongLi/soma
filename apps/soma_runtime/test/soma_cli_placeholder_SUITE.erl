@@ -7,13 +7,15 @@
 -export([test_cli_argv_placeholder_from_step_replaces_doc/1,
          test_cli_argv_placeholder_sends_no_trailing_input/1,
          test_cli_argv_placeholder_metacharacters_are_one_arg/1,
-         test_cli_argv_placeholder_renders_string_integer_boolean/1]).
+         test_cli_argv_placeholder_renders_string_integer_boolean/1,
+         test_cli_argv_placeholder_missing_key_fails_before_tool_started/1]).
 
 all() ->
     [test_cli_argv_placeholder_from_step_replaces_doc,
      test_cli_argv_placeholder_sends_no_trailing_input,
      test_cli_argv_placeholder_metacharacters_are_one_arg,
-     test_cli_argv_placeholder_renders_string_integer_boolean].
+     test_cli_argv_placeholder_renders_string_integer_boolean,
+     test_cli_argv_placeholder_missing_key_fails_before_tool_started].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -179,6 +181,45 @@ test_cli_argv_placeholder_renders_string_integer_boolean(Config) ->
                  "arg5=--verbose\n"
                  "arg6=true\n">>,
     ?assertEqual(Expected, step_output_for(Events, s1)),
+    ok.
+
+%% Criterion 9: a cli argv placeholder names a key the resolved step input does
+%% not carry. Nothing in the descriptor or the step's `args' can satisfy
+%% `"{doc}"', so the run must fail before any worker is spawned -- the same
+%% "fail before a tool-call boundary" shape as an unregistered tool -- rather
+%% than launching the external helper with the literal placeholder text still
+%% in argv. Driving this through soma_agent_session:start_run/2 proves the
+%% failure lands on the run's terminal `run.failed' event, names the missing
+%% key, and leaves no `tool.started' event in the run's trail.
+test_cli_argv_placeholder_missing_key_fails_before_tool_started(Config) ->
+    StorePid = event_store_pid(),
+    Helper = write_print_argv_helper(Config),
+    Manifest = #{name => cli_missing_placeholder,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => ["--doc", "{doc}"],
+                 params => [#{name => <<"doc">>,
+                              type => string,
+                              required => true}]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1,
+               tool => cli_missing_placeholder,
+               args => #{}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ?assertEqual(ok,
+                 wait_for_event(StorePid, RunId, <<"run.failed">>, 100)),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Types = [maps:get(event_type, E) || E <- Events],
+    ?assertNot(lists:member(<<"run.completed">>, Types)),
+    ?assertNot(lists:member(<<"tool.started">>, Types)),
+    [RunFailed] = [E || E <- Events,
+                        maps:get(event_type, E) =:= <<"run.failed">>],
+    Reason = maps:get(reason, maps:get(payload, RunFailed)),
+    ?assertEqual({missing_cli_placeholder, <<"doc">>}, Reason),
     ok.
 
 write_print_second_arg_helper() ->
