@@ -15,7 +15,8 @@
          test_register_invalid_manifest_returns_normalize_error/1,
          test_failed_register_leaves_tools_dir_unchanged/1,
          test_failed_register_leaves_registry_clean/1,
-         test_register_builtin_name_reserved/1]).
+         test_register_builtin_name_reserved/1,
+         test_register_existing_config_tool_already_registered/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -25,7 +26,8 @@ all() ->
      test_register_invalid_manifest_returns_normalize_error,
      test_failed_register_leaves_tools_dir_unchanged,
      test_failed_register_leaves_registry_clean,
-     test_register_builtin_name_reserved].
+     test_register_builtin_name_reserved,
+     test_register_existing_config_tool_already_registered].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -342,6 +344,43 @@ test_register_builtin_name_reserved(Config) ->
 
     %% The daemon rejects the register with a failed result carrying the
     %% reserved-name reason verbatim.
+    Reply = register_over_socket(SocketPath, Manifest),
+    match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
+    {_, _} = binary:match(Reply, Expected),
+    ok.
+
+%% Criterion 9 (#220): a register request for a name that already resolves as a
+%% config tool is rejected with `{already_registered, Name}' -- the live-duplicate
+%% gate, checked against the running registry, distinct from the boot loader's
+%% per-load `{duplicate_name, Name}'. The daemon boots with an empty tools dir;
+%% the first register for `mgmt_dup' succeeds and the name resolves live; a
+%% second register for the same name is a failed result whose reason is the
+%% exact rendering of `{already_registered, mgmt_dup}'.
+test_register_existing_config_tool_already_registered(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_dup\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+
+    %% The first register succeeds: the name now resolves live as a config tool.
+    FirstReply = register_over_socket(SocketPath, Manifest),
+    match = re:run(FirstReply, "\\(status registered\\)", [{capture, none}]),
+    {ok, #{adapter := cli}} = soma_tool_registry:resolve_descriptor(mgmt_dup),
+
+    %% A second register for the same name is rejected with the live-duplicate
+    %% reason carried verbatim on the wire.
+    Expected = iolist_to_binary(soma_lisp:render({already_registered, mgmt_dup})),
     Reply = register_over_socket(SocketPath, Manifest),
     match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
     {_, _} = binary:match(Reply, Expected),
