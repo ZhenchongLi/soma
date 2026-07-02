@@ -250,7 +250,9 @@ Each slice is independently green and contract-proven, in the usual order:
 1. **T.1 — manifest v2 + catalog** [done, #203]: optional `description` /
    `params`, `catalog/0`. Additive; existing manifests unchanged. Proofs in
    `docs/contracts/tool-catalog-test-contract.md`. (Planning-prompt
-   consumption of the catalog is still open — a follow-up slice.)
+   consumption of the catalog: done, #212 — the planning system prompt
+   renders catalog entries as `(tool ...)` blocks, reading `catalog/0`
+   fresh on every build; proofs in the same contract file.)
 2. **T.2 — config-registered cli tools** [done, #205 + #208]:
    `~/.soma/tools/*.lisp` at daemon boot, one validation path,
    skip-with-diagnostic, built-in names reserved (#208 — a config file must

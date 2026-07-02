@@ -367,9 +367,9 @@ test_planning_prompt_carries_no_runtime_descriptor_fields() ->
     %% Runtime descriptor fields leave no trace: not the cli tool's executable
     %% path or argv value, not a built-in's module name, not the effect /
     %% idempotent / timeout_ms field text.
-    ?assertNotEqual(nomatch,
-                    binary:match(Content,
-                                 <<"/opt/leak-probe/bin/upperize_secret">>)),
+    ?assertEqual(nomatch,
+                 binary:match(Content,
+                              <<"/opt/leak-probe/bin/upperize_secret">>)),
     ?assertEqual(nomatch, binary:match(Content, <<"--leak-probe-flag">>)),
     ?assertEqual(nomatch, binary:match(Content, <<"soma_tool_echo">>)),
     ?assertEqual(nomatch, binary:match(Content, <<"effect">>)),
