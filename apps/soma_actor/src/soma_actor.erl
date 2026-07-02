@@ -20,6 +20,7 @@
 
 -record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
                runs = #{}, waiters = #{}, monitors = #{}, llm_calls = #{},
+               waiter_monitors = #{}, waiter_mrefs = #{},
                budget = #{}, llm_call_counts = #{}, repair = auto,
                max_repairs = 1}).
 
@@ -164,8 +165,7 @@ idle({call, From}, {ask, Envelope}, Data) ->
                     %% A run was started: defer the reply, parking From against
                     %% the task to answer when the run completes. The caller
                     %% stays blocked inside its gen_statem:call.
-                    Waiters = maps:put(TaskId, From, Data2#data.waiters),
-                    {keep_state, Data2#data{waiters = Waiters}};
+                    {keep_state, park_waiter(TaskId, From, Data2)};
                 _ ->
                     case has_llm(Envelope) of
                         true ->
@@ -176,11 +176,9 @@ idle({call, From}, {ask, Envelope}, Data) ->
                             %% the parked waiter -- so a budget-failed `llm' task
                             %% answers the caller with `{error, Reason}' rather
                             %% than blocking until TimeoutMs.
-                            Waiters = maps:put(TaskId, From,
-                                               Data2#data.waiters),
                             Data3 = maybe_start_llm_call(
                                       Envelope, TaskId, CorrelationId,
-                                      Data2#data{waiters = Waiters}),
+                                      park_waiter(TaskId, From, Data2)),
                             {keep_state, Data3};
                         false ->
                             %% No-steps, no-llm envelope: valid, but starts no
@@ -514,6 +512,15 @@ idle(info, {timeout, _TimerRef, {llm_timeout, LlmCallId}}, Data) ->
                    llm_call_id => LlmCallId}),
             reply_waiter(TaskId, {error, timeout}, Data1)
     end;
+%% A parked ask/3 caller died while the task was still in flight. Cancel the
+%% target's owned work from inside the target actor; the runtime only observes
+%% the ask_actor tool worker's death.
+idle(info, {'DOWN', MRef, process, _AskerPid, _Reason}, Data)
+  when is_map_key(MRef, Data#data.waiter_monitors) ->
+    TaskId = maps:get(MRef, Data#data.waiter_monitors),
+    Data0 = clear_waiter_monitor(TaskId, Data),
+    Data1 = cancel_waiter_task(TaskId, Data0),
+    {keep_state, Data1};
 %% The run pid died without sending one of the four terminal messages -- a crash
 %% inside soma_run itself, not a tool crash the run catches and reports. The
 %% monitor delivers `'DOWN'' with a non-`normal' reason. Record the task as a
@@ -1032,10 +1039,10 @@ fail_task(TaskId, Reason, Data) ->
     %% instead of blocking until its timeout.
     case maps:get(TaskId, Data1#data.waiters, undefined) of
         undefined ->
-            Data1;
+            clear_waiter_monitor(TaskId, Data1);
         From ->
             gen_statem:reply(From, {error, Reason}),
-            Data1#data{waiters = maps:remove(TaskId, Data1#data.waiters)}
+            clear_waiter_monitor(TaskId, Data1)
     end.
 
 start_llm_call(Llm, TaskId, CorrelationId, Data) ->
@@ -1211,17 +1218,70 @@ clear_llm_call(TaskId, Data) ->
             Data0#data{llm_calls = LlmCalls}
     end.
 
+park_waiter(TaskId, From = {CallerPid, _Tag}, Data) when is_pid(CallerPid) ->
+    MRef = erlang:monitor(process, CallerPid),
+    Waiters = maps:put(TaskId, From, Data#data.waiters),
+    WaiterMonitors = maps:put(MRef, TaskId, Data#data.waiter_monitors),
+    WaiterMRefs = maps:put(TaskId, MRef, Data#data.waiter_mrefs),
+    Data#data{waiters = Waiters,
+              waiter_monitors = WaiterMonitors,
+              waiter_mrefs = WaiterMRefs}.
+
+clear_waiter_monitor(TaskId, Data) ->
+    Waiters = maps:remove(TaskId, Data#data.waiters),
+    case maps:get(TaskId, Data#data.waiter_mrefs, undefined) of
+        undefined ->
+            Data#data{waiters = Waiters};
+        MRef ->
+            erlang:demonitor(MRef, [flush]),
+            WaiterMRefs = maps:remove(TaskId, Data#data.waiter_mrefs),
+            WaiterMonitors = maps:remove(MRef, Data#data.waiter_monitors),
+            Data#data{waiters = Waiters,
+                      waiter_mrefs = WaiterMRefs,
+                      waiter_monitors = WaiterMonitors}
+    end.
+
+cancel_waiter_task(TaskId, Data) ->
+    case maps:get(TaskId, Data#data.tasks, undefined) of
+        undefined ->
+            Data;
+        Task ->
+            Status = maps:get(status, Task, undefined),
+            RunPid = maps:get(run_pid, Task, undefined),
+            WorkerPid = maps:get(llm_call_pid, Task, undefined),
+            case {Status, RunPid, WorkerPid} of
+                {running, RunPid1, _} when is_pid(RunPid1) ->
+                    RunPid1 ! cancel,
+                    Data;
+                {running, _, WorkerPid1} when is_pid(WorkerPid1) ->
+                    exit(WorkerPid1, kill),
+                    LlmCallId = maps:get(llm_call_id, Task),
+                    Data0 = clear_llm_timer(TaskId,
+                                            clear_llm_monitor(TaskId, Data)),
+                    Task0 = maps:get(TaskId, Data0#data.tasks),
+                    CorrelationId = maps:get(correlation_id, Task0),
+                    Task1 = Task0#{status => cancelled},
+                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+                    Data1 = Data0#data{tasks = Tasks},
+                    emit(Data1, <<"llm.cancelled">>,
+                         #{task_id => TaskId, correlation_id => CorrelationId,
+                           llm_call_id => LlmCallId}),
+                    Data1;
+                _ ->
+                    Data
+            end
+    end.
+
 %% If an ask/3 caller is parked on this task, reply with the given term to it and
 %% drop the waiter. The success path passes {ok, Outputs}, the failure path
 %% {error, Reason}. A send-started task has no waiter, so this is a no-op for send.
 reply_waiter(TaskId, Reply, Data) ->
     case maps:get(TaskId, Data#data.waiters, undefined) of
         undefined ->
-            {keep_state, Data};
+            {keep_state, clear_waiter_monitor(TaskId, Data)};
         From ->
-            Waiters = maps:remove(TaskId, Data#data.waiters),
-            {keep_state, Data#data{waiters = Waiters},
-             [{reply, From, Reply}]}
+            Data1 = clear_waiter_monitor(TaskId, Data),
+            {keep_state, Data1, [{reply, From, Reply}]}
     end.
 
 mint_run_id() ->

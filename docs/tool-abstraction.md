@@ -261,6 +261,7 @@ Each slice is independently green and contract-proven, in the usual order:
    docmod tools without hardcoding them into the release.
 3. **T.3 — `soma_memory`**: the store server + the four tools (§6).
 4. **T.4 — `ask_actor`**: sub-agent as tool, cancel propagation proven.
+   Proofs in `docs/contracts/tool-ask-actor-test-contract.md`.
 5. **T.5 — `soma_mcp`**: post-validation, per the roadmap; by then it is
    "one more capability app", not a runtime change.
 
