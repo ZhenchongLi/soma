@@ -67,7 +67,13 @@ init_per_testcase(_Case, Config) ->
     ok = filelib:ensure_dir(filename:join(Base, "x")),
     SocketPath = filename:join(Base, "soma.sock"),
     _ = file:delete(SocketPath),
-    [{base_dir, Base}, {socket_path, SocketPath} | Config].
+    %% A per-case stub executable, so cli-tool cases never depend on a shared
+    %% location or a system binary.
+    Stub = filename:join(Base, "stub_tool"),
+    ok = file:write_file(Stub, <<"#!/bin/sh\nprintf 'stub-ok'\n">>),
+    ok = file:change_mode(Stub, 8#755),
+    [{base_dir, Base}, {socket_path, SocketPath}, {stub_executable, Stub}
+     | Config].
 
 end_per_testcase(_Case, Config) ->
     _ = application:stop(soma_runtime),
