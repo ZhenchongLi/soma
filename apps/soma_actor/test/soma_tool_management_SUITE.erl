@@ -18,7 +18,8 @@
          test_register_builtin_name_reserved/1,
          test_register_existing_config_tool_already_registered/1,
          test_list_returns_summary_fields/1,
-         test_list_omits_internal_fields/1]).
+         test_list_omits_internal_fields/1,
+         test_remove_config_tool_unresolved/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -31,7 +32,8 @@ all() ->
      test_register_builtin_name_reserved,
      test_register_existing_config_tool_already_registered,
      test_list_returns_summary_fields,
-     test_list_omits_internal_fields].
+     test_list_omits_internal_fields,
+     test_remove_config_tool_unresolved].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -533,6 +535,42 @@ test_list_omits_internal_fields(Config) ->
             Fields)
       end,
       Entries),
+    ok.
+
+%% Criterion 12 (#220): a `(tool-remove "<name>")' request makes a
+%% config-registered tool unresolved in the running daemon. The daemon boots
+%% with an empty tools dir; a config tool `mgmt_gone' is registered over the
+%% socket and resolves live; the test then sends `(tool-remove "mgmt_gone")'
+%% and asserts the daemon acknowledges the removal and a real
+%% `soma_tool_registry:resolve_descriptor/1' on the same daemon returns
+%% `{error, not_found}' -- the live registration is gone without any restart.
+test_remove_config_tool_unresolved(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_gone\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    RegReply = register_over_socket(SocketPath, Manifest),
+    match = re:run(RegReply, "\\(status registered\\)", [{capture, none}]),
+    %% The config tool resolves live before the remove.
+    {ok, #{adapter := cli}} = soma_tool_registry:resolve_descriptor(mgmt_gone),
+
+    %% The remove verb succeeds on the wire...
+    Reply = request_over_socket(SocketPath, <<"(tool-remove \"mgmt_gone\")">>),
+    match = re:run(Reply, "\\(status removed\\)", [{capture, none}]),
+
+    %% ...and the name no longer resolves in the same running daemon.
+    {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_gone),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
