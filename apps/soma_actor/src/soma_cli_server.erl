@@ -316,6 +316,7 @@ handle_tool_remove(NameBin, ToolsDir) ->
         {ok, Name} ->
             ok = soma_tool_registry:unregister_tool(Name),
             _ = delete_manifest_file(ToolsDir, Name),
+            ok = append_tool_removed_event(Name),
             ["(result (status removed) (tool-name ",
              soma_lisp:render(NameBin), "))"];
         error ->
@@ -335,6 +336,17 @@ known_tool_name(NameBin) ->
         [Name | _] -> Name;
         [] -> NameBin
     end.
+
+%% Append the one bounded `tool.removed' event for a successful remove -- the
+%% mirror of `append_tool_registered_event/2'. `soma_event_store:append/2'
+%% fills the run/session/step ids with `undefined' (tool management belongs to
+%% no run); the payload carries the removed tool's name alone -- never the
+%% executable path, argv values, pids, ports, or refs.
+append_tool_removed_event(Name) ->
+    soma_event_store:append(
+      event_store_pid(),
+      #{event_type => <<"tool.removed">>,
+        payload => #{tool_name => Name}}).
 
 %% Delete the persisted manifest at `<ToolsDir>/<name>.lisp' -- the mirror of
 %% `write_manifest_file/3', built from the configured dir plus the tool name as
