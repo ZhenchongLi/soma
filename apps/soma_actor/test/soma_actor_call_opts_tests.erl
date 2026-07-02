@@ -385,3 +385,22 @@ planning_prompt_carries_no_runtime_descriptor_fields_test_() ->
      fun(_Pid) ->
          ?_test(test_planning_prompt_carries_no_runtime_descriptor_fields())
      end}.
+
+%% Criterion 6 (#219): a real-provider model_config carrying a binary
+%% `system_prompt' places a first `system' message before the user prompt --
+%% so a caller can steer the actor's non-planning conversation with a custom
+%% system prompt, not just the planning-mode instruction.
+test_real_provider_system_prompt_precedes_user_message() ->
+    Prompt = <<"hello">>,
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    system_prompt => <<"custom">>},
+    Envelope = #{payload => #{prompt => Prompt}},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    ?assertEqual([#{role => <<"system">>, content => <<"custom">>},
+                  #{role => <<"user">>, content => Prompt}],
+                 maps:get(messages, Opts)).
+
+real_provider_system_prompt_precedes_user_message_test() ->
+    test_real_provider_system_prompt_precedes_user_message().
