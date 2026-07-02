@@ -8,14 +8,16 @@
          test_cli_argv_placeholder_sends_no_trailing_input/1,
          test_cli_argv_placeholder_metacharacters_are_one_arg/1,
          test_cli_argv_placeholder_renders_string_integer_boolean/1,
-         test_cli_argv_placeholder_missing_key_fails_before_tool_started/1]).
+         test_cli_argv_placeholder_missing_key_fails_before_tool_started/1,
+         test_session_alive_runs_new_run_after_cli_placeholder_missing_key/1]).
 
 all() ->
     [test_cli_argv_placeholder_from_step_replaces_doc,
      test_cli_argv_placeholder_sends_no_trailing_input,
      test_cli_argv_placeholder_metacharacters_are_one_arg,
      test_cli_argv_placeholder_renders_string_integer_boolean,
-     test_cli_argv_placeholder_missing_key_fails_before_tool_started].
+     test_cli_argv_placeholder_missing_key_fails_before_tool_started,
+     test_session_alive_runs_new_run_after_cli_placeholder_missing_key].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -220,6 +222,47 @@ test_cli_argv_placeholder_missing_key_fails_before_tool_started(Config) ->
                         maps:get(event_type, E) =:= <<"run.failed">>],
     Reason = maps:get(reason, maps:get(payload, RunFailed)),
     ?assertEqual({missing_cli_placeholder, <<"doc">>}, Reason),
+    ok.
+
+%% Criterion 10: a missing-placeholder-key failure (criterion 9) fails the run
+%% before any worker starts, but must not take the session down with it -- the
+%% same "run failure is data for the session, not a crash" guarantee every
+%% other run-failure mode in this codebase already proves (compare
+%% `soma_run_failure_SUITE:test_session_runs_new_run_after_failed/1' and
+%% `soma_cli_failure_SUITE:test_session_alive_runs_new_run_after_cli_failure/1').
+%% Drive the first run to `run.failed' exactly as
+%% `test_cli_argv_placeholder_missing_key_fails_before_tool_started/1' does,
+%% assert the session pid is still alive, then start a second, ordinary `echo'
+%% run on the SAME session pid and assert it reaches `run.completed'.
+test_session_alive_runs_new_run_after_cli_placeholder_missing_key(Config) ->
+    StorePid = event_store_pid(),
+    Helper = write_print_argv_helper(Config),
+    Manifest = #{name => cli_missing_placeholder_alive,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => ["--doc", "{doc}"],
+                 params => [#{name => <<"doc">>,
+                              type => string,
+                              required => true}]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps1 = [#{id => s1,
+                tool => cli_missing_placeholder_alive,
+                args => #{}}],
+    {ok, RunId1} = soma_agent_session:start_run(SessionPid, Steps1),
+    ok = wait_for_event(StorePid, RunId1, <<"run.failed">>, 100),
+    %% the session survives the failed run.
+    true = is_process_alive(SessionPid),
+    %% a fresh, ordinary run on the same session runs to completion.
+    Steps2 = [#{id => s1, tool => echo, args => #{value => <<"still-alive">>}}],
+    {ok, RunId2} = soma_agent_session:start_run(SessionPid, Steps2),
+    ok = wait_for_event(StorePid, RunId2, <<"run.failed">>, 100),
+    Events = soma_event_store:by_run(StorePid, RunId2),
+    Types = [maps:get(event_type, E) || E <- Events],
+    true = lists:member(<<"run.completed">>, Types),
     ok.
 
 write_print_second_arg_helper() ->
