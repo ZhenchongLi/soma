@@ -229,3 +229,49 @@ planning_prompt_renders_allowed_catalog_entries_test_() ->
      fun(_Pid) ->
          ?_test(test_planning_prompt_renders_allowed_catalog_entries())
      end}.
+
+%% Criterion 2 (#212): with an `all' policy (`allowed_tools => all', the
+%% tool_policy default `planning_tools/2' threads through), the planning system
+%% prompt renders every catalog entry -- each seeded built-in's registry-spelled
+%% name and description appear -- and keeps the `(run-steps ...)' answer
+%% directive. `all' names no concrete tools, so the whole catalog *is* the
+%% offer; today's prompt drops the catalog entirely on that branch.
+test_planning_prompt_all_policy_renders_full_catalog() ->
+    Catalog = soma_tool_registry:catalog(),
+    CatalogNames = lists:sort([Name || #{name := Name} <- Catalog]),
+    %% The registry seeds the five described built-ins -- the loop below is
+    %% not vacuous.
+    ?assertEqual([echo, fail, file_read, file_write, sleep], CatalogNames),
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    plan => true,
+                    allowed_tools => all},
+    Envelope = #{payload => #{prompt => <<"do something useful">>}},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    [System | _] = maps:get(messages, Opts),
+    ?assertEqual(<<"system">>, maps:get(role, System)),
+    Content = maps:get(content, System),
+    ?assert(is_binary(Content)),
+    %% The (run-steps ...) answer directive is kept.
+    ?assertNotEqual(nomatch, binary:match(Content, <<"(run-steps">>)),
+    %% Every catalog entry's name (registry spelling, underscores) and
+    %% description appear in the prompt.
+    lists:foreach(
+      fun(#{name := Name, description := Description}) ->
+              ?assertNotEqual(nomatch,
+                              binary:match(Content,
+                                           atom_to_binary(Name, utf8))),
+              ?assertNotEqual(nomatch, binary:match(Content, Description))
+      end,
+      Catalog).
+
+planning_prompt_all_policy_renders_full_catalog_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_planning_prompt_all_policy_renders_full_catalog())
+     end}.
