@@ -21,12 +21,12 @@ manifest() ->
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
     {ok, soma_tool:output()} | {error, soma_tool:error()}.
-invoke(Input, _Ctx) ->
+invoke(Input, Ctx) ->
     case normalize_input(Input) of
         {ok, StableName, Envelope} ->
             case soma_actor_registry:lookup(StableName) of
                 {ok, ActorPid} ->
-                    ask_actor(ActorPid, Envelope);
+                    ask_actor(ActorPid, with_parent_correlation(Envelope, Ctx));
                 {error, Reason} ->
                     {error, {ask_actor_lookup_failed, Reason}}
             end;
@@ -48,6 +48,12 @@ normalize_input(Input) when is_map(Input) ->
     end;
 normalize_input(_Input) ->
     {error, {invalid_ask_actor_input, non_map}}.
+
+with_parent_correlation(Envelope, Ctx) ->
+    case maps:get(correlation_id, Ctx, undefined) of
+        undefined -> Envelope;
+        CorrelationId -> Envelope#{correlation_id => CorrelationId}
+    end.
 
 ask_actor(ActorPid, Envelope) ->
     case soma_actor:ask(ActorPid, Envelope, ask_timeout_ms()) of
