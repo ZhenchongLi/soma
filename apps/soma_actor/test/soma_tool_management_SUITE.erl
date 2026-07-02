@@ -19,7 +19,8 @@
          test_register_existing_config_tool_already_registered/1,
          test_list_returns_summary_fields/1,
          test_list_omits_internal_fields/1,
-         test_remove_config_tool_unresolved/1]).
+         test_remove_config_tool_unresolved/1,
+         test_remove_deletes_only_owned_manifest_file/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -33,7 +34,8 @@ all() ->
      test_register_existing_config_tool_already_registered,
      test_list_returns_summary_fields,
      test_list_omits_internal_fields,
-     test_remove_config_tool_unresolved].
+     test_remove_config_tool_unresolved,
+     test_remove_deletes_only_owned_manifest_file].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -571,6 +573,55 @@ test_remove_config_tool_unresolved(Config) ->
 
     %% ...and the name no longer resolves in the same running daemon.
     {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_gone),
+    ok.
+
+%% Criterion 13 (#220): a successful remove deletes only the manifest file
+%% owned by the configured tools directory -- `<tools_dir>/<name>.lisp', a path
+%% built from the configured dir plus the tool name as a basename. The daemon
+%% boots with an empty tools dir; a config tool `mgmt_delfile' is registered
+%% over the socket (writing `mgmt_delfile.lisp'), and an unrelated neighbour
+%% file is placed alongside it in the tools dir. After a successful
+%% `(tool-remove "mgmt_delfile")' the tool's own manifest file is gone while
+%% the neighbour file is still present byte-for-byte -- the delete touched
+%% exactly the one owned file.
+test_remove_deletes_only_owned_manifest_file(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_delfile\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    RegReply = register_over_socket(SocketPath, Manifest),
+    match = re:run(RegReply, "\\(status registered\\)", [{capture, none}]),
+    %% The register persisted the tool's own manifest file.
+    ManifestFile = filename:join(ToolsDir, "mgmt_delfile.lisp"),
+    true = filelib:is_regular(ManifestFile),
+
+    %% An unrelated neighbour file sits in the same tools dir (written after
+    %% boot, so it is a plain file -- never a registered tool).
+    NeighbourFile = filename:join(ToolsDir, "neighbour.lisp"),
+    NeighbourBytes = <<"; unrelated neighbour -- must survive the remove\n">>,
+    ok = file:write_file(NeighbourFile, NeighbourBytes),
+
+    %% The remove succeeds on the wire...
+    Reply = request_over_socket(SocketPath, <<"(tool-remove \"mgmt_delfile\")">>),
+    match = re:run(Reply, "\\(status removed\\)", [{capture, none}]),
+
+    %% ...the tool's own `<name>.lisp' is gone from the tools dir...
+    false = filelib:is_regular(ManifestFile),
+    {error, enoent} = file:read_file(ManifestFile),
+
+    %% ...and the unrelated neighbour file survives byte-for-byte.
+    {ok, NeighbourBytes} = file:read_file(NeighbourFile),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
