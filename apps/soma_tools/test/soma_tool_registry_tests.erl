@@ -40,6 +40,47 @@ test_registry_lists_names() ->
 registry_lists_names_test() ->
     test_registry_lists_names().
 
+%% The list projection maps every live descriptor to exactly its summary
+%% fields — #{name, effect, idempotent, adapter} — plus `description' only
+%% when the descriptor carries one, sorted by name. Unlike catalog/1, a
+%% descriptor without a description still appears (the list is the operator
+%% view of every live tool, not the model-facing half).
+test_list_projection_includes_summary_fields() ->
+    WithDescription = #{
+        name => list_described_tool,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 5000,
+        adapter => cli,
+        executable => "/bin/echo",
+        argv => ["hello"],
+        description => <<"Uppercases text.">>
+    },
+    Bare = #{
+        name => list_bare_tool,
+        effect => state,
+        idempotent => false,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo
+    },
+    Registry0 = soma_tool_registry:register(#{}, list_described_tool,
+                                            WithDescription),
+    Registry1 = soma_tool_registry:register(Registry0, list_bare_tool, Bare),
+    ?assertEqual([#{name => list_bare_tool,
+                    effect => state,
+                    idempotent => false,
+                    adapter => erlang_module},
+                  #{name => list_described_tool,
+                    effect => reader,
+                    idempotent => true,
+                    adapter => cli,
+                    description => <<"Uppercases text.">>}],
+                 soma_tool_registry:list_tools(Registry1)).
+
+list_projection_includes_summary_fields_test() ->
+    test_list_projection_includes_summary_fields().
+
 %% A manifest missing a required field is rejected by register_tool/1 on the
 %% running registry, and the tool name it carried does not resolve afterwards:
 %% the registry was left unchanged, so resolve_descriptor/1 returns
