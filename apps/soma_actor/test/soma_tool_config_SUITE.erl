@@ -81,7 +81,7 @@ test_config_tool_description_in_catalog(Config) ->
         soma_tool_config:load_dir(ToolsDir),
     [Entry] = [E || #{name := cfg_described} = E
                         <- soma_tool_registry:catalog()],
-    #{description := <<"NOT the declared description">>} = Entry,
+    #{description := <<"Uppercase the final argv argument.">>} = Entry,
     ok.
 
 %% A fresh temp tools directory under the case's priv_dir.
