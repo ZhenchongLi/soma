@@ -158,7 +158,7 @@ handle_lisp_request(Bytes, Socket, ModelConfig, ToolsDir, Listener) ->
         list ->
             handle_tool_list();
         {remove, NameBin} ->
-            handle_tool_remove(NameBin);
+            handle_tool_remove(NameBin, ToolsDir);
         not_tool_management ->
             handle_lfe_request(Bytes, Socket, ModelConfig, Listener)
     end.
@@ -288,21 +288,33 @@ render_tool_summary(#{name := Name, effect := Effect,
     ["(tool ", lists:join(" ", Fields), ")"].
 
 %% Remove a config tool from the running registry so its name no longer
-%% resolves on this daemon. The wire carries the name as a binary; it is mapped
-%% to an *existing* registry atom (never minted), and only a live non-built-in
-%% tool -- the definition of a config tool -- is removable. Any other name
-%% (built-in, unknown, or traversal-shaped) is rejected with
-%% `{not_config_tool, Name}' before anything is touched.
-handle_tool_remove(NameBin) ->
+%% resolves on this daemon, and delete its persisted manifest file. The wire
+%% carries the name as a binary; it is mapped to an *existing* registry atom
+%% (never minted), and only a live non-built-in tool -- the definition of a
+%% config tool -- is removable. Any other name (built-in, unknown, or
+%% traversal-shaped) is rejected with `{not_config_tool, Name}' before
+%% anything is touched. The deleted path is always the configured tools dir
+%% plus the tool name as a basename -- never a caller-supplied path -- so a
+%% remove can only ever delete inside the tools directory.
+handle_tool_remove(NameBin, ToolsDir) ->
     case config_tool_name(NameBin) of
         {ok, Name} ->
             ok = soma_tool_registry:unregister_tool(Name),
+            _ = delete_manifest_file(ToolsDir, Name),
             ["(result (status removed) (tool-name ",
              soma_lisp:render(NameBin), "))"];
         error ->
             soma_lisp:render(#{status => error,
                                error => {not_config_tool, NameBin}})
     end.
+
+%% Delete the persisted manifest at `<ToolsDir>/<name>.lisp' -- the mirror of
+%% `write_manifest_file/3', built from the configured dir plus the tool name as
+%% a basename. A missing file is harmless (`file:delete' returns
+%% `{error, enoent}'): every config tool has a backing file today, but the
+%% remove must not fail if one does not.
+delete_manifest_file(ToolsDir, Name) ->
+    file:delete(filename:join(ToolsDir, atom_to_list(Name) ++ ".lisp")).
 
 %% Map a wire name (binary) to the atom of a live config tool: a name that
 %% resolves in the running registry and is not a built-in. Matching against the
