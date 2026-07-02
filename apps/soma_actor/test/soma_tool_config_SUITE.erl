@@ -165,7 +165,7 @@ test_load_dir_skips_cli_tool_with_unknown_argv_placeholder(Config) ->
     #{registered := [], skipped := [SkipEntry]} =
         soma_tool_config:load_dir(ToolsDir),
     #{file := "cfg_bad_doc_edit.lisp",
-      reason := {unknown_argv_placeholder, <<"wrong">>}} = SkipEntry,
+      reason := {unknown_argv_placeholder, <<"changes">>}} = SkipEntry,
     {error, not_found} =
         soma_tool_registry:resolve_descriptor(cfg_bad_doc_edit),
     ok.
