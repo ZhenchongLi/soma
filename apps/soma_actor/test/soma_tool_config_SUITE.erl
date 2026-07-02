@@ -228,7 +228,7 @@ test_broken_file_skipped_daemon_serves(Config) ->
             soma_tool_registry:resolve_descriptor(cfg_bad_manifest),
         %% Each skipped file produced a named, bounded boot diagnostic.
         {parse_error, [_ | _]} = receive_skip("cfg_unparseable.lisp"),
-        {invalid_effect, plantain} = receive_skip("cfg_bad_manifest.lisp"),
+        {invalid_effect, banana} = receive_skip("cfg_bad_manifest.lisp"),
         %% And the daemon serves requests over the socket.
         0 = soma_cli:ping(#{socket => SocketPath})
     after
