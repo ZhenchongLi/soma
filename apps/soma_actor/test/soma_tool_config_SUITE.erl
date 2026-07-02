@@ -106,7 +106,7 @@ test_invalid_field_surfaces_normalize_error(Config) ->
     #{registered := [], skipped := [SkipEntry]} =
         soma_tool_config:load_dir(ToolsDir),
     #{file := "cfg_bad_effect.lisp",
-      reason := {invalid_effect, wrong_expected}} = SkipEntry,
+      reason := {invalid_effect, banana}} = SkipEntry,
     ok.
 
 %% A fresh temp tools directory under the case's priv_dir.
