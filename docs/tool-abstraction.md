@@ -232,6 +232,16 @@ tool.
 - Borderline, resolved: asking a human (`P14`) **is** a tool-shaped action
   (a discrete request/response mid-task), and lands as `ask_human` in §4's
   table when the pending-question path exists.
+- **No separate "skill" concept — help covers it.** Some agent runtimes add
+  a skill layer beside tools (a `list_skills` / `call_skill` pair with its
+  own discovery). Soma deliberately does not: the catalog *is* the help
+  surface, and everything a skill would be decomposes into things that
+  already exist — a packaged capability is a described tool, a reusable
+  procedure is a `(task …)` file, and a prompt-plus-model bundle is an
+  actor reached through `ask_actor`, each discoverable by name +
+  `description` + `params` through the same `catalog/0`. If a skill
+  library ever ships, its entries register as described tools and appear
+  in help automatically; discovery never gets a second mechanism.
 
 ## 8. Sequencing
 
