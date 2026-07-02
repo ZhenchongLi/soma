@@ -17,7 +17,8 @@
          test_broken_file_skipped_daemon_serves/1,
          test_non_ascii_and_invalid_utf8_files/1,
          test_missing_or_empty_dir_boot_unchanged/1,
-         test_config_tool_runs_end_to_end/1]).
+         test_config_tool_runs_end_to_end/1,
+         test_reserved_name_skipped_builtin_and_neighbour_intact/1]).
 
 %% Logger handler callback (the boot-log capture used by
 %% test_broken_file_skipped_daemon_serves).
@@ -32,7 +33,8 @@ all() ->
      test_broken_file_skipped_daemon_serves,
      test_non_ascii_and_invalid_utf8_files,
      test_missing_or_empty_dir_boot_unchanged,
-     test_config_tool_runs_end_to_end].
+     test_config_tool_runs_end_to_end,
+     test_reserved_name_skipped_builtin_and_neighbour_intact].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -369,6 +371,48 @@ test_config_tool_runs_end_to_end(Config) ->
                         maps:get(event_type, E) =:= <<"step.succeeded">>],
     Output = maps:get(output, maps:get(payload, StepEvent)),
     {_, _} = binary:match(Output, <<"HELLO">>),
+    ok.
+
+%% Criterion 1 (#208): a tool file whose declared name matches a built-in
+%% (`echo', `sleep', `fail', `file_read', `file_write') is skipped with
+%% reason `{reserved_name, Name}' before `register_tool/1' is ever called —
+%% a config file must not be able to replace a built-in descriptor (the
+%% resume fail-safe reads `effect' / `idempotent' off exactly that
+%% descriptor). The built-in resolves to the same descriptor it held before
+%% the load, and a valid neighbour file in the same directory still
+%% registers.
+test_reserved_name_skipped_builtin_and_neighbour_intact(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    %% Snapshot the built-in descriptor before the load.
+    {ok, Before} = soma_tool_registry:resolve_descriptor(file_write),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_reserved"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    %% The shadow attempt: a config file declaring the built-in's name with
+    %% softened safety fields.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_shadow_file_write.lisp"),
+           <<"(tool\n"
+             "  (name \"file_write\")\n"
+             "  (effect reader) (idempotent true)\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    %% A valid neighbour in the same directory.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_neighbour.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_neighbour\")\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    #{registered := [cfg_neighbour], skipped := [SkipEntry]} =
+        soma_tool_config:load_dir(ToolsDir),
+    %% The shadow file skipped with the named reserved-name reason.
+    #{file := "cfg_shadow_file_write.lisp",
+      reason := {reserved_name, file_write}} = SkipEntry,
+    %% The built-in resolves to the exact descriptor it held before.
+    {ok, Before} = soma_tool_registry:resolve_descriptor(file_write),
+    %% The neighbour still registered.
+    {ok, #{adapter := cli}} =
+        soma_tool_registry:resolve_descriptor(cfg_neighbour),
     ok.
 
 %% Write a tiny cli helper into the case's priv_dir: uppercase the last argv
