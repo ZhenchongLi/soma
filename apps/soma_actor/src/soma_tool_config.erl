@@ -50,7 +50,7 @@ load_dir(Dir) ->
 %% skips the file — one warning log line plus a named skip entry — and the
 %% fold continues to the next file; a broken tool file never stops boot.
 load_file(Path, {Registered, Skipped}) ->
-    case register_file(Path) of
+    case register_file(Path, Registered) of
         {ok, Name} ->
             {[Name | Registered], Skipped};
         {error, Reason} ->
@@ -62,12 +62,12 @@ load_file(Path, {Registered, Skipped}) ->
 
 %% Read → parse → compile → register, failing closed with bounded named
 %% reasons at each edge.
-register_file(Path) ->
+register_file(Path, Registered) ->
     case file:read_file(Path) of
         {ok, Source} ->
             case soma_lfe_reader:read_forms(Source) of
                 {ok, [Form]} ->
-                    compile_and_register(Form);
+                    compile_and_register(Form, Registered);
                 {ok, Forms} ->
                     {error, {expected_one_tool_form, length(Forms)}};
                 {error, Diagnostics} ->
@@ -77,28 +77,37 @@ register_file(Path) ->
             {error, {read_error, Reason}}
     end.
 
-compile_and_register(Form) ->
+compile_and_register(Form, Registered) ->
     case compile_tool(Form) of
         {ok, Manifest} ->
-            register_manifest(Manifest);
+            register_manifest(Manifest, Registered);
         {error, _} = Error ->
             Error
     end.
 
-%% Admission gate in front of `register_tool/1': a config file may not
-%% declare a built-in tool's name — the registry overwrites by name, and the
-%% resume fail-safe reads `effect' / `idempotent' off exactly those
-%% descriptors, so a shadow would soften it. The reserved set comes from
-%% `soma_tool_registry:builtin_names/0' (the seed list's own names), never a
-%% retyped list here.
-register_manifest(#{name := Name} = Manifest) ->
+%% Admission gate in front of `register_tool/1'. Reserved first: a config
+%% file may not declare a built-in tool's name — the registry overwrites by
+%% name, and the resume fail-safe reads `effect' / `idempotent' off exactly
+%% those descriptors, so a shadow would soften it (the reserved set comes
+%% from `soma_tool_registry:builtin_names/0', the seed list's own names,
+%% never a retyped list here). Then duplicate: a name already registered by
+%% an earlier file *in this load* skips, so the first file in sorted order
+%% wins with a diagnostic instead of silent last-write-wins. The duplicate
+%% check is per-load (the fold accumulator), not against the live registry —
+%% re-loading a directory must keep working.
+register_manifest(#{name := Name} = Manifest, Registered) ->
     case lists:member(Name, soma_tool_registry:builtin_names()) of
         true ->
             {error, {reserved_name, Name}};
         false ->
-            case soma_tool_registry:register_tool(Manifest) of
-                ok -> {ok, Name};
-                {error, _} = Error -> Error
+            case lists:member(Name, Registered) of
+                true ->
+                    {error, {duplicate_name, Name}};
+                false ->
+                    case soma_tool_registry:register_tool(Manifest) of
+                        ok -> {ok, Name};
+                        {error, _} = Error -> Error
+                    end
             end
     end.
 
