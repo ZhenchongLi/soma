@@ -6,11 +6,15 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([ask_actor_run_step_returns_target_result_and_uses_tool_worker/1,
-         ask_actor_propagates_parent_correlation_id/1]).
+         ask_actor_propagates_parent_correlation_id/1,
+         ask_actor_step_timeout_cancels_child_task/1,
+         ask_actor_parent_cancel_cancels_child_task/1]).
 
 all() ->
     [ask_actor_run_step_returns_target_result_and_uses_tool_worker,
-     ask_actor_propagates_parent_correlation_id].
+     ask_actor_propagates_parent_correlation_id,
+     ask_actor_step_timeout_cancels_child_task,
+     ask_actor_parent_cancel_cancels_child_task].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -129,6 +133,75 @@ ask_actor_propagates_parent_correlation_id(_Config) ->
     [CorrelationId] = lists:usort([maps:get(correlation_id, E) || E <- Events]),
     ok.
 
+ask_actor_step_timeout_cancels_child_task(_Config) ->
+    StorePid = event_store_pid(),
+    StableName = <<"timeout-child">>,
+    ChildTaskId = <<"task-ask-actor-timeout-child">>,
+    {ok, TargetPid} =
+        soma_actor_sup:start_actor(#{actor_id => <<"ask-actor-timeout-child">>,
+                                     stable_name => StableName,
+                                     event_store => StorePid,
+                                     model_config => #{},
+                                     tool_policy => #{}}),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    ParentSteps =
+        [#{id => s1,
+           tool => ask_actor,
+           timeout_ms => 1000,
+           args => #{target => StableName,
+                     envelope => long_child_envelope(ChildTaskId)}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, ParentSteps),
+
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 50),
+    WorkerPid = tool_call_pid_from(StorePid, RunId, <<"tool.started">>),
+    ok = wait_for_task_status(TargetPid, ChildTaskId, running, 100),
+
+    case wait_for_terminal(StorePid, RunId, 150) of
+        {timeout, _Events} ->
+            ok;
+        Other ->
+            ct:fail({expected_parent_timeout, Other})
+    end,
+    ok = wait_for_dead(WorkerPid, 100),
+    ok = wait_for_task_status(TargetPid, ChildTaskId, cancelled, 100),
+    true = is_process_alive(TargetPid),
+    ok = assert_session_completes_echo(StorePid, SessionPid, after_timeout),
+    ok.
+
+ask_actor_parent_cancel_cancels_child_task(_Config) ->
+    StorePid = event_store_pid(),
+    StableName = <<"cancel-child">>,
+    ChildTaskId = <<"task-ask-actor-cancel-child">>,
+    {ok, TargetPid} =
+        soma_actor_sup:start_actor(#{actor_id => <<"ask-actor-cancel-child">>,
+                                     stable_name => StableName,
+                                     event_store => StorePid,
+                                     model_config => #{},
+                                     tool_policy => #{}}),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    ParentSteps =
+        [#{id => s1,
+           tool => ask_actor,
+           timeout_ms => 60000,
+           args => #{target => StableName,
+                     envelope => long_child_envelope(ChildTaskId)}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, ParentSteps),
+
+    ok = wait_for_event(StorePid, RunId, <<"tool.started">>, 50),
+    ok = wait_for_task_status(TargetPid, ChildTaskId, running, 100),
+    SessionPid ! {cancel_run, RunId},
+
+    case wait_for_terminal(StorePid, RunId, 100) of
+        {cancelled, _Events} ->
+            ok;
+        Other ->
+            ct:fail({expected_parent_cancelled, Other})
+    end,
+    ok = wait_for_task_status(TargetPid, ChildTaskId, cancelled, 100),
+    true = is_process_alive(TargetPid),
+    ok = assert_session_completes_echo(StorePid, SessionPid, after_cancel),
+    ok.
+
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
     {soma_event_store, Pid, _Type, _Mods} =
@@ -177,9 +250,53 @@ terminal(Events) ->
                 [] ->
                     case lists:member(<<"run.timeout">>, Types) of
                         true -> {timeout, Events};
-                        false -> none
+                        false ->
+                            case lists:member(<<"run.cancelled">>, Types) of
+                                true -> {cancelled, Events};
+                                false -> none
+                            end
                     end
             end
+    end.
+
+long_child_envelope(ChildTaskId) ->
+    #{type => <<"actor.message">>,
+      payload => #{},
+      task_id => ChildTaskId,
+      steps => [#{id => child_sleep, tool => sleep, args => #{ms => 5000}}]}.
+
+wait_for_task_status(_ActorPid, _TaskId, _Status, 0) ->
+    {error, timeout};
+wait_for_task_status(ActorPid, TaskId, Status, N) ->
+    case soma_actor:get_task_status(ActorPid, TaskId) of
+        #{status := Status} ->
+            ok;
+        _Other ->
+            timer:sleep(20),
+            wait_for_task_status(ActorPid, TaskId, Status, N - 1)
+    end.
+
+wait_for_dead(_Pid, 0) ->
+    {error, still_alive};
+wait_for_dead(Pid, N) ->
+    case is_process_alive(Pid) of
+        false ->
+            ok;
+        true ->
+            timer:sleep(20),
+            wait_for_dead(Pid, N - 1)
+    end.
+
+assert_session_completes_echo(StorePid, SessionPid, StepId) ->
+    Steps = [#{id => StepId, tool => echo,
+               args => #{value => <<"session-alive">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    case wait_for_terminal(StorePid, RunId, 100) of
+        {completed, Events} ->
+            #{value := <<"session-alive">>} = step_output(Events, StepId),
+            ok;
+        Other ->
+            ct:fail({expected_followup_completed, Other})
     end.
 
 tool_call_pid_from(StorePid, RunId, EventType) ->
