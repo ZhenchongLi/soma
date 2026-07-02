@@ -31,6 +31,24 @@ test_normalize_accepts_cli() ->
 normalize_accepts_cli_test() ->
     test_normalize_accepts_cli().
 
+test_normalize_preserves_cli_argv_placeholder_with_declared_param() ->
+    Params = [#{name => <<"doc">>, type => string, required => true}],
+    Manifest = #{
+        name => edit_doc,
+        effect => state,
+        idempotent => false,
+        timeout_ms => 1000,
+        adapter => cli,
+        executable => "edit",
+        argv => ["--doc", "{doc}", "--dry-run"],
+        params => Params
+    },
+    Expected = Manifest#{argv => ["--doc", "{missing}", "--dry-run"]},
+    ?assertEqual({ok, Expected}, soma_tool_manifest:normalize(Manifest)).
+
+normalize_preserves_cli_argv_placeholder_with_declared_param_test() ->
+    test_normalize_preserves_cli_argv_placeholder_with_declared_param().
+
 test_normalize_rejects_missing_shared_field() ->
     Base = #{
         name => file_read,
