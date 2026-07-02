@@ -9,10 +9,12 @@
 -include_lib("common_test/include/ct.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
--export([test_daemon_boot_registers_config_tool/1]).
+-export([test_daemon_boot_registers_config_tool/1,
+         test_config_tool_description_in_catalog/1]).
 
 all() ->
-    [test_daemon_boot_registers_config_tool].
+    [test_daemon_boot_registers_config_tool,
+     test_config_tool_description_in_catalog].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -55,6 +57,31 @@ test_daemon_boot_registers_config_tool(Config) ->
     <<"/bin/echo">> = unicode:characters_to_binary(Executable),
     [<<"hello">>, <<"world">>] =
         [unicode:characters_to_binary(A) || A <- Argv],
+    ok.
+
+%% Criterion 2 (#205): a tool file that declares a `(description "...")'
+%% appears in `soma_tool_registry:catalog/0' with that description. Entry
+%% point is `soma_tool_config:load_dir/1' directly -- boot wiring is
+%% criterion 1's proof; this criterion is about the description surviving the
+%% loader -> register_tool -> registry state -> catalog chain.
+test_config_tool_description_in_catalog(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    %% A dedicated subdir (the suite's priv_dir is shared across cases, and
+    %% load_dir reads every *.lisp in the dir it is given).
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_desc"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_described.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_described\")\n"
+             "  (description \"Uppercase the final argv argument.\")\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    #{registered := [cfg_described], skipped := []} =
+        soma_tool_config:load_dir(ToolsDir),
+    [Entry] = [E || #{name := cfg_described} = E
+                        <- soma_tool_registry:catalog()],
+    #{description := <<"NOT the declared description">>} = Entry,
     ok.
 
 %% A fresh temp tools directory under the case's priv_dir.
