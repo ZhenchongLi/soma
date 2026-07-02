@@ -145,3 +145,76 @@ test_planning_mode_builds_run_steps_system_message_over_allowed_tools() ->
 
 planning_mode_builds_run_steps_system_message_over_allowed_tools_test() ->
     test_planning_mode_builds_run_steps_system_message_over_allowed_tools().
+
+%% Criterion 1 (#212): with a concrete allowlist, the planning system prompt
+%% consumes the tool catalog. Each allowed tool that has a catalog entry gets a
+%% Lisp `(tool ...)' block carrying its registry-spelled name, description, and
+%% declared params; a catalog entry outside the allowlist (file_write, seeded by
+%% the registry) leaves no trace; an allowed tool without a catalog entry (a v1
+%% manifest with no description) still appears in the plain tool-name list; and
+%% the `(run-steps ...)' answer directive is kept. Needs the live registry --
+%% the builder reads soma_tool_registry:catalog/0 on every planning build.
+test_planning_prompt_renders_allowed_catalog_entries() ->
+    Described = #{
+        name => described_plan_tool,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo,
+        description => <<"Reverses the given input for planning.">>,
+        params => [#{name => <<"reversal_input">>,
+                     type => string,
+                     required => true,
+                     doc => <<"What to reverse.">>}]
+    },
+    Bare = #{
+        name => bare_plan_tool,
+        effect => identity,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo
+    },
+    ok = soma_tool_registry:register_tool(Described),
+    ok = soma_tool_registry:register_tool(Bare),
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    plan => true,
+                    allowed_tools => [echo, described_plan_tool,
+                                      bare_plan_tool]},
+    Envelope = #{payload => #{prompt => <<"reverse the file name">>}},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    [System | _] = maps:get(messages, Opts),
+    ?assertEqual(<<"system">>, maps:get(role, System)),
+    Content = maps:get(content, System),
+    ?assert(is_binary(Content)),
+    %% The (run-steps ...) answer directive is kept.
+    ?assertNotEqual(nomatch, binary:match(Content, <<"(run-steps">>)),
+    %% Allowed tools with catalog entries render as (tool ...) blocks carrying
+    %% name (registry spelling, underscores), description, and declared params.
+    ?assertNotEqual(nomatch, binary:match(Content, <<"(tool">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(Content, <<"described_plan_tool">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(Content,
+                                 <<"Reverses the given input for planning.">>)),
+    ?assertNotEqual(nomatch, binary:match(Content, <<"reversal_input">>)),
+    %% echo is an allowed built-in with a catalog entry: its description shows.
+    ?assertNotEqual(nomatch,
+                    binary:match(Content, <<"Returns its input unchanged.">>)),
+    %% file_write has a catalog entry but is off the allowlist: no trace.
+    ?assertEqual(nomatch, binary:match(Content, <<"file_write">>)),
+    %% An allowed tool without a catalog entry still shows in the plain list.
+    ?assertNotEqual(nomatch, binary:match(Content, <<"bare_plan_tool">>)).
+
+planning_prompt_renders_allowed_catalog_entries_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_planning_prompt_renders_allowed_catalog_entries())
+     end}.
