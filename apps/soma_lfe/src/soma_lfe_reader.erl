@@ -15,12 +15,18 @@
 -spec read_forms(binary()) ->
     {ok, [term()]} | {error, [diagnostic()]}.
 read_forms(Source) when is_binary(Source) ->
-    Input = unicode:characters_to_list(Source),
-    case scan(Input, 1, []) of
-        {ok, Tokens} ->
-            parse_all_forms(Tokens, [], []);
-        {error, Diags} ->
-            {error, Diags}
+    %% Invalid UTF-8 makes characters_to_list/1 return an error/incomplete
+    %% tuple, not a list — a bounded diagnostic, never a scan crash.
+    case unicode:characters_to_list(Source) of
+        Input when is_list(Input) ->
+            case scan(Input, 1, []) of
+                {ok, Tokens} ->
+                    parse_all_forms(Tokens, [], []);
+                {error, Diags} ->
+                    {error, Diags}
+            end;
+        _ ->
+            {error, [#{message => <<"source is not valid UTF-8">>, line => 0}]}
     end.
 
 %%% --- Scanner ---
@@ -55,8 +61,10 @@ scan([C | Rest], Line, Acc) when C >= $a, C =< $z;
                                   C =:= $@; C =:= $# ->
     scan_atom(Rest, Line, [C], Acc);
 scan([C | _Rest], Line, _Acc) ->
-    {error, [#{message => iolist_to_binary(
-                    io_lib:format("unrecognised character: ~c", [C])),
+    %% ~tc + characters_to_binary: the unrecognised character may be a code
+    %% point above 255, which ~c / iolist_to_binary would crash on.
+    {error, [#{message => unicode:characters_to_binary(
+                    io_lib:format("unrecognised character: ~tc", [C])),
                line => Line}]}.
 
 scan_string([], Line, _Buf, _Acc) ->
@@ -70,7 +78,9 @@ scan_string([$\\, $n | Rest], Line, Buf, Acc) ->
 scan_string([$\n | Rest], Line, Buf, Acc) ->
     scan_string(Rest, Line + 1, [$\n | Buf], Acc);
 scan_string([$" | Rest], Line, Buf, Acc) ->
-    Str = list_to_binary(lists:reverse(Buf)),
+    %% characters_to_binary, not list_to_binary: string content may carry
+    %% code points above 255 (an em-dash, an accent, Chinese text).
+    Str = unicode:characters_to_binary(lists:reverse(Buf)),
     scan(Rest, Line, [{string, Line, Str} | Acc]);
 scan_string([C | Rest], Line, Buf, Acc) ->
     scan_string(Rest, Line, [C | Buf], Acc).
