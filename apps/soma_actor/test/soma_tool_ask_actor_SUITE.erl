@@ -7,6 +7,7 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([ask_actor_run_step_returns_target_result_and_uses_tool_worker/1,
          ask_actor_shorthand_file_read_to_file_write_writes_reply_text/1,
+         ask_actor_shorthand_uses_actor_mock_model_config_no_socket/1,
          ask_actor_propagates_parent_correlation_id/1,
          ask_actor_step_timeout_cancels_child_task/1,
          ask_actor_parent_cancel_cancels_child_task/1,
@@ -17,6 +18,7 @@
 all() ->
     [ask_actor_run_step_returns_target_result_and_uses_tool_worker,
      ask_actor_shorthand_file_read_to_file_write_writes_reply_text,
+     ask_actor_shorthand_uses_actor_mock_model_config_no_socket,
      ask_actor_propagates_parent_correlation_id,
      ask_actor_step_timeout_cancels_child_task,
      ask_actor_parent_cancel_cancels_child_task,
@@ -131,6 +133,57 @@ ask_actor_shorthand_file_read_to_file_write_writes_reply_text(Config) ->
         Other ->
             ct:fail(Other)
     end.
+
+%% Criterion: a shorthand ask_actor call reaches the mock LLM directive path
+%% without a provider socket. The target's model_config carries only a mock
+%% directive (no provider/base_url), so the child's llm.* trail proves the
+%% call went through soma_llm_call's mock path.
+ask_actor_shorthand_uses_actor_mock_model_config_no_socket(_Config) ->
+    StorePid = event_store_pid(),
+    StableName = <<"mock-path-child">>,
+    ChildActorId = <<"ask-actor-mock-path-child">>,
+    {ok, _TargetPid} =
+        soma_actor_sup:start_actor(#{actor_id => ChildActorId,
+                                     stable_name => StableName,
+                                     event_store => StorePid,
+                                     model_config =>
+                                         #{directive => proposal,
+                                           output => #{kind => reply,
+                                                       text => <<"mock path reply">>}},
+                                     tool_policy => #{}}),
+    CorrelationId = <<"corr-ask-actor-mock-path">>,
+    RunId = <<"run-ask-actor-mock-path">>,
+    ParentSteps =
+        [#{id => s1,
+           tool => ask_actor,
+           timeout_ms => 5000,
+           args => #{target => StableName,
+                     message => <<"plain shorthand prompt">>}}],
+    {ok, _RunPid} =
+        soma_run_sup:start_run(#{run_id => RunId,
+                                 session_id => <<"session-ask-actor-mock-path">>,
+                                 event_store => StorePid,
+                                 correlation_id => CorrelationId,
+                                 steps => ParentSteps}),
+
+    case wait_for_terminal(StorePid, RunId, 100) of
+        {completed, Events} ->
+            <<"mock path reply">> = step_output(Events, s1),
+            ok;
+        {failed, Reason} ->
+            ct:fail({run_failed, Reason});
+        Other ->
+            ct:fail(Other)
+    end,
+
+    ChildEvents = events_for_actor(
+                      soma_event_store:by_correlation(StorePid, CorrelationId),
+                      ChildActorId),
+    ChildTypes = event_types(ChildEvents),
+    true = lists:member(<<"llm.started">>, ChildTypes),
+    true = lists:member(<<"llm.succeeded">>, ChildTypes),
+    true = lists:member(<<"proposal.created">>, ChildTypes),
+    ok.
 
 ask_actor_propagates_parent_correlation_id(_Config) ->
     StorePid = event_store_pid(),
