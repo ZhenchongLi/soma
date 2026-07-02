@@ -72,6 +72,13 @@ dispatch(["cancel", TaskId | Flags]) ->
     with_flags(Flags, fun(Opts) ->
         soma_cli:cancel(#{task_id => TaskId, socket => socket(Opts)})
     end);
+dispatch(["tool", "register", File | Flags]) ->
+    %% Resolve the socket and drive `soma_cli:tool_register/1', which reads the
+    %% `(tool ...)' manifest file and sends it wrapped as a `(tool-register ...)'
+    %% frame over the socket. Returns its exit code.
+    with_flags(Flags, fun(Opts) ->
+        soma_cli:tool_register(#{file => File, socket => socket(Opts)})
+    end);
 dispatch(["stop" | Flags]) ->
     with_flags(Flags, fun(Opts) ->
         soma_cli:stop(#{socket => socket(Opts)})
