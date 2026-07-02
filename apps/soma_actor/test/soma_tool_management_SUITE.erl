@@ -749,7 +749,7 @@ test_restart_after_remove_stays_unresolved(Config) ->
     {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
                                          config_path => ConfigPath,
                                          tools_dir => ToolsDir}),
-    {ok, _StillHere} = soma_tool_registry:resolve_descriptor(mgmt_purged),
+    {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_purged),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
