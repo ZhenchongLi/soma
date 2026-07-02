@@ -25,6 +25,9 @@ Proved by `soma_tool_config_SUITE`:
 | Valid UTF-8 above code point 255 registers with the description intact; invalid UTF-8 bytes skip with the reader's named diagnostic — neither crashes the loader or the boot. | `test_non_ascii_and_invalid_utf8_files` |
 | A missing or empty tools directory leaves boot byte-for-byte unchanged: exactly the built-in seed, no skip line, daemon answers ping. | `test_missing_or_empty_dir_boot_unchanged` |
 | A config-registered tool runs end-to-end through session → run → tool-call with the usual event trail — the registered descriptor drives the existing cli adapter unchanged. | `test_config_tool_runs_end_to_end` |
+| A file declaring a built-in tool's name is skipped with `{reserved_name, Name}`; the built-in descriptor is unchanged after the load and valid neighbours still register (#208). | `test_reserved_name_skipped_builtin_and_neighbour_intact` |
+| A config file redeclaring `file_write` as `reader`/idempotent cannot flip the descriptor `soma_run_resume_plan` classifies from — it still resolves `effect => state, idempotent => false` (#208). | `test_shadowed_file_write_keeps_resume_safety_fields` |
+| Two config files declaring one name: the first in sorted filename order registers, the later skips with `{duplicate_name, Name}` (#208). | `test_duplicate_name_first_sorted_file_wins` |
 
 ## Reader Unicode Contract
 

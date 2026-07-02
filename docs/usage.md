@@ -189,6 +189,10 @@ Rules that keep this safe:
 - **A broken file never blocks the daemon.** A file that fails to parse or
   validate is skipped with one named boot-log line; the other files still
   register. A missing or empty `~/.soma/tools/` changes nothing.
+- **Built-in names are reserved.** A file declaring a built-in tool's name
+  (`echo`, `sleep`, `fail`, `file_read`, `file_write`) is skipped — a config
+  file cannot replace a built-in's safety metadata. Two files declaring the
+  same name register the first (sorted by filename) and skip the second.
 - Descriptions may contain any UTF-8 text; the file itself must be saved as
   UTF-8.
 
