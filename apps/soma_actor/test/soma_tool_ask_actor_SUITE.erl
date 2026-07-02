@@ -8,13 +8,17 @@
 -export([ask_actor_run_step_returns_target_result_and_uses_tool_worker/1,
          ask_actor_propagates_parent_correlation_id/1,
          ask_actor_step_timeout_cancels_child_task/1,
-         ask_actor_parent_cancel_cancels_child_task/1]).
+         ask_actor_parent_cancel_cancels_child_task/1,
+         ask_actor_unknown_name_fails_run_session_alive/1,
+         ask_actor_dead_name_fails_run_session_alive/1]).
 
 all() ->
     [ask_actor_run_step_returns_target_result_and_uses_tool_worker,
      ask_actor_propagates_parent_correlation_id,
      ask_actor_step_timeout_cancels_child_task,
-     ask_actor_parent_cancel_cancels_child_task].
+     ask_actor_parent_cancel_cancels_child_task,
+     ask_actor_unknown_name_fails_run_session_alive,
+     ask_actor_dead_name_fails_run_session_alive].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -202,6 +206,64 @@ ask_actor_parent_cancel_cancels_child_task(_Config) ->
     ok = assert_session_completes_echo(StorePid, SessionPid, after_cancel),
     ok.
 
+ask_actor_unknown_name_fails_run_session_alive(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    ParentSteps =
+        [#{id => s1,
+           tool => ask_actor,
+           timeout_ms => 5000,
+           args => #{target => <<"ghost">>,
+                     envelope => short_child_envelope()}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, ParentSteps),
+
+    case wait_for_terminal(StorePid, RunId, 100) of
+        {failed, Reason} ->
+            ok = assert_lookup_failed_not_found(Reason);
+        Other ->
+            ct:fail({expected_parent_failed, Other})
+    end,
+    true = is_process_alive(SessionPid),
+    ok = assert_session_completes_echo(StorePid, SessionPid, after_unknown_name),
+    ok.
+
+ask_actor_dead_name_fails_run_session_alive(_Config) ->
+    StorePid = event_store_pid(),
+    StableName = <<"dead-child">>,
+    {ok, TargetPid} =
+        soma_actor_sup:start_actor(#{actor_id => <<"ask-actor-dead-child">>,
+                                     stable_name => StableName,
+                                     event_store => StorePid,
+                                     model_config => #{},
+                                     tool_policy => #{}}),
+    MRef = monitor(process, TargetPid),
+    exit(TargetPid, kill),
+    receive
+        {'DOWN', MRef, process, TargetPid, _Reason} ->
+            ok
+    after 2000 ->
+        ct:fail(dead_actor_still_alive)
+    end,
+
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    ParentSteps =
+        [#{id => s1,
+           tool => ask_actor,
+           timeout_ms => 5000,
+           args => #{target => StableName,
+                     envelope => short_child_envelope()}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, ParentSteps),
+
+    case wait_for_terminal(StorePid, RunId, 100) of
+        {failed, Reason} ->
+            ok = assert_lookup_failed_not_found(Reason);
+        Other ->
+            ct:fail({expected_parent_failed, Other})
+    end,
+    true = is_process_alive(SessionPid),
+    ok = assert_session_completes_echo(StorePid, SessionPid, after_dead_name),
+    ok.
+
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
     {soma_event_store, Pid, _Type, _Mods} =
@@ -264,6 +326,18 @@ long_child_envelope(ChildTaskId) ->
       payload => #{},
       task_id => ChildTaskId,
       steps => [#{id => child_sleep, tool => sleep, args => #{ms => 5000}}]}.
+
+short_child_envelope() ->
+    #{type => <<"actor.message">>,
+      payload => #{},
+      steps => [#{id => child_s1, tool => echo,
+                  args => #{value => <<"unreached">>}}]}.
+
+assert_lookup_failed_not_found(#{error := ask_actor_lookup_failed,
+                                 registry_error := not_found}) ->
+    ok;
+assert_lookup_failed_not_found(Other) ->
+    ct:fail({unexpected_lookup_failure_reason, Other}).
 
 wait_for_task_status(_ActorPid, _TaskId, _Status, 0) ->
     {error, timeout};
