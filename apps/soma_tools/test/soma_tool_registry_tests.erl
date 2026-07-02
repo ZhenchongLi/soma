@@ -121,13 +121,11 @@ test_list_projection_omits_internal_fields() ->
             Forbidden)
       end,
       Entries),
-    %% DELIBERATELY WRONG (staged red): expects the cli entry to leak its
-    %% executable, so the assertion fires against the real projection.
+    %% Each entry is exactly its safe summary — nothing else survived.
     ?assertEqual([#{name => scrub_cli_tool,
                     effect => reader,
                     idempotent => true,
                     adapter => cli,
-                    executable => "/bin/echo",
                     description => <<"Scrub check.">>},
                   #{name => scrub_mod_tool,
                     effect => state,
