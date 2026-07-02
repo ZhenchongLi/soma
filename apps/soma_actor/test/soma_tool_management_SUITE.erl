@@ -8,10 +8,12 @@
 -include_lib("common_test/include/ct.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
--export([test_register_sends_manifest_over_socket/1]).
+-export([test_register_sends_manifest_over_socket/1,
+         test_register_tool_resolves_before_restart/1]).
 
 all() ->
-    [test_register_sends_manifest_over_socket].
+    [test_register_sends_manifest_over_socket,
+     test_register_tool_resolves_before_restart].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -29,6 +31,7 @@ init_per_testcase(_Case, Config) ->
     [{base_dir, Base}, {socket_path, SocketPath} | Config].
 
 end_per_testcase(_Case, Config) ->
+    _ = application:stop(soma_runtime),
     _ = file:delete(?config(socket_path, Config)),
     ok.
 
@@ -63,3 +66,48 @@ test_register_sends_manifest_over_socket(Config) ->
     match = re:run(Request, "\\(tool", [{capture, none}]),
     match = re:run(Request, "\\(name \"cfg_upper\"\\)", [{capture, none}]),
     0 = Exit.
+
+%% Criterion 2 (#220): a valid register request makes the named cli tool
+%% resolve in the running daemon before any restart. The daemon boots with an
+%% empty tools dir, so the declared name does not resolve yet; the test sends a
+%% real `(tool-register (tool ...))' frame over the socket, and afterwards
+%% `soma_tool_registry:resolve_descriptor/1' returns the registered `cli'
+%% descriptor -- proving the server register handler compiled, normalized, and
+%% registered the tool in the live registry.
+test_register_tool_resolves_before_restart(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% Nothing named `mgmt_upper' is registered at boot (empty tools dir).
+    {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_upper),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_upper\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    _Reply = register_over_socket(SocketPath, Manifest),
+    %% After the register the name resolves live in the running registry to a
+    %% `cli' descriptor carrying the declared executable.
+    {ok, Descriptor} = soma_tool_registry:resolve_descriptor(mgmt_upper),
+    #{adapter := cli, executable := Executable} = Descriptor,
+    <<"/bin/echo">> = unicode:characters_to_binary(Executable),
+    ok.
+
+%% Wrap the manifest bytes as a `(tool-register (tool ...))' frame, send it over
+%% the daemon's socket the way the real `soma_cli:tool_register/1' client does,
+%% and return the daemon's reply bytes.
+register_over_socket(SocketPath, Manifest) ->
+    Source = iolist_to_binary(["(tool-register ", Manifest, ")"]),
+    {ok, Sock} = gen_tcp:connect({local, SocketPath}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, Source),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    Reply.
