@@ -404,3 +404,40 @@ test_real_provider_system_prompt_precedes_user_message() ->
 
 real_provider_system_prompt_precedes_user_message_test() ->
     test_real_provider_system_prompt_precedes_user_message().
+
+%% Criterion 7 (#219): a planning real-provider model_config (`plan => true')
+%% that also carries a binary `system_prompt' orders the built messages as
+%% custom system prompt, then the planning `(run-steps ...)' system message,
+%% then the user prompt -- the caller's own instruction stays first, ahead of
+%% the planning-mode instruction, with the user prompt last. Needs the tool
+%% registry fixture: the planning branch reads soma_tool_registry:catalog/0.
+test_planning_system_prompt_orders_custom_then_planning_then_user() ->
+    Prompt = <<"summarize the file">>,
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    plan => true,
+                    system_prompt => <<"custom">>,
+                    allowed_tools => all},
+    Envelope = #{payload => #{prompt => Prompt}},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    Messages = maps:get(messages, Opts),
+    [CustomSystem, PlanningSystem, User] = Messages,
+    ?assertEqual(#{role => <<"system">>, content => <<"custom">>},
+                 CustomSystem),
+    ?assertEqual(<<"system">>, maps:get(role, PlanningSystem)),
+    PlanningContent = maps:get(content, PlanningSystem),
+    ?assert(is_binary(PlanningContent)),
+    ?assertNotEqual(nomatch, binary:match(PlanningContent, <<"(run-steps">>)),
+    ?assertEqual(#{role => <<"user">>, content => Prompt}, User).
+
+planning_system_prompt_orders_custom_then_planning_then_user_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(
+            test_planning_system_prompt_orders_custom_then_planning_then_user())
+     end}.
