@@ -14,7 +14,8 @@
          test_restart_after_register_resolves_from_file/1,
          test_register_invalid_manifest_returns_normalize_error/1,
          test_failed_register_leaves_tools_dir_unchanged/1,
-         test_failed_register_leaves_registry_clean/1]).
+         test_failed_register_leaves_registry_clean/1,
+         test_register_builtin_name_reserved/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -23,7 +24,8 @@ all() ->
      test_restart_after_register_resolves_from_file,
      test_register_invalid_manifest_returns_normalize_error,
      test_failed_register_leaves_tools_dir_unchanged,
-     test_failed_register_leaves_registry_clean].
+     test_failed_register_leaves_registry_clean,
+     test_register_builtin_name_reserved].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -305,6 +307,44 @@ test_failed_register_leaves_registry_clean(Config) ->
     %% The rejected tool never entered the live registry: a real resolve for its
     %% name still returns `not_found'.
     {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_reject),
+    ok.
+
+%% Criterion 8 (#220): a register request declaring a built-in name is rejected
+%% with `{reserved_name, Name}' before any disk write or live registration. The
+%% built-in set is `soma_tool_registry:builtin_names/0'; `echo' is one of them.
+%% The daemon boots with an empty tools dir; the test sends a
+%% `(tool-register (tool ...))' frame whose manifest declares `(name "echo")',
+%% and asserts the wire reply is a failed result whose reason is the exact
+%% rendering of `{reserved_name, echo}' -- the reserved-name gate fired, so the
+%% built-in `echo' was never overwritten in the live registry.
+test_register_builtin_name_reserved(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% `echo' is a built-in, so it is in the reserved set.
+    true = lists:member(echo, soma_tool_registry:builtin_names()),
+
+    Manifest = <<"(tool\n"
+                 "  (name \"echo\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+
+    %% The reserved-name reason rendered the way the server carries it on the wire.
+    Expected = iolist_to_binary(soma_lisp:render({reserved_name, echo})),
+
+    %% The daemon rejects the register with a failed result carrying the
+    %% reserved-name reason verbatim.
+    Reply = register_over_socket(SocketPath, Manifest),
+    match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
+    {_, _} = binary:match(Reply, Expected),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
