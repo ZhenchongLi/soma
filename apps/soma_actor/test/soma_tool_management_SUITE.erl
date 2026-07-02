@@ -689,8 +689,8 @@ test_remove_never_deletes_outside_tools_dir(Config) ->
     %% acknowledged as removed.
     RelReply = request_over_socket(SocketPath,
                                    <<"(tool-remove \"../sentinel\")">>),
-    match = re:run(RelReply, "\\(status removed\\)", [{capture, none}]),
-    nomatch = re:run(RelReply, "\\(status error\\)", [{capture, none}]),
+    match = re:run(RelReply, "\\(status error\\)", [{capture, none}]),
+    nomatch = re:run(RelReply, "\\(status removed\\)", [{capture, none}]),
 
     %% An absolute-path name is rejected the same way.
     AbsName = filename:rootname(SentinelFile),
