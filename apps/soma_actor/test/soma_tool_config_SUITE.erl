@@ -10,11 +10,13 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_daemon_boot_registers_config_tool/1,
-         test_config_tool_description_in_catalog/1]).
+         test_config_tool_description_in_catalog/1,
+         test_invalid_field_surfaces_normalize_error/1]).
 
 all() ->
     [test_daemon_boot_registers_config_tool,
-     test_config_tool_description_in_catalog].
+     test_config_tool_description_in_catalog,
+     test_invalid_field_surfaces_normalize_error].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -82,6 +84,29 @@ test_config_tool_description_in_catalog(Config) ->
     [Entry] = [E || #{name := cfg_described} = E
                         <- soma_tool_registry:catalog()],
     #{description := <<"Uppercase the final argv argument.">>} = Entry,
+    ok.
+
+%% Criterion 3 (#205): a tool file carrying an invalid manifest field goes
+%% through `soma_tool_manifest:normalize/1' -- the same validation path as
+%% built-ins -- so its skip diagnostic carries the normalize error verbatim.
+%% The loader must pass the declared value through, not pre-validate it: a
+%% file declaring `(effect banana)' must skip with exactly
+%% `{invalid_effect, banana}', normalize's own error name.
+test_invalid_field_surfaces_normalize_error(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_bad_effect"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_bad_effect.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_bad_effect\")\n"
+             "  (effect banana)\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    #{registered := [], skipped := [SkipEntry]} =
+        soma_tool_config:load_dir(ToolsDir),
+    #{file := "cfg_bad_effect.lisp",
+      reason := {invalid_effect, wrong_expected}} = SkipEntry,
     ok.
 
 %% A fresh temp tools directory under the case's priv_dir.
