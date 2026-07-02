@@ -21,7 +21,8 @@
          test_list_omits_internal_fields/1,
          test_remove_config_tool_unresolved/1,
          test_remove_deletes_only_owned_manifest_file/1,
-         test_remove_builtin_not_config_tool/1]).
+         test_remove_builtin_not_config_tool/1,
+         test_remove_never_deletes_outside_tools_dir/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -37,7 +38,8 @@ all() ->
      test_list_omits_internal_fields,
      test_remove_config_tool_unresolved,
      test_remove_deletes_only_owned_manifest_file,
-     test_remove_builtin_not_config_tool].
+     test_remove_builtin_not_config_tool,
+     test_remove_never_deletes_outside_tools_dir].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -656,6 +658,50 @@ test_remove_builtin_not_config_tool(Config) ->
 
     %% The built-in was never unregistered: `echo' still resolves.
     {ok, _StillThere} = soma_tool_registry:resolve_descriptor(echo),
+    ok.
+
+%% Criterion 15 (#220): a remove request never deletes a path outside the
+%% configured tools directory. The remove handler maps the wire name to an
+%% *existing* live config-tool atom and builds the delete path from the
+%% configured dir plus that atom as a basename -- so a traversal-shaped name
+%% (`../sentinel', or an absolute path, which `filename:join/2' would let
+%% replace the tools dir entirely) matches no config tool and is rejected
+%% before any deletion. A sentinel file placed one level above the tools dir
+%% -- exactly where a naive `filename:join(ToolsDir, Name ++ ".lisp")' would
+%% land for `../sentinel' -- survives both attempts byte-for-byte.
+test_remove_never_deletes_outside_tools_dir(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% The sentinel sits outside the tools dir, at the exact path a naive
+    %% basename-less join would delete for the name `../sentinel'.
+    SentinelFile = filename:join(?config(base_dir, Config), "sentinel.lisp"),
+    SentinelBytes = <<"; outside the tools dir -- must survive any remove\n">>,
+    ok = file:write_file(SentinelFile, SentinelBytes),
+
+    %% A relative traversal name matches no live config tool: rejected, never
+    %% acknowledged as removed.
+    RelReply = request_over_socket(SocketPath,
+                                   <<"(tool-remove \"../sentinel\")">>),
+    match = re:run(RelReply, "\\(status removed\\)", [{capture, none}]),
+    nomatch = re:run(RelReply, "\\(status error\\)", [{capture, none}]),
+
+    %% An absolute-path name is rejected the same way.
+    AbsName = filename:rootname(SentinelFile),
+    AbsReply = request_over_socket(
+                 SocketPath,
+                 iolist_to_binary(["(tool-remove \"", AbsName, "\")"])),
+    match = re:run(AbsReply, "\\(status error\\)", [{capture, none}]),
+    nomatch = re:run(AbsReply, "\\(status removed\\)", [{capture, none}]),
+
+    %% The sentinel outside the tools dir survives byte-for-byte.
+    {ok, SentinelBytes} = file:read_file(SentinelFile),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
