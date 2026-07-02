@@ -10,12 +10,14 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_register_sends_manifest_over_socket/1,
          test_register_tool_resolves_before_restart/1,
-         test_register_writes_normalized_manifest_file/1]).
+         test_register_writes_normalized_manifest_file/1,
+         test_restart_after_register_resolves_from_file/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
      test_register_tool_resolves_before_restart,
-     test_register_writes_normalized_manifest_file].
+     test_register_writes_normalized_manifest_file,
+     test_restart_after_register_resolves_from_file].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -139,6 +141,80 @@ test_register_writes_normalized_manifest_file(Config) ->
     {ok, #{name := mgmt_writer, adapter := cli}} =
         soma_tool_config:compile_form(ToolForm),
     ok.
+
+%% Criterion 4 (#220): a restart after register resolves the tool from the
+%% persisted file -- the round-trip the register write and the boot loader share.
+%% The daemon boots with an empty tools dir; a valid register writes
+%% `mgmt_reboot.lisp' and registers the tool live. The daemon is then stopped and
+%% the runtime reset -- the live registration is gone, only the file on disk
+%% remains -- and a fresh `soma_cli:daemon/1' boots against the same tools dir.
+%% After the reboot the name resolves again, proving the boot-time
+%% `soma_tool_config:load_dir/1' re-read and re-registered the persisted manifest
+%% (not a lingering live registration).
+test_restart_after_register_resolves_from_file(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    %% First boot: empty tools dir, so the name does not resolve yet.
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_reboot),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_reboot\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    _Reply = register_over_socket(SocketPath, Manifest),
+    %% The register took live before any restart.
+    {ok, _Live} = soma_tool_registry:resolve_descriptor(mgmt_reboot),
+
+    %% Stop the daemon (tear the listener down and wait for the socket to go)
+    %% and reset the runtime so the live registration is gone -- only the
+    %% persisted file remains as the hand-off.
+    _ = stop_over_socket(SocketPath),
+    ok = wait_socket_gone(SocketPath, 50),
+    _ = application:stop(soma_runtime),
+
+    %% Reboot against the same tools dir: `load_dir/1' re-registers from the file.
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% Staged red: this expected value is deliberately wrong -- after the reboot
+    %% the persisted file re-registers the tool, so it DOES resolve. The
+    %% `{error, not_found}' below fires the assertion to prove the test exercises
+    %% the reboot resolve path; the `fix(test)' commit corrects it to `{ok, _}'.
+    {error, not_found} = soma_tool_registry:resolve_descriptor(mgmt_reboot),
+    ok.
+
+%% Send a framed `(stop)' over the daemon's socket to tear the listener down,
+%% the way the `soma stop' client does, and return the reply bytes.
+stop_over_socket(SocketPath) ->
+    {ok, Sock} = gen_tcp:connect({local, SocketPath}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(stop)">>),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    Reply.
+
+%% Poll until the daemon's listen socket at Path stops answering, so a reboot
+%% binds a fresh listener instead of racing the old one still closing.
+wait_socket_gone(_Path, 0) ->
+    {error, still_listening};
+wait_socket_gone(Path, N) ->
+    case gen_tcp:connect({local, Path}, 0,
+                         [binary, {active, false}], 200) of
+        {ok, Probe} ->
+            gen_tcp:close(Probe),
+            timer:sleep(50),
+            wait_socket_gone(Path, N - 1);
+        {error, _} ->
+            ok
+    end.
 
 %% Wrap the manifest bytes as a `(tool-register (tool ...))' frame, send it over
 %% the daemon's socket the way the real `soma_cli:tool_register/1' client does,
