@@ -5,7 +5,8 @@
 -module(soma_cli).
 
 -export([run/1, ask/1, trace/1, status/1, cancel/1, stop/1, ping/1, daemon/1,
-         daemon_foreground/1, ensure_daemon/2, resolve_socket/1]).
+         daemon_foreground/1, ensure_daemon/2, resolve_socket/1,
+         tool_register/1]).
 
 %% Resolve the task source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -130,6 +131,26 @@ stop_exit_code(Reply) ->
         match -> 0;
         nomatch -> 1
     end.
+
+%% Read the `(tool ...)' manifest file, wrap its bytes as a
+%% `(tool-register (tool ...))' frame, and drive the same connect / frame+send /
+%% read / print path as the other client commands. The client does not parse the
+%% manifest -- the daemon is the only parser; the client only reads the file and
+%% wraps it. A successful daemon reply returns exit 0.
+-spec tool_register(map()) -> non_neg_integer().
+tool_register(#{file := File, socket := Path}) ->
+    Source = tool_register_source(read_source(File)),
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, Source),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    io:format("~s~n", [Reply]),
+    0.
+
+%% Wrap the manifest file's `(tool ...)' bytes in a `(tool-register ...)' s-expr.
+tool_register_source(Manifest) ->
+    iolist_to_binary(["(tool-register ", Manifest, ")"]).
 
 %% Liveness probe. Resolve the socket the same way the other client funcs do,
 %% then attempt a `{local, Path}' connect that sends no request and closes
