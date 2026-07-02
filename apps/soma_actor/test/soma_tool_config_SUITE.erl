@@ -139,7 +139,7 @@ test_safety_defaults_and_declared_values(Config) ->
     #{registered := [cfg_declared, cfg_defaulted], skipped := []} =
         soma_tool_config:load_dir(ToolsDir),
     {ok, Defaulted} = soma_tool_registry:resolve_descriptor(cfg_defaulted),
-    #{effect := reader, idempotent := true, timeout_ms := 1000} = Defaulted,
+    #{effect := state, idempotent := false, timeout_ms := 30000} = Defaulted,
     {ok, Declared} = soma_tool_registry:resolve_descriptor(cfg_declared),
     #{effect := reader, idempotent := true, timeout_ms := 5000} = Declared,
     ok.
