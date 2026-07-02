@@ -10,6 +10,7 @@
          ask_actor_shorthand_uses_actor_mock_model_config_no_socket/1,
          ask_actor_shorthand_non_reply_result_unchanged/1,
          ask_actor_message_and_envelope_rejected/1,
+         ask_actor_shorthand_non_binary_message_rejected/1,
          ask_actor_propagates_parent_correlation_id/1,
          ask_actor_step_timeout_cancels_child_task/1,
          ask_actor_parent_cancel_cancels_child_task/1,
@@ -23,6 +24,7 @@ all() ->
      ask_actor_shorthand_uses_actor_mock_model_config_no_socket,
      ask_actor_shorthand_non_reply_result_unchanged,
      ask_actor_message_and_envelope_rejected,
+     ask_actor_shorthand_non_binary_message_rejected,
      ask_actor_propagates_parent_correlation_id,
      ask_actor_step_timeout_cancels_child_task,
      ask_actor_parent_cancel_cancels_child_task,
@@ -248,6 +250,35 @@ ask_actor_message_and_envelope_rejected(_Config) ->
     true = is_process_alive(SessionPid),
     ok = assert_session_completes_echo(StorePid, SessionPid,
                                        after_message_and_envelope),
+    ok.
+
+ask_actor_shorthand_non_binary_message_rejected(_Config) ->
+    StorePid = event_store_pid(),
+    StableName = <<"non-binary-message-child">>,
+    {ok, _TargetPid} =
+        soma_actor_sup:start_actor(#{actor_id => <<"ask-actor-non-binary-message-child">>,
+                                     stable_name => StableName,
+                                     event_store => StorePid,
+                                     model_config => #{},
+                                     tool_policy => #{}}),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    ParentSteps =
+        [#{id => s1,
+           tool => ask_actor,
+           timeout_ms => 5000,
+           args => #{target => StableName,
+                     message => #{bad => value}}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, ParentSteps),
+
+    case wait_for_terminal(StorePid, RunId, 100) of
+        {failed, {invalid_ask_actor_input, not_invalid_message}} ->
+            ok;
+        Other ->
+            ct:fail({expected_non_binary_message_rejected, Other})
+    end,
+    true = is_process_alive(SessionPid),
+    ok = assert_session_completes_echo(StorePid, SessionPid,
+                                       after_non_binary_message),
     ok.
 
 ask_actor_propagates_parent_correlation_id(_Config) ->
