@@ -16,7 +16,8 @@
          test_failed_register_leaves_tools_dir_unchanged/1,
          test_failed_register_leaves_registry_clean/1,
          test_register_builtin_name_reserved/1,
-         test_register_existing_config_tool_already_registered/1]).
+         test_register_existing_config_tool_already_registered/1,
+         test_list_returns_summary_fields/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -27,7 +28,8 @@ all() ->
      test_failed_register_leaves_tools_dir_unchanged,
      test_failed_register_leaves_registry_clean,
      test_register_builtin_name_reserved,
-     test_register_existing_config_tool_already_registered].
+     test_register_existing_config_tool_already_registered,
+     test_list_returns_summary_fields].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -386,6 +388,89 @@ test_register_existing_config_tool_already_registered(Config) ->
     {_, _} = binary:match(Reply, Expected),
     ok.
 
+%% Criterion 10 (#220): a `(tool-list)' request returns each live tool as a
+%% `(tool ...)' entry carrying `name' / `effect' / `idempotent' / `adapter',
+%% plus `description' only when the descriptor has one. The daemon boots with an
+%% empty tools dir, then two config tools are registered over the socket -- one
+%% declaring a `description', one without -- so the optional field is exercised
+%% both ways. The reply lists every live tool exactly once (the five built-ins
+%% plus both config tools); the two config-tool entries are pinned field for
+%% field, and the built-in `echo' entry is pinned against its live descriptor.
+test_list_returns_summary_fields(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% One config tool with a description, one without.
+    Described = <<"(tool\n"
+                  "  (name \"mgmt_described\")\n"
+                  "  (description \"Uppercases text.\")\n"
+                  "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                  "  (adapter cli)\n"
+                  "  (executable \"/bin/echo\")\n"
+                  "  (argv \"hello\"))\n">>,
+    Plain = <<"(tool\n"
+              "  (name \"mgmt_plain\")\n"
+              "  (effect state) (idempotent false) (timeout-ms 5000)\n"
+              "  (adapter cli)\n"
+              "  (executable \"/bin/echo\")\n"
+              "  (argv \"hello\"))\n">>,
+    FirstReply = register_over_socket(SocketPath, Described),
+    match = re:run(FirstReply, "\\(status registered\\)", [{capture, none}]),
+    SecondReply = register_over_socket(SocketPath, Plain),
+    match = re:run(SecondReply, "\\(status registered\\)", [{capture, none}]),
+
+    Reply = request_over_socket(SocketPath, <<"(tool-list)">>),
+    {ok, [['tool-list' | Entries]]} = soma_lfe_reader:read_forms(Reply),
+
+    %% Every live tool appears exactly once: the five built-ins plus the two
+    %% config tools just registered -- and every entry leads with its name.
+    Names = lists:sort([Name || [tool, [name, Name] | _] <- Entries]),
+    Expected = lists:sort([atom_to_binary(N, utf8)
+                           || N <- soma_tool_registry:builtin_names()]
+                          ++ [<<"mgmt_described">>, <<"mgmt_plain">>]),
+    Expected = Names,
+    true = length(Entries) =:= length(Names),
+
+    %% The config tool with a description carries all four summary fields plus
+    %% the description, pinned field for field.
+    [DescribedEntry] =
+        [E || [tool, [name, <<"mgmt_described">>] | _] = E <- Entries],
+    [tool,
+     [name, <<"mgmt_described">>],
+     [effect, reader],
+     [idempotent, true],
+     [adapter, cli],
+     [description, <<"Uppercases text.">>]] = DescribedEntry,
+
+    %% The config tool without a description carries exactly the four summary
+    %% fields -- no `description' sub-form appears.
+    [PlainEntry] = [E || [tool, [name, <<"mgmt_plain">>] | _] = E <- Entries],
+    [tool,
+     [name, <<"mgmt_plain">>],
+     [effect, state],
+     [idempotent, false],
+     [adapter, cli]] = PlainEntry,
+
+    %% A built-in entry matches its live descriptor: `echo' reports its own
+    %% effect / idempotent / description and the `erlang_module' adapter.
+    {ok, #{effect := EchoEffect, idempotent := EchoIdempotent,
+           description := EchoDescription}} =
+        soma_tool_registry:resolve_descriptor(echo),
+    [EchoEntry] = [E || [tool, [name, <<"echo">>] | _] = E <- Entries],
+    [tool,
+     [name, <<"echo">>],
+     [effect, EchoEffect],
+     [idempotent, EchoIdempotent],
+     [adapter, erlang_module],
+     [description, EchoDescription]] = EchoEntry,
+    ok.
+
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
 %% the way the `soma stop' client does, and return the reply bytes.
 stop_over_socket(SocketPath) ->
@@ -416,6 +501,10 @@ wait_socket_gone(Path, N) ->
 %% and return the daemon's reply bytes.
 register_over_socket(SocketPath, Manifest) ->
     Source = iolist_to_binary(["(tool-register ", Manifest, ")"]),
+    request_over_socket(SocketPath, Source).
+
+%% Send one framed request over the daemon's socket and return the reply bytes.
+request_over_socket(SocketPath, Source) ->
     {ok, Sock} = gen_tcp:connect({local, SocketPath}, 0,
                                  [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:send(Sock, Source),
