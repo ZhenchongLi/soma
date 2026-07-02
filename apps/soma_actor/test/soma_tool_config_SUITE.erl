@@ -330,7 +330,7 @@ test_config_tool_runs_end_to_end(Config) ->
     [StepEvent] = [E || E <- Events,
                         maps:get(event_type, E) =:= <<"step.succeeded">>],
     Output = maps:get(output, maps:get(payload, StepEvent)),
-    {_, _} = binary:match(Output, <<"hello">>),
+    {_, _} = binary:match(Output, <<"HELLO">>),
     ok.
 
 %% Write a tiny cli helper into the case's priv_dir: uppercase the last argv
