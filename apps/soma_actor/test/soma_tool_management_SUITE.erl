@@ -509,9 +509,8 @@ test_list_omits_internal_fields(Config) ->
     %% Sanity: the registered tool is in the reply at all.
     {_, _} = binary:match(Reply, <<"(name \"mgmt_scrub\")">>),
 
-    %% DELIBERATELY WRONG (staged red): expects the executable field form to
-    %% appear on the wire, so the match fires against the real scrubbed reply.
-    {_, _} = binary:match(Reply, <<"(executable">>),
+    %% No internal field form appears anywhere in the reply bytes.
+    nomatch = binary:match(Reply, <<"(executable">>),
     nomatch = binary:match(Reply, <<"(module">>),
     nomatch = binary:match(Reply, <<"(argv">>),
     nomatch = binary:match(Reply, <<"(timeout-ms">>),
