@@ -301,10 +301,11 @@ the Lisp message/proposal/trace/repair edge forms, persistent run resume
 (`soma_run_resume_executor:resume/3`) plus boot auto-resume for interrupted
 durable runs, the packaged `bin/soma` Unix-socket task command, the
 model-facing tool catalog and config-registered cli tools (`~/.soma/tools`),
+the catalog-fed planning prompt, the `ask_actor` sub-agent tool,
 and a self-contained release.
 
 Out of scope (later roadmap layers, see **[docs/roadmap.md](docs/roadmap.md)**):
-an effect-aware policy gate, memory tools (`soma_memory`), sub-agent-as-tool,
+an effect-aware policy gate, memory tools (`soma_memory`, deferred),
 MCP, DAG parallelism, distributed Erlang, per-tool resume policy /
 compensation hooks for non-idempotent in-flight steps, and Linux x86_64 / arm64
 release artifacts.
@@ -389,6 +390,12 @@ release artifacts.
   validation path with built-ins, conservative defaults, reserved built-in
   names, skip-with-diagnostic, reader unicode handling, and the end-to-end
   run through the unchanged cli adapter.
+- **[docs/contracts/tool-ask-actor-test-contract.md](docs/contracts/tool-ask-actor-test-contract.md)**
+  — sub-agent-as-tool proofs: boot registration and catalog presence,
+  end-to-end delegation through the real layers, correlation propagation
+  across the recursive chain, teardown of the sub-agent's task on step
+  timeout and run cancel via the asker-death monitor, bounded unknown-name
+  failures, and the answered ask's immunity to a later asker death.
 
 **Chinese docs**
 

@@ -38,7 +38,7 @@ Active tracks (parallel to v0.7+, building now):
 node B  real LLM provider behind the perform_call seam   [done — provider + actor planning + CLI/config planning surface]
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
-tools   tool abstraction (docs/tool-abstraction.md)       [T.1 catalog + T.2 config tools done; next T.3 memory, T.4 ask_actor, T.5 MCP]
+tools   tool abstraction (docs/tool-abstraction.md)       [T.1 catalog + T.2 config tools + planning prompt + T.4 ask_actor done; T.3 memory deferred; T.5 MCP later]
 ```
 
 ## v0.4 — soma_actor skeleton [done]
@@ -376,12 +376,25 @@ apps, and cross-cutting policy as process ownership, never a decorator layer.
   `effect`/`idempotent` fields resume-safety classifies from, and bounded
   reader unicode failures. Proofs in
   [contracts/tool-config-test-contract.md](contracts/tool-config-test-contract.md).
+- catalog-fed planning prompt [done] (#212): planning mode's system prompt
+  renders the live catalog at prompt-build time — allowlist-filtered
+  `(tool …)` blocks with name/description/params, undescribed tools named
+  plainly, no runtime descriptor fields can leak (rendering reads
+  `catalog/0`, never raw descriptors). A tool registered at runtime appears
+  in the next prompt built. This is the "help" surface: there is no separate
+  skill concept (tool-abstraction.md §7).
 - `T.3` — memory as tools: a `soma_memory` capability app — a supervised
   keyed store plus `memory_get`/`memory_search` (reader) and
   `memory_put`/`memory_del` (state, idempotent keyed upsert/delete, so
-  resume classification is safe by construction).
-- `T.4` — sub-agent as tool: `ask_actor` in `soma_actor`, the ask under the
-  caller's `correlation_id` with cancel propagation.
+  resume classification is safe by construction). **Deferred by decision
+  (2026-07-02)** — not scheduled.
+- `T.4` — sub-agent as tool [done] (#213): `soma_tool_ask_actor`, an
+  `erlang_module` tool registered at `soma_actor` app boot. The ask runs
+  under the caller's `correlation_id` (one additive ctx field in the run);
+  teardown lives in the callee — the asked actor monitors its asker while
+  the ask is parked and cancels the in-flight sub-task if the asker dies,
+  so step-timeout and run-cancel both propagate; an answered ask is immune.
+  Proofs in [contracts/tool-ask-actor-test-contract.md](contracts/tool-ask-actor-test-contract.md).
 - `T.5` — MCP as a capability app (post-validation, per the decision to
   validate before distributing).
 

@@ -146,6 +146,7 @@ The local daemon seeds these tools automatically:
 | `fail` | Return or raise a controlled failure. Mostly useful for testing isolation. |
 | `file_read` | Read a file under a supplied `root`. |
 | `file_write` | Write bytes to a file under a supplied `root`. |
+| `ask_actor` | Delegate to another running actor by its stable name and return that actor's task result. The whole sub-chain shares the parent's correlation id, so one `soma trace` covers it; cancelling or timing out the parent step cancels the sub-agent's task too. |
 
 File tools use `(root "...")` as their sandbox root. Keep file paths relative to
 that root:
@@ -284,6 +285,12 @@ model = "gpt-4.1-mini"
 # max_tokens = 1024
 # plan = true
 ```
+
+With `plan = true` the daemon asks the model for a `(run-steps ...)` plan,
+and the planning prompt carries the live tool catalog — every registered
+tool's name, description, and params, including tools you added under
+`~/.soma/tools/` — so the model plans against tools that actually exist.
+The policy allowlist still gates the plan after the model proposes it.
 
 Then export the API key in the environment that starts the daemon:
 
