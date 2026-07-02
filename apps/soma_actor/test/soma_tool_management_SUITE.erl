@@ -22,7 +22,8 @@
          test_remove_config_tool_unresolved/1,
          test_remove_deletes_only_owned_manifest_file/1,
          test_remove_builtin_not_config_tool/1,
-         test_remove_never_deletes_outside_tools_dir/1]).
+         test_remove_never_deletes_outside_tools_dir/1,
+         test_restart_after_remove_stays_unresolved/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -39,7 +40,8 @@ all() ->
      test_remove_config_tool_unresolved,
      test_remove_deletes_only_owned_manifest_file,
      test_remove_builtin_not_config_tool,
-     test_remove_never_deletes_outside_tools_dir].
+     test_remove_never_deletes_outside_tools_dir,
+     test_restart_after_remove_stays_unresolved].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -702,6 +704,52 @@ test_remove_never_deletes_outside_tools_dir(Config) ->
 
     %% The sentinel outside the tools dir survives byte-for-byte.
     {ok, SentinelBytes} = file:read_file(SentinelFile),
+    ok.
+
+%% Criterion 16 (#220): a daemon restart after a remove keeps the removed tool
+%% unresolved -- the remove's file deletion is the durable half of the verb, so
+%% the boot loader finds no manifest to re-register. The daemon boots with an
+%% empty tools dir; a config tool `mgmt_purged' is registered over the socket
+%% (persisting `mgmt_purged.lisp') and then removed (deleting that file). The
+%% daemon is stopped and the runtime reset -- if the remove had only touched the
+%% live registry, the reboot's `soma_tool_config:load_dir/1' would re-register
+%% the leftover file. After a fresh `soma_cli:daemon/1' boot against the same
+%% tools dir, the name still does not resolve: the removal survived the restart.
+test_restart_after_remove_stays_unresolved(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    %% First boot: register a config tool, then remove it over the socket.
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_purged\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    RegReply = register_over_socket(SocketPath, Manifest),
+    match = re:run(RegReply, "\\(status registered\\)", [{capture, none}]),
+    {ok, #{adapter := cli}} = soma_tool_registry:resolve_descriptor(mgmt_purged),
+    Reply = request_over_socket(SocketPath, <<"(tool-remove \"mgmt_purged\")">>),
+    match = re:run(Reply, "\\(status removed\\)", [{capture, none}]),
+
+    %% Stop the daemon and reset the runtime, so only what is on disk decides
+    %% what the reboot registers.
+    _ = stop_over_socket(SocketPath),
+    ok = wait_socket_gone(SocketPath, 50),
+    _ = application:stop(soma_runtime),
+
+    %% Reboot against the same tools dir: `load_dir/1' finds no manifest file
+    %% for the removed tool, so the name stays unresolved.
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    {ok, _StillHere} = soma_tool_registry:resolve_descriptor(mgmt_purged),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
