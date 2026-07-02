@@ -113,11 +113,13 @@ execute_valid_step(Data, Step) ->
             %% program via `executable' + `argv'. The worker owns the difference;
             %% `soma_run' only chooses which opts to hand it.
             case prepare_cli_argv_placeholders(Descriptor0, Input) of
-                {error, {missing_cli_placeholder, _Name} = Reason} ->
+                {error, Reason} ->
                     %% A `cli' argv placeholder names a key the resolved step
-                    %% input does not carry. This fails before any worker is
-                    %% spawned, exactly like an unregistered tool: reuse
-                    %% `fail_run/5' with `undefined' for the worker pid so
+                    %% input does not carry (`missing_cli_placeholder'), or its
+                    %% value does not match the declared param type
+                    %% (`invalid_cli_placeholder_value'). Both fail before any
+                    %% worker is spawned, exactly like an unregistered tool:
+                    %% reuse `fail_run/5' with `undefined' for the worker pid so
                     %% there is no `tool.started' event for this step.
                     fail_run(Data, Step, ToolCallId, undefined, Reason);
                 Descriptor ->
@@ -283,7 +285,8 @@ prepare_cli_argv_placeholders(#{adapter := cli, argv := Argv} = Descriptor,
                               Input)
   when is_map(Input) ->
     Lookup = cli_placeholder_lookup(Input),
-    case render_cli_argv(Argv, Lookup) of
+    Types = cli_placeholder_types(Descriptor),
+    case render_cli_argv(Argv, Lookup, Types) of
         {error, _} = Error ->
             Error;
         {ok, RenderedArgv} ->
@@ -297,18 +300,19 @@ prepare_cli_argv_placeholders(Descriptor, _Input) ->
     Descriptor.
 
 %% Render every argv element, short-circuiting on the first placeholder whose
-%% key is absent from the resolved step input. A missing key cannot become a
-%% worker argv element -- it is reported to the caller as a named failure
-%% instead, so the run can fail before any worker is spawned.
-render_cli_argv(Argv, Lookup) ->
-    render_cli_argv(Argv, Lookup, []).
+%% key is absent from the resolved step input or whose value does not match
+%% the declared param type. Neither can become a worker argv element -- each is
+%% reported to the caller as a named failure instead, so the run can fail
+%% before any worker is spawned.
+render_cli_argv(Argv, Lookup, Types) ->
+    render_cli_argv(Argv, Lookup, Types, []).
 
-render_cli_argv([], _Lookup, Acc) ->
+render_cli_argv([], _Lookup, _Types, Acc) ->
     {ok, lists:reverse(Acc)};
-render_cli_argv([Arg | Rest], Lookup, Acc) ->
-    case render_cli_argv_placeholder(Arg, Lookup) of
+render_cli_argv([Arg | Rest], Lookup, Types, Acc) ->
+    case render_cli_argv_placeholder(Arg, Lookup, Types) of
         {error, _} = Error -> Error;
-        Rendered -> render_cli_argv(Rest, Lookup, [Rendered | Acc])
+        Rendered -> render_cli_argv(Rest, Lookup, Types, [Rendered | Acc])
     end.
 
 cli_argv_has_placeholder([]) ->
@@ -337,16 +341,34 @@ cli_placeholder_key(Key) when is_binary(Key) ->
 cli_placeholder_key(_Key) ->
     error.
 
-render_cli_argv_placeholder(Arg, Lookup) ->
+render_cli_argv_placeholder(Arg, Lookup, Types) ->
     case cli_argv_placeholder_name(Arg) of
         {placeholder, Name} ->
             case maps:find(Name, Lookup) of
-                {ok, Value} -> render_cli_placeholder_value(Value);
+                {ok, Value} ->
+                    render_cli_placeholder_value(
+                        Name, maps:get(Name, Types, undefined), Value);
                 error -> {error, {missing_cli_placeholder, Name}}
             end;
         none ->
             Arg
     end.
+
+%% The declared param types of a cli descriptor, keyed by placeholder name.
+%% Normalization guarantees every argv placeholder is declared in `params',
+%% so a lookup miss can only mean a descriptor that bypassed that guarantee --
+%% the typed renderer below then fails closed on the `undefined' type.
+cli_placeholder_types(#{params := Params}) when is_list(Params) ->
+    lists:foldl(
+      fun(#{name := Name, type := Type}, Acc) when is_binary(Name) ->
+              Acc#{Name => Type};
+         (_Other, Acc) ->
+              Acc
+      end,
+      #{},
+      Params);
+cli_placeholder_types(_Descriptor) ->
+    #{}.
 
 cli_argv_placeholder_name(Arg) when is_binary(Arg) ->
     Size = byte_size(Arg),
@@ -368,12 +390,28 @@ cli_argv_placeholder_name(Arg) when is_list(Arg) ->
 cli_argv_placeholder_name(_) ->
     none.
 
-render_cli_placeholder_value(Value) when is_binary(Value) ->
+%% Render a placeholder value by its declared param type. The declared type is
+%% the contract: a `string' must be a binary or an Erlang string (kept
+%% literal), an `integer' renders as base-10 decimal text, a `boolean' renders
+%% as `"true"' / `"false"'. A value whose shape does not match its declared
+%% type fails closed with `{invalid_cli_placeholder_value, Name, Type}' --
+%% never a fall-back to Erlang term printing, so no term syntax can leak into
+%% an external process's argv.
+render_cli_placeholder_value(_Name, string, Value) when is_binary(Value) ->
     Value;
-render_cli_placeholder_value(Value) when is_list(Value) ->
-    Value;
-render_cli_placeholder_value(Value) ->
-    lists:flatten(io_lib:format("~p", [Value])).
+render_cli_placeholder_value(Name, string, Value) when is_list(Value) ->
+    case unicode:characters_to_binary(Value) of
+        Bin when is_binary(Bin) -> Value;
+        _ -> {error, {invalid_cli_placeholder_value, Name, string}}
+    end;
+render_cli_placeholder_value(_Name, integer, Value) when is_integer(Value) ->
+    integer_to_list(Value);
+render_cli_placeholder_value(_Name, boolean, true) ->
+    "true";
+render_cli_placeholder_value(_Name, boolean, false) ->
+    "false";
+render_cli_placeholder_value(Name, Type, _Value) ->
+    {error, {invalid_cli_placeholder_value, Name, Type}}.
 
 durable_run_options(#data{run_id = RunId,
                           session_id = SessionId,
