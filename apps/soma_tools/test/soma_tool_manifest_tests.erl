@@ -43,7 +43,7 @@ test_normalize_preserves_cli_argv_placeholder_with_declared_param() ->
         argv => ["--doc", "{doc}", "--dry-run"],
         params => Params
     },
-    Expected = Manifest#{argv => ["--doc", "{missing}", "--dry-run"]},
+    Expected = Manifest#{argv => ["--doc", "{doc}", "--dry-run"]},
     ?assertEqual({ok, Expected}, soma_tool_manifest:normalize(Manifest)).
 
 normalize_preserves_cli_argv_placeholder_with_declared_param_test() ->
