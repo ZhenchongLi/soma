@@ -6,12 +6,14 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_cli_argv_placeholder_from_step_replaces_doc/1,
          test_cli_argv_placeholder_sends_no_trailing_input/1,
-         test_cli_argv_placeholder_metacharacters_are_one_arg/1]).
+         test_cli_argv_placeholder_metacharacters_are_one_arg/1,
+         test_cli_argv_placeholder_renders_string_integer_boolean/1]).
 
 all() ->
     [test_cli_argv_placeholder_from_step_replaces_doc,
      test_cli_argv_placeholder_sends_no_trailing_input,
-     test_cli_argv_placeholder_metacharacters_are_one_arg].
+     test_cli_argv_placeholder_metacharacters_are_one_arg,
+     test_cli_argv_placeholder_renders_string_integer_boolean].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -131,6 +133,51 @@ test_cli_argv_placeholder_metacharacters_are_one_arg(Config) ->
     Expected = <<"argc=2\n"
                  "arg1=--payload\n"
                  "arg2=; rm -rf / && echo pwned | cat $(whoami) \"quoted arg\"\n">>,
+    ?assertEqual(Expected, step_output_for(Events, s1)),
+    ok.
+
+%% Criterion 8: placeholder rendering follows the declared `string' /
+%% `integer' / `boolean' param types -- a string value stays literal text, an
+%% integer renders as base-10 decimal text, and a boolean renders as `"true"'
+%% or `"false"'. Driving all three through one cli manifest proves the
+%% rendering matches the declared type for each placeholder, not just an
+%% incidental Erlang term-printing fallback.
+test_cli_argv_placeholder_renders_string_integer_boolean(Config) ->
+    StorePid = event_store_pid(),
+    Helper = write_print_argv_helper(Config),
+    Manifest = #{name => cli_typed_placeholder,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => ["--name", "{name}", "--count", "{count}",
+                          "--verbose", "{verbose}"],
+                 params => [#{name => <<"name">>,
+                              type => string,
+                              required => true},
+                            #{name => <<"count">>,
+                              type => integer,
+                              required => true},
+                            #{name => <<"verbose">>,
+                              type => boolean,
+                              required => true}]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1,
+               tool => cli_typed_placeholder,
+               args => #{name => <<"widget">>, count => 42, verbose => true}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ?assertEqual(ok,
+                 wait_for_event(StorePid, RunId, <<"run.completed">>, 100)),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Expected = <<"argc=6\n"
+                 "arg1=--name\n"
+                 "arg2=widget\n"
+                 "arg3=--count\n"
+                 "arg4=4200\n"
+                 "arg5=--verbose\n"
+                 "arg6=true\n">>,
     ?assertEqual(Expected, step_output_for(Events, s1)),
     ok.
 
