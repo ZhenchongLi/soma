@@ -5,11 +5,13 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_cli_argv_placeholder_from_step_replaces_doc/1,
-         test_cli_argv_placeholder_sends_no_trailing_input/1]).
+         test_cli_argv_placeholder_sends_no_trailing_input/1,
+         test_cli_argv_placeholder_metacharacters_are_one_arg/1]).
 
 all() ->
     [test_cli_argv_placeholder_from_step_replaces_doc,
-     test_cli_argv_placeholder_sends_no_trailing_input].
+     test_cli_argv_placeholder_sends_no_trailing_input,
+     test_cli_argv_placeholder_metacharacters_are_one_arg].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -92,6 +94,43 @@ test_cli_argv_placeholder_sends_no_trailing_input(Config) ->
                  "arg1=--edit\n"
                  "arg2=doc-arg\n"
                  "arg3=changes-arg\n">>,
+    ?assertEqual(Expected, step_output_for(Events, s1)),
+    ok.
+
+%% Criterion 7: a placeholder value carrying shell metacharacters must reach
+%% the external process as one literal argv element, never shell-expanded or
+%% split. The port launches `open_port({spawn_executable, _}, [{args, _} | _])'
+%% -- no shell -- so this proves the runtime never routes rendered placeholder
+%% values through a shell. The payload mixes `;', `&&', `|', `$()', quotes and
+%% spaces; the stub helper reports back the argc it received and each argv
+%% element on its own line, so the test can assert the whole payload landed in
+%% a single argv slot, byte for byte.
+test_cli_argv_placeholder_metacharacters_are_one_arg(Config) ->
+    StorePid = event_store_pid(),
+    Payload = <<"; rm -rf / && echo pwned | cat $(whoami) \"quoted arg\"">>,
+    Helper = write_print_argv_helper(Config),
+    Manifest = #{name => cli_metacharacter_placeholder,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => ["--payload", "{payload}"],
+                 params => [#{name => <<"payload">>,
+                              type => string,
+                              required => true}]},
+    ok = soma_tool_registry:register_tool(Manifest),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => s1,
+               tool => cli_metacharacter_placeholder,
+               args => #{payload => Payload}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ?assertEqual(ok,
+                 wait_for_event(StorePid, RunId, <<"run.completed">>, 100)),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    Expected = <<"argc=WRONG\n"
+                 "arg1=--payload\n"
+                 "arg2=; rm -rf / && echo pwned | cat $(whoami) \"quoted arg\"\n">>,
     ?assertEqual(Expected, step_output_for(Events, s1)),
     ok.
 
