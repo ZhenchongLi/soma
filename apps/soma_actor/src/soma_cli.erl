@@ -6,7 +6,7 @@
 
 -export([run/1, ask/1, trace/1, status/1, cancel/1, stop/1, ping/1, daemon/1,
          daemon_foreground/1, ensure_daemon/2, resolve_socket/1,
-         tool_register/1]).
+         tool_register/1, tool_list/1, tool_remove/1]).
 
 %% Resolve the task source (a file path, or stdin when the path arg is `-'),
 %% connect to the resolved socket path with `{packet, 4}', frame + send the source
@@ -151,6 +151,35 @@ tool_register(#{file := File, socket := Path}) ->
 %% Wrap the manifest file's `(tool ...)' bytes in a `(tool-register ...)' s-expr.
 tool_register_source(Manifest) ->
     iolist_to_binary(["(tool-register ", Manifest, ")"]).
+
+%% Send `(tool-list)' and print the daemon's `(tool-list ...)' reply -- the
+%% live registry's catalog projection. Same connect / frame+send / read /
+%% print shape as `tool_register/1'.
+-spec tool_list(map()) -> non_neg_integer().
+tool_list(#{socket := Path}) ->
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(tool-list)">>),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    io:format("~s~n", [Reply]),
+    0.
+
+%% Send `(tool-remove "<name>")' for a config-registered tool and print the
+%% daemon's reply. The name travels as a Lisp string; the daemon is the only
+%% parser and never mints an atom from it.
+-spec tool_remove(map()) -> non_neg_integer().
+tool_remove(#{name := Name, socket := Path}) ->
+    Source = iolist_to_binary(["(tool-remove ", soma_lisp:render(
+                                                    unicode:characters_to_binary(Name)),
+                               ")"]),
+    {ok, Sock} = gen_tcp:connect({local, Path}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, Source),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
+    ok = gen_tcp:close(Sock),
+    io:format("~s~n", [Reply]),
+    0.
 
 %% Liveness probe. Resolve the socket the same way the other client funcs do,
 %% then attempt a `{local, Path}' connect that sends no request and closes
