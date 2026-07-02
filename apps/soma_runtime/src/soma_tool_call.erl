@@ -35,29 +35,35 @@ run(#{executable := Executable, argv := Argv} = Opts) ->
     Input = maps:get(input, Opts),
     ToolCallId = maps:get(tool_call_id, Opts),
     ReplyTo = maps:get(reply_to, Opts),
-    Result = run_cli(Executable, Argv, Input, ToolCallId, ReplyTo),
+    AppendInput = maps:get(append_input, Opts, true),
+    Result = run_cli(Executable, Argv, Input, AppendInput, ToolCallId, ReplyTo),
     ReplyTo ! {tool_result, ToolCallId, self(), Result},
     ok.
 
-%% Launch the external program with `argv ++ [InputArg]' through a port -- no
-%% shell, so each argv element reaches the program as one literal argument. The
-%% step's resolved input travels as the final argument (the port cannot half-close
-%% the child's stdin, so a stdin-reading helper would hang). Collect the program's
-%% stdout and reply `{ok, Stdout}' on exit status 0.
+%% Launch the external program through a port -- no shell, so each argv element
+%% reaches the program as one literal argument. No-placeholder cli descriptors
+%% keep the original `argv ++ [InputArg]' protocol. Descriptors whose argv was
+%% fully prepared from placeholders skip that trailing compatibility argument.
+%% Collect the program's stdout and reply `{ok, Stdout}' on exit status 0.
 %%
 %% Before blocking in `collect_cli/2', report the spawned child's OS pid up to the
 %% run. `exit(WorkerPid, kill)' is untrappable, so this worker gets no chance to
 %% reap its child on teardown; the run -- which outlives the worker -- holds the
 %% OS pid and kills it when the run times out or is cancelled. Reporting the OS
 %% pid as the worker's first act keeps the run holding it for the whole step.
-run_cli(Executable, Argv, Input, ToolCallId, ReplyTo) ->
-    Args = [render_arg(A) || A <- Argv] ++ [render_input(Input)],
+run_cli(Executable, Argv, Input, AppendInput, ToolCallId, ReplyTo) ->
+    Args = [render_arg(A) || A <- Argv] ++ input_args(AppendInput, Input),
     case open_cli_port(Executable, Args) of
         {ok, Port} ->
             await_cli(Port, ToolCallId, ReplyTo);
         {error, Reason} ->
             {error, Reason}
     end.
+
+input_args(false, _Input) ->
+    [];
+input_args(true, Input) ->
+    [render_input(Input)].
 
 %% Open the port for the external program, catching the raise `open_port' makes
 %% when the executable cannot be spawned. The raise kills the worker and is

@@ -264,6 +264,9 @@ cancelled(_EventType, _Event, Data) ->
 %% descriptor hands it the `executable' and `argv' so the worker opens a port.
 adapter_opts(#{adapter := erlang_module, module := Module}) ->
     #{module => Module};
+adapter_opts(#{adapter := cli, executable := Executable, argv := Argv,
+               append_input := AppendInput}) ->
+    #{executable => Executable, argv => Argv, append_input => AppendInput};
 adapter_opts(#{adapter := cli, executable := Executable, argv := Argv}) ->
     #{executable => Executable, argv => Argv}.
 
@@ -271,10 +274,22 @@ prepare_cli_argv_placeholders(#{adapter := cli, argv := Argv} = Descriptor,
                               Input)
   when is_map(Input) ->
     Lookup = cli_placeholder_lookup(Input),
-    Descriptor#{argv := [render_cli_argv_placeholder(Arg, Lookup)
-                         || Arg <- Argv]};
+    Prepared = Descriptor#{argv := [render_cli_argv_placeholder(Arg, Lookup)
+                                    || Arg <- Argv]},
+    case cli_argv_has_placeholder(Argv) of
+        true -> Prepared#{append_input => false};
+        false -> Prepared
+    end;
 prepare_cli_argv_placeholders(Descriptor, _Input) ->
     Descriptor.
+
+cli_argv_has_placeholder([]) ->
+    false;
+cli_argv_has_placeholder([Arg | Rest]) ->
+    case cli_argv_placeholder_name(Arg) of
+        {placeholder, _Name} -> true;
+        none -> cli_argv_has_placeholder(Rest)
+    end.
 
 cli_placeholder_lookup(Input) ->
     maps:fold(
