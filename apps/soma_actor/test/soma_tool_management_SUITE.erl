@@ -11,13 +11,15 @@
 -export([test_register_sends_manifest_over_socket/1,
          test_register_tool_resolves_before_restart/1,
          test_register_writes_normalized_manifest_file/1,
-         test_restart_after_register_resolves_from_file/1]).
+         test_restart_after_register_resolves_from_file/1,
+         test_register_invalid_manifest_returns_normalize_error/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
      test_register_tool_resolves_before_restart,
      test_register_writes_normalized_manifest_file,
-     test_restart_after_register_resolves_from_file].
+     test_restart_after_register_resolves_from_file,
+     test_register_invalid_manifest_returns_normalize_error].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -187,6 +189,45 @@ test_restart_after_register_resolves_from_file(Config) ->
     {ok, Descriptor} = soma_tool_registry:resolve_descriptor(mgmt_reboot),
     #{adapter := cli, executable := Executable} = Descriptor,
     <<"/bin/echo">> = unicode:characters_to_binary(Executable),
+    ok.
+
+%% Criterion 5 (#220): a register request carrying an invalid manifest returns
+%% the same named `{error, Reason}' that `soma_tool_manifest:normalize/1' itself
+%% produces -- the server must surface normalize's reason verbatim, never rename
+%% it. The daemon boots with an empty tools dir; the test sends a
+%% `(tool-register (tool ...))' frame whose body carries a bad `effect' value
+%% (`effect banana'), and asserts the wire reply is a failed result whose reason
+%% is the exact rendering of normalize's own `{invalid_effect, banana}'.
+test_register_invalid_manifest_returns_normalize_error(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_bad\")\n"
+                 "  (effect banana) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+
+    %% The reason `normalize/1' itself produces for this exact manifest, taken
+    %% through the same compile path the server uses.
+    {ok, [ToolForm]} = soma_lfe_reader:read_forms(Manifest),
+    {ok, BadManifest} = soma_tool_config:compile_form(ToolForm),
+    {error, {invalid_effect, banana}} =
+        soma_tool_manifest:normalize(BadManifest),
+    Expected = iolist_to_binary(soma_lisp:render({bad_effect, banana})),
+
+    %% The daemon rejects the register and carries that reason verbatim on the
+    %% wire -- a failed result whose `error' sub-form is normalize's own reason.
+    Reply = register_over_socket(SocketPath, Manifest),
+    match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
+    {_, _} = binary:match(Reply, Expected),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
