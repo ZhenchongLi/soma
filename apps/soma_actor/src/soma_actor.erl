@@ -889,9 +889,15 @@ build_call_opts(#{provider := openai_compat,
         _ -> Opts1
     end;
 %% A non-real-provider `model_config' -- empty or carrying a `directive' (the
-%% v0.5 mock default) -- is not routed: the builder returns the envelope's
-%% `llm' map unchanged, the mock directive opts the actor passes to
-%% `soma_llm_call' today.
+%% v0.5 mock default) -- is not routed. An explicit non-empty envelope `llm' map
+%% still wins. A shorthand ask_actor envelope carries `llm => #{}`, so a target
+%% actor with a mock directive in its model_config can drive the same mock worker
+%% path without opening a provider socket.
+build_call_opts(#{directive := _Directive} = ModelConfig, Envelope) ->
+    case maps:get(llm, Envelope, #{}) of
+        Llm when map_size(Llm) =:= 0 -> ModelConfig;
+        Llm -> Llm
+    end;
 build_call_opts(_ModelConfig, Envelope) ->
     maps:get(llm, Envelope, #{}).
 

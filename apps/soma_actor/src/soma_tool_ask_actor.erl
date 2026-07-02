@@ -23,10 +23,11 @@ manifest() ->
     {ok, soma_tool:output()} | {error, soma_tool:error()}.
 invoke(Input, Ctx) ->
     case normalize_input(Input) of
-        {ok, StableName, Envelope} ->
+        {ok, StableName, Envelope, Mode} ->
             case soma_actor_registry:lookup(StableName) of
                 {ok, ActorPid} ->
-                    ask_actor(ActorPid, with_parent_correlation(Envelope, Ctx));
+                    ask_actor(ActorPid, with_parent_correlation(Envelope, Ctx),
+                              Mode);
                 {error, Reason} ->
                     {error, ask_actor_lookup_error(Reason)}
             end;
@@ -40,9 +41,14 @@ ask_actor_lookup_error(Reason) ->
 
 normalize_input(#{target := StableName, envelope := Envelope})
   when is_binary(StableName), is_map(Envelope) ->
-    {ok, StableName, Envelope};
+    {ok, StableName, Envelope, envelope};
+normalize_input(#{target := StableName, message := Message})
+  when is_binary(StableName), is_binary(Message) ->
+    {ok, StableName, message_envelope(Message), shorthand};
 normalize_input(#{target := StableName}) when not is_binary(StableName) ->
     {error, {invalid_ask_actor_input, invalid_target}};
+normalize_input(#{message := Message}) when not is_binary(Message) ->
+    {error, {invalid_ask_actor_input, invalid_message}};
 normalize_input(#{envelope := Envelope}) when not is_map(Envelope) ->
     {error, {invalid_ask_actor_input, invalid_envelope}};
 normalize_input(Input) when is_map(Input) ->
@@ -53,23 +59,34 @@ normalize_input(Input) when is_map(Input) ->
 normalize_input(_Input) ->
     {error, {invalid_ask_actor_input, non_map}}.
 
+message_envelope(Message) ->
+    #{type => <<"ask">>,
+      payload => #{prompt => Message},
+      llm => #{}}.
+
 with_parent_correlation(Envelope, Ctx) ->
     case maps:get(correlation_id, Ctx, undefined) of
         undefined -> Envelope;
         CorrelationId -> Envelope#{correlation_id => CorrelationId}
     end.
 
-ask_actor(ActorPid, Envelope) ->
+ask_actor(ActorPid, Envelope, Mode) ->
     case soma_actor:ask(ActorPid, Envelope, ask_timeout_ms()) of
         {ok, Result} ->
-            {ok, Result};
+            {ok, unwrap_shorthand_reply(Mode, Result)};
         {error, Reason} ->
             {error, Reason};
         timeout ->
             {error, timeout};
         Reply ->
-            {ok, Reply}
+            {ok, unwrap_shorthand_reply(Mode, Reply)}
     end.
+
+unwrap_shorthand_reply(shorthand, #{kind := reply, text := Text})
+  when is_binary(Text) ->
+    Text;
+unwrap_shorthand_reply(_Mode, Result) ->
+    Result.
 
 ask_timeout_ms() ->
     maps:get(timeout_ms, describe()).
