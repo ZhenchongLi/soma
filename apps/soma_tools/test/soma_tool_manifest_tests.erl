@@ -49,6 +49,25 @@ test_normalize_preserves_cli_argv_placeholder_with_declared_param() ->
 normalize_preserves_cli_argv_placeholder_with_declared_param_test() ->
     test_normalize_preserves_cli_argv_placeholder_with_declared_param().
 
+test_normalize_rejects_cli_argv_placeholder_without_param() ->
+    Manifest = #{
+        name => edit_doc,
+        effect => state,
+        idempotent => false,
+        timeout_ms => 1000,
+        adapter => cli,
+        executable => "edit",
+        argv => ["--doc", "{doc}", "--changes", "{changes}"],
+        params => [#{name => <<"doc">>, type => string, required => true}]
+    },
+    ?assertEqual(
+        {error, {unknown_argv_placeholder, <<"changes">>}},
+        soma_tool_manifest:normalize(Manifest)
+    ).
+
+normalize_rejects_cli_argv_placeholder_without_param_test() ->
+    test_normalize_rejects_cli_argv_placeholder_without_param().
+
 test_normalize_rejects_missing_shared_field() ->
     Base = #{
         name => file_read,
