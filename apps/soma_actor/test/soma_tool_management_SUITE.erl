@@ -12,14 +12,16 @@
          test_register_tool_resolves_before_restart/1,
          test_register_writes_normalized_manifest_file/1,
          test_restart_after_register_resolves_from_file/1,
-         test_register_invalid_manifest_returns_normalize_error/1]).
+         test_register_invalid_manifest_returns_normalize_error/1,
+         test_failed_register_leaves_tools_dir_unchanged/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
      test_register_tool_resolves_before_restart,
      test_register_writes_normalized_manifest_file,
      test_restart_after_register_resolves_from_file,
-     test_register_invalid_manifest_returns_normalize_error].
+     test_register_invalid_manifest_returns_normalize_error,
+     test_failed_register_leaves_tools_dir_unchanged].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -228,6 +230,43 @@ test_register_invalid_manifest_returns_normalize_error(Config) ->
     Reply = register_over_socket(SocketPath, Manifest),
     match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
     {_, _} = binary:match(Reply, Expected),
+    ok.
+
+%% Criterion 6 (#220): a failed register leaves the configured tools directory
+%% unchanged. Validation (compile + normalize + admission) runs before any disk
+%% write, so a rejected request never writes a `<name>.lisp' file. The daemon
+%% boots with an empty tools dir; the test snapshots the directory, sends a
+%% register whose manifest is rejected by `normalize/1' (`effect banana'), and
+%% asserts the directory listing is byte-for-byte identical afterwards -- no
+%% `mgmt_nowrite.lisp' appeared.
+test_failed_register_leaves_tools_dir_unchanged(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    %% Snapshot the tools dir before the failed register.
+    Before = lists:sort(filelib:wildcard(filename:join(ToolsDir, "*"))),
+
+    %% An invalid manifest (`effect banana') is rejected before any disk write.
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_nowrite\")\n"
+                 "  (effect banana) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    Reply = register_over_socket(SocketPath, Manifest),
+    match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
+
+    %% The tools dir is unchanged: no `<name>.lisp' was written for the rejected
+    %% tool and the listing is identical to the pre-register snapshot.
+    After = lists:sort(filelib:wildcard(filename:join(ToolsDir, "*"))),
+    Before = After,
+    [_Written] = filelib:wildcard(filename:join(ToolsDir, "mgmt_nowrite.lisp")),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
