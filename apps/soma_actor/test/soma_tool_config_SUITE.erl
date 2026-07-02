@@ -442,7 +442,7 @@ test_shadowed_file_write_keeps_resume_safety_fields(Config) ->
     %% The same lookup the resume planner classifies from still carries the
     %% built-in's conservative safety fields.
     {ok, Descriptor} = soma_tool_registry:resolve_descriptor(file_write),
-    #{effect := reader, idempotent := true} = Descriptor,
+    #{effect := state, idempotent := false} = Descriptor,
     ok.
 
 %% Write a tiny cli helper into the case's priv_dir: uppercase the last argv
