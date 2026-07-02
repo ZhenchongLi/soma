@@ -173,8 +173,12 @@ tool_register_form(Bytes) ->
 %% Compile the `(tool ...)' body through the shared boot-loader compiler,
 %% register the resulting manifest in the running registry (which normalizes
 %% it), and render the terminal reply. A valid register makes the named tool
-%% resolve live on this daemon before any restart. A compile or registration
-%% error renders an `error' result carrying the reason verbatim.
+%% resolve live on this daemon before any restart. Admission gates run before
+%% any side effect: a built-in name is `{reserved_name, Name}', and a name that
+%% already resolves live (a config tool -- built-ins were caught above) is
+%% `{already_registered, Name}' -- distinct from the boot loader's per-load
+%% `{duplicate_name, Name}' because it checks live registry state. A compile or
+%% registration error renders an `error' result carrying the reason verbatim.
 handle_tool_register(ToolForm, ToolsDir) ->
     case soma_tool_config:compile_form(ToolForm) of
         {ok, #{name := Name} = Manifest} ->
@@ -183,7 +187,14 @@ handle_tool_register(ToolForm, ToolsDir) ->
                     soma_lisp:render(#{status => error,
                                        error => {reserved_name, Name}});
                 false ->
-                    register_normalized_tool(Name, Manifest, ToolsDir)
+                    case soma_tool_registry:resolve_descriptor(Name) of
+                        {ok, _Existing} ->
+                            soma_lisp:render(#{status => error,
+                                               error => {already_registered,
+                                                         Name}});
+                        {error, not_found} ->
+                            register_normalized_tool(Name, Manifest, ToolsDir)
+                    end
             end;
         {error, Reason} ->
             soma_lisp:render(#{status => error, error => Reason})
