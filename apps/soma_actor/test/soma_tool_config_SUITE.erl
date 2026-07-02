@@ -11,6 +11,7 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_daemon_boot_registers_config_tool/1,
          test_config_tool_description_in_catalog/1,
+         test_load_dir_registers_cli_tool_with_argv_placeholders/1,
          test_invalid_field_surfaces_normalize_error/1,
          test_safety_defaults_and_declared_values/1,
          test_non_cli_adapter_rejected/1,
@@ -29,6 +30,7 @@
 all() ->
     [test_daemon_boot_registers_config_tool,
      test_config_tool_description_in_catalog,
+     test_load_dir_registers_cli_tool_with_argv_placeholders,
      test_invalid_field_surfaces_normalize_error,
      test_safety_defaults_and_declared_values,
      test_non_cli_adapter_rejected,
@@ -106,6 +108,38 @@ test_config_tool_description_in_catalog(Config) ->
     [Entry] = [E || #{name := cfg_described} = E
                         <- soma_tool_registry:catalog()],
     #{description := <<"Uppercase the final argv argument.">>} = Entry,
+    ok.
+
+%% Criterion 3 (#218): `soma_tool_config:load_dir/1' compiles a config
+%% `(tool ...)' file with literal cli argv placeholders plus matching
+%% model-facing params, registers it through `soma_tool_registry:register_tool/1',
+%% and therefore through `soma_tool_manifest:normalize/1'. The resolved
+%% descriptor proves the loader did not strip or pre-render the placeholder
+%% argv entries, and that the matching params reached the manifest validator.
+test_load_dir_registers_cli_tool_with_argv_placeholders(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_argv_placeholders"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_doc_edit.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_doc_edit\")\n"
+             "  (description \"Edit a document with an explicit change set.\")\n"
+             "  (effect state) (idempotent false) (timeout-ms 5000)\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv \"edit\" \"{doc}\" \"{changes}\")\n"
+             "  (params ((\"doc\" string required \"Document path\")\n"
+             "           (\"changes\" string required \"Requested edits\"))))\n">>),
+    #{registered := [cfg_doc_edit], skipped := []} =
+        soma_tool_config:load_dir(ToolsDir),
+    {ok, Descriptor} = soma_tool_registry:resolve_descriptor(cfg_doc_edit),
+    #{adapter := cli, argv := Argv, params := Params} = Descriptor,
+    [<<"edit">>, <<"{doc}">>, <<"{changes}">>] =
+        [unicode:characters_to_binary(A) || A <- Argv],
+    [#{name := <<"doc">>, type := string, required := true,
+       doc := <<"Document path">>},
+     #{name := <<"changes">>, type := string, required := true,
+       doc := <<"Requested edits">>}] = Params,
     ok.
 
 %% Criterion 3 (#205): a tool file carrying an invalid manifest field goes
