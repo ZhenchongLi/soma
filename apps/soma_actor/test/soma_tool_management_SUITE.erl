@@ -221,7 +221,7 @@ test_register_invalid_manifest_returns_normalize_error(Config) ->
     {ok, BadManifest} = soma_tool_config:compile_form(ToolForm),
     {error, {invalid_effect, banana}} =
         soma_tool_manifest:normalize(BadManifest),
-    Expected = iolist_to_binary(soma_lisp:render({bad_effect, banana})),
+    Expected = iolist_to_binary(soma_lisp:render({invalid_effect, banana})),
 
     %% The daemon rejects the register and carries that reason verbatim on the
     %% wire -- a failed result whose `error' sub-form is normalize's own reason.
