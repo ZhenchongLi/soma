@@ -279,6 +279,10 @@ write_manifest_file(ToolsDir, Name, Manifest) ->
 %% `soma_tool_config:compile_form/1' re-reads to the same manifest -- the
 %% round-trip the boot loader depends on. Config tools are always `cli'
 %% (`compile_form/1' gates the adapter), so only the cli shape is rendered.
+%% `params' is included whenever the manifest carries it: a templated argv's
+%% placeholders only resolve after a reload if their param declarations
+%% survive the round-trip (dropping them here made `load_dir/1' skip the file
+%% on the very next boot with `{unknown_argv_placeholder, _}').
 render_tool_manifest(#{name := Name, effect := Effect,
                        idempotent := Idempotent, timeout_ms := TimeoutMs,
                        adapter := cli, executable := Executable,
@@ -291,12 +295,33 @@ render_tool_manifest(#{name := Name, effect := Effect,
             ["(timeout-ms ", integer_to_list(TimeoutMs), ")"],
             render_atom_field(adapter, cli),
             render_string_field(executable, Executable),
-            render_argv_field(Argv)],
+            render_argv_field(Argv)]
+        ++ render_optional_params(Manifest),
     ["(tool ", lists:join(" ", Fields), ")\n"].
 
 render_optional_description(#{description := Description}) ->
     [render_string_field(description, Description)];
 render_optional_description(_Manifest) ->
+    [].
+
+render_optional_params(#{params := Params}) when is_list(Params), Params =/= [] ->
+    Rows = [render_param_row(Param) || Param <- Params],
+    [["(params (", lists:join(" ", Rows), "))"]];
+render_optional_params(_Manifest) ->
+    [].
+
+render_param_row(#{name := Name, type := Type, required := Required} = Param) ->
+    RequiredSymbol = case Required of
+                         true -> "required";
+                         false -> "optional"
+                     end,
+    Parts = [soma_lisp:render(Name), atom_to_list(Type), RequiredSymbol]
+        ++ render_optional_param_doc(Param),
+    ["(", lists:join(" ", Parts), ")"].
+
+render_optional_param_doc(#{doc := Doc}) ->
+    [soma_lisp:render(Doc)];
+render_optional_param_doc(_Param) ->
     [].
 
 render_string_field(Key, Value) ->
