@@ -28,6 +28,8 @@ Proved by `soma_tool_config_SUITE`:
 | A file declaring a built-in tool's name is skipped with `{reserved_name, Name}`; the built-in descriptor is unchanged after the load and valid neighbours still register (#208). | `test_reserved_name_skipped_builtin_and_neighbour_intact` |
 | A config file redeclaring `file_write` as `reader`/idempotent cannot flip the descriptor `soma_run_resume_plan` classifies from — it still resolves `effect => state, idempotent => false` (#208). | `test_shadowed_file_write_keeps_resume_safety_fields` |
 | Two config files declaring one name: the first in sorted filename order registers, the later skips with `{duplicate_name, Name}` (#208). | `test_duplicate_name_first_sorted_file_wins` |
+| A `(tool …)` file with literal cli argv placeholders (`"{doc}"`, `"{changes}"`) plus matching model-facing `params` registers: the resolved `cli` descriptor keeps the placeholder argv entries unrendered and carries the declared params — the loader does not strip or pre-render them (#218). | `test_load_dir_registers_cli_tool_with_argv_placeholders` |
+| A `(tool …)` file with a cli argv placeholder that has no matching `params` entry skips with `soma_tool_manifest:normalize/1`'s named reason `{unknown_argv_placeholder, Name}` and never registers (#218). | `test_load_dir_skips_cli_tool_with_unknown_argv_placeholder` |
 
 ## Reader Unicode Contract
 
