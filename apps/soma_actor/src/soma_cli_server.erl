@@ -305,7 +305,20 @@ handle_tool_remove(NameBin, ToolsDir) ->
              soma_lisp:render(NameBin), "))"];
         error ->
             soma_lisp:render(#{status => error,
-                               error => {not_config_tool, NameBin}})
+                               error => {not_config_tool,
+                                         known_tool_name(NameBin)}})
+    end.
+
+%% Map a rejected wire name back to an *existing* tool atom when one exists --
+%% a built-in or a live registry name -- so the error reason carries the name
+%% the way the register gates do (`{reserved_name, echo}', atom). No atom is
+%% ever minted from external input: an unknown name stays a binary.
+known_tool_name(NameBin) ->
+    Known = soma_tool_registry:builtin_names()
+        ++ [maps:get(name, Entry) || Entry <- soma_tool_registry:list_tools()],
+    case [Name || Name <- Known, atom_to_binary(Name, utf8) =:= NameBin] of
+        [Name | _] -> Name;
+        [] -> NameBin
     end.
 
 %% Delete the persisted manifest at `<ToolsDir>/<name>.lisp' -- the mirror of
