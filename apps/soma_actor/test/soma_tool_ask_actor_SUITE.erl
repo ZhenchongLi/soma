@@ -271,7 +271,7 @@ ask_actor_shorthand_non_binary_message_rejected(_Config) ->
     {ok, RunId} = soma_agent_session:start_run(SessionPid, ParentSteps),
 
     case wait_for_terminal(StorePid, RunId, 100) of
-        {failed, {invalid_ask_actor_input, not_invalid_message}} ->
+        {failed, {invalid_ask_actor_input, invalid_message}} ->
             ok;
         Other ->
             ct:fail({expected_non_binary_message_rejected, Other})
