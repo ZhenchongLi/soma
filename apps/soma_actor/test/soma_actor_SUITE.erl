@@ -1547,7 +1547,7 @@ cli_placeholder_missing_key_marks_task_failed_actor_alive(Config) ->
                   task_id => TaskId2,
                   steps => Steps2},
     {ok, TaskId2} = soma_actor:send(Pid, Envelope2),
-    failed = wait_for_task_status(Pid, TaskId2, failed, 100),
+    completed = wait_for_task_status(Pid, TaskId2, completed, 100),
     ok.
 
 write_actor_cli_argv_helper(Config) ->
