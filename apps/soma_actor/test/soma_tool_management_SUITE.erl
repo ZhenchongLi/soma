@@ -31,7 +31,9 @@
          test_register_starts_no_actor_task/1,
          test_harness_drives_real_socket_with_temp_dirs_and_stub/1,
          test_register_into_missing_tools_dir_creates_it/1,
-         test_cli_client_tool_list_and_remove_reach_daemon/1]).
+         test_cli_client_tool_list_and_remove_reach_daemon/1,
+         test_register_missing_cli_fields_replies_error_no_crash/1,
+         test_remove_undeletable_manifest_replies_error_keeps_tool/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -56,7 +58,9 @@ all() ->
      test_register_starts_no_actor_task,
      test_harness_drives_real_socket_with_temp_dirs_and_stub,
      test_register_into_missing_tools_dir_creates_it,
-     test_cli_client_tool_list_and_remove_reach_daemon].
+     test_cli_client_tool_list_and_remove_reach_daemon,
+     test_register_missing_cli_fields_replies_error_no_crash,
+     test_remove_undeletable_manifest_replies_error_keeps_tool].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -1127,6 +1131,71 @@ test_cli_client_tool_list_and_remove_reach_daemon(Config) ->
                                socket => SocketPath}),
     {error, not_found} =
         soma_tool_registry:resolve_descriptor(mgmt_client_verbs),
+    ok.
+
+%% Review finding (#220, round 2): a register whose manifest omits the cli
+%% fields (`executable' / `argv') must be a clean normalize-error reply --
+%% never a `function_clause' in the file renderer that kills the handler and
+%% closes the socket with no reply. `compile_form/1' requires only `name', so
+%% the handler must run `normalize/1' before touching disk. The daemon keeps
+%% serving afterwards, the tools dir stays empty, and nothing registers.
+test_register_missing_cli_fields_replies_error_no_crash(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Reply = register_over_socket(SocketPath, <<"(tool (name \"crashcase\"))">>),
+    match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
+    %% Nothing was written, nothing registered, no crash-shaped fallout.
+    [] = filelib:wildcard(filename:join(ToolsDir, "*.lisp")),
+    {error, not_found} = soma_tool_registry:resolve_descriptor(crashcase),
+    %% The daemon still serves: a follow-up request on a fresh connection
+    %% gets a reply instead of a closed socket.
+    ListReply = request_over_socket(SocketPath, <<"(tool-list)">>),
+    {ok, [['tool-list' | _]]} = soma_lfe_reader:read_forms(ListReply),
+    ok.
+
+%% Review finding (#220, round 2): a remove whose manifest file cannot be
+%% deleted (here: a read-only tools dir) must reply with a named error and
+%% leave the live registration in place -- never reply `removed' while the
+%% surviving file would re-register the tool at the next boot. Only `enoent'
+%% is a tolerable delete outcome.
+test_remove_undeletable_manifest_replies_error_keeps_tool(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_undeletable\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"hello\"))\n">>,
+    _ = register_over_socket(SocketPath, Manifest),
+    ManifestFile = filename:join(ToolsDir, "mgmt_undeletable.lisp"),
+    true = filelib:is_regular(ManifestFile),
+    %% Make the file undeletable: deleting a directory entry needs write
+    %% permission on the DIRECTORY, so a read-only tools dir forces eacces.
+    ok = file:change_mode(ToolsDir, 8#500),
+    Reply = request_over_socket(SocketPath,
+                                <<"(tool-remove \"mgmt_undeletable\")">>),
+    ok = file:change_mode(ToolsDir, 8#755),
+    match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
+    match = re:run(Reply, "manifest_delete_failed", [{capture, none}]),
+    %% Live and durable state stayed consistent: the tool still resolves and
+    %% its file is still on disk.
+    {ok, _} = soma_tool_registry:resolve_descriptor(mgmt_undeletable),
+    true = filelib:is_regular(ManifestFile),
     ok.
 
 wait_socket_gone(_Path, 0) ->

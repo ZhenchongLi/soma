@@ -203,15 +203,29 @@ handle_tool_register(ToolForm, ToolsDir) ->
                                                error => {already_registered,
                                                          Name}});
                         {error, not_found} ->
-                            register_normalized_tool(Name, Manifest, ToolsDir)
+                            case soma_tool_manifest:normalize(Manifest) of
+                                {ok, _Descriptor} ->
+                                    register_normalized_tool(Name, Manifest,
+                                                             ToolsDir);
+                                {error, Reason} ->
+                                    %% Validate BEFORE touching disk: a
+                                    %% manifest normalize rejects (missing
+                                    %% executable/argv, bad effect, ...) is a
+                                    %% clean error reply -- it must never
+                                    %% reach the file renderer (which pattern-
+                                    %% requires the cli fields) or leave a
+                                    %% transient file in the tools dir.
+                                    soma_lisp:render(#{status => error,
+                                                       error => Reason})
+                            end
                     end
             end;
         {error, Reason} ->
             soma_lisp:render(#{status => error, error => Reason})
     end.
 
-%% Persist the compiled manifest, then register it in the running registry
-%% (which normalizes it), once the reserved-name gate has passed. The file is
+%% Persist the validated manifest, then register it in the running registry,
+%% once the reserved-name gate and `normalize/1' have both passed. The file is
 %% written FIRST: a disk failure then leaves the registry untouched, so a
 %% caller told `error' never has a live-only registration that a restart would
 %% silently drop. A write failure (including a missing tools dir the daemon
@@ -328,11 +342,25 @@ render_tool_summary(#{name := Name, effect := Effect,
 handle_tool_remove(NameBin, ToolsDir) ->
     case config_tool_name(NameBin) of
         {ok, Name} ->
-            ok = soma_tool_registry:unregister_tool(Name),
-            _ = delete_manifest_file(ToolsDir, Name),
-            ok = append_tool_removed_event(Name),
-            ["(result (status removed) (tool-name ",
-             soma_lisp:render(NameBin), "))"];
+            %% Delete the persisted file FIRST and check the result: a file
+            %% that survives (eacces, a read-only dir) would re-register the
+            %% tool at the next boot, so replying `removed' while it remains
+            %% would be a silent resurrection. Only a missing file (`enoent')
+            %% is tolerated; any other delete error is a named reply and the
+            %% live registration is left untouched, so live and durable state
+            %% never contradict.
+            case delete_manifest_file(ToolsDir, Name) of
+                Deleted when Deleted =:= ok;
+                             Deleted =:= {error, enoent} ->
+                    ok = soma_tool_registry:unregister_tool(Name),
+                    ok = append_tool_removed_event(Name),
+                    ["(result (status removed) (tool-name ",
+                     soma_lisp:render(NameBin), "))"];
+                {error, Reason} ->
+                    soma_lisp:render(#{status => error,
+                                       error => {manifest_delete_failed,
+                                                 Reason}})
+            end;
         error ->
             soma_lisp:render(#{status => error,
                                error => {not_config_tool,
