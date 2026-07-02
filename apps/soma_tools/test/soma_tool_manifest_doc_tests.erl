@@ -135,3 +135,26 @@ test_manifest_doc_describes_cli_execution_protocol() ->
 
 manifest_doc_describes_cli_execution_protocol_test() ->
     test_manifest_doc_describes_cli_execution_protocol().
+
+%% Criterion 13: the doc documents the cli argv placeholder feature across all
+%% five facets — the `"{name}"` whole-argument placeholder syntax, the
+%% undeclared-placeholder validation rejection (`unknown_argv_placeholder`),
+%% type rendering (string / integer / boolean), the missing-key runtime failure
+%% (`missing_cli_placeholder`), and no-placeholder backward compatibility.
+test_tool_manifest_docs_describe_cli_argv_placeholders() ->
+    Doc = read_doc(),
+    Lower = string:lowercase(Doc),
+    %% placeholder syntax: a whole-argument `"{name}"` placeholder
+    ?assert(contains(Lower, <<"placeholder">>)),
+    ?assert(contains(Doc, <<"{name}">>)),
+    %% validation: an undeclared placeholder is rejected during normalization
+    ?assert(contains(Lower, <<"unknown_argv_placeholder">>)),
+    %% type rendering: string / integer / boolean
+    ?assert(contains(Lower, <<"base-10">>)),
+    %% missing-key runtime failure
+    ?assert(contains(Lower, <<"missing_cli_placeholder">>)),
+    %% no-placeholder backward compatibility
+    ?assert(contains(Lower, <<"no placeholders">>)).
+
+tool_manifest_docs_describe_cli_argv_placeholders_test() ->
+    test_tool_manifest_docs_describe_cli_argv_placeholders().
