@@ -167,7 +167,7 @@ test_non_cli_adapter_rejected(Config) ->
     #{registered := [], skipped := [SkipEntry]} =
         soma_tool_config:load_dir(ToolsDir),
     #{file := "cfg_module_inject.lisp",
-      reason := {adapter_not_allowed, wrong_adapter_value}} = SkipEntry,
+      reason := {adapter_not_allowed, erlang_module}} = SkipEntry,
     %% The name never reached the registry.
     {error, not_found} =
         soma_tool_registry:resolve_descriptor(cfg_module_inject),
