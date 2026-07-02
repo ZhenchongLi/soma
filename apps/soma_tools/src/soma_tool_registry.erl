@@ -15,11 +15,12 @@
 -behaviour(gen_server).
 
 %% Pure map API
--export([register/3, lookup/2, names/1, catalog/1, builtin_names/0]).
+-export([register/3, lookup/2, names/1, catalog/1, list_tools/1,
+         builtin_names/0]).
 
 %% Process API
 -export([start_link/0, register_tool/1, resolve/1, resolve_descriptor/1,
-         catalog/0]).
+         catalog/0, list_tools/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
@@ -53,8 +54,13 @@
 -type catalog_entry() :: #{name := atom(),
                            description := binary(),
                            params := [map()]}.
+-type tool_summary() :: #{name := atom(),
+                          effect := atom(),
+                          idempotent := boolean(),
+                          adapter := erlang_module | cli,
+                          description => binary()}.
 
--export_type([descriptor/0, registry/0, catalog_entry/0]).
+-export_type([descriptor/0, registry/0, catalog_entry/0, tool_summary/0]).
 
 %% The backing modules for the five built-in tools. Each one exports
 %% `manifest/0'; the seed is built by normalizing those manifests, so the
@@ -109,6 +115,35 @@ catalog(Registry) ->
           Registry),
     lists:sort(fun(#{name := A}, #{name := B}) -> A =< B end, Entries).
 
+%% @doc The operator-facing list projection of a registry map: one entry per
+%% live descriptor — every tool appears, unlike `catalog/1'. Each entry is
+%% constructed as exactly `#{name, effect, idempotent, adapter}' from named
+%% fields — never filtered down from the descriptor — so runtime internals
+%% (`module', `executable', `argv', `timeout_ms') cannot leak. `description'
+%% is carried only when the descriptor declares one. Entries are sorted by
+%% name.
+-spec list_tools(registry()) -> [tool_summary()].
+list_tools(Registry) ->
+    Entries =
+        maps:fold(
+          fun(Name, #{effect := Effect, idempotent := Idempotent,
+                      adapter := Adapter} = Descriptor, Acc) ->
+                  Base = #{name => Name,
+                           effect => Effect,
+                           idempotent => Idempotent,
+                           adapter => Adapter},
+                  Entry = case maps:find(description, Descriptor) of
+                              {ok, Description} ->
+                                  Base#{description => Description};
+                              error ->
+                                  Base
+                          end,
+                  [Entry | Acc]
+          end,
+          [],
+          Registry),
+    lists:sort(fun(#{name := A}, #{name := B}) -> A =< B end, Entries).
+
 %%% Process API
 
 -spec start_link() -> {ok, pid()}.
@@ -137,6 +172,12 @@ resolve_descriptor(Name) ->
 -spec catalog() -> [catalog_entry()].
 catalog() ->
     gen_server:call(?MODULE, catalog).
+
+%% @doc The operator-facing list projection of the running registry. See
+%% `list_tools/1'.
+-spec list_tools() -> [tool_summary()].
+list_tools() ->
+    gen_server:call(?MODULE, list_tools).
 
 %%% gen_server callbacks
 
@@ -180,6 +221,8 @@ handle_call({resolve_descriptor, Name}, _From, Registry) ->
     {reply, lookup(Registry, Name), Registry};
 handle_call(catalog, _From, Registry) ->
     {reply, catalog(Registry), Registry};
+handle_call(list_tools, _From, Registry) ->
+    {reply, list_tools(Registry), Registry};
 handle_call(_Msg, _From, Registry) ->
     {reply, {error, unknown_call}, Registry}.
 

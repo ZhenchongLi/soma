@@ -150,24 +150,29 @@ handle_lisp_request(Bytes, Socket, ModelConfig, ToolsDir, Listener) ->
     %% Tool-management verbs are their own wire forms, not `soma_lfe' forms, so
     %% dispatch them before the `soma_lfe:compile/2' path. A `(tool-register
     %% (tool ...))' request compiles the inner `(tool ...)' body through the same
-    %% compiler the boot loader uses and registers it in the live registry.
-    case tool_register_form(Bytes) of
-        {ok, ToolForm} ->
+    %% compiler the boot loader uses and registers it in the live registry; a
+    %% `(tool-list)' request renders the live registry's list projection.
+    case tool_management_form(Bytes) of
+        {register, ToolForm} ->
             handle_tool_register(ToolForm, ToolsDir);
-        not_tool_register ->
+        list ->
+            handle_tool_list();
+        not_tool_management ->
             handle_lfe_request(Bytes, Socket, ModelConfig, Listener)
     end.
 
-%% Peek at the request: return the inner `(tool ...)' form of a
-%% `(tool-register (tool ...))' request, or `not_tool_register' for anything
-%% else (including garbage the reader cannot parse -- that falls through to the
-%% existing `soma_lfe' path, which renders the malformed-request error).
-tool_register_form(Bytes) ->
+%% Peek at the request: classify a tool-management wire form -- the inner
+%% `(tool ...)' body of a `(tool-register (tool ...))' request, or a bare
+%% `(tool-list)'. Anything else (including garbage the reader cannot parse)
+%% is `not_tool_management' and falls through to the existing `soma_lfe'
+%% path, which renders the malformed-request error.
+tool_management_form(Bytes) ->
     try soma_lfe_reader:read_forms(Bytes) of
-        {ok, [['tool-register', ToolForm]]} -> {ok, ToolForm};
-        _ -> not_tool_register
+        {ok, [['tool-register', ToolForm]]} -> {register, ToolForm};
+        {ok, [['tool-list']]} -> list;
+        _ -> not_tool_management
     catch
-        _:_ -> not_tool_register
+        _:_ -> not_tool_management
     end.
 
 %% Compile the `(tool ...)' body through the shared boot-loader compiler,
@@ -254,6 +259,28 @@ render_atom_field(Key, Value) ->
 
 render_argv_field(Argv) ->
     ["(argv", [[" ", soma_lisp:render(Arg)] || Arg <- Argv], ")"].
+
+%% Render the live registry's list projection as the `(tool-list ...)' reply:
+%% one `(tool ...)' entry per live tool, each carrying `name' / `effect' /
+%% `idempotent' / `adapter' plus `description' only when the descriptor has
+%% one. The projection (`soma_tool_registry:list_tools/0') is built from named
+%% safe fields, so runtime internals never reach the wire.
+handle_tool_list() ->
+    Entries = soma_tool_registry:list_tools(),
+    ["(tool-list",
+     [[" ", render_tool_summary(Entry)] || Entry <- Entries],
+     ")"].
+
+render_tool_summary(#{name := Name, effect := Effect,
+                      idempotent := Idempotent, adapter := Adapter} = Entry) ->
+    Fields =
+        [render_string_field(name, atom_to_binary(Name, utf8)),
+         render_atom_field(effect, Effect),
+         render_atom_field(idempotent, Idempotent),
+         render_atom_field(adapter, Adapter)]
+        ++ [render_string_field(description, Description)
+            || {ok, Description} <- [maps:find(description, Entry)]],
+    ["(tool ", lists:join(" ", Fields), ")"].
 
 handle_lfe_request(Bytes, Socket, ModelConfig, Listener) ->
     Compiled = try soma_lfe:compile(Bytes, #{})
