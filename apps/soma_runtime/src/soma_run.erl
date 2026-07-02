@@ -107,11 +107,12 @@ execute_valid_step(Data, Step) ->
             %% failure trail, as any other failure -- not a badmatch crash.
             fail_run(Data, Step, ToolCallId, undefined,
                      {unregistered_tool, ToolName});
-        {ok, Descriptor} ->
+        {ok, Descriptor0} ->
             %% Branch on the adapter the descriptor names. An `erlang_module'
             %% tool runs in-BEAM via `module'; a `cli' tool runs an external
             %% program via `executable' + `argv'. The worker owns the difference;
             %% `soma_run' only chooses which opts to hand it.
+            Descriptor = prepare_cli_argv_placeholders(Descriptor0, Input),
             start_tool_call(Data, Step, StepId, ToolCallId, Descriptor, Input,
                             CtxExtra)
     end.
@@ -265,6 +266,71 @@ adapter_opts(#{adapter := erlang_module, module := Module}) ->
     #{module => Module};
 adapter_opts(#{adapter := cli, executable := Executable, argv := Argv}) ->
     #{executable => Executable, argv => Argv}.
+
+prepare_cli_argv_placeholders(#{adapter := cli, argv := Argv} = Descriptor,
+                              Input)
+  when is_map(Input) ->
+    Lookup = cli_placeholder_lookup(Input),
+    Descriptor#{argv := [render_cli_argv_placeholder(Arg, Lookup)
+                         || Arg <- Argv]};
+prepare_cli_argv_placeholders(Descriptor, _Input) ->
+    Descriptor.
+
+cli_placeholder_lookup(Input) ->
+    maps:fold(
+      fun(Key, Value, Acc) ->
+              case cli_placeholder_key(Key) of
+                  {ok, Name} -> Acc#{Name => Value};
+                  error -> Acc
+              end
+      end,
+      #{},
+      Input).
+
+cli_placeholder_key(Key) when is_atom(Key) ->
+    {ok, atom_to_binary(Key, utf8)};
+cli_placeholder_key(Key) when is_binary(Key) ->
+    {ok, Key};
+cli_placeholder_key(_Key) ->
+    error.
+
+render_cli_argv_placeholder(Arg, Lookup) ->
+    case cli_argv_placeholder_name(Arg) of
+        {placeholder, Name} ->
+            case maps:find(Name, Lookup) of
+                {ok, Value} -> render_cli_placeholder_value(Value);
+                error -> Arg
+            end;
+        none ->
+            Arg
+    end.
+
+cli_argv_placeholder_name(Arg) when is_binary(Arg) ->
+    Size = byte_size(Arg),
+    case Size >= 2 andalso
+        binary:at(Arg, 0) =:= ${ andalso
+        binary:at(Arg, Size - 1) =:= $} of
+        true ->
+            NameSize = Size - 2,
+            <<${, Name:NameSize/binary, $}>> = Arg,
+            {placeholder, Name};
+        false ->
+            none
+    end;
+cli_argv_placeholder_name(Arg) when is_list(Arg) ->
+    case unicode:characters_to_binary(Arg) of
+        Bin when is_binary(Bin) -> cli_argv_placeholder_name(Bin);
+        _ -> none
+    end;
+cli_argv_placeholder_name(_) ->
+    none.
+
+render_cli_placeholder_value(Value) when is_binary(Value) ->
+    Value;
+render_cli_placeholder_value(Value) when is_list(Value) ->
+    Value;
+render_cli_placeholder_value(Value) ->
+    lists:flatten(io_lib:format("~p", [Value])).
 
 durable_run_options(#data{run_id = RunId,
                           session_id = SessionId,
