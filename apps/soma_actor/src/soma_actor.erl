@@ -910,8 +910,9 @@ copy_optional(Keys, Src, Dst) ->
 %% Catalog entries outside the allowlist are filtered out; an allowed tool
 %% without a catalog entry stays in the plain name list and gets no block. An
 %% `all' policy has no concrete names, so the instruction text carries the
-%% `(run-steps ...)' directive without a tool list. Pure -- the caller fetches
-%% the catalog; no call, no event here.
+%% `(run-steps ...)' directive without a tool-name list -- but the whole
+%% catalog is the offer, so every catalog entry renders as a block. Pure --
+%% the caller fetches the catalog; no call, no event here.
 planning_system_prompt(AllowedTools, Catalog) when is_list(AllowedTools) ->
     Names = [atom_to_binary(T, utf8) || T <- AllowedTools],
     Joined = iolist_to_binary(lists:join(<<", ">>, Names)),
@@ -921,8 +922,10 @@ planning_system_prompt(AllowedTools, Catalog) when is_list(AllowedTools) ->
       [<<"Answer with a Lisp plan of the form (run-steps ...) using only ">>,
        <<"these tools: ">>, Joined, <<".">>,
        catalog_blocks(Allowed)]);
-planning_system_prompt(_All, _Catalog) ->
-    <<"Answer with a Lisp plan of the form (run-steps ...).">>.
+planning_system_prompt(_All, Catalog) ->
+    iolist_to_binary(
+      [<<"Answer with a Lisp plan of the form (run-steps ...).">>,
+       catalog_blocks(Catalog)]).
 
 %% Render catalog entries as newline-separated Lisp `(tool ...)' blocks,
 %% mirroring the `(tool ...)' config form from docs/tool-abstraction.md section 5.
