@@ -12,6 +12,7 @@
 -export([test_daemon_boot_registers_config_tool/1,
          test_config_tool_description_in_catalog/1,
          test_load_dir_registers_cli_tool_with_argv_placeholders/1,
+         test_load_dir_skips_cli_tool_with_unknown_argv_placeholder/1,
          test_invalid_field_surfaces_normalize_error/1,
          test_safety_defaults_and_declared_values/1,
          test_non_cli_adapter_rejected/1,
@@ -31,6 +32,7 @@ all() ->
     [test_daemon_boot_registers_config_tool,
      test_config_tool_description_in_catalog,
      test_load_dir_registers_cli_tool_with_argv_placeholders,
+     test_load_dir_skips_cli_tool_with_unknown_argv_placeholder,
      test_invalid_field_surfaces_normalize_error,
      test_safety_defaults_and_declared_values,
      test_non_cli_adapter_rejected,
@@ -140,6 +142,32 @@ test_load_dir_registers_cli_tool_with_argv_placeholders(Config) ->
        doc := <<"Document path">>},
      #{name := <<"changes">>, type := string, required := true,
        doc := <<"Requested edits">>}] = Params,
+    ok.
+
+%% Criterion 4 (#218): `soma_tool_config:load_dir/1' skips a config
+%% `(tool ...)' file whose cli argv placeholder has no matching model-facing
+%% param. The loader owns skip reporting, but the reason must be
+%% `soma_tool_manifest:normalize/1''s named placeholder error.
+test_load_dir_skips_cli_tool_with_unknown_argv_placeholder(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    ToolsDir = filename:join(?config(priv_dir, Config),
+                             "tools_unknown_argv_placeholder"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_bad_doc_edit.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_bad_doc_edit\")\n"
+             "  (description \"Edit a document with an explicit change set.\")\n"
+             "  (effect state) (idempotent false) (timeout-ms 5000)\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv \"edit\" \"{doc}\" \"{changes}\")\n"
+             "  (params ((\"doc\" string required \"Document path\"))))\n">>),
+    #{registered := [], skipped := [SkipEntry]} =
+        soma_tool_config:load_dir(ToolsDir),
+    #{file := "cfg_bad_doc_edit.lisp",
+      reason := {unknown_argv_placeholder, <<"wrong">>}} = SkipEntry,
+    {error, not_found} =
+        soma_tool_registry:resolve_descriptor(cfg_bad_doc_edit),
     ok.
 
 %% Criterion 3 (#205): a tool file carrying an invalid manifest field goes
