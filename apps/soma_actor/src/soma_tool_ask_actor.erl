@@ -39,6 +39,8 @@ ask_actor_lookup_error(Reason) ->
     #{error => ask_actor_lookup_failed,
       registry_error => Reason}.
 
+normalize_input(#{message := _Message, envelope := _Envelope}) ->
+    {error, {invalid_ask_actor_input, message_and_envelope}};
 normalize_input(#{target := StableName, envelope := Envelope})
   when is_binary(StableName), is_map(Envelope) ->
     {ok, StableName, Envelope, envelope};
