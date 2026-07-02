@@ -112,9 +112,18 @@ execute_valid_step(Data, Step) ->
             %% tool runs in-BEAM via `module'; a `cli' tool runs an external
             %% program via `executable' + `argv'. The worker owns the difference;
             %% `soma_run' only chooses which opts to hand it.
-            Descriptor = prepare_cli_argv_placeholders(Descriptor0, Input),
-            start_tool_call(Data, Step, StepId, ToolCallId, Descriptor, Input,
-                            CtxExtra)
+            case prepare_cli_argv_placeholders(Descriptor0, Input) of
+                {error, {missing_cli_placeholder, _Name} = Reason} ->
+                    %% A `cli' argv placeholder names a key the resolved step
+                    %% input does not carry. This fails before any worker is
+                    %% spawned, exactly like an unregistered tool: reuse
+                    %% `fail_run/5' with `undefined' for the worker pid so
+                    %% there is no `tool.started' event for this step.
+                    fail_run(Data, Step, ToolCallId, undefined, Reason);
+                Descriptor ->
+                    start_tool_call(Data, Step, StepId, ToolCallId, Descriptor,
+                                    Input, CtxExtra)
+            end
     end.
 
 %% Spawn the tool-call worker for a resolved tool, record `tool.started', arm the
@@ -274,14 +283,33 @@ prepare_cli_argv_placeholders(#{adapter := cli, argv := Argv} = Descriptor,
                               Input)
   when is_map(Input) ->
     Lookup = cli_placeholder_lookup(Input),
-    Prepared = Descriptor#{argv := [render_cli_argv_placeholder(Arg, Lookup)
-                                    || Arg <- Argv]},
-    case cli_argv_has_placeholder(Argv) of
-        true -> Prepared#{append_input => false};
-        false -> Prepared
+    case render_cli_argv(Argv, Lookup) of
+        {error, _} = Error ->
+            Error;
+        {ok, RenderedArgv} ->
+            Prepared = Descriptor#{argv := RenderedArgv},
+            case cli_argv_has_placeholder(Argv) of
+                true -> Prepared#{append_input => false};
+                false -> Prepared
+            end
     end;
 prepare_cli_argv_placeholders(Descriptor, _Input) ->
     Descriptor.
+
+%% Render every argv element, short-circuiting on the first placeholder whose
+%% key is absent from the resolved step input. A missing key cannot become a
+%% worker argv element -- it is reported to the caller as a named failure
+%% instead, so the run can fail before any worker is spawned.
+render_cli_argv(Argv, Lookup) ->
+    render_cli_argv(Argv, Lookup, []).
+
+render_cli_argv([], _Lookup, Acc) ->
+    {ok, lists:reverse(Acc)};
+render_cli_argv([Arg | Rest], Lookup, Acc) ->
+    case render_cli_argv_placeholder(Arg, Lookup) of
+        {error, _} = Error -> Error;
+        Rendered -> render_cli_argv(Rest, Lookup, [Rendered | Acc])
+    end.
 
 cli_argv_has_placeholder([]) ->
     false;
@@ -314,7 +342,7 @@ render_cli_argv_placeholder(Arg, Lookup) ->
         {placeholder, Name} ->
             case maps:find(Name, Lookup) of
                 {ok, Value} -> render_cli_placeholder_value(Value);
-                error -> Arg
+                error -> {error, {missing_cli_placeholder, Name}}
             end;
         none ->
             Arg
