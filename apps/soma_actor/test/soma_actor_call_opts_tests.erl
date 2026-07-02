@@ -327,3 +327,61 @@ registered_tool_appears_in_next_planning_prompt_test_() ->
      fun(_Pid) ->
          ?_test(test_registered_tool_appears_in_next_planning_prompt())
      end}.
+
+%% Criterion 4 (#212), no-leak half: the planning prompt is built from
+%% soma_tool_registry:catalog/0 entries only -- never from raw descriptors --
+%% so none of the runtime-internal descriptor fields can appear. Register a
+%% described `cli' tool whose descriptor carries distinctive `executable' /
+%% `argv' values; the built prompt renders its name and description (proving
+%% the entry is in play) while carrying no trace of the executable path, the
+%% argv value, a built-in's module name, or the `effect' / `idempotent' /
+%% `timeout_ms' field text.
+test_planning_prompt_carries_no_runtime_descriptor_fields() ->
+    Manifest = #{
+        name => cli_leak_probe_tool,
+        effect => state,
+        idempotent => false,
+        timeout_ms => 4321,
+        adapter => cli,
+        executable => <<"/opt/leak-probe/bin/upperize_secret">>,
+        argv => [<<"--leak-probe-flag">>],
+        description => <<"Uppercases input via an external helper.">>
+    },
+    ok = soma_tool_registry:register_tool(Manifest),
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    plan => true,
+                    allowed_tools => [echo, cli_leak_probe_tool]},
+    Envelope = #{payload => #{prompt => <<"uppercase the file name">>}},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    [System | _] = maps:get(messages, Opts),
+    ?assertEqual(<<"system">>, maps:get(role, System)),
+    Content = maps:get(content, System),
+    ?assert(is_binary(Content)),
+    %% The tool's catalog entry is in play: name and description render.
+    ?assertNotEqual(nomatch, binary:match(Content, <<"cli_leak_probe_tool">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(Content,
+                                 <<"Uppercases input via an external helper.">>)),
+    %% Runtime descriptor fields leave no trace: not the cli tool's executable
+    %% path or argv value, not a built-in's module name, not the effect /
+    %% idempotent / timeout_ms field text.
+    ?assertNotEqual(nomatch,
+                    binary:match(Content,
+                                 <<"/opt/leak-probe/bin/upperize_secret">>)),
+    ?assertEqual(nomatch, binary:match(Content, <<"--leak-probe-flag">>)),
+    ?assertEqual(nomatch, binary:match(Content, <<"soma_tool_echo">>)),
+    ?assertEqual(nomatch, binary:match(Content, <<"effect">>)),
+    ?assertEqual(nomatch, binary:match(Content, <<"idempotent">>)),
+    ?assertEqual(nomatch, binary:match(Content, <<"timeout_ms">>)).
+
+planning_prompt_carries_no_runtime_descriptor_fields_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_planning_prompt_carries_no_runtime_descriptor_fields())
+     end}.
