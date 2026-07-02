@@ -261,7 +261,7 @@ test_missing_or_empty_dir_boot_unchanged(Config) ->
                               config_path => no_llm_config_file(Config),
                               tools_dir => MissingDir}),
         %% The registered tool names equal the built-in seed exactly.
-        SeedNames = [config_ghost, echo, fail, file_read, file_write, sleep],
+        SeedNames = [echo, fail, file_read, file_write, sleep],
         SeedNames = registered_names(),
         %% The loader returns the empty result for the missing path and for
         %% an empty directory -- no skip entry, nothing registered.
