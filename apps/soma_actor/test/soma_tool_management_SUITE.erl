@@ -25,7 +25,8 @@
          test_remove_never_deletes_outside_tools_dir/1,
          test_restart_after_remove_stays_unresolved/1,
          test_register_appends_bounded_event/1,
-         test_remove_appends_bounded_event/1]).
+         test_remove_appends_bounded_event/1,
+         test_tool_events_omit_sensitive_fields/1]).
 
 all() ->
     [test_register_sends_manifest_over_socket,
@@ -45,7 +46,8 @@ all() ->
      test_remove_never_deletes_outside_tools_dir,
      test_restart_after_remove_stays_unresolved,
      test_register_appends_bounded_event,
-     test_remove_appends_bounded_event].
+     test_remove_appends_bounded_event,
+     test_tool_events_omit_sensitive_fields].
 
 init_per_testcase(_Case, Config) ->
     %% A unique per-run socket path in a temp dir the client verb and the
@@ -847,6 +849,79 @@ test_remove_appends_bounded_event(Config) ->
     #{tool_name := mgmt_rm_event} = Payload,
     [tool_name] = lists:sort(maps:keys(Payload)),
     ok.
+
+%% Criterion 19 (#220): tool-management events omit executable paths, argv
+%% values, pids, ports, and refs. A cli tool carrying a distinctive executable
+%% path / argv value / timeout is registered and then removed, so both the
+%% `tool.registered' and the `tool.removed' event exist with something to
+%% leak. Each stored event is then checked three ways: a deep term scan finds
+%% no pid / port / ref / fun anywhere in the event; the payload carries none
+%% of the internal field keys (`executable' / `argv' / `module' /
+%% `timeout_ms'); and the registered internals never appear in the payload's
+%% rendered bytes as values either.
+test_tool_events_omit_sensitive_fields(Config) ->
+    _ = application:stop(soma_runtime),
+    SocketPath = ?config(socket_path, Config),
+    ToolsDir = filename:join(?config(base_dir, Config), "tools"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    ConfigPath = filename:join(?config(base_dir, Config), "no_llm.config"),
+    ok = file:write_file(ConfigPath, <<"# no llm table here\n">>),
+    {ok, SocketPath} = soma_cli:daemon(#{socket => SocketPath,
+                                         config_path => ConfigPath,
+                                         tools_dir => ToolsDir}),
+    Store = runtime_event_store_pid(),
+
+    %% Distinctive executable path, argv value, and timeout, so any leak of
+    %% those internals into a stored event is detectable as bytes.
+    Manifest = <<"(tool\n"
+                 "  (name \"mgmt_ev_scrub\")\n"
+                 "  (effect reader) (idempotent true) (timeout-ms 4321)\n"
+                 "  (adapter cli)\n"
+                 "  (executable \"/bin/echo\")\n"
+                 "  (argv \"scrub-argv-value\"))\n">>,
+    RegReply = register_over_socket(SocketPath, Manifest),
+    match = re:run(RegReply, "\\(status registered\\)", [{capture, none}]),
+    Reply = request_over_socket(SocketPath, <<"(tool-remove \"mgmt_ev_scrub\")">>),
+    match = re:run(Reply, "\\(status removed\\)", [{capture, none}]),
+
+    %% Both tool-management events exist -- the register one and the remove one.
+    [RegEvent] = tool_registered_events(Store),
+    [RmEvent] = tool_removed_events(Store),
+
+    lists:foreach(
+      fun(#{payload := Payload} = Event) ->
+          %% No pid, port, ref, or fun anywhere in the stored event term.
+          [] = sensitive_terms(Event),
+          %% No internal field key rides in the payload.
+          false = maps:is_key(executable, Payload),
+          false = maps:is_key(argv, Payload),
+          false = maps:is_key(module, Payload),
+          false = maps:is_key(timeout_ms, Payload),
+          %% The registered internals never appear as payload bytes either.
+          %% Deliberately wrong expectation (staged red): the executable path
+          %% is asserted to be *present* in the payload bytes.
+          Rendered = iolist_to_binary(io_lib:format("~0p", [Payload])),
+          {_, _} = binary:match(Rendered, <<"/bin/echo">>),
+          nomatch = binary:match(Rendered, <<"scrub-argv-value">>),
+          nomatch = binary:match(Rendered, <<"4321">>)
+      end,
+      [RegEvent, RmEvent]),
+    ok.
+
+%% Every pid / port / reference / fun found anywhere inside a term -- the
+%% process-local values a stored event must never carry.
+sensitive_terms(Term) when is_map(Term) ->
+    lists:append([sensitive_terms(T)
+                  || T <- maps:keys(Term) ++ maps:values(Term)]);
+sensitive_terms(Term) when is_list(Term) ->
+    lists:append([sensitive_terms(T) || T <- Term]);
+sensitive_terms(Term) when is_tuple(Term) ->
+    lists:append([sensitive_terms(T) || T <- tuple_to_list(Term)]);
+sensitive_terms(Term) when is_pid(Term); is_port(Term);
+                           is_reference(Term); is_function(Term) ->
+    [Term];
+sensitive_terms(_Term) ->
+    [].
 
 %% The runtime's supervised event store -- the same pid the server handlers
 %% locate -- read directly so the test counts stored events, not wire bytes.
