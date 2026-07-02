@@ -35,9 +35,10 @@ v0.7    persistent resume                              [done — journal + recon
 v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
-node B  real LLM provider behind the perform_call seam   [provider + actor planning done; product surface next]
+node B  real LLM provider behind the perform_call seam   [done — provider + actor planning + CLI/config planning surface]
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
+tools   tool abstraction (docs/tool-abstraction.md)       [T.1 catalog + T.2 config tools done; next T.3 memory, T.4 ask_actor, T.5 MCP]
 ```
 
 ## v0.4 — soma_actor skeleton [done]
@@ -282,8 +283,11 @@ the gate default; real calls are opt-in and **off the test gate** (no network in
   a Lisp `(run-steps ...)` proposal, sends it through `soma_lfe:compile/2`,
   `soma_proposal:normalize/1`, policy, and budget, then runs approved steps. Gate
   tests use fixed responses and open no model socket.
-- Later: productize the planning surface through config/CLI conventions and add
-  an effect-aware policy gate.
+- planning surface productized [done]: `~/.soma/config` and the CLI drive
+  real-provider planning mode through the daemon; proofs in
+  [contracts/cli-real-planning-test-contract.md](contracts/cli-real-planning-test-contract.md).
+- Later: an effect-aware policy gate (reads the manifest `effect` /
+  `idempotent` the tool catalog already declares — see the tools track).
 
 Provider `base_url` / `model` live in local config; the **API key is only ever
 read from an env var / a gitignored file, never committed**.
@@ -347,6 +351,43 @@ executable plan in one language. Full design: [lisp-messages.md](lisp-messages.m
 - `L.5` — self-repair [done]: a parse-failure → LLM-repair(source, diagnostics) →
   re-parse loop, bounded by the v0.5.5 budget. The repaired message re-enters the
   full normalize + policy + budget pipeline — a second chance, **never a bypass**.
+
+## tools — tool abstraction and third-party integration
+
+The tool model and integration tiers are designed in
+[tool-abstraction.md](tool-abstraction.md): the manifest as the whole truth
+about a tool (runtime-facing effect metadata + a model-facing
+`description`/`params` half), a closed adapter vocabulary
+(`erlang_module` + `cli`) with richer integrations landing as capability
+apps, and cross-cutting policy as process ownership, never a decorator layer.
+
+- `T.1` — manifest v2 + catalog [done] (#203): optional model-facing
+  `description`/`params` validated fail-closed by `normalize/1` (a v1
+  manifest normalizes byte-for-byte unchanged);
+  `soma_tool_registry:catalog/0` exposes exactly `#{name, description,
+  params}` per described tool; the five built-ins declare descriptions.
+  Proofs in [contracts/tool-catalog-test-contract.md](contracts/tool-catalog-test-contract.md).
+- `T.2` — config-registered cli tools [done] (#205, hardened by #208): one
+  `(tool …)` form per file in `~/.soma/tools/`, loaded at daemon boot
+  through the same `normalize/1` path as built-ins. cli-adapter only (no
+  module injection from config), conservative defaults
+  (`state`/non-idempotent/30 s), skip-with-named-diagnostic on a broken
+  file, built-in names reserved so a config file cannot flip the
+  `effect`/`idempotent` fields resume-safety classifies from, and bounded
+  reader unicode failures. Proofs in
+  [contracts/tool-config-test-contract.md](contracts/tool-config-test-contract.md).
+- `T.3` — memory as tools: a `soma_memory` capability app — a supervised
+  keyed store plus `memory_get`/`memory_search` (reader) and
+  `memory_put`/`memory_del` (state, idempotent keyed upsert/delete, so
+  resume classification is safe by construction).
+- `T.4` — sub-agent as tool: `ask_actor` in `soma_actor`, the ask under the
+  caller's `correlation_id` with cancel propagation.
+- `T.5` — MCP as a capability app (post-validation, per the decision to
+  validate before distributing).
+
+Effect-aware policy pairs with this track: once config `state` tools and
+memory writes exist, the policy gate reading `effect`/`idempotent` is the
+natural next guardrail.
 
 ## Packaging
 

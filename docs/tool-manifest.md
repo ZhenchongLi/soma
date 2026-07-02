@@ -166,3 +166,9 @@ soma_tool_registry:register_tool(#{
 
 `register_tool/1` returns `ok` or `{error, Reason}` — a malformed manifest is
 rejected and never lands in the registry.
+
+External `cli` tools can also be registered without writing Erlang: one
+`(tool …)` form per file in `~/.soma/tools/`, loaded at daemon boot through
+this same `normalize/1` path. See the "Register Your Own CLI Tools" section
+in [usage.md](usage.md) and
+[tool-abstraction.md](tool-abstraction.md) §5 for the integration tiers.
