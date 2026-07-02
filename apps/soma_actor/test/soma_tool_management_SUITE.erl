@@ -266,7 +266,7 @@ test_failed_register_leaves_tools_dir_unchanged(Config) ->
     %% tool and the listing is identical to the pre-register snapshot.
     After = lists:sort(filelib:wildcard(filename:join(ToolsDir, "*"))),
     Before = After,
-    [_Written] = filelib:wildcard(filename:join(ToolsDir, "mgmt_nowrite.lisp")),
+    [] = filelib:wildcard(filename:join(ToolsDir, "mgmt_nowrite.lisp")),
     ok.
 
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
