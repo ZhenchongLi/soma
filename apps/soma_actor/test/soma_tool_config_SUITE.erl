@@ -11,12 +11,14 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_daemon_boot_registers_config_tool/1,
          test_config_tool_description_in_catalog/1,
-         test_invalid_field_surfaces_normalize_error/1]).
+         test_invalid_field_surfaces_normalize_error/1,
+         test_safety_defaults_and_declared_values/1]).
 
 all() ->
     [test_daemon_boot_registers_config_tool,
      test_config_tool_description_in_catalog,
-     test_invalid_field_surfaces_normalize_error].
+     test_invalid_field_surfaces_normalize_error,
+     test_safety_defaults_and_declared_values].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -107,6 +109,39 @@ test_invalid_field_surfaces_normalize_error(Config) ->
         soma_tool_config:load_dir(ToolsDir),
     #{file := "cfg_bad_effect.lisp",
       reason := {invalid_effect, banana}} = SkipEntry,
+    ok.
+
+%% Criterion 4 (#205): safety metadata defaults conservatively and declared
+%% values win. A tool file declaring none of `effect' / `idempotent' /
+%% `timeout-ms' registers as effect `state', idempotent `false', timeout
+%% 30000 ms (never guess a tool is safe); a file declaring all three
+%% registers with exactly the declared values. The resolved descriptors
+%% prove both sides.
+test_safety_defaults_and_declared_values(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    ToolsDir = filename:join(?config(priv_dir, Config), "tools_defaults"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    %% Declares none of the three safety fields.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_defaulted.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_defaulted\")\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    %% Declares all three.
+    ok = file:write_file(
+           filename:join(ToolsDir, "cfg_declared.lisp"),
+           <<"(tool\n"
+             "  (name \"cfg_declared\")\n"
+             "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv))\n">>),
+    #{registered := [cfg_declared, cfg_defaulted], skipped := []} =
+        soma_tool_config:load_dir(ToolsDir),
+    {ok, Defaulted} = soma_tool_registry:resolve_descriptor(cfg_defaulted),
+    #{effect := reader, idempotent := true, timeout_ms := 1000} = Defaulted,
+    {ok, Declared} = soma_tool_registry:resolve_descriptor(cfg_declared),
+    #{effect := reader, idempotent := true, timeout_ms := 5000} = Declared,
     ok.
 
 %% A fresh temp tools directory under the case's priv_dir.
