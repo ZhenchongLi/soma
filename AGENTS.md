@@ -61,6 +61,9 @@ Layer status:
   `model_config` can route to it. Gate tests use fixed response seams and do not
   open network sockets. Live smoke is opt-in via `soma_llm_smoke:run/0` and
   `SOMA_LLM_API_KEY`.
+- structured real-model planning is built: actor-level planning mode reads
+  provider text as a Lisp `(run-steps ...)` proposal when `model_config` carries
+  `plan => true`, and the CLI/config surface productizes that mode.
 - Lisp edge language L.1-L.5 is built: the bounded Soma Lisp v1 public task surface
   with `(task ...)` task sources, `(msg ...)` envelopes, actor-to-actor
   Lisp bodies, Lisp proposals, Lisp audit/trace rendering, and bounded
@@ -74,9 +77,8 @@ Layer status:
 
 Latest runtime layer: **v0.7 persistent resume** is in through v0.7.5 (#198).
 The resume layer now includes event-store interrupted-run discovery and
-auto-resume on boot. Other open tracks: structured real-model planning that
-emits tool-running proposals, effect-aware policy, log/index compaction, and
-Linux release artifacts.
+auto-resume on boot. Other open tracks: effect-aware policy, log/index
+compaction, and Linux release artifacts.
 
 ## What Soma Is
 
@@ -395,6 +397,8 @@ In scope for the current core:
 - `soma_actor` message/task layer
 - mock-gated LLM decision layer
 - OpenAI-compatible provider path
+- structured real-model planning that emits tool-running proposals through a
+  productized CLI/config surface
 - Lisp message/proposal/trace/repair edge forms
 - manual persistent run resume
 - boot auto-resume
@@ -404,7 +408,6 @@ In scope for the current core:
 Out of scope for the current core unless explicitly requested:
 
 - MCP
-- structured real-model planner that emits tool-running proposals
 - effect-aware policy gate
 - human-in-the-loop policy ask path
 - DAG parallelism
