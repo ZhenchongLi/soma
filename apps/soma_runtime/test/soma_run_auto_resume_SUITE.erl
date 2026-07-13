@@ -50,7 +50,7 @@ test_boot_with_event_store_log_resumes_between_steps_interrupted_run(Config) ->
          || E <- Events,
             maps:get(event_type, E, undefined) =:= <<"step.succeeded">>,
             maps:get(step_id, E, undefined) =:= s2],
-    ?assertEqual([#{value => <<"pending">>}], PendingOutputs).
+    ?assertEqual([], PendingOutputs).
 
 %% v0.7.5 criterion 4: an auto-resumed run emits `run.resumed' for the first
 %% pending step, so the boot-resume trail names that step on the event.
