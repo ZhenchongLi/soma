@@ -38,3 +38,18 @@ test_non_ascii_outside_string_is_diagnostic() ->
 
 non_ascii_outside_string_is_diagnostic_test() ->
     test_non_ascii_outside_string_is_diagnostic().
+
+test_parser_cleanup_preserves_reader_results() ->
+    ?assertEqual({ok, []}, soma_lfe_reader:read_forms(<<>>)),
+    ?assertEqual(
+        {ok, [alpha, 42, <<"beta">>]},
+        soma_lfe_reader:read_forms(<<"alpha 42 \"beta\"">>)),
+    ?assertEqual(
+        {error, [#{message => <<"unexpected close parenthesis">>, line => 1}]},
+        soma_lfe_reader:read_forms(<<")">>)),
+    ?assertEqual(
+        {error, [#{message => <<"unexpected end of input inside a list">>, line => 0}]},
+        soma_lfe_reader:read_forms(<<"(alpha">>)).
+
+parser_cleanup_preserves_reader_results_test() ->
+    test_parser_cleanup_preserves_reader_results().
