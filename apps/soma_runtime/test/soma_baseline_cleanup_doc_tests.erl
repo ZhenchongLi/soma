@@ -26,3 +26,25 @@ test_claude_md_contains_only_agents_import() ->
 
 claude_md_contains_only_agents_import_test() ->
     test_claude_md_contains_only_agents_import().
+
+test_design_lists_cli_config_real_planning_as_built() ->
+    Design = read_repo_file("docs/design.md"),
+    [_, CurrentScope] = binary:split(Design, <<"## Current Scope\n">>),
+    [Built, OpenAndRest] = binary:split(CurrentScope, <<"\nStill open:\n">>),
+    [Open, _] =
+        binary:split(OpenAndRest, <<"\nOut of scope for the current core:\n">>),
+    ?assert(
+        contains(
+            Built,
+            <<"productized real-model planning through CLI/config conventions">>
+        )
+    ),
+    ?assertNot(
+        contains(
+            Open,
+            <<"productizing real-model planning through CLI/config conventions">>
+        )
+    ).
+
+design_lists_cli_config_real_planning_as_built_test() ->
+    test_design_lists_cli_config_real_planning_as_built().
