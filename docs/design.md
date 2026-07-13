@@ -119,13 +119,13 @@ Soma currently includes:
 - mock LLM execution for deterministic local runs, an opt-in OpenAI-compatible
   provider path, and actor-level planning mode that reads provider text as a
   Lisp `(run-steps ...)` proposal when `model_config` carries `plan => true`;
+- productized real-model planning through CLI/config conventions;
 - local single-user CLI/daemon commands: `run`, `ask`, `status`, `trace`,
   `cancel`, `stop`, and `daemon`;
 - self-contained release packaging.
 
 Still open:
 
-- productizing real-model planning through CLI/config conventions;
 - effect-aware policy;
 - log/index compaction;
 - Linux release artifacts.
