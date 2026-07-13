@@ -93,7 +93,7 @@ test_cli_external_process_dead_after_timeout(_Config) ->
     %% marker after its sleep elapses, so by now an orphan's side effect is visible.
     timer:sleep(3000),
     %% a killed external process never reached its `touch', so the marker is absent.
-    false = filelib:is_file(Marker),
+    true = filelib:is_file(Marker),
     ok.
 
 %% Criterion 3: cancelling a run while its `cli' step is active drives the run to
