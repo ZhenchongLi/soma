@@ -48,3 +48,38 @@ test_design_lists_cli_config_real_planning_as_built() ->
 
 design_lists_cli_config_real_planning_as_built_test() ->
     test_design_lists_cli_config_real_planning_as_built().
+
+test_agents_lists_structured_real_model_planning_as_built() ->
+    Agents = read_repo_file("AGENTS.md"),
+    [_, CurrentStateAndRest] = binary:split(Agents, <<"## Current State\n">>),
+    [CurrentState, _] = binary:split(CurrentStateAndRest, <<"\n## What Soma Is\n">>),
+    [_, ScopeAndRest] = binary:split(Agents, <<"## Scope Discipline\n">>),
+    [InScope, OutOfScope] =
+        binary:split(
+            ScopeAndRest,
+            <<"\nOut of scope for the current core unless explicitly requested:\n">>
+        ),
+    ?assert(contains(CurrentState, <<"structured real-model planning is built">>)),
+    ?assert(contains(CurrentState, <<"CLI/config surface">>)),
+    ?assertNot(
+        contains(
+            CurrentState,
+            <<"Other open tracks: structured real-model planning">>
+        )
+    ),
+    ?assert(
+        contains(
+            InScope,
+            <<"structured real-model planning that emits tool-running proposals">>
+        )
+    ),
+    ?assert(contains(InScope, <<"CLI/config surface">>)),
+    ?assertNot(
+        contains(
+            OutOfScope,
+            <<"structured real-model planner that emits tool-running proposals">>
+        )
+    ).
+
+agents_lists_structured_real_model_planning_as_built_test() ->
+    test_agents_lists_structured_real_model_planning_as_built().
