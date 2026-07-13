@@ -59,19 +59,25 @@ test_doc_names_cli_3_suites_and_cases() ->
 doc_names_cli_3_suites_and_cases_test() ->
     test_doc_names_cli_3_suites_and_cases().
 
-%% Criterion 12: the branch carries the PR-ready Dialyzer report locally, so the
-%% no-PR GitHub state does not leave the acceptance evidence without a carrier.
-test_cli_3_dialyzer_pr_report_is_carried_locally() ->
+%% Issue #227 criterion 11: the CLI.3 contract and its Dialyzer report identify
+%% the four-warning result as dated historical evidence, not current status.
+test_cli_3_dialyzer_report_is_2026_06_27_historical_snapshot() ->
     Contract = read_doc(),
     Report = read_doc(?DIALYZER_REPORT_PATH),
     ?assert(byte_size(Report) > 0),
     ?assert(contains(Contract, <<"cli-3-dialyzer-pr-report.md">>)),
+    ?assert(contains(Contract,
+                     <<"four-warning result is a historical snapshot captured on 2026-06-27">>)),
+    ?assert(contains(Contract, <<"not the current branch status">>)),
     ?assert(contains(Report, <<"rebar3 dialyzer">>)),
     ?assert(contains(Report, <<"4 warnings">>)),
+    ?assert(contains(Report,
+                     <<"four-warning result is a historical snapshot captured on 2026-06-27">>)),
+    ?assert(contains(Report, <<"not the current branch status">>)),
     ?assert(contains(Report, <<"apps/soma_lfe/src/soma_lfe_reader.erl">>)),
     ?assert(contains(Report, <<"apps/soma_runtime/src/soma_tool_call.erl">>)),
     ?assert(contains(Report, <<"git diff origin/main...HEAD">>)),
     ?assert(contains(Report, <<"PR body">>)).
 
-cli_3_dialyzer_pr_report_is_carried_locally_test() ->
-    test_cli_3_dialyzer_pr_report_is_carried_locally().
+cli_3_dialyzer_report_is_2026_06_27_historical_snapshot_test() ->
+    test_cli_3_dialyzer_report_is_2026_06_27_historical_snapshot().
