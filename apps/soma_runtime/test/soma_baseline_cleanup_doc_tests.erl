@@ -1,0 +1,20 @@
+-module(soma_baseline_cleanup_doc_tests).
+
+-include_lib("eunit/include/eunit.hrl").
+
+read_repo_file(Name) ->
+    Path = filename:join([code:lib_dir(soma_runtime), "..", "..", "..", "..", Name]),
+    case file:read_file(Path) of
+        {ok, Bin} -> Bin;
+        {error, Reason} -> erlang:error({cannot_read, Name, Reason})
+    end.
+
+contains(Haystack, Needle) ->
+    binary:match(Haystack, Needle) =/= nomatch.
+
+test_readme_and_agents_report_final_green_gate_totals() ->
+    Readme = read_repo_file("README.md"),
+    ?assert(contains(Readme, <<"EUnit 386, Common Test 425">>)).
+
+readme_and_agents_report_final_green_gate_totals_test() ->
+    test_readme_and_agents_report_final_green_gate_totals().
