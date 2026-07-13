@@ -20,3 +20,9 @@ test_readme_and_agents_report_final_green_gate_totals() ->
 
 readme_and_agents_report_final_green_gate_totals_test() ->
     test_readme_and_agents_report_final_green_gate_totals().
+
+test_claude_md_contains_only_agents_import() ->
+    ?assertEqual(<<"@AGENTS.md\n">>, read_repo_file("CLAUDE.md")).
+
+claude_md_contains_only_agents_import_test() ->
+    test_claude_md_contains_only_agents_import().
