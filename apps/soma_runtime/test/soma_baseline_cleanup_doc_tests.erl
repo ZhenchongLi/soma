@@ -83,3 +83,14 @@ test_agents_lists_structured_real_model_planning_as_built() ->
 
 agents_lists_structured_real_model_planning_as_built_test() ->
     test_agents_lists_structured_real_model_planning_as_built().
+
+test_zh_overview_lists_v0_7_5_boot_auto_resume_as_built() ->
+    Overview = read_repo_file("docs/zh/what-is-soma.zh.md"),
+    ?assert(contains(Overview, <<"v0.7.1-v0.7.5">>)),
+    ?assert(contains(Overview, <<"interrupted-run discovery">>)),
+    ?assert(contains(Overview, <<"boot auto-resume">>)),
+    ?assertNot(contains(Overview, <<"v0.7.1-v0.7.4">>)),
+    ?assertNot(contains(Overview, <<"v0.7.5 auto-resume on boot">>)).
+
+zh_overview_lists_v0_7_5_boot_auto_resume_as_built_test() ->
+    test_zh_overview_lists_v0_7_5_boot_auto_resume_as_built().
