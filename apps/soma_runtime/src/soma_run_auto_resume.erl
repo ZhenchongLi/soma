@@ -5,6 +5,11 @@
 
 resume_interrupted(StorePid) ->
     RunIds = soma_event_store:interrupted_runs(StorePid),
-    [soma_run_resume_executor:resume(RunId, undefined, StorePid)
-     || RunId <- RunIds],
+    ok = lists:foreach(
+           fun(RunId) ->
+                   _ResumeResult =
+                       soma_run_resume_executor:resume(RunId, undefined, StorePid),
+                   ok
+           end,
+           RunIds),
     ok.
