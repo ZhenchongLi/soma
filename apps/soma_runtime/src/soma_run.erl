@@ -382,13 +382,13 @@ cli_argv_placeholder_name(Arg) when is_binary(Arg) ->
         false ->
             none
     end;
-cli_argv_placeholder_name(Arg) when is_list(Arg) ->
-    case unicode:characters_to_binary(Arg) of
+cli_argv_placeholder_name(Arg) ->
+    try unicode:characters_to_binary(Arg) of
         Bin when is_binary(Bin) -> cli_argv_placeholder_name(Bin);
         _ -> none
-    end;
-cli_argv_placeholder_name(_) ->
-    none.
+    catch
+        error:badarg -> none
+    end.
 
 %% Render a placeholder value by its declared param type. The declared type is
 %% the contract: a `string' must be a binary or an Erlang string (kept

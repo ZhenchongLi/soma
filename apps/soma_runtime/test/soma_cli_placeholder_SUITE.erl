@@ -183,7 +183,7 @@ test_cli_argv_placeholder_renders_string_integer_boolean(Config) ->
                  "arg1=--name\n"
                  "arg2=widget\n"
                  "arg3=--count\n"
-                 "arg4=43\n"
+                 "arg4=42\n"
                  "arg5=--verbose\n"
                  "arg6=true\n">>,
     ?assertEqual(Expected, step_output_for(Events, s1)),
