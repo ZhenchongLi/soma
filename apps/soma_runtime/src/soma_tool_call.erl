@@ -117,12 +117,13 @@ adapter_cwd() ->
     Dir.
 
 await_cli(Port, ToolCallId, ReplyTo) ->
-    case erlang:port_info(Port, os_pid) of
-        {os_pid, OsPid} ->
-            ReplyTo ! {tool_started_os_pid, ToolCallId, self(), OsPid};
-        undefined ->
-            ok
-    end,
+    ok = case erlang:port_info(Port, os_pid) of
+             {os_pid, OsPid} ->
+                 ReplyTo ! {tool_started_os_pid, ToolCallId, self(), OsPid},
+                 ok;
+             undefined ->
+                 ok
+         end,
     collect_cli(Port, [], 0).
 
 %% Collect the program's merged stdout/stderr until it exits. A clean exit
