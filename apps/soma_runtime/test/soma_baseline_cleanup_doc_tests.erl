@@ -14,7 +14,9 @@ contains(Haystack, Needle) ->
 
 test_readme_and_agents_report_final_green_gate_totals() ->
     Readme = read_repo_file("README.md"),
-    ?assert(contains(Readme, <<"EUnit 386, Common Test 425">>)).
+    Agents = read_repo_file("AGENTS.md"),
+    ?assert(contains(Readme, <<"EUnit 386, Common Test 425">>)),
+    ?assert(contains(Agents, <<"EUnit 386 and Common Test 425">>)).
 
 readme_and_agents_report_final_green_gate_totals_test() ->
     test_readme_and_agents_report_final_green_gate_totals().
