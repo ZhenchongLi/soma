@@ -48,7 +48,7 @@ test_parser_cleanup_preserves_reader_results() ->
         {error, [#{message => <<"unexpected close parenthesis">>, line => 1}]},
         soma_lfe_reader:read_forms(<<")">>)),
     ?assertEqual(
-        {error, [#{message => <<"unexpected end of input inside a list">>, line => 0}]},
+        {error, [#{message => <<"unclosed parenthesis">>, line => 0}]},
         soma_lfe_reader:read_forms(<<"(alpha">>)).
 
 parser_cleanup_preserves_reader_results_test() ->

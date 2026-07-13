@@ -21,7 +21,7 @@ read_forms(Source) when is_binary(Source) ->
         Input when is_list(Input) ->
             case scan(Input, 1, []) of
                 {ok, Tokens} ->
-                    parse_all_forms(Tokens, [], []);
+                    parse_all_forms(Tokens, []);
                 {error, Diags} ->
                     {error, Diags}
             end;
@@ -115,19 +115,15 @@ scan_atom(Rest, Line, Buf, Acc) ->
 %%% --- Form parser ---
 
 %% parse_all_forms accumulates top-level forms from a flat token list.
-parse_all_forms([], Forms, []) ->
+parse_all_forms([], Forms) ->
     {ok, lists:reverse(Forms)};
-parse_all_forms([], _Forms, _Stack) ->
-    {error, [#{message => <<"unexpected end of input inside a list">>, line => 0}]};
-parse_all_forms(Tokens, Forms, []) ->
+parse_all_forms(Tokens, Forms) ->
     case parse_form(Tokens) of
         {ok, Form, Rest} ->
-            parse_all_forms(Rest, [Form | Forms], []);
+            parse_all_forms(Rest, [Form | Forms]);
         {error, Diags} ->
             {error, Diags}
-    end;
-parse_all_forms(_Tokens, _Forms, _Stack) ->
-    {error, [#{message => <<"internal reader error">>, line => 0}]}.
+    end.
 
 %% parse_form reads exactly one form from the head of the token list.
 parse_form([{atom, _Line, Atom} | Rest]) ->
@@ -139,9 +135,7 @@ parse_form([{string, _Line, Str} | Rest]) ->
 parse_form([{open_paren, _Line} | Rest]) ->
     parse_list(Rest, []);
 parse_form([{close_paren, Line} | _Rest]) ->
-    {error, [#{message => <<"unexpected close parenthesis">>, line => Line}]};
-parse_form([]) ->
-    {error, [#{message => <<"unexpected end of input">>, line => 0}]}.
+    {error, [#{message => <<"unexpected close parenthesis">>, line => Line}]}.
 
 parse_list([{close_paren, _Line} | Rest], Acc) ->
     {ok, lists:reverse(Acc), Rest};
