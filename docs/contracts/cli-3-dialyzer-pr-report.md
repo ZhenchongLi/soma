@@ -10,8 +10,9 @@ exists.
 
 ## PR body
 
-Dialyzer was run with `rebar3 dialyzer` on 2026-06-27. It exited non-zero with
-the known baseline 4 warnings:
+The four-warning result is a historical snapshot captured on 2026-06-27. It is
+not the current branch status. Dialyzer was run with `rebar3 dialyzer` for that
+snapshot and exited non-zero with 4 warnings:
 
 - `apps/soma_lfe/src/soma_lfe_reader.erl:110` - pattern can never match.
 - `apps/soma_lfe/src/soma_lfe_reader.erl:119` - previous clauses completely
