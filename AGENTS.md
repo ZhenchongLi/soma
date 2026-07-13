@@ -107,6 +107,7 @@ soma_sup
                               `-- soma_tool_call (per-tool-call worker)
 
 soma_actor_sup                              (apps/soma_actor)
+  |-- soma_actor_registry                   (gen_server, stable-name index)
   `-- soma_actor                            (gen_statem, long-lived actor)
 ```
 
@@ -119,10 +120,17 @@ soma_actor_sup                              (apps/soma_actor)
   `completed | failed | timeout | cancelled`.
 - `soma_tool_call` executes exactly one tool invocation, reports the result or
   error to `soma_run`, then exits. Every tool call crosses this process
-  boundary.
+  boundary. `soma_tool_call:start/1` uses `spawn_monitor`, so the run atomically
+  holds the worker monitor. An immediate tool crash therefore keeps
+  the real exit reason in the `'DOWN'` message instead of racing a separate
+  monitor and collapsing to `noproc`.
 - `soma_actor` sits above the runtime as a separate app. It owns tasks and starts
   runs directly under `soma_run_sup` with `session_pid => self()`. The runtime
-  must not import `soma_actor`.
+  must not import `soma_actor`. Stable-name addressing goes through the
+  supervised `soma_actor_registry`, which maps a binary stable name to a live
+  pid. An actor started with `stable_name` registers there, so
+  `soma_actor:send/2` and `actor_message.to` accept either the stable name or a
+  pid; an unknown or dead name resolves to `{error, not_found}`.
 - `soma_llm_call` is a disposable worker owned directly by `soma_actor`; there
   is no `soma_llm_call_sup`.
 

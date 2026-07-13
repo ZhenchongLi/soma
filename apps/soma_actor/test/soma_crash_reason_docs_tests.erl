@@ -1,48 +1,48 @@
-%% @doc Documentation proofs for the `CLAUDE.md' actor-registry and
-%% crash-reason criteria (issue #187). Each test reads `CLAUDE.md' at the repo
+%% @doc Documentation proofs for the `AGENTS.md' actor-registry and
+%% crash-reason criteria (issue #187). Each test reads `AGENTS.md' at the repo
 %% root and asserts the substrings that prove the criterion is documented; it
 %% opens no socket and starts no app.
 -module(soma_crash_reason_docs_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
-claude_md_path() ->
+agents_md_path() ->
     filename:join([code:lib_dir(soma_actor), "..", "..", "..", "..",
-                   "CLAUDE.md"]).
+                   "AGENTS.md"]).
 
-read_claude_md() ->
-    {ok, Bin} = file:read_file(claude_md_path()),
+read_agents_md() ->
+    {ok, Bin} = file:read_file(agents_md_path()),
     Bin.
 
 contains(Haystack, Needle) ->
     binary:match(Haystack, Needle) =/= nomatch.
 
-test_claude_md_names_actor_registry() ->
-    Doc = read_claude_md(),
-    %% `CLAUDE.md' names `soma_actor_registry' as the stable-name addressing
+test_agents_md_names_actor_registry() ->
+    Doc = read_agents_md(),
+    %% `AGENTS.md' names `soma_actor_registry' as the stable-name addressing
     %% mechanism in the actor description.
     ?assert(contains(Doc, <<"soma_actor_registry">>)),
     ?assert(contains(Doc, <<"stable">>)).
 
-claude_md_names_actor_registry_test() ->
-    test_claude_md_names_actor_registry().
+agents_md_names_actor_registry_test() ->
+    test_agents_md_names_actor_registry().
 
-test_claude_md_names_spawn_monitor() ->
-    Doc = read_claude_md(),
-    %% `CLAUDE.md' names `spawn_monitor' as the `soma_tool_call:start/1'
+test_agents_md_names_spawn_monitor() ->
+    Doc = read_agents_md(),
+    %% `AGENTS.md' names `spawn_monitor' as the `soma_tool_call:start/1'
     %% worker-spawn mechanism.
     ?assert(contains(Doc, <<"spawn_monitor">>)),
     ?assert(contains(Doc, <<"soma_tool_call">>)).
 
-claude_md_names_spawn_monitor_test() ->
-    test_claude_md_names_spawn_monitor().
+agents_md_names_spawn_monitor_test() ->
+    test_agents_md_names_spawn_monitor().
 
-test_claude_md_immediate_crash_keeps_real_reason() ->
-    Doc = read_claude_md(),
-    %% `CLAUDE.md' states an immediate tool crash keeps the real exit reason
+test_agents_md_immediate_crash_keeps_real_reason() ->
+    Doc = read_agents_md(),
+    %% `AGENTS.md' states an immediate tool crash keeps the real exit reason
     %% instead of `noproc'.
     ?assert(contains(Doc, <<"real exit reason">>)),
     ?assert(contains(Doc, <<"noproc">>)).
 
-claude_md_immediate_crash_keeps_real_reason_test() ->
-    test_claude_md_immediate_crash_keeps_real_reason().
+agents_md_immediate_crash_keeps_real_reason_test() ->
+    test_agents_md_immediate_crash_keeps_real_reason().
