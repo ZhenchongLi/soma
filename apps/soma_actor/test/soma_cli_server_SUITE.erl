@@ -48,6 +48,7 @@
 -export([test_real_provider_plan_api_key_leaks_nowhere/1]).
 -export([test_explore_ask_uses_configured_round_and_observation_budgets/1]).
 -export([test_unparseable_explore_setting_keeps_daemon_reachable_and_off/1]).
+-export([test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -93,7 +94,8 @@ all() ->
      test_ask_real_provider_plan_rejects_disallowed_tool,
      test_real_provider_plan_api_key_leaks_nowhere,
      test_explore_ask_uses_configured_round_and_observation_budgets,
-     test_unparseable_explore_setting_keeps_daemon_reachable_and_off].
+     test_unparseable_explore_setting_keeps_daemon_reachable_and_off,
+     test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -1398,6 +1400,84 @@ test_unparseable_explore_setting_keeps_daemon_reachable_and_off(Config) ->
         end
     end.
 
+%% Criterion 5 (#232): a model map loaded from local config enables a complete
+%% two-request explore ask through the real local socket. The first fixed
+%% provider response starts one reader run; the second responder records the
+%% request carrying the configured seven-byte observation and returns the
+%% terminal reply printed by `soma ask'. The response sequence is added only in
+%% the test process, so no executable seam enters config and no provider socket
+%% is opened.
+test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation(
+  Config) ->
+    Path = socket_path(Config),
+    ConfigPath = terminal_explore_provider_config_file(Config),
+    KeyEnv = "SOMA_LLM_API_KEY",
+    Prev = os:getenv(KeyEnv),
+    os:putenv(KeyEnv, "sk-terminal-explore-test"),
+    ObservationCap = 7,
+    ReaderText = <<"reader output longer than cap">>,
+    ExploreSource =
+        <<"(explore (step (id inspect) (tool text_head) "
+          "(args (text \"reader output longer than cap\") (lines 1))))">>,
+    TerminalText = <<"done after inspection">>,
+    TerminalSource = <<"(reply (text \"done after inspection\"))">>,
+    TestPid = self(),
+    SecondResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_request, 2, CallOpts},
+                {200, provider_response_body(TerminalSource)}
+        end,
+    try
+        Loaded = soma_config:load(#{config_path => ConfigPath}),
+        true = maps:get(explore, Loaded),
+        ModelConfig =
+            Loaded#{response_sequence =>
+                        [{200, provider_response_body(ExploreSource)},
+                         SecondResponder]},
+        {ok, _Server} =
+            soma_cli_server:start_link(#{socket => Path,
+                                         model_config => ModelConfig}),
+
+        ct:capture_start(),
+        Exit = soma_cli:ask(#{intent => "inspect before answering",
+                              socket => Path}),
+        ct:capture_stop(),
+        Printed = iolist_to_binary(ct:capture_get()),
+        SecondCallOpts =
+            receive
+                {provider_request, 2, CallOpts} -> CallOpts
+            after 2000 ->
+                ct:fail(second_provider_request_timeout)
+            end,
+
+        %% Staged-red expectation: this end-to-end ask must become terminal
+        %% success once the proof is made green.
+        1 = Exit,
+        match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
+        match = re:run(Printed, TerminalText, [{capture, none}]),
+        [#{role := <<"system">>},
+         #{role := <<"user">>, content := <<"inspect before answering">>},
+         #{role := <<"assistant">>, content := ExploreSource},
+         #{role := <<"user">>, content := Observation}] =
+            maps:get(messages, SecondCallOpts),
+        SerializedOutput =
+            iolist_to_binary(
+              soma_lisp:render(#{text => ReaderText, truncated => false})),
+        RetainedOutput = binary:part(SerializedOutput, 0, ObservationCap),
+        ExpectedObservation =
+            iolist_to_binary(
+              [<<"(observation (status completed) (outputs "
+                  "(step (id inspect) (output ">>,
+               soma_lisp:render(RetainedOutput),
+               <<"))) (truncated true))">>]),
+        ExpectedObservation = Observation
+    after
+        case Prev of
+            false -> os:unsetenv(KeyEnv);
+            _ -> os:putenv(KeyEnv, Prev)
+        end
+    end.
+
 %% True when the sentinel binary appears anywhere inside Term (a map's keys or
 %% values, a list, or a tuple, however nested).
 term_contains(Term, Sentinel) when is_binary(Term) ->
@@ -1472,6 +1552,23 @@ unparseable_explore_provider_config_file(Config) ->
               "base", "_url = \"api.example/v1\"\n",
               "model = \"test-model\"\n",
               "explore = definitely-not-a-boolean\n"]),
+    ok = file:write_file(File, Toml),
+    File.
+
+%% Complete provider config for a reader round followed by one terminal model
+%% request. Two rounds admit exactly those two responses, and the seven-byte
+%% observation cap makes the second request prove bounded carry-through.
+terminal_explore_provider_config_file(Config) ->
+    Dir = ?config(priv_dir, Config),
+    File = filename:join(Dir, "terminal_explore_provider.config"),
+    Toml = iolist_to_binary(
+             ["[llm]\n",
+              "provider = \"openai_compat\"\n",
+              "base", "_url = \"api.example/v1\"\n",
+              "model = \"test-model\"\n",
+              "explore = true\n",
+              "max_explore_rounds = 2\n",
+              "max_observation_bytes = 7\n"]),
     ok = file:write_file(File, Toml),
     File.
 
