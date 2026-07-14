@@ -356,7 +356,7 @@ test_out_of_scope_invocation_rejected_through_policy(_Config) ->
 test_unscoped_invocation_uses_configured_or_empty_default_policy(_Config) ->
     Cases =
         [{configured, #{allowed_tools => [echo]}, succeeded, 1},
-         {empty_default, application_default, succeeded, 0}],
+         {empty_default, application_default, rejected, 0}],
     lists:foreach(
       fun({Name, PolicySetting, ExpectedStatus, ExpectedRunStarts}) ->
               ok = restart_actor_with_service_policy(PolicySetting),
