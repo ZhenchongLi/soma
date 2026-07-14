@@ -1,6 +1,7 @@
 -module(soma_text_reader_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_text_grep_compilable_pattern_and_zero_match/1,
@@ -9,7 +10,8 @@
          test_text_grep_default_and_explicit_match_caps/1,
          test_text_readers_enforce_shared_65536_byte_cap/1,
          test_text_head_explicit_default_and_short_input/1,
-         test_text_head_input_validation_fails_named_session_alive/1]).
+         test_text_head_input_validation_fails_named_session_alive/1,
+         test_text_grep_filters_cli_stdout_from_step/1]).
 
 all() ->
     [test_text_grep_compilable_pattern_and_zero_match,
@@ -18,7 +20,8 @@ all() ->
      test_text_grep_default_and_explicit_match_caps,
      test_text_readers_enforce_shared_65536_byte_cap,
      test_text_head_explicit_default_and_short_input,
-     test_text_head_input_validation_fails_named_session_alive].
+     test_text_head_input_validation_fails_named_session_alive,
+     test_text_grep_filters_cli_stdout_from_step].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -232,6 +235,36 @@ test_text_head_input_validation_fails_named_session_alive(_Config) ->
                                        echo_after_head_validation),
     ok.
 
+test_text_grep_filters_cli_stdout_from_step(Config) ->
+    Helper = write_multiline_stdout_helper(Config),
+    Manifest = #{name => cli_multiline_stdout,
+                 effect => reader,
+                 idempotent => true,
+                 timeout_ms => 5000,
+                 adapter => cli,
+                 executable => Helper,
+                 argv => []},
+    ok = soma_tool_registry:register_tool(Manifest),
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => cli_step,
+               tool => cli_multiline_stdout,
+               args => #{}},
+             #{id => grep_step,
+               tool => text_grep,
+               args => #{text => {from_step, cli_step},
+                         pattern => <<"^keep">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    ?assertEqual(<<"keep alpha\nskip beta\nkeep gamma\n">>,
+                 step_output(Events, cli_step)),
+    ?assertEqual(#{text => <<"keep alpha\n">>,
+                   match_count => 1,
+                   truncated => false},
+                 step_output(Events, grep_step)),
+    ok.
+
 assert_validation_failures(SessionPid, StorePid, Tool, Cases) ->
     lists:foreach(
       fun({StepId, Args, ExpectedReason}) ->
@@ -257,6 +290,16 @@ assert_session_completes_echo(SessionPid, StorePid, StepId) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     #{value := <<"still alive">>} = step_output(Events, StepId),
     ok.
+
+write_multiline_stdout_helper(Config) ->
+    Dir = filename:join(?config(priv_dir, Config), "text_reader_cli_helpers"),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "multiline_stdout.sh"),
+    Script = <<"#!/bin/sh\n"
+               "printf '%s\\n' 'keep alpha' 'skip beta' 'keep gamma'\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
 
 step_output(Events, StepId) ->
     [Event] = [E || E <- Events,
