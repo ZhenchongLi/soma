@@ -19,7 +19,24 @@ describe() ->
 -spec manifest() -> map().
 manifest() ->
     (describe())#{adapter => erlang_module,
-                  module => ?MODULE}.
+                  module => ?MODULE,
+                  description =>
+                      <<"Returns source lines whose bodies match a regular "
+                        "expression.">>,
+                  params => [#{name => <<"text">>,
+                               type => string,
+                               required => true,
+                               doc => <<"Text to search.">>},
+                             #{name => <<"pattern">>,
+                               type => string,
+                               required => true,
+                               doc => <<"Regular expression matched against "
+                                        "each line body.">>},
+                             #{name => <<"max_matches">>,
+                               type => integer,
+                               required => false,
+                               doc => <<"Maximum matching lines to return; "
+                                        "defaults to 100.">>}]}.
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
     {ok, soma_tool:output()} | {error, soma_tool:error()}.
