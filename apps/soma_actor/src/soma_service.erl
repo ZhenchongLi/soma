@@ -12,6 +12,7 @@
 -record(state, {event_store,
                 policy = #{allowed_tools => []},
                 tasks = #{},
+                requests = #{},
                 runs = #{},
                 monitors = #{}}).
 
@@ -33,7 +34,7 @@ init([]) ->
 handle_call({invoke, Envelope}, _From, State) ->
     case soma_service_envelope:normalize(Envelope) of
         {ok, Normalized} ->
-            start_invocation(Normalized, State);
+            invoke_normalized(Normalized, State);
         {error, _Diagnostics} = Error ->
             {reply, Error, State}
     end;
@@ -75,19 +76,33 @@ handle_info({'DOWN', MRef, process, RunPid, Reason},
 handle_info(_Info, State) ->
     {noreply, State}.
 
-start_invocation(Envelope, State = #state{policy = Policy}) ->
+invoke_normalized(Envelope,
+                  State = #state{requests = Requests, tasks = Tasks}) ->
+    RequestId = maps:get(request_id, Envelope),
+    EnvelopeHash = envelope_hash(Envelope),
+    case maps:get(RequestId, Requests, undefined) of
+        #{envelope_hash := EnvelopeHash} = Request ->
+            {reply, duplicate_reply(Request, Tasks), State};
+        _ ->
+            start_invocation(Envelope, EnvelopeHash, State)
+    end.
+
+start_invocation(Envelope, EnvelopeHash,
+                 State = #state{policy = Policy}) ->
     Steps = operation_steps(maps:get(operation, Envelope)),
     Proposal = #{kind => run_steps, steps => Steps},
     case soma_policy:check(Proposal, Policy) of
         allow ->
-            start_allowed_invocation(Envelope, Steps, State);
+            start_allowed_invocation(
+              Envelope, EnvelopeHash, Steps, State);
         {reject, Reason} ->
             {reply, {error, {policy_rejected, Reason}}, State}
     end.
 
-start_allowed_invocation(Envelope, Steps,
+start_allowed_invocation(Envelope, EnvelopeHash, Steps,
                          State = #state{event_store = EventStore,
                                         tasks = Tasks,
+                                        requests = Requests,
                                         runs = Runs,
                                         monitors = Monitors}) ->
     TaskId = mint_id("service-task-"),
@@ -111,9 +126,13 @@ start_allowed_invocation(Envelope, Steps,
                       run_pid => RunPid,
                       run_mref => MRef},
             Task = maybe_add_max_output_bytes(Envelope, Task0),
+            Request = #{envelope_hash => EnvelopeHash,
+                        task_id => TaskId,
+                        accepted_handle => Handle},
             NewState =
                 State#state{
                   tasks = maps:put(TaskId, Task, Tasks),
+                  requests = maps:put(RequestId, Request, Requests),
                   runs = maps:put(RunId, TaskId, Runs),
                   monitors = maps:put(
                                MRef,
@@ -123,6 +142,17 @@ start_allowed_invocation(Envelope, Steps,
         {error, Reason} ->
             {reply, {error, {run_start_failed, Reason}}, State}
     end.
+
+duplicate_reply(#{task_id := TaskId,
+                  accepted_handle := Handle}, Tasks) ->
+    Task = maps:get(TaskId, Tasks),
+    case maps:get(status, Task) of
+        running -> {ok, Handle};
+        _Terminal -> {ok, public_task(Task)}
+    end.
+
+envelope_hash(Envelope) ->
+    crypto:hash(sha256, term_to_binary(Envelope, [deterministic])).
 
 operation_steps(#{kind := tool, step := Step}) ->
     [Step];
