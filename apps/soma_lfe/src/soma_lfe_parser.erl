@@ -887,7 +887,7 @@ parse_args([], Acc) ->
     {ok, Acc};
 parse_args([[from_step, Id]], Acc) when map_size(Acc) =:= 0 ->
     {ok, #{from_step => Id}};
-parse_args([[from_step, _Id]], _Acc) ->
+parse_args([[from_step, _Id] | _Rest], _Acc) ->
     {error, [#{code => invalid_step,
                message => <<"bare (from_step Id) must be the only arg entry">>,
                line => 0}]};
