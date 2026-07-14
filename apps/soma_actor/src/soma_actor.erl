@@ -389,6 +389,8 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                             {keep_state, Data1}
                     end;
                 {proposal, Proposal} ->
+                    maybe_emit_explore_round_completed(
+                      TaskId, proposal, completed, 0, false, Data0),
                     Tasks0 = maps:put(TaskId, Task#{result => Proposal},
                                       Data0#data.tasks),
                     Data0a = Data0#data{tasks = Tasks0},
@@ -1240,6 +1242,26 @@ max_explore_rounds(TaskId, Data) ->
 %% bounded invalid-reply metadata before the task-level terminal outcome. The
 %% ordinary non-exploration LLM path emits no round event.
 maybe_emit_terminal_explore_llm_round(TaskId, Status, Data) ->
+    maybe_emit_explore_round_completed(
+      TaskId, invalid_reply, Status, 0, false, Data).
+
+maybe_emit_explore_round_started(TaskId, CorrelationId, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    case maps:get(explore, Task, false) of
+        true ->
+            Round = maps:get(explore_round, Task, 1),
+            RemainingRounds = max_explore_rounds(TaskId, Data) - Round + 1,
+            emit(Data, <<"explore.round.started">>,
+                 #{task_id => TaskId,
+                   correlation_id => CorrelationId,
+                   round => Round,
+                   remaining_rounds => RemainingRounds});
+        false ->
+            ok
+    end.
+
+maybe_emit_explore_round_completed(TaskId, Action, Status,
+                                   ObservationBytes, Truncated, Data) ->
     Task = maps:get(TaskId, Data#data.tasks),
     case maps:get(explore, Task, false) of
         true ->
@@ -1250,26 +1272,17 @@ maybe_emit_terminal_explore_llm_round(TaskId, Status, Data) ->
                    correlation_id => maps:get(correlation_id, Task),
                    round => Round,
                    remaining_rounds => RemainingRounds,
-                   action => invalid_reply,
+                   action => Action,
                    status => Status,
-                   observation_bytes => 0,
-                   truncated => false});
+                   observation_bytes => ObservationBytes,
+                   truncated => Truncated});
         false ->
             ok
     end.
 
-emit_cancelled_explore_run_round(
-  #{round := Round, remaining_rounds := RemainingRounds}, TaskId, Data) ->
-    Task = maps:get(TaskId, Data#data.tasks),
-    emit(Data, <<"explore.round.completed">>,
-         #{task_id => TaskId,
-           correlation_id => maps:get(correlation_id, Task),
-           round => Round,
-           remaining_rounds => RemainingRounds,
-           action => explore,
-           status => cancelled,
-           observation_bytes => 0,
-           truncated => false}).
+emit_cancelled_explore_run_round(_RunContext, TaskId, Data) ->
+    maybe_emit_explore_round_completed(
+      TaskId, explore, cancelled, 0, false, Data).
 
 explore_round_budget_available(#{explore := true}, TaskId, Data) ->
     Task = maps:get(TaskId, Data#data.tasks),
@@ -1349,6 +1362,7 @@ start_llm_call(Llm, TaskId, CorrelationId, Data) ->
     Counts = maps:put(TaskId, Count + 1, Data#data.llm_call_counts),
     Data1 = Data#data{llm_calls = LlmCalls, tasks = Tasks,
                       monitors = Monitors, llm_call_counts = Counts},
+    maybe_emit_explore_round_started(TaskId, CorrelationId, Data1),
     emit(Data1, <<"llm.started">>,
          #{task_id => TaskId, correlation_id => CorrelationId,
            llm_call_id => LlmCallId, llm_call_pid => WorkerPid}),
@@ -1455,35 +1469,41 @@ continue_explore_after_completion(RunId, Outputs,
     MaxObservationBytes =
         maps:get(max_observation_bytes, Data0#data.budget,
                  ?DEFAULT_MAX_OBSERVATION_BYTES),
-    Observation = completed_explore_observation(
-                    Steps, Outputs, MaxObservationBytes),
-    continue_explore_with_observation(TaskId, Round, AssistantReply,
-                                      Observation, Data0).
+    {Observation, ObservationBytes, Truncated} =
+        completed_explore_observation(
+          Steps, Outputs, MaxObservationBytes),
+    continue_explore_with_observation(
+      TaskId, Round, AssistantReply, Observation,
+      explore, completed, ObservationBytes, Truncated, Data0).
 
 completed_explore_observation(Steps, Outputs, MaxBytes) ->
-    {StepForms, Truncated} =
+    {StepForms, ObservationBytes, Truncated} =
         completed_observation_steps(Steps, Outputs, MaxBytes),
     Marker = case Truncated of
                  true -> <<" (truncated true)">>;
                  false -> <<>>
              end,
-    iolist_to_binary(
-      [<<"(observation (status completed) (outputs ">>,
-       lists:join(<<" ">>, StepForms), <<")">>, Marker, <<")">>]).
+    Observation =
+        iolist_to_binary(
+          [<<"(observation (status completed) (outputs ">>,
+           lists:join(<<" ">>, StepForms), <<")">>, Marker, <<")">>]),
+    {Observation, ObservationBytes, Truncated}.
 
 completed_observation_steps(Steps, Outputs, MaxBytes) ->
-    completed_observation_steps(Steps, Outputs, MaxBytes, false, []).
+    completed_observation_steps(Steps, Outputs, MaxBytes, 0, false, []).
 
-completed_observation_steps([], _Outputs, _Remaining, Truncated, Acc) ->
-    {lists:reverse(Acc), Truncated};
+completed_observation_steps([], _Outputs, _Remaining, ObservationBytes,
+                            Truncated, Acc) ->
+    {lists:reverse(Acc), ObservationBytes, Truncated};
 completed_observation_steps([#{id := StepId} | Rest], Outputs, Remaining,
-                            Truncated0, Acc) ->
+                            ObservationBytes0, Truncated0, Acc) ->
     Output = maps:get(StepId, Outputs),
     RenderedOutput = iolist_to_binary(soma_lisp:render(Output)),
     {RetainedOutput, Remaining1, Truncated1} =
         retain_observation_output(RenderedOutput, Remaining),
     StepForm = completed_observation_step(StepId, RetainedOutput),
     completed_observation_steps(Rest, Outputs, Remaining1,
+                                ObservationBytes0 + byte_size(RetainedOutput),
                                 Truncated0 orelse Truncated1,
                                 [StepForm | Acc]).
 
@@ -1517,8 +1537,9 @@ continue_explore_after_non_reader_rejection(TaskId, Tool, Effect, Data) ->
           [<<"(observation (status rejected) (tool ">>,
            observation_step_id(Tool), <<") (effect ">>,
            observation_step_id(Effect), <<"))">>]),
-    continue_explore_with_observation(TaskId, Round, AssistantReply,
-                                      Observation, Data).
+    continue_explore_with_observation(
+      TaskId, Round, AssistantReply, Observation,
+      explore, rejected, 0, false, Data).
 
 continue_explore_after_failure(RunId, Reason,
                                #{task_id := TaskId, round := Round}, Data) ->
@@ -1528,10 +1549,12 @@ continue_explore_after_failure(RunId, Reason,
     MaxObservationBytes =
         maps:get(max_observation_bytes, Data0#data.budget,
                  ?DEFAULT_MAX_OBSERVATION_BYTES),
-    Observation = bounded_explore_term_observation(
-                    failed, reason, Reason, MaxObservationBytes),
-    continue_explore_with_observation(TaskId, Round, AssistantReply,
-                                      Observation, Data0).
+    {Observation, ObservationBytes, Truncated} =
+        bounded_explore_term_observation(
+          failed, reason, Reason, MaxObservationBytes),
+    continue_explore_with_observation(
+      TaskId, Round, AssistantReply, Observation,
+      explore, failed, ObservationBytes, Truncated, Data0).
 
 continue_explore_after_timeout(RunId,
                                #{task_id := TaskId, round := Round}, Data) ->
@@ -1539,8 +1562,9 @@ continue_explore_after_timeout(RunId,
     Task = maps:get(TaskId, Data0#data.tasks),
     AssistantReply = maps:get(explore_assistant_reply, Task),
     Observation = <<"(observation (status timeout))">>,
-    continue_explore_with_observation(TaskId, Round, AssistantReply,
-                                      Observation, Data0).
+    continue_explore_with_observation(
+      TaskId, Round, AssistantReply, Observation,
+      explore, timeout, 0, false, Data0).
 
 continue_explore_after_invalid_reply(TaskId, AssistantReply, Diagnostics,
                                      Data) ->
@@ -1549,13 +1573,18 @@ continue_explore_after_invalid_reply(TaskId, AssistantReply, Diagnostics,
     MaxObservationBytes =
         maps:get(max_observation_bytes, Data#data.budget,
                  ?DEFAULT_MAX_OBSERVATION_BYTES),
-    Observation = bounded_explore_term_observation(
-                    failed, diagnostic, Diagnostics, MaxObservationBytes),
-    continue_explore_with_observation(TaskId, Round, AssistantReply,
-                                      Observation, Data).
+    {Observation, ObservationBytes, Truncated} =
+        bounded_explore_term_observation(
+          failed, diagnostic, Diagnostics, MaxObservationBytes),
+    continue_explore_with_observation(
+      TaskId, Round, AssistantReply, Observation,
+      invalid_reply, failed, ObservationBytes, Truncated, Data).
 
 continue_explore_with_observation(TaskId, Round, AssistantReply, Observation,
+                                  Action, Status, ObservationBytes, Truncated,
                                   Data) ->
+    maybe_emit_explore_round_completed(
+      TaskId, Action, Status, ObservationBytes, Truncated, Data),
     Task0 = maps:get(TaskId, Data#data.tasks),
     Transcript0 = maps:get(explore_transcript, Task0, []),
     Transcript = Transcript0
@@ -1577,10 +1606,12 @@ bounded_explore_term_observation(Status, Field, Term, MaxBytes) ->
                  true -> <<" (truncated true)">>;
                  false -> <<>>
              end,
-    iolist_to_binary(
-      [<<"(observation (status ">>, observation_step_id(Status),
-       <<") (">>, observation_step_id(Field), <<" ">>,
-       soma_lisp:render(Retained), <<")">>, Marker, <<")">>]).
+    Observation =
+        iolist_to_binary(
+          [<<"(observation (status ">>, observation_step_id(Status),
+           <<") (">>, observation_step_id(Field), <<" ">>,
+           soma_lisp:render(Retained), <<")">>, Marker, <<")">>]),
+    {Observation, byte_size(Retained), Truncated}.
 
 observation_step_id(StepId) when is_atom(StepId) ->
     atom_to_binary(StepId, utf8);
