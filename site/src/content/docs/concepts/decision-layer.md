@@ -16,6 +16,24 @@ real provider slots in; the mock is directive-driven (`proposal` / `success` /
 (`soma_llm_openai`) fills this seam, while the mock stays the test-gate default
 so the gate never reaches the network.
 
+## Configured planning
+
+The shipped OpenAI-compatible `[llm]` configuration enables planning with
+`plan = true`:
+
+```toml
+[llm]
+provider = "openai_compat"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4.1-mini"
+plan = true
+```
+
+Provider text is compiled as a Soma Lisp `(run-steps ...)` proposal. It then
+passes proposal normalization, the tool-name policy gate, and the budget gate
+before actor-owned supervised execution starts the approved steps as a
+`soma_run`.
+
 ## Proposals
 
 `soma_proposal:normalize/1` is a pure validate-and-normalize boundary. It tags
