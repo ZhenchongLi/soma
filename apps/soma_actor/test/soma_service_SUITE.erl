@@ -11,6 +11,7 @@
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
 -export([test_conflicting_request_id_rejected_before_new_run/1]).
+-export([test_run_started_journals_request_id_and_envelope_hash/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -18,8 +19,20 @@ all() ->
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
-     test_conflicting_request_id_rejected_before_new_run].
+     test_conflicting_request_id_rejected_before_new_run,
+     test_run_started_journals_request_id_and_envelope_hash].
 
+init_per_testcase(test_run_started_journals_request_id_and_envelope_hash,
+                  Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo, sleep]}),
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    ok = application:set_env(soma_runtime, event_store_log, Path),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
@@ -27,7 +40,9 @@ init_per_testcase(TestCase, Config)
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
            test_identical_duplicate_reuses_running_handle_and_terminal_result;
-       TestCase =:= test_conflicting_request_id_rejected_before_new_run ->
+       TestCase =:= test_conflicting_request_id_rejected_before_new_run;
+       TestCase =:=
+           test_run_started_journals_request_id_and_envelope_hash ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -35,18 +50,22 @@ init_per_testcase(TestCase, Config)
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started} | Config].
 
-end_per_testcase(TestCase, _Config)
+end_per_testcase(TestCase, Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
            test_identical_duplicate_reuses_running_handle_and_terminal_result;
-       TestCase =:= test_conflicting_request_id_rejected_before_new_run ->
+       TestCase =:= test_conflicting_request_id_rejected_before_new_run;
+       TestCase =:=
+           test_run_started_journals_request_id_and_envelope_hash ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
+    application:unset_env(soma_runtime, event_store_log),
     application:unload(soma_actor),
+    maybe_del_tmp_dir(Config),
     ok.
 
 test_supervised_service_restarts_and_serves_again(_Config) ->
@@ -207,6 +226,38 @@ test_conflicting_request_id_rejected_before_new_run(_Config) ->
        soma_service:invoke(ConflictingEnvelope)),
     ?assertEqual(RunStartCount, count_run_started(StorePid)).
 
+test_run_started_journals_request_id_and_envelope_hash(Config) ->
+    RequestId = <<"service-durable-request-identity">>,
+    Envelope = tool_envelope(
+                 RequestId, echo,
+                 #{value => <<"durable request metadata">>}),
+    {ok, NormalizedEnvelope} =
+        soma_service_envelope:normalize(Envelope),
+    EnvelopeHash =
+        crypto:hash(
+          sha256, term_to_binary(NormalizedEnvelope, [deterministic])),
+    Step = maps:get(step, maps:get(operation, NormalizedEnvelope)),
+
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(Envelope),
+    {ok, #{status := succeeded}} =
+        wait_for_status(TaskId, succeeded, 100),
+
+    ok = application:stop(soma_actor),
+    ok = application:stop(soma_runtime),
+    ok = application:set_env(
+           soma_runtime, event_store_log, ?config(log_path, Config)),
+    {ok, _Started} = application:ensure_all_started(soma_runtime),
+
+    [RunStarted] =
+        [Event || Event <- soma_event_store:all(runtime_event_store()),
+                  maps:get(event_type, Event) =:= <<"run.started">>,
+                  maps:get(steps, maps:get(payload, Event)) =:= [Step]],
+    RunOptions = maps:get(run_options, maps:get(payload, RunStarted)),
+    ?assertEqual(
+       #{request_id => RequestId, envelope_hash => EnvelopeHash},
+       maps:with([request_id, envelope_hash], RunOptions)).
+
 ensure_loaded(App) ->
     case application:load(App) of
         ok -> ok;
@@ -339,4 +390,27 @@ wait_for_terminal(TaskId, Attempts) ->
         {ok, _Task} ->
             timer:sleep(10),
             wait_for_terminal(TaskId, Attempts - 1)
+    end.
+
+make_tmp_dir() ->
+    Unique = erlang:integer_to_list(erlang:unique_integer([positive])),
+    Dir = filename:join(["/tmp", "soma_service_" ++ Unique]),
+    ok = file:make_dir(Dir),
+    Dir.
+
+maybe_del_tmp_dir(Config) ->
+    case proplists:get_value(tmp_dir, Config, undefined) of
+        undefined ->
+            ok;
+        Dir ->
+            del_tmp_dir(Dir)
+    end.
+
+del_tmp_dir(Dir) ->
+    case file:list_dir(Dir) of
+        {ok, Names} ->
+            [ok = file:delete(filename:join(Dir, Name)) || Name <- Names],
+            file:del_dir(Dir);
+        {error, enoent} ->
+            ok
     end.
