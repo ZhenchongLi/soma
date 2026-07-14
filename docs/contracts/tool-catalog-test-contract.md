@@ -26,7 +26,7 @@ The catalog behavior is proved by `soma_tool_registry_tests`:
 | Each catalog entry is exactly `#{name, description, params}`, `params` defaulting to `[]`; runtime-facing fields (`module`, `executable`, `argv`, `effect`, `idempotent`, `timeout_ms`) never appear. | `catalog_entry_is_exactly_name_description_params_test_` |
 | A registered tool without a `description` stays resolvable but is absent from `catalog/0`. | `tool_without_description_absent_from_catalog_test_` |
 | A manifest with model-facing fields registered through `register_tool/1` appears in `catalog/0` with those fields verbatim. | `register_tool_with_model_facing_fields_appears_in_catalog_test_` |
-| A freshly seeded registry catalogs all five built-ins, each with a non-empty binary description. | `seeded_catalog_lists_all_five_builtins_test_` |
+| A freshly seeded registry catalogs all seven built-ins, each with a non-empty binary description. | `seeded_catalog_lists_all_seven_builtins_test_` |
 
 ## Planning-Prompt Contract
 

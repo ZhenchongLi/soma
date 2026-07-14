@@ -146,6 +146,8 @@ The local daemon seeds these tools automatically:
 | `fail` | Return or raise a controlled failure. Mostly useful for testing isolation. |
 | `file_read` | Read a file under a supplied `root`. |
 | `file_write` | Write bytes to a file under a supplied `root`. |
+| `text_grep` | Return source lines whose bodies match a regular expression. |
+| `text_head` | Return the leading lines of text. |
 | `ask_actor` | Delegate to another running actor by its stable name and return that actor's task result. The whole sub-chain shares the parent's correlation id, so one `soma trace` covers it; cancelling or timing out the parent step cancels the sub-agent's task too. |
 
 File tools use `(root "...")` as their sandbox root. Keep file paths relative to
@@ -191,9 +193,10 @@ Rules that keep this safe:
   validate is skipped with one named boot-log line; the other files still
   register. A missing or empty `~/.soma/tools/` changes nothing.
 - **Built-in names are reserved.** A file declaring a built-in tool's name
-  (`echo`, `sleep`, `fail`, `file_read`, `file_write`) is skipped — a config
-  file cannot replace a built-in's safety metadata. Two files declaring the
-  same name register the first (sorted by filename) and skip the second.
+  (`echo`, `sleep`, `fail`, `file_read`, `file_write`, `text_grep`, `text_head`)
+  is skipped — a config file cannot replace a built-in's safety metadata. Two
+  files declaring the same name register the first (sorted by filename) and
+  skip the second.
 - Descriptions may contain any UTF-8 text; the file itself must be saved as
   UTF-8.
 

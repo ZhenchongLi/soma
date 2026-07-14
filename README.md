@@ -258,9 +258,10 @@ A tool is a behaviour with `describe/0` and `invoke/2`; its spec declares an
 `effect` (`identity | reader | state`), `idempotent`, and `timeout_ms`, and it
 registers through a manifest naming its adapter. Built-in tools (in-BEAM,
 `erlang_module` adapter): `echo`, `sleep`, `fail` (for tests — error and crash
-modes), `file_read`, `file_write` (sandboxed under a `root`). External tools use
-the `cli` adapter — executable + argv, never shell strings, with explicit `argv`,
-`env`, and `cwd` handling; a packaged sample helper ships at
+modes), `file_read`, `file_write` (sandboxed under a `root`), `text_grep`, and
+`text_head`. External tools use the `cli` adapter — executable + argv, never shell
+strings, with explicit `argv`, `env`, and `cwd` handling; a packaged sample helper
+ships at
 `apps/soma_tools/priv/cli/soma_sample_upper`. The manifest shape and the cli
 execution protocol are in **[docs/tool-manifest.md](docs/tool-manifest.md)**.
 

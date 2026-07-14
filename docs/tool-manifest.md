@@ -214,7 +214,7 @@ step and leave the session alive:
 
 ## Built-in tools
 
-The five built-in tools seed the registry at startup via their `manifest/0`
+The seven built-in tools seed the registry at startup via their `manifest/0`
 callbacks. All use the `erlang_module` adapter.
 
 | Name | Effect | Idempotent | Notes |
@@ -224,6 +224,8 @@ callbacks. All use the `erlang_module` adapter.
 | `fail` | `identity` | `true` | for tests — error and crash modes |
 | `file_read` | `reader` | `true` | reads a file under a sandboxed `root` |
 | `file_write` | `state` | `false` | writes a file under a sandboxed `root` |
+| `text_grep` | `reader` | `true` | returns source lines matching a regular expression |
+| `text_head` | `reader` | `true` | returns the leading lines of text |
 
 ## Registering a custom tool
 

@@ -61,8 +61,8 @@ the shell that triggers that auto-start.
 
 ## The task files
 
-All five built-in tools the daemon seeds are fair game (`echo`, `sleep`, `fail`,
-`file_read`, `file_write`). The tour uses:
+All seven built-in tools the daemon seeds are fair game (`echo`, `sleep`, `fail`,
+`file_read`, `file_write`, `text_grep`, `text_head`). The tour uses:
 
 - **`pipeline.lfe`** — read a file, pass it through echo, write it back out.
 - **`slow.lfe`** — one 60s `sleep` step, for the cancel beat.
