@@ -8,10 +8,30 @@ import { Code } from 'astro:components';
 import '../styles/custom.css';
 import '../styles/landing.css';
 
-const quickStart = `# first client call auto-starts the daemon
-soma run ./pipeline.lfe
-soma trace <correlation-id>
-soma stop`;
+const quickStart = `rebar3 release
+SOMA="_build/default/rel/somad/bin/soma"
+
+mkdir -p /tmp/soma-demo
+printf 'hi soma\n' > /tmp/soma-demo/input.txt
+
+cat > /tmp/soma-demo/pipeline.lisp <<'EOF'
+(task
+  (let* ((read (tool file_read
+                 (path "input.txt")
+                 (root "/tmp/soma-demo")))
+         (process (tool echo
+                    (from read)))
+         (write (tool file_write
+                  (path "output.txt")
+                  (root "/tmp/soma-demo")
+                  (bytes (from process)))))
+    (return write)))
+EOF
+
+$SOMA run /tmp/soma-demo/pipeline.lisp
+cat /tmp/soma-demo/output.txt
+
+$SOMA trace "<correlation-id-from-result>"`;
 ---
 
 <html lang="en">
