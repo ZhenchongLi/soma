@@ -153,7 +153,7 @@ test_flat_plan_preserves_order_and_from_step_output(_Config) ->
         [maps:get(step_id, Event)
          || Event <- soma_event_store:by_run(StorePid, RunId),
             maps:get(event_type, Event) =:= <<"step.started">>],
-    ?assertEqual([SecondStepId, FirstStepId], StartedStepIds).
+    ?assertEqual([FirstStepId, SecondStepId], StartedStepIds).
 
 ensure_loaded(App) ->
     case application:load(App) of
