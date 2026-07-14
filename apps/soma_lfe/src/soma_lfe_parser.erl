@@ -2,8 +2,9 @@
 %% run representation, or a list of structured diagnostics.
 -module(soma_lfe_parser).
 
--export([parse_run/1, parse_task/1, parse_msg/1, parse_proposal/1, parse_ask/1,
-         parse_trace/1, parse_status/1, parse_cancel/1, parse_stop/1]).
+-export([parse_run/1, parse_task/1, parse_msg/1, parse_explore/1,
+         parse_proposal/1, parse_ask/1, parse_trace/1, parse_status/1,
+         parse_cancel/1, parse_stop/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -24,7 +25,7 @@ parse_msg_fields([[type, Value] | Rest], Acc) ->
 parse_msg_fields([[payload, Value] | Rest], Acc) ->
     parse_msg_fields(Rest, Acc#{payload => Value});
 parse_msg_fields([[steps | StepForms] | Rest], Acc) ->
-    case parse_msg_steps(StepForms, []) of
+    case parse_proposal_steps(StepForms) of
         {ok, Steps} ->
             parse_msg_fields(Rest, Acc#{steps => Steps});
         {error, Diags} ->
@@ -309,49 +310,86 @@ validate_task_return(ReturnId, Steps) ->
                line => 0}]
     end.
 
-parse_msg_steps([], Acc) ->
+parse_proposal_steps(StepForms) ->
+    parse_proposal_steps(StepForms, []).
+
+parse_proposal_steps([], Acc) ->
     {ok, lists:reverse(Acc)};
-parse_msg_steps([[step | StepChildren] | Rest], Acc) ->
-    case parse_msg_step(StepChildren, #{args => #{}}) of
+parse_proposal_steps([[step | StepChildren] | Rest], Acc) ->
+    case parse_proposal_step(StepChildren, #{args => #{}}) of
         {ok, Step} ->
-            parse_msg_steps(Rest, [Step | Acc]);
+            parse_proposal_steps(Rest, [Step | Acc]);
         {error, Diags} ->
             {error, Diags}
     end;
-parse_msg_steps([[Head | _] | _], _Acc) when is_atom(Head) ->
+parse_proposal_steps([[Head | _] | _], _Acc) when is_atom(Head) ->
     {error, [#{code => unknown_form,
                message => iolist_to_binary(
                    io_lib:format("steps child form must be 'step', got '~s'", [Head])),
                line => 0}]};
-parse_msg_steps([Other | _], _Acc) ->
+parse_proposal_steps([Other | _], _Acc) ->
     {error, [#{code => unknown_form,
                message => iolist_to_binary(
                    io_lib:format("unexpected form inside steps: ~p", [Other])),
                line => 0}]}.
 
-parse_msg_step([], Acc) ->
-    {ok, Acc};
-parse_msg_step([[id, Id] | Rest], Acc) ->
-    parse_msg_step(Rest, Acc#{id => Id});
-parse_msg_step([[tool, Tool] | Rest], Acc) ->
-    parse_msg_step(Rest, Acc#{tool => Tool});
-parse_msg_step([[args | KVPairs] | Rest], Acc) ->
+parse_proposal_step([], Acc) ->
+    validate_proposal_step(Acc);
+parse_proposal_step([[id, Id] | Rest], Acc) when is_atom(Id) ->
+    parse_proposal_step(Rest, Acc#{id => Id});
+parse_proposal_step([[tool, Tool] | Rest], Acc) when is_atom(Tool) ->
+    parse_proposal_step(Rest, Acc#{tool => Tool});
+parse_proposal_step([[args | KVPairs] | Rest], Acc) ->
     case parse_args(KVPairs, #{}) of
         {ok, ArgsMap} ->
-            parse_msg_step(Rest, Acc#{args => ArgsMap});
+            parse_proposal_step(Rest, Acc#{args => ArgsMap});
         {error, Diags} ->
             {error, Diags}
     end;
-parse_msg_step([[Head | _] | _], _Acc) when is_atom(Head) ->
+parse_proposal_step([[timeout_ms, TimeoutMs] | Rest], Acc)
+        when is_integer(TimeoutMs), TimeoutMs > 0 ->
+    parse_proposal_step(Rest, Acc#{timeout_ms => TimeoutMs});
+parse_proposal_step([[id, _] | _], _Acc) ->
+    invalid_proposal_step();
+parse_proposal_step([[tool, _] | _], _Acc) ->
+    invalid_proposal_step();
+parse_proposal_step([[timeout_ms, _] | _], _Acc) ->
+    invalid_proposal_step();
+parse_proposal_step([[Head | _] | _], _Acc) when is_atom(Head) ->
     {error, [#{code => unknown_form,
                message => iolist_to_binary(
-                   io_lib:format("unknown step child form: '~s' (expected 'id', 'tool' or 'args')", [Head])),
+                   io_lib:format(
+                       "unknown step child form: '~s' "
+                       "(expected 'id', 'tool', 'args' or 'timeout_ms')",
+                       [Head]
+                   )),
                line => 0}]};
-parse_msg_step([Other | _], _Acc) ->
+parse_proposal_step([Other | _], _Acc) ->
     {error, [#{code => unknown_form,
                message => iolist_to_binary(
                    io_lib:format("unexpected token in step children: ~p", [Other])),
                line => 0}]}.
+
+validate_proposal_step(#{id := Id, tool := Tool} = Step)
+        when is_atom(Id), is_atom(Tool) ->
+    {ok, Step};
+validate_proposal_step(_Step) ->
+    invalid_proposal_step().
+
+invalid_proposal_step() ->
+    {error, [#{code => invalid_step,
+               message => <<"proposal step requires atom id and tool fields">>,
+               line => 0}]}.
+
+%% @doc Parse a single explore form to canonical, compile-only step data.
+-spec parse_explore([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_explore([explore | StepForms]) ->
+    case parse_proposal_steps(StepForms) of
+        {ok, Steps} ->
+            {ok, #{kind => explore, steps => Steps}};
+        {error, Diags} ->
+            {error, Diags}
+    end.
 
 %% @doc Parse a single proposal form into the #{kind => ...} map
 %% soma_proposal:normalize/1 accepts.
@@ -361,9 +399,7 @@ parse_proposal([reply, [text, Text]]) when is_binary(Text) ->
 parse_proposal([reject, [reason, Reason]]) when is_binary(Reason) ->
     {ok, #{kind => reject, reason => Reason}};
 parse_proposal(['run-steps' | StepForms]) ->
-    %% Reuse the L.1 step parser (parse_msg_steps) so the step maps are
-    %% identical to the run path's steps.
-    case parse_msg_steps(StepForms, []) of
+    case parse_proposal_steps(StepForms) of
         {ok, Steps} ->
             {ok, #{kind => run_steps, steps => Steps}};
         {error, Diags} ->
