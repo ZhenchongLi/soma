@@ -83,8 +83,10 @@ invoke_normalized(Envelope,
     case maps:get(RequestId, Requests, undefined) of
         #{envelope_hash := EnvelopeHash} = Request ->
             {reply, duplicate_reply(Request, Tasks), State};
-        _ ->
-            start_invocation(Envelope, EnvelopeHash, State)
+        undefined ->
+            start_invocation(Envelope, EnvelopeHash, State);
+        #{envelope_hash := _DifferentHash} ->
+            {reply, {error, request_id_conflict}, State}
     end.
 
 start_invocation(Envelope, EnvelopeHash,
