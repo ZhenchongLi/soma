@@ -53,8 +53,8 @@ end_per_testcase(_TestCase, Config) ->
 explore_mode_provider_text_is_parsed_as_round_reply(_Config) ->
     Store = event_store_pid(),
     Source =
-        <<"(explore (step (id inspect) (tool file_read) "
-          "(args (path \"input.txt\"))))">>,
+        <<"(explore (step (id inspect) (tool sleep) "
+          "(args (ms 5000)) (timeout_ms 10000)))">>,
     Body =
         iolist_to_binary(
           json:encode(
@@ -70,7 +70,7 @@ explore_mode_provider_text_is_parsed_as_round_reply(_Config) ->
         soma_actor_sup:start_actor(
           #{actor_id => <<"actor-explore-round-reply">>,
             model_config => ModelConfig,
-            tool_policy => #{allowed_tools => [file_read]},
+            tool_policy => #{allowed_tools => [sleep]},
             event_store => Store}),
     TaskId = <<"task-explore-round-reply">>,
     CorrelationId = <<"corr-explore-round-reply">>,
@@ -91,8 +91,9 @@ explore_mode_provider_text_is_parsed_as_round_reply(_Config) ->
         #{kind => explore,
           steps =>
               [#{id => inspect,
-                 tool => file_read,
-                 args => #{path => <<"input.txt">>}}]},
+                 tool => sleep,
+                 args => #{ms => 5000},
+                 timeout_ms => 10000}]},
     ok = assert_equal(ExpectedRoundReply,
                       maps:get(explore_round_reply, Task, undefined)),
     ok = assert_equal(running, maps:get(status, Task)),

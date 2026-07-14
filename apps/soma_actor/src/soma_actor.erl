@@ -17,6 +17,7 @@
 -export([idle/3]).
 
 -define(DEFAULT_LLM_TIMEOUT_MS, 60000).
+-define(DEFAULT_MAX_EXPLORE_ROUNDS, 5).
 -define(DEFAULT_MAX_OBSERVATION_BYTES, 16384).
 
 -record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
@@ -375,8 +376,7 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                     case admit_explore_steps(Steps, Data1) of
                         ok ->
                             Round = maps:get(explore_round, Task1, 1),
-                            MaxRounds = maps:get(max_explore_rounds,
-                                                Data1#data.budget, 5),
+                            MaxRounds = max_explore_rounds(TaskId, Data1),
                             Purpose =
                                 #{purpose => explore_run,
                                   round => Round,
@@ -992,7 +992,8 @@ build_call_opts(#{provider := openai_compat,
             Round = maps:get(round, ModelConfig, 1),
             RemainingRounds =
                 maps:get(remaining_rounds, ModelConfig,
-                         maps:get(max_explore_rounds, ModelConfig, 5)
+                         maps:get(max_explore_rounds, ModelConfig,
+                                  ?DEFAULT_MAX_EXPLORE_ROUNDS)
                          - Round + 1),
             System = #{role => <<"system">>,
                        content => explore_system_prompt(Round,
@@ -1149,10 +1150,11 @@ prepare_explore_call(#{explore := true} = ModelConfig, Envelope, TaskId, Data) -
     Task0 = maps:get(TaskId, Data#data.tasks),
     Round = maps:get(explore_round, Task0, 1),
     Transcript = maps:get(explore_transcript, Task0, []),
-    MaxRounds = maps:get(max_explore_rounds, Data#data.budget, 5),
+    MaxRounds = max_explore_rounds(TaskId, Data),
     Task1 = Task0#{explore_round => Round,
                    explore_transcript => Transcript,
-                   explore_envelope => Envelope},
+                   explore_envelope => Envelope,
+                   max_explore_rounds => MaxRounds},
     Tasks = maps:put(TaskId, Task1, Data#data.tasks),
     Config0 = ModelConfig#{round => Round,
                            remaining_rounds => MaxRounds - Round + 1,
@@ -1180,35 +1182,66 @@ response_at_round([], _Round) ->
 maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
     case maps:get(llm, Envelope, undefined) of
         Llm when is_map(Llm) ->
-            case llm_budget_available(TaskId, Data) of
-                true ->
-                    %% Build the worker opts from the actor's model_config plus
-                    %% this envelope. A real-provider model_config yields
-                    %% openai_compat routing opts (reaching soma_llm_openai); an
-                    %% empty / directive-shaped one returns the envelope's `llm'
-                    %% map unchanged, so the mock path the actor drives today is
-                    %% byte-for-byte what it was.
-                    %% Thread the actor's allowed-tools list (from its
-                    %% tool_policy) into the model_config the builder reads, so a
-                    %% planning-mode request can list the allowed tool names in
-                    %% its system message. A model_config without `plan => true'
-                    %% ignores it, so non-planning opts are unchanged.
-                    ModelConfig0 = planning_tools(Data#data.model_config,
-                                                  Data#data.tool_policy),
-                    {ModelConfig, Data0} =
-                        prepare_explore_call(ModelConfig0, Envelope, TaskId,
-                                             Data),
-                    CallOpts = build_call_opts(ModelConfig, Envelope),
-                    start_llm_call(CallOpts, TaskId, CorrelationId, Data0);
+            ModelConfig0 = planning_tools(Data#data.model_config,
+                                          Data#data.tool_policy),
+            case explore_round_budget_available(ModelConfig0, TaskId, Data) of
                 false ->
-                    %% Spend point one: the task's LLM-call count is at the
-                    %% max_llm_calls cap, so no call is made. The task fails as
-                    %% data through the shared failure path; no llm.started fires.
-                    fail_task(TaskId, {budget_exceeded, max_llm_calls}, Data)
+                    %% Exploration replies are counted by the round stored on
+                    %% the task. Refuse round N+1 before the ordinary LLM-call
+                    %% gate or worker start, so no extra llm.started event can
+                    %% be emitted and this limit wins when both are exhausted.
+                    fail_task(TaskId,
+                              {budget_exceeded, max_explore_rounds}, Data);
+                true ->
+                    case llm_budget_available(TaskId, Data) of
+                        true ->
+                            %% Build the worker opts from the actor's model_config
+                            %% plus this envelope. A real-provider model_config
+                            %% yields openai_compat routing opts (reaching
+                            %% soma_llm_openai); an empty / directive-shaped one
+                            %% returns the envelope's `llm' map unchanged, so the
+                            %% mock path the actor drives today is byte-for-byte
+                            %% what it was.
+                            %% Thread the actor's allowed-tools list (from its
+                            %% tool_policy) into the model_config the builder reads,
+                            %% so a planning-mode request can list the allowed tool
+                            %% names. A model_config without `plan => true' ignores
+                            %% it, so non-planning opts are unchanged.
+                            {ModelConfig, Data0} =
+                                prepare_explore_call(ModelConfig0, Envelope,
+                                                     TaskId, Data),
+                            CallOpts = build_call_opts(ModelConfig, Envelope),
+                            start_llm_call(CallOpts, TaskId, CorrelationId,
+                                           Data0);
+                        false ->
+                            %% Spend point one: the task's LLM-call count is at the
+                            %% max_llm_calls cap, so no call is made. The task fails
+                            %% as data through the shared failure path; no
+                            %% llm.started fires.
+                            fail_task(TaskId,
+                                      {budget_exceeded, max_llm_calls}, Data)
+                    end
             end;
         _ ->
             Data
     end.
+
+%% Exploration has a default five-reply allowance. Snapshot it onto the task
+%% when the first request is prepared, then read that task-owned value for every
+%% later continuation. Before that first preparation the actor budget supplies
+%% the configured value.
+max_explore_rounds(TaskId, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    maps:get(max_explore_rounds, Task,
+             maps:get(max_explore_rounds, Data#data.budget,
+                      ?DEFAULT_MAX_EXPLORE_ROUNDS)).
+
+explore_round_budget_available(#{explore := true}, TaskId, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    Round = maps:get(explore_round, Task, 1),
+    Round =< max_explore_rounds(TaskId, Data);
+explore_round_budget_available(_ModelConfig, _TaskId, _Data) ->
+    true.
 
 %% True when the task's started-LLM-call count is below the budget's
 %% `max_llm_calls' cap. An absent `max_llm_calls' (or absent budget) means no
