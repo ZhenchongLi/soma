@@ -568,6 +568,7 @@ idle(info, {timeout, _TimerRef, {llm_timeout, LlmCallId}}, Data) ->
             emit(Data1, <<"llm.timeout">>,
                  #{task_id => TaskId, correlation_id => CorrelationId,
                    llm_call_id => LlmCallId}),
+            maybe_emit_terminal_explore_llm_round(TaskId, timeout, Data1),
             reply_waiter(TaskId, {error, timeout}, Data1)
     end;
 %% A parked ask/3 caller died while the task was still in flight. Cancel the
@@ -616,6 +617,13 @@ idle(info, {'DOWN', MRef, process, _RunPid, Reason}, Data)
                     emit(Data1, <<"llm.failed">>,
                          #{task_id => TaskId, correlation_id => CorrelationId,
                            llm_call_id => LlmCallId})
+            end,
+            case maps:get(llm_call_mref, Task1, undefined) of
+                MRef ->
+                    maybe_emit_terminal_explore_llm_round(
+                      TaskId, failed, Data1);
+                _ ->
+                    ok
             end,
             emit(Data1, <<"actor.task.failed">>,
                  #{task_id => TaskId, correlation_id => CorrelationId,
@@ -1235,6 +1243,29 @@ max_explore_rounds(TaskId, Data) ->
     maps:get(max_explore_rounds, Task,
              maps:get(max_explore_rounds, Data#data.budget,
                       ?DEFAULT_MAX_EXPLORE_ROUNDS)).
+
+%% A failed or timed-out provider worker terminates exploration rather than
+%% becoming a next-round observation. Close the currently open round with the
+%% bounded invalid-reply metadata before the task-level terminal outcome. The
+%% ordinary non-exploration LLM path emits no round event.
+maybe_emit_terminal_explore_llm_round(TaskId, Status, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    case maps:get(explore, Task, false) of
+        true ->
+            Round = maps:get(explore_round, Task, 1),
+            RemainingRounds = max_explore_rounds(TaskId, Data) - Round + 1,
+            emit(Data, <<"explore.round.completed">>,
+                 #{task_id => TaskId,
+                   correlation_id => maps:get(correlation_id, Task),
+                   round => Round,
+                   remaining_rounds => RemainingRounds,
+                   action => invalid_reply,
+                   status => Status,
+                   observation_bytes => 0,
+                   truncated => false});
+        false ->
+            ok
+    end.
 
 explore_round_budget_available(#{explore := true}, TaskId, Data) ->
     Task = maps:get(TaskId, Data#data.tasks),
