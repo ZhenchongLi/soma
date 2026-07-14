@@ -296,7 +296,7 @@ test_invoke_compile_normalize_boundary_is_pure() ->
                 "apps/soma_event_store/src/soma_event_store.app.src"
             ),
         ?assertEqual(
-            [kernel],
+            [kernel, stdlib],
             proplists:get_value(applications, EventStoreProps)
         ),
 
