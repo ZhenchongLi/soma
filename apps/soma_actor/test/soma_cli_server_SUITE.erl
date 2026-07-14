@@ -46,6 +46,7 @@
 -export([test_ask_real_provider_plan_returns_step_outputs/1]).
 -export([test_ask_real_provider_plan_rejects_disallowed_tool/1]).
 -export([test_real_provider_plan_api_key_leaks_nowhere/1]).
+-export([test_explore_ask_uses_configured_round_and_observation_budgets/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -89,7 +90,8 @@ all() ->
      test_real_provider_api_key_leaks_nowhere,
      test_ask_real_provider_plan_returns_step_outputs,
      test_ask_real_provider_plan_rejects_disallowed_tool,
-     test_real_provider_plan_api_key_leaks_nowhere].
+     test_real_provider_plan_api_key_leaks_nowhere,
+     test_explore_ask_uses_configured_round_and_observation_budgets].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -1313,6 +1315,62 @@ test_real_provider_plan_api_key_leaks_nowhere(Config) ->
         end
     end.
 
+%% Criterion 2 (#232): one local config fixture carries positive exploration
+%% round and observation limits. A socket ask loads that map, executes one reader
+%% round, caps the retained reader output at the configured byte limit, and then
+%% exhausts the configured one-round allowance before a second model call starts.
+%% The response sequence is added only in the test process, so no provider socket
+%% is opened and no executable seam enters the config surface.
+test_explore_ask_uses_configured_round_and_observation_budgets(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = explore_budget_provider_config_file(Config),
+    KeyEnv = "SOMA_LLM_API_KEY",
+    Prev = os:getenv(KeyEnv),
+    os:putenv(KeyEnv, "sk-explore-budget-test"),
+    ObservationCap = 7,
+    ExploreSource =
+        <<"(explore (step (id inspect) (tool text_head) "
+          "(args (text \"reader output longer than cap\") (lines 1))))">>,
+    TerminalSource = <<"(reply (text \"unexpected second call\"))">>,
+    try
+        Loaded = soma_config:load(#{config_path => ConfigPath}),
+        true = maps:get(explore, Loaded),
+        ModelConfig =
+            Loaded#{response_sequence =>
+                        [{200, provider_response_body(ExploreSource)},
+                         {200, provider_response_body(TerminalSource)}]},
+        {ok, _Server} =
+            soma_cli_server:start_link(#{socket => Path,
+                                         model_config => ModelConfig}),
+
+        ct:capture_start(),
+        Exit = soma_cli:ask(#{intent => "inspect before answering",
+                              socket => Path}),
+        ct:capture_stop(),
+        Printed = iolist_to_binary(ct:capture_get()),
+
+        1 = Exit,
+        match = re:run(Printed, "\\(status failed\\)", [{capture, none}]),
+        match = re:run(Printed, "max_explore_rounds", [{capture, none}]),
+        {match, [CorrelationId]} =
+            re:run(Printed, "\\(correlation-id \"([^\"]+)\"\\)",
+                   [{capture, all_but_first, binary}]),
+        Events = soma_event_store:by_correlation(event_store_pid(),
+                                                  CorrelationId),
+        [RoundCompleted] =
+            [Event || #{event_type := <<"explore.round.completed">>} = Event
+                          <- Events],
+        ObservationCap = maps:get(observation_bytes, RoundCompleted),
+        true = maps:get(truncated, RoundCompleted),
+        1 = length([Event || #{event_type := <<"llm.started">>} = Event
+                                <- Events])
+    after
+        case Prev of
+            false -> os:unsetenv(KeyEnv);
+            _ -> os:putenv(KeyEnv, Prev)
+        end
+    end.
+
 %% True when the sentinel binary appears anywhere inside Term (a map's keys or
 %% values, a list, or a tuple, however nested).
 term_contains(Term, Sentinel) when is_binary(Term) ->
@@ -1355,6 +1413,23 @@ planning_provider_config_file(Config) ->
               "base", "_url = \"api.example/v1\"\n",
               "model = \"deepseek-v4\"\n",
               "plan = true\n"]),
+    ok = file:write_file(File, Toml),
+    File.
+
+%% Real-provider fixture for the configured explore-budget socket proof. Both
+%% positive limits live in this one file; the response sequence remains a direct
+%% Erlang test seam added only after `soma_config:load/1'.
+explore_budget_provider_config_file(Config) ->
+    Dir = ?config(priv_dir, Config),
+    File = filename:join(Dir, "explore_budget_provider.config"),
+    Toml = iolist_to_binary(
+             ["[llm]\n",
+              "provider = \"openai_compat\"\n",
+              "base", "_url = \"api.example/v1\"\n",
+              "model = \"test-model\"\n",
+              "explore = true\n",
+              "max_explore_rounds = 1\n",
+              "max_observation_bytes = 7\n"]),
     ok = file:write_file(File, Toml),
     File.
 
