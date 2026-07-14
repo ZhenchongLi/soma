@@ -45,6 +45,20 @@ normalize_visible_text() {
   ' "$1"
 }
 
+assert_fragments_in_order() {
+  local text="$1"
+  shift
+  local fragment
+
+  for fragment in "$@"; do
+    if [[ "${text}" != *"${fragment}"* ]]; then
+      printf 'Missing or out-of-order normalized visible text fragment:\n  %s\n' "${fragment}" >&2
+      return 1
+    fi
+    text="${text#*"${fragment}"}"
+  done
+}
+
 test_landing_names_packaged_bin_soma_entry_point() {
   local landing_text
   local expected="The release's packaged bin/soma command is Soma's public entry point."
@@ -105,7 +119,27 @@ test_landing_marks_config_registered_cli_tools_shipped() {
   echo "PASS: test_landing_marks_config_registered_cli_tools_shipped"
 }
 
+test_landing_quick_start_matches_readme_checkout_flow() {
+  local landing_text
+
+  landing_text="$(normalize_visible_text "${SITE_DIR}/dist/index.html")"
+
+  if ! assert_fragments_in_order "${landing_text}" \
+    "rebar3 release" \
+    "_build/default/rel/somad/bin/soma" \
+    "pipeline.lisp" \
+    "(task" \
+    '$SOMA run' \
+    '$SOMA trace'; then
+    echo "FAIL: test_landing_quick_start_matches_readme_checkout_flow" >&2
+    return 1
+  fi
+
+  echo "PASS: test_landing_quick_start_matches_readme_checkout_flow"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
 test_landing_marks_config_registered_cli_tools_shipped
+test_landing_quick_start_matches_readme_checkout_flow
