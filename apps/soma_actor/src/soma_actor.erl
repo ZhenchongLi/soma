@@ -260,6 +260,11 @@ idle(info, {run_completed, RunId, Outputs}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
             {keep_state, Data};
+        #{purpose := explore_run, task_id := TaskId} ->
+            %% Reader work is a nonterminal exploration action. Clear the
+            %% finished child while leaving the task running; the observation
+            %% and next-round handoff are owned by later loop slices.
+            {keep_state, clear_finished_explore_run(RunId, TaskId, Data)};
         TaskId ->
             Data0 = clear_monitor(TaskId, Data),
             Task = maps:get(TaskId, Data0#data.tasks),
@@ -277,6 +282,8 @@ idle(info, {run_failed, RunId, Reason}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
             {keep_state, Data};
+        #{purpose := explore_run, task_id := TaskId} ->
+            {keep_state, clear_finished_explore_run(RunId, TaskId, Data)};
         TaskId ->
             Data0 = clear_monitor(TaskId, Data),
             Task = maps:get(TaskId, Data0#data.tasks),
@@ -293,6 +300,8 @@ idle(info, {run_timeout, RunId}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
             {keep_state, Data};
+        #{purpose := explore_run, task_id := TaskId} ->
+            {keep_state, clear_finished_explore_run(RunId, TaskId, Data)};
         TaskId ->
             Data0 = clear_monitor(TaskId, Data),
             Task = maps:get(TaskId, Data0#data.tasks),
@@ -309,7 +318,8 @@ idle(info, {run_cancelled, RunId}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
             {keep_state, Data};
-        TaskId ->
+        RunContext ->
+            TaskId = run_context_task_id(RunContext),
             Data0 = clear_monitor(TaskId, Data),
             Task = maps:get(TaskId, Data0#data.tasks),
             CorrelationId = maps:get(correlation_id, Task),
@@ -345,11 +355,35 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                                  planning_directive(Task)) of
                 {explore_round, RoundReply} ->
                     %% A valid `(explore ...)' provider reply is nonterminal.
-                    %% Retain the canonical compiler output as round state; the
-                    %% reader admission/execution loop is added by later slices.
+                    %% Retain the canonical compiler output, gate every step
+                    %% through the actor's name policy and the live descriptor
+                    %% effect, then execute accepted reader work through the
+                    %% ordinary owned soma_run path. The run context is tagged
+                    %% so its terminal message cannot be mistaken for the
+                    %% task's final proposal run.
                     Task1 = Task#{explore_round_reply => RoundReply},
                     Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
-                    {keep_state, Data0#data{tasks = Tasks}};
+                    Data1 = Data0#data{tasks = Tasks},
+                    Steps = maps:get(steps, RoundReply),
+                    case admit_explore_steps(Steps, Data1) of
+                        ok ->
+                            Round = maps:get(explore_round, Task1, 1),
+                            MaxRounds = maps:get(max_explore_rounds,
+                                                Data1#data.budget, 5),
+                            Purpose =
+                                #{purpose => explore_run,
+                                  round => Round,
+                                  remaining_rounds => MaxRounds - Round + 1,
+                                  steps => Steps},
+                            Data2 = start_owned_run(Steps, TaskId,
+                                                    CorrelationId, Purpose,
+                                                    Data1),
+                            {keep_state, Data2};
+                        {error, _Reason} ->
+                            %% A rejected action is nonterminal, but it must not
+                            %% cross the run boundary.
+                            {keep_state, Data1}
+                    end;
                 {proposal, Proposal} ->
                     Tasks0 = maps:put(TaskId, Task#{result => Proposal},
                                       Data0#data.tasks),
@@ -657,6 +691,34 @@ valid_step(Step) when is_map(Step) ->
 valid_step(_Step) ->
     false.
 
+%% Admit an exploration step list in two stages. The actor's existing
+%% tool-name policy remains the first authority. Only after it allows the full
+%% list do we resolve each live descriptor in source order and require the
+%% declared effect to be `reader'. No admitted step executes here.
+admit_explore_steps(Steps, Data) ->
+    Policy = case Data#data.tool_policy of
+                 Value when is_map(Value) -> Value;
+                 _ -> #{}
+             end,
+    case soma_policy:check(#{kind => run_steps, steps => Steps}, Policy) of
+        allow ->
+            admit_reader_descriptors(Steps);
+        {reject, Reason} ->
+            {error, {policy_rejected, Reason}}
+    end.
+
+admit_reader_descriptors([]) ->
+    ok;
+admit_reader_descriptors([#{tool := Tool} | Rest]) ->
+    case soma_tool_registry:resolve_descriptor(Tool) of
+        {ok, #{effect := reader}} ->
+            admit_reader_descriptors(Rest);
+        {ok, #{effect := Effect}} ->
+            {error, {non_reader_tool, Tool, Effect}};
+        {error, not_found} ->
+            {error, {tool_not_found, Tool}}
+    end.
+
 resolve_task_id(Envelope) ->
     case maps:get(task_id, Envelope, undefined) of
         undefined -> mint_task_id();
@@ -823,6 +885,12 @@ trim_trailing_ws(Bin) ->
 %% direct `steps' envelope path (maybe_start_run/4) and the approved `run_steps'
 %% proposal path, so both inherit one set of run-ownership and failure semantics.
 start_owned_run(Steps, TaskId, CorrelationId, Data) ->
+    start_owned_run(Steps, TaskId, CorrelationId, TaskId, Data).
+
+%% Exploration uses the same owned-run start with a tagged context. The context
+%% carries the task id plus its purpose/round/source steps; existing final-run
+%% callers retain the historical bare task-id value in `runs'.
+start_owned_run(Steps, TaskId, CorrelationId, RunContext0, Data) ->
     RunId = mint_run_id(),
     RunOpts = #{run_id => RunId,
                 session_id => Data#data.actor_id,
@@ -839,7 +907,13 @@ start_owned_run(Steps, TaskId, CorrelationId, Data) ->
     %% demonitor-and-flush so a still-alive completed run leaves no
     %% dangling monitor.
     MRef = erlang:monitor(process, RunPid),
-    Runs = maps:put(RunId, TaskId, Data#data.runs),
+    RunContext = case RunContext0 of
+                     Context when is_map(Context) ->
+                         Context#{task_id => TaskId};
+                     _ ->
+                         TaskId
+                 end,
+    Runs = maps:put(RunId, RunContext, Data#data.runs),
     Monitors = maps:put(MRef, TaskId, Data#data.monitors),
     Task = maps:get(TaskId, Data#data.tasks),
     Task1 = Task#{status => running, run_id => RunId,
@@ -1222,6 +1296,24 @@ proposal_result(Output, proposal) when is_binary(Output); is_list(Output) ->
     end;
 proposal_result(Output, _Directive) ->
     {opaque, Output}.
+
+run_context_task_id(#{task_id := TaskId}) ->
+    TaskId;
+run_context_task_id(TaskId) ->
+    TaskId.
+
+%% An explore run is not the task's final answer. Once its ordinary runtime
+%% terminal message arrives, release the monitor and active-run fields while
+%% retaining the canonical round reply and a running task for the next loop
+%% slice to continue.
+clear_finished_explore_run(RunId, TaskId, Data) ->
+    Data0 = clear_monitor(TaskId, Data),
+    Task0 = maps:get(TaskId, Data0#data.tasks),
+    Task1 = (maps:without([run_id, run_pid, run_mref], Task0))#{
+              status => running},
+    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+    Runs = maps:remove(RunId, Data0#data.runs),
+    Data0#data{tasks = Tasks, runs = Runs}.
 
 %% On a normal terminal message (run_completed | run_failed | run_timeout |
 %% run_cancelled) the run pid is reporting its own outcome and may still be
