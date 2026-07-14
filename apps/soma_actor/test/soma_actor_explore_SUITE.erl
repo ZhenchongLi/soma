@@ -16,6 +16,9 @@
 -export([failed_explore_run_becomes_next_round_observation/1]).
 -export([timed_out_explore_run_becomes_next_round_observation/1]).
 -export([invalid_round_reply_becomes_bounded_next_observation/1]).
+-export([configured_round_limit_stops_before_next_llm_start/1]).
+-export([default_round_limit_is_five/1]).
+-export([explore_rounds_consume_existing_llm_call_budget/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
@@ -26,7 +29,10 @@ all() ->
      default_observation_cap_is_16384_bytes,
      failed_explore_run_becomes_next_round_observation,
      timed_out_explore_run_becomes_next_round_observation,
-     invalid_round_reply_becomes_bounded_next_observation].
+     invalid_round_reply_becomes_bounded_next_observation,
+     configured_round_limit_stops_before_next_llm_start,
+     default_round_limit_is_five,
+     explore_rounds_consume_existing_llm_call_budget].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -381,6 +387,84 @@ invalid_round_reply_becomes_bounded_next_observation(_Config) ->
                       soma_actor:get_task_result(ActorPid, TaskId)),
     ok.
 
+configured_round_limit_stops_before_next_llm_start(_Config) ->
+    {Store, ActorPid, TaskId, CorrelationId} =
+        nonterminal_round_budget_task(
+          <<"configured-round-limit">>,
+          #{max_explore_rounds => 2, max_llm_calls => 10}, 2),
+
+    Status = wait_for_terminal_task_status(ActorPid, TaskId, 100),
+    ok = assert_equal(failed, maps:get(status, Status)),
+    ok = assert_equal({budget_exceeded, max_explore_rounds},
+                      maps:get(reason, Status, undefined)),
+    ok = assert_equal(2, event_count(Store, CorrelationId,
+                                     <<"llm.started">>)),
+    ok.
+
+default_round_limit_is_five(_Config) ->
+    {Store, ActorPid, TaskId, CorrelationId} =
+        nonterminal_round_budget_task(
+          <<"default-round-limit">>, omitted, 5),
+
+    Status = wait_for_terminal_task_status(ActorPid, TaskId, 100),
+    ok = assert_equal(failed, maps:get(status, Status)),
+    ok = assert_equal({budget_exceeded, max_explore_rounds},
+                      maps:get(reason, Status, undefined)),
+    ok = assert_equal(5, event_count(Store, CorrelationId,
+                                     <<"llm.started">>)),
+    ok.
+
+explore_rounds_consume_existing_llm_call_budget(_Config) ->
+    {Store, ActorPid, TaskId, CorrelationId} =
+        nonterminal_round_budget_task(
+          <<"llm-call-budget">>,
+          #{max_explore_rounds => 5, max_llm_calls => 2}, 2),
+
+    Status = wait_for_terminal_task_status(ActorPid, TaskId, 100),
+    ok = assert_equal(failed, maps:get(status, Status)),
+    ok = assert_equal({budget_exceeded, max_llm_calls},
+                      maps:get(reason, Status, undefined)),
+    ok = assert_equal(2, event_count(Store, CorrelationId,
+                                     <<"llm.succeeded">>)),
+    ok = assert_equal(2, event_count(Store, CorrelationId,
+                                     <<"llm.started">>)),
+    ok.
+
+nonterminal_round_budget_task(Suffix, Budget, NonterminalRounds) ->
+    Store = event_store_pid(),
+    NonterminalResponse = fixed_response(<<"not-a-lisp-form">>),
+    TerminalResponse = fixed_response(<<"(reply (text \"too late\"))">>),
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response_sequence =>
+              lists:duplicate(NonterminalRounds, NonterminalResponse)
+              ++ [TerminalResponse]},
+    ActorOpts0 =
+        #{actor_id => <<"actor-explore-budget-", Suffix/binary>>,
+          model_config => ModelConfig,
+          tool_policy => #{allowed_tools => [text_head]},
+          event_store => Store},
+    ActorOpts =
+        case Budget of
+            omitted -> ActorOpts0;
+            _ -> ActorOpts0#{budget => Budget}
+        end,
+    {ok, ActorPid} = soma_actor_sup:start_actor(ActorOpts),
+    TaskId = <<"task-explore-budget-", Suffix/binary>>,
+    CorrelationId = <<"corr-explore-budget-", Suffix/binary>>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => <<"keep exploring">>},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    {Store, ActorPid, TaskId, CorrelationId}.
+
 two_round_explore(Suffix, AllowedTools, Budget, FirstSource) ->
     Store = event_store_pid(),
     TestPid = self(),
@@ -545,6 +629,25 @@ wait_for_task_status(ActorPid, TaskId, Status, N) ->
             timer:sleep(20),
             wait_for_task_status(ActorPid, TaskId, Status, N - 1)
     end.
+
+wait_for_terminal_task_status(_ActorPid, _TaskId, 0) ->
+    ct:fail(task_terminal_status_timeout);
+wait_for_terminal_task_status(ActorPid, TaskId, N) ->
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    case maps:get(status, Status) of
+        completed -> Status;
+        failed -> Status;
+        rejected -> Status;
+        cancelled -> Status;
+        _ ->
+            timer:sleep(20),
+            wait_for_terminal_task_status(ActorPid, TaskId, N - 1)
+    end.
+
+event_count(Store, CorrelationId, EventType) ->
+    length([Event || Event <-
+                         soma_event_store:by_correlation(Store, CorrelationId),
+                     maps:get(event_type, Event, undefined) =:= EventType]).
 
 assert_equal(Expected, Actual) when Expected =:= Actual ->
     ok;
