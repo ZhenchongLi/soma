@@ -7,6 +7,7 @@
 -module(soma_tool_config_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_daemon_boot_registers_config_tool/1,
@@ -23,7 +24,8 @@
          test_reserved_name_skipped_builtin_and_neighbour_intact/1,
          test_shadowed_file_write_keeps_resume_safety_fields/1,
          test_duplicate_name_first_sorted_file_wins/1,
-         test_docmod_example_manifests_normalize_with_expected_metadata/1]).
+         test_docmod_example_manifests_normalize_with_expected_metadata/1,
+         test_docmod_help_stub_receives_help_then_substituted_topic/1]).
 
 %% Logger handler callback (the boot-log capture used by
 %% test_broken_file_skipped_daemon_serves).
@@ -44,7 +46,8 @@ all() ->
      test_reserved_name_skipped_builtin_and_neighbour_intact,
      test_shadowed_file_write_keeps_resume_safety_fields,
      test_duplicate_name_first_sorted_file_wins,
-     test_docmod_example_manifests_normalize_with_expected_metadata].
+     test_docmod_example_manifests_normalize_with_expected_metadata,
+     test_docmod_help_stub_receives_help_then_substituted_topic].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -571,6 +574,49 @@ test_docmod_example_manifests_normalize_with_expected_metadata(_Config) ->
       argv := [<<"edit">>, <<"{input}">>, <<"{changes}">>]} = Edit,
     ok.
 
+%% Criterion 9 (#232): copy the exact docmod help example, replace only its
+%% documented executable placeholder with a suite-created stub, and load the
+%% copy through the production config-tool boundary. A one-step session run
+%% then proves placeholder rendering gives the executable exactly two argv
+%% elements, in the example's declared order, with no compatibility input
+%% appended after the substituted topic.
+test_docmod_help_stub_receives_help_then_substituted_topic(Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    Stub = write_argv_stub(Config),
+    ToolsDir = filename:join(?config(priv_dir, Config), "docmod_help_stub"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    Example = filename:join([project_root(), "examples", "docmod-tools",
+                             "docmod_help.lisp"]),
+    {ok, Source} = file:read_file(Example),
+    ExecutablePlaceholder = <<"/REPLACE/WITH/PATH/TO/docmod">>,
+    [ExecutablePlaceholder] =
+        [Match || {Start, Length} <- binary:matches(Source,
+                                                     ExecutablePlaceholder),
+                  Match <- [binary:part(Source, Start, Length)]],
+    Patched = binary:replace(Source, ExecutablePlaceholder,
+                             unicode:characters_to_binary(Stub)),
+    ok = file:write_file(filename:join(ToolsDir, "docmod_help.lisp"),
+                         Patched),
+    #{registered := [docmod_help], skipped := []} =
+        soma_tool_config:load_dir(ToolsDir),
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    Steps = [#{id => help,
+               tool => docmod_help,
+               args => #{topic => <<"formatting">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    [StepEvent] = [E || E <- Events,
+                        maps:get(event_type, E) =:= <<"step.succeeded">>,
+                        maps:get(step_id, E) =:= help],
+    Output = maps:get(output, maps:get(payload, StepEvent)),
+    ?assertEqual(<<"argc=2\n"
+                   "arg1=formatting\n"
+                   "arg2=help\n">>,
+                 Output),
+    ok.
+
 %% Test beams run from `_build', so source-tree examples need an explicit
 %% project root rather than Common Test's per-run working directory.
 project_root() ->
@@ -596,6 +642,21 @@ write_upper_helper(Config) ->
     Script = <<"#!/bin/sh\n"
                "for a in \"$@\"; do last=\"$a\"; done\n"
                "printf '%s' \"$last\" | tr '[:lower:]' '[:upper:]'\n">>,
+    ok = file:write_file(Path, Script),
+    ok = file:change_mode(Path, 8#755),
+    Path.
+
+%% Write a cli stub that reports argc and every argument in order. The helper
+%% is created by the suite; the test never depends on a system docmod binary.
+write_argv_stub(Config) ->
+    Path = filename:join(?config(priv_dir, Config), "docmod_argv_stub.sh"),
+    Script = <<"#!/bin/sh\n"
+               "printf 'argc=%s\\n' \"$#\"\n"
+               "i=1\n"
+               "for arg in \"$@\"; do\n"
+               "  printf 'arg%s=%s\\n' \"$i\" \"$arg\"\n"
+               "  i=$((i + 1))\n"
+               "done\n">>,
     ok = file:write_file(Path, Script),
     ok = file:change_mode(Path, 8#755),
     Path.
