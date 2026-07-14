@@ -251,6 +251,24 @@ test_tools_documents_actor_owned_ask_actor() {
   echo "PASS: test_tools_documents_actor_owned_ask_actor"
 }
 
+test_cli_documents_live_register_persist_reload() {
+  local cli_text
+
+  cli_text="$(normalize_visible_text "${SITE_DIR}/dist/guides/cli/index.html")"
+
+  if ! assert_fragments_in_order "${cli_text}" \
+    "soma tool register <file>" \
+    "becomes live immediately" \
+    "normalized <name>.lisp" \
+    "~/.soma/tools/" \
+    "boot reload"; then
+    echo "FAIL: test_cli_documents_live_register_persist_reload" >&2
+    return 1
+  fi
+
+  echo "PASS: test_cli_documents_live_register_persist_reload"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
@@ -263,3 +281,4 @@ test_tools_documents_config_manifest_registration_path
 test_tools_documents_whole_argument_placeholders
 test_tools_documents_config_tool_defaults
 test_tools_documents_actor_owned_ask_actor
+test_cli_documents_live_register_persist_reload
