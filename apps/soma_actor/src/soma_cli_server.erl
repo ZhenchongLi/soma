@@ -511,9 +511,11 @@ handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId) ->
                 {ok, Policy} -> Opts0#{tool_policy => Policy};
                 error -> Opts0
             end,
-    Opts2 = case maps:find(budget, Ask) of
-                {ok, Budget} -> Opts1#{budget => Budget};
-                error -> Opts1
+    ConfigBudget = configured_explore_budget(ModelConfig),
+    Budget = maps:merge(ConfigBudget, maps:get(budget, Ask, #{})),
+    Opts2 = case map_size(Budget) of
+                0 -> Opts1;
+                _ -> Opts1#{budget => Budget}
             end,
     {ok, ActorPid} = soma_actor_sup:start_actor(Opts2),
     Llm = mock_llm_opts(ModelConfig),
@@ -559,6 +561,14 @@ handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId) ->
                        correlation_id => CorrId}
              end,
     soma_lisp:render(Result).
+
+%% Exploration limits are daemon configuration, while the actor remains their
+%% enforcement owner. Only an enabled explore model contributes these fields;
+%% absent settings preserve the existing actor-option shape.
+configured_explore_budget(#{explore := true} = ModelConfig) ->
+    maps:with([max_explore_rounds, max_observation_bytes], ModelConfig);
+configured_explore_budget(_ModelConfig) ->
+    #{}.
 
 %% Handle a `(stop)' request: signal the listener to close the listen socket,
 %% then return the terminal `(result (status stopped))' reply. The handler does
