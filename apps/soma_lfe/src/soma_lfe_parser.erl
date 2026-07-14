@@ -12,10 +12,13 @@
 %% actor-layer service-envelope normalizer.
 -spec parse_invoke([term()]) -> {ok, map()} | {error, [diagnostic()]}.
 parse_invoke([invoke | SubForms]) ->
-    case parse_invoke_fields(SubForms, #{kind => invoke}) of
-        {ok, #{request_id := RequestId,
-               operation := {tool, Tool, Args}} = Envelope} ->
-            Step = #{id => RequestId, tool => Tool, args => Args},
+    case parse_invoke_fields(SubForms, {#{kind => invoke}, #{}}) of
+        {ok, #{operation := {tool, Tool, Args}} = Envelope} ->
+            Step0 = #{tool => Tool, args => Args},
+            Step = case maps:find(request_id, Envelope) of
+                {ok, RequestId} -> Step0#{id => RequestId};
+                error -> Step0
+            end,
             {ok, Envelope#{operation => #{kind => tool, step => Step}}};
         {ok, #{operation := {steps, Steps}} = Envelope} ->
             {ok, Envelope#{operation => #{kind => steps, steps => Steps}}};
@@ -25,52 +28,159 @@ parse_invoke([invoke | SubForms]) ->
             invalid_invoke_operation()
     end.
 
-parse_invoke_fields([], Acc) ->
-    {ok, Acc};
+parse_invoke_fields([], {Envelope, _Seen}) ->
+    {ok, Envelope};
 parse_invoke_fields([['api-version', Value] | Rest], Acc) ->
-    parse_invoke_fields(Rest, Acc#{api_version => Value});
+    add_invoke_field(api_version, Value, Rest, Acc);
 parse_invoke_fields([['request-id', Value] | Rest], Acc) ->
-    parse_invoke_fields(Rest, Acc#{request_id => Value});
+    add_invoke_field(request_id, Value, Rest, Acc);
 parse_invoke_fields([[tool | ToolFields] | Rest], Acc) ->
-    case parse_invoke_tool(ToolFields, #{}) of
-        {ok, Tool, Args} ->
-            parse_invoke_fields(Rest, Acc#{operation => {tool, Tool, Args}});
+    case claim_invoke_operation(tool, Acc) of
+        {ok, Claimed} ->
+            case parse_invoke_tool(ToolFields, {#{}, #{}}) of
+                {ok, Tool, Args} ->
+                    parse_invoke_fields(
+                        Rest,
+                        set_acc_field(operation, {tool, Tool, Args}, Claimed)
+                    );
+                {error, Diags} ->
+                    {error, Diags}
+            end;
         {error, Diags} ->
             {error, Diags}
     end;
 parse_invoke_fields([[steps | StepForms] | Rest], Acc) ->
-    case parse_proposal_steps(StepForms) of
-        {ok, Steps} ->
-            parse_invoke_fields(Rest, Acc#{operation => {steps, Steps}});
-        {error, _Diags} ->
-            invalid_invoke_operation()
+    case claim_invoke_operation(steps, Acc) of
+        {ok, Claimed} ->
+            case parse_proposal_steps(StepForms) of
+                {ok, Steps} ->
+                    parse_invoke_fields(
+                        Rest,
+                        set_acc_field(operation, {steps, Steps}, Claimed)
+                    );
+                {error, _Diags} ->
+                    invalid_invoke_operation()
+            end;
+        {error, Diags} ->
+            {error, Diags}
     end;
 parse_invoke_fields([[scope | Values] | Rest], Acc) ->
-    parse_invoke_fields(Rest, Acc#{scope => Values});
+    add_invoke_field(scope, Values, Rest, Acc);
 parse_invoke_fields([['deadline-ms', Value] | Rest], Acc) ->
-    parse_invoke_fields(Rest, Acc#{deadline_ms => Value});
+    add_invoke_field(deadline_ms, Value, Rest, Acc);
 parse_invoke_fields([['max-output-bytes', Value] | Rest], Acc) ->
-    parse_invoke_fields(Rest, Acc#{max_output_bytes => Value});
+    add_invoke_field(max_output_bytes, Value, Rest, Acc);
 parse_invoke_fields([['correlation-id', Value] | Rest], Acc) ->
-    parse_invoke_fields(Rest, Acc#{correlation_id => Value});
+    add_invoke_field(correlation_id, Value, Rest, Acc);
 parse_invoke_fields([[artifacts | Values] | Rest], Acc) ->
-    parse_invoke_fields(Rest, Acc#{artifacts => Values});
+    add_invoke_field(artifacts, Values, Rest, Acc);
+parse_invoke_fields([[Head | _] | _], Acc) when is_atom(Head) ->
+    malformed_or_unknown_invoke_field(Head, Acc);
 parse_invoke_fields([_Other | _], _Acc) ->
     invalid_invoke_operation().
 
-parse_invoke_tool([], #{name := Tool, args := Args}) ->
+add_invoke_field(Field, Value, Rest, Acc) ->
+    case claim_unique_field(Field, Acc) of
+        {ok, Claimed} ->
+            parse_invoke_fields(Rest, set_acc_field(Field, Value, Claimed));
+        {error, Diags} ->
+            {error, Diags}
+    end.
+
+claim_unique_field(Field, {Values, Seen}) ->
+    case maps:is_key(Field, Seen) of
+        true ->
+            duplicate_invoke_field();
+        false ->
+            {ok, {Values, Seen#{Field => true}}}
+    end.
+
+claim_invoke_operation(Kind, {Envelope, Seen}) ->
+    case maps:find(operation, Seen) of
+        error ->
+            {ok, {Envelope, Seen#{operation => Kind}}};
+        {ok, Kind} ->
+            duplicate_invoke_field();
+        {ok, _OtherKind} ->
+            invalid_invoke_operation()
+    end.
+
+set_acc_field(Field, Value, {Values, Seen}) ->
+    {Values#{Field => Value}, Seen}.
+
+malformed_or_unknown_invoke_field(Head, {_Envelope, Seen}) ->
+    case invoke_field_descriptor(Head) of
+        {field, Field} ->
+            case maps:is_key(Field, Seen) of
+                true -> duplicate_invoke_field();
+                false -> invalid_invoke_operation()
+            end;
+        {operation, Kind} ->
+            case maps:find(operation, Seen) of
+                {ok, Kind} -> duplicate_invoke_field();
+                _ -> invalid_invoke_operation()
+            end;
+        unknown ->
+            unknown_invoke_field()
+    end.
+
+invoke_field_descriptor('api-version') -> {field, api_version};
+invoke_field_descriptor('request-id') -> {field, request_id};
+invoke_field_descriptor(tool) -> {operation, tool};
+invoke_field_descriptor(steps) -> {operation, steps};
+invoke_field_descriptor(scope) -> {field, scope};
+invoke_field_descriptor('deadline-ms') -> {field, deadline_ms};
+invoke_field_descriptor('max-output-bytes') -> {field, max_output_bytes};
+invoke_field_descriptor('correlation-id') -> {field, correlation_id};
+invoke_field_descriptor(artifacts) -> {field, artifacts};
+invoke_field_descriptor(_Head) -> unknown.
+
+parse_invoke_tool([], {#{name := Tool, args := Args}, _Seen}) ->
     {ok, Tool, Args};
 parse_invoke_tool([[name, Tool] | Rest], Acc) when is_atom(Tool) ->
-    parse_invoke_tool(Rest, Acc#{name => Tool});
+    case claim_unique_field(name, Acc) of
+        {ok, Claimed} ->
+            parse_invoke_tool(Rest, set_acc_field(name, Tool, Claimed));
+        {error, Diags} ->
+            {error, Diags}
+    end;
+parse_invoke_tool([[name, _Tool] | _], {_Fields, Seen}) ->
+    case maps:is_key(name, Seen) of
+        true -> duplicate_invoke_field();
+        false -> invalid_invoke_operation()
+    end;
 parse_invoke_tool([[args | ArgForms] | Rest], Acc) ->
-    case parse_args(ArgForms, #{}) of
-        {ok, Args} ->
-            parse_invoke_tool(Rest, Acc#{args => Args});
-        {error, _Diags} ->
-            invalid_invoke_operation()
+    case claim_unique_field(args, Acc) of
+        {ok, Claimed} ->
+            case parse_args(ArgForms, #{}) of
+                {ok, Args} ->
+                    parse_invoke_tool(
+                        Rest,
+                        set_acc_field(args, Args, Claimed)
+                    );
+                {error, _Diags} ->
+                    invalid_invoke_operation()
+            end;
+        {error, Diags} ->
+            {error, Diags}
+    end;
+parse_invoke_tool([[Head | _] | _], {_Fields, Seen}) when is_atom(Head) ->
+    case (Head =:= name orelse Head =:= args) andalso maps:is_key(Head, Seen) of
+        true -> duplicate_invoke_field();
+        false -> invalid_invoke_operation()
     end;
 parse_invoke_tool(_Other, _Acc) ->
     invalid_invoke_operation().
+
+duplicate_invoke_field() ->
+    {error, [#{code => duplicate_field,
+               message => <<"invoke field is duplicated">>,
+               line => 0}]}.
+
+unknown_invoke_field() ->
+    {error, [#{code => unknown_field,
+               message => <<"invoke field is unknown">>,
+               line => 0}]}.
 
 invalid_invoke_operation() ->
     {error, [#{code => invalid_operation,
