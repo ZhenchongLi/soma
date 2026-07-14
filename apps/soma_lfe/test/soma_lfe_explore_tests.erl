@@ -122,6 +122,65 @@ test_explore_source_keeps_dependency_and_atom_creation_boundaries() ->
 explore_source_keeps_dependency_and_atom_creation_boundaries_test() ->
     test_explore_source_keeps_dependency_and_atom_creation_boundaries().
 
+test_empty_explore_returns_fixed_diagnostic() ->
+    Expected =
+        {error,
+         [#{code => empty_explore,
+            message => <<"explore requires at least one step">>,
+            line => 0}]},
+
+    ?assertEqual(Expected, soma_lfe:compile(<<"(explore)">>, #{})).
+
+empty_explore_returns_fixed_diagnostic_test() ->
+    test_empty_explore_returns_fixed_diagnostic().
+
+test_malformed_explore_step_returns_fixed_diagnostic() ->
+    Expected =
+        {error,
+         [#{code => invalid_explore_step,
+            message => <<"explore contains a malformed step">>,
+            line => 0}]},
+    LargeValue = binary:copy(<<"x">>, 65536),
+    LargeSource =
+        iolist_to_binary(
+            [<<"(explore (step (id incomplete) (args (payload \"">>,
+             LargeValue,
+             <<"\"))))">>]
+        ),
+
+    ?assertEqual(
+        Expected,
+        soma_lfe:compile(<<"(explore (step (id incomplete)))">>, #{})
+    ),
+    ?assertEqual(Expected, soma_lfe:compile(LargeSource, #{})).
+
+malformed_explore_step_returns_fixed_diagnostic_test() ->
+    test_malformed_explore_step_returns_fixed_diagnostic().
+
+test_unknown_explore_level_form_returns_fixed_diagnostic() ->
+    Expected =
+        {error,
+         [#{code => unknown_explore_form,
+            message => <<"explore accepts only step forms">>,
+            line => 0}]},
+    LargeValue = binary:copy(<<"x">>, 65536),
+    LargeSource =
+        iolist_to_binary(
+            [<<"(explore (mystery \"">>, LargeValue, <<"\"))">>]
+        ),
+
+    ?assertEqual(Expected, soma_lfe:compile(<<"(explore (mystery))">>, #{})),
+    ?assertEqual(Expected, soma_lfe:compile(LargeSource, #{})),
+    Results =
+        [soma_lfe:compile(<<"(explore)">>, #{}),
+         soma_lfe:compile(<<"(explore (step (id incomplete)))">>, #{}),
+         soma_lfe:compile(<<"(explore (mystery))">>, #{})],
+    Codes = [maps:get(code, Diag) || {error, [Diag]} <- Results],
+    ?assertEqual(3, length(lists:usort(Codes))).
+
+unknown_explore_level_form_returns_fixed_diagnostic_test() ->
+    test_unknown_explore_level_form_returns_fixed_diagnostic().
+
 read_source(Path) ->
     case file:read_file(Path) of
         {ok, Source} -> Source;
