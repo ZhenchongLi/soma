@@ -406,7 +406,7 @@ test_unknown_scope_entry_does_not_create_atom(_Config) ->
         soma_service:invoke(Envelope),
 
     ?assertEqual(
-       AtomCountBefore + 1,
+       AtomCountBefore,
        erlang:system_info(atom_count)).
 
 ensure_loaded(App) ->
