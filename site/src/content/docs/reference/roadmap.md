@@ -40,6 +40,7 @@ Active tracks (parallel to v0.7+, building now):
 node B  real LLM provider behind the perform_call seam   [done — provider + actor planning + CLI/config planning surface]
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
+tools   tool abstraction track                            [done — T.1 manifest v2 + catalog/0; T.2 config tools; catalog-fed planning prompt; T.4 ask_actor]
 ```
 
 ## v0.4 — soma_actor skeleton [done]
