@@ -13,6 +13,7 @@
 -export([test_conflicting_request_id_rejected_before_new_run/1]).
 -export([test_run_started_journals_request_id_and_envelope_hash/1]).
 -export([test_durable_restart_rebuilds_dedupe_without_new_run_started/1]).
+-export([test_out_of_scope_invocation_rejected_through_policy/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -22,7 +23,8 @@ all() ->
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
      test_conflicting_request_id_rejected_before_new_run,
      test_run_started_journals_request_id_and_envelope_hash,
-     test_durable_restart_rebuilds_dedupe_without_new_run_started].
+     test_durable_restart_rebuilds_dedupe_without_new_run_started,
+     test_out_of_scope_invocation_rejected_through_policy].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_run_started_journals_request_id_and_envelope_hash;
@@ -45,6 +47,7 @@ init_per_testcase(TestCase, Config)
        TestCase =:=
            test_identical_duplicate_reuses_running_handle_and_terminal_result;
        TestCase =:= test_conflicting_request_id_rejected_before_new_run;
+       TestCase =:= test_out_of_scope_invocation_rejected_through_policy;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -64,6 +67,7 @@ end_per_testcase(TestCase, Config)
        TestCase =:=
            test_identical_duplicate_reuses_running_handle_and_terminal_result;
        TestCase =:= test_conflicting_request_id_rejected_before_new_run;
+       TestCase =:= test_out_of_scope_invocation_rejected_through_policy;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -299,6 +303,50 @@ test_durable_restart_rebuilds_dedupe_without_new_run_started(Config) ->
     ?assertEqual({ok, Terminal}, soma_service:invoke(Envelope)),
     ?assertEqual(1, count_run_started(ReplayedStorePid)).
 
+test_out_of_scope_invocation_rejected_through_policy(_Config) ->
+    RequestId = <<"service-out-of-scope">>,
+    Envelope =
+        (tool_envelope(
+           RequestId, echo,
+           #{value => <<"must not run">>}))#{scope => [<<"sleep">>]},
+    {ok, NormalizedEnvelope} =
+        soma_service_envelope:normalize(Envelope),
+    Step = maps:get(step, maps:get(operation, NormalizedEnvelope)),
+    Proposal = #{kind => run_steps, steps => [Step]},
+    StorePid = runtime_event_store(),
+    RunStartCount = count_run_started(StorePid),
+    ServicePid = whereis(soma_service),
+
+    ok = start_policy_check_trace(ServicePid),
+    try
+        Reply = soma_service:invoke(Envelope),
+        PolicyCalls = stop_policy_check_trace(ServicePid),
+        ?assertEqual(
+           [[Proposal, #{allowed_tools => [sleep]}]],
+           PolicyCalls),
+
+        {ok, #{task_id := TaskId,
+               request_id := RequestId,
+               status := rejected,
+               reason := Rejection} = Terminal} = Reply,
+        ?assertEqual(
+           {policy_rejected, {tools_not_allowed, [echo]}},
+           Rejection),
+        ?assertEqual({ok, Terminal}, soma_service:status(TaskId)),
+
+        [TerminalEvent] =
+            [Event || Event <- soma_event_store:all(StorePid),
+                      maps:get(event_type, Event) =:=
+                          <<"service.task.terminal">>,
+                      maps:get(task_id, Event) =:= TaskId],
+        ?assertEqual(
+           #{status => rejected, reason => Rejection},
+           maps:get(payload, TerminalEvent)),
+        ?assertEqual(RunStartCount, count_run_started(StorePid))
+    after
+        clear_policy_check_trace(ServicePid)
+    end.
+
 ensure_loaded(App) ->
     case application:load(App) of
         ok -> ok;
@@ -331,6 +379,32 @@ clear_llm_start_trace() ->
     _ = erlang:trace(all, false, [call]),
     _ = erlang:trace(new, false, [call]),
     _ = erlang:trace_pattern({soma_llm_call, start, 1}, false, [local]),
+    ok.
+
+start_policy_check_trace(ServicePid) ->
+    {module, soma_policy} = code:ensure_loaded(soma_policy),
+    1 = erlang:trace_pattern({soma_policy, check, 2}, true, [local]),
+    1 = erlang:trace(ServicePid, true, [call, {tracer, self()}]),
+    ok.
+
+stop_policy_check_trace(ServicePid) ->
+    _ = erlang:trace(ServicePid, false, [call]),
+    Ref = erlang:trace_delivered(ServicePid),
+    collect_policy_check_calls(ServicePid, Ref, []).
+
+collect_policy_check_calls(ServicePid, Ref, Calls) ->
+    receive
+        {trace_delivered, ServicePid, Ref} ->
+            lists:reverse(Calls);
+        {trace, ServicePid, call, {soma_policy, check, Args}} ->
+            collect_policy_check_calls(ServicePid, Ref, [Args | Calls])
+    after 1000 ->
+        error(policy_check_trace_not_delivered)
+    end.
+
+clear_policy_check_trace(ServicePid) ->
+    _ = erlang:trace(ServicePid, false, [call]),
+    _ = erlang:trace_pattern({soma_policy, check, 2}, false, [local]),
     ok.
 
 runtime_event_store() ->
