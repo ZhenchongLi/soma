@@ -1450,9 +1450,9 @@ test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation(
                 ct:fail(second_provider_request_timeout)
             end,
 
-        %% Staged-red expectation: this end-to-end ask must become terminal
-        %% success once the proof is made green.
-        1 = Exit,
+        %% The terminal provider reply crosses the socket as a completed result,
+        %% so the `soma ask' client reports success.
+        0 = Exit,
         match = re:run(Printed, "\\(status completed\\)", [{capture, none}]),
         match = re:run(Printed, TerminalText, [{capture, none}]),
         [#{role := <<"system">>},
