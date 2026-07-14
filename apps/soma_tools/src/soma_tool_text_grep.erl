@@ -6,6 +6,7 @@
 
 -export([describe/0, manifest/0, invoke/2]).
 
+-define(DEFAULT_MAX_MATCHES, 100).
 -define(REGEX_DIAGNOSTIC_LIMIT, 128).
 
 -spec describe() -> soma_tool:spec().
@@ -22,7 +23,40 @@ manifest() ->
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
     {ok, soma_tool:output()} | {error, soma_tool:error()}.
-invoke(#{text := Text, pattern := Pattern}, _Ctx) ->
+invoke(Input, _Ctx) ->
+    case validate_input(Input) of
+        {ok, Text, Pattern, _MaxMatches} ->
+            compile_and_grep(Text, Pattern);
+        {error, _Reason} = Error ->
+            Error
+    end.
+
+validate_input(Input) ->
+    case soma_tool_text:required_binary(Input, text) of
+        {ok, Text} ->
+            validate_pattern(Input, Text);
+        {error, _Reason} = Error ->
+            Error
+    end.
+
+validate_pattern(Input, Text) ->
+    case soma_tool_text:required_binary(Input, pattern) of
+        {ok, Pattern} ->
+            validate_max_matches(Input, Text, Pattern);
+        {error, _Reason} = Error ->
+            Error
+    end.
+
+validate_max_matches(Input, Text, Pattern) ->
+    case soma_tool_text:positive_integer(Input, max_matches,
+                                         ?DEFAULT_MAX_MATCHES) of
+        {ok, MaxMatches} ->
+            {ok, Text, Pattern, MaxMatches};
+        {error, _Reason} = Error ->
+            Error
+    end.
+
+compile_and_grep(Text, Pattern) ->
     case re:compile(Pattern) of
         {ok, CompiledPattern} ->
             grep(Text, CompiledPattern);
