@@ -1387,8 +1387,8 @@ test_unparseable_explore_setting_keeps_daemon_reachable_and_off(Config) ->
     application:stop(soma_runtime),
     try
         {ok, Path} = soma_cli:daemon(DaemonOpts),
-        %% Staged-red expectation: the daemon is required to be reachable.
-        1 = soma_cli:ping(DaemonOpts),
+        %% A reachable daemon reports success from the liveness probe.
+        0 = soma_cli:ping(DaemonOpts),
         Loaded = soma_config:load(DaemonOpts),
         false = maps:is_key(explore, Loaded)
     after
