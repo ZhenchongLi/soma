@@ -1,0 +1,10 @@
+(tool
+  (name "docmod_read")
+  (description "Read a document through docmod.")
+  (effect reader)
+  (idempotent true)
+  (timeout-ms 30000)
+  (adapter cli)
+  (executable "/REPLACE/WITH/PATH/TO/docmod")
+  (argv "read" "{input}")
+  (params (("input" string required "Input document path"))))

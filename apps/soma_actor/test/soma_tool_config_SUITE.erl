@@ -557,7 +557,7 @@ test_duplicate_name_first_sorted_file_wins(Config) ->
 %% shapes and do not soften the read/edit safety boundary.
 test_docmod_example_manifests_normalize_with_expected_metadata(_Config) ->
     {ok, _} = application:ensure_all_started(soma_runtime),
-    ToolsDir = filename:join("examples", "docmod-tools"),
+    ToolsDir = filename:join([project_root(), "examples", "docmod-tools"]),
     #{registered := [docmod_edit, docmod_help, docmod_read], skipped := []} =
         soma_tool_config:load_dir(ToolsDir),
     {ok, Help} = soma_tool_registry:resolve_descriptor(docmod_help),
@@ -570,6 +570,22 @@ test_docmod_example_manifests_normalize_with_expected_metadata(_Config) ->
     #{adapter := cli, effect := state, idempotent := false,
       argv := [<<"edit">>, <<"{input}">>, <<"{changes}">>]} = Edit,
     ok.
+
+%% Test beams run from `_build', so source-tree examples need an explicit
+%% project root rather than Common Test's per-run working directory.
+project_root() ->
+    walk_up_to_apps(filename:dirname(code:which(?MODULE))).
+
+walk_up_to_apps(Dir) ->
+    case filelib:is_dir(filename:join(Dir, "apps")) of
+        true -> Dir;
+        false ->
+            Parent = filename:dirname(Dir),
+            case Parent of
+                Dir -> erlang:error(project_root_not_found);
+                _ -> walk_up_to_apps(Parent)
+            end
+    end.
 
 %% Write a tiny cli helper into the case's priv_dir: uppercase the last argv
 %% argument and print it to stdout, exit 0 (the `write_cli_helper' pattern
