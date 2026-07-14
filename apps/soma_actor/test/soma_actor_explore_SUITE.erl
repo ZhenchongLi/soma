@@ -9,10 +9,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([explore_mode_provider_text_is_parsed_as_round_reply/1]).
 -export([reader_explore_run_and_tool_worker_are_distinct_children/1]).
+-export([reader_then_terminal_run_steps_carries_observation_and_outputs/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
-     reader_explore_run_and_tool_worker_are_distinct_children].
+     reader_explore_run_and_tool_worker_are_distinct_children,
+     reader_then_terminal_run_steps_carries_observation_and_outputs].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -136,6 +138,98 @@ reader_explore_run_and_tool_worker_are_distinct_children(_Config) ->
     ok = assert_equal(true, ActorPid =/= WorkerPid),
     ok = assert_equal(true, RunPid =/= WorkerPid),
     ok.
+
+reader_then_terminal_run_steps_carries_observation_and_outputs(_Config) ->
+    Store = event_store_pid(),
+    TestPid = self(),
+    ExploreSource =
+        <<"(explore (step (id inspect) (tool text_head) "
+          "(args (text \"observed\") (lines 1))))">>,
+    TerminalSource =
+        <<"(run-steps (step (id finish) (tool echo) "
+          "(args (value \"done\"))))">>,
+    FirstResponse = fixed_response(ExploreSource),
+    SecondResponse = fixed_response(TerminalSource),
+    FirstResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_request, 1, CallOpts},
+                FirstResponse
+        end,
+    SecondResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_request, 2, CallOpts},
+                SecondResponse
+        end,
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response_sequence => [FirstResponder, SecondResponder]},
+    {ok, ActorPid} =
+        soma_actor_sup:start_actor(
+          #{actor_id => <<"actor-explore-loop-spine">>,
+            model_config => ModelConfig,
+            tool_policy => #{allowed_tools => [text_head, echo]},
+            event_store => Store}),
+    TaskId = <<"task-explore-loop-spine">>,
+    CorrelationId = <<"corr-explore-loop-spine">>,
+    Prompt = <<"inspect, then finish">>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => Prompt},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    FirstCallOpts = wait_for_provider_request(1),
+    SecondCallOpts = wait_for_provider_request(2),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+
+    [#{role := <<"system">>},
+     #{role := <<"user">>, content := Prompt}] =
+        maps:get(messages, FirstCallOpts),
+    [#{role := <<"system">>},
+     #{role := <<"user">>, content := Prompt},
+     #{role := <<"assistant">>, content := ExploreSource},
+     #{role := <<"user">>, content := Observation}] =
+        maps:get(messages, SecondCallOpts),
+    ExpectedObservation =
+        <<"(observation (status completed) "
+          "(outputs (step (id inspect) "
+          "(output \"((text \\\"observed\\\") (truncated false))\"))))">>,
+    ok = assert_equal(ExpectedObservation, Observation),
+    ok = assert_equal({ok, #{finish => #{value => <<"done">>}}},
+                      soma_actor:get_task_result(ActorPid, TaskId)),
+    ok.
+
+fixed_response(Content) ->
+    Body =
+        iolist_to_binary(
+          json:encode(
+            #{<<"choices">> =>
+                  [#{<<"message">> => #{<<"content">> => Content}}]})),
+    {200, Body}.
+
+wait_for_provider_request(Round) ->
+    receive
+        {provider_request, Round, CallOpts} ->
+            CallOpts
+    after 2000 ->
+        ct:fail({provider_request_timeout, Round})
+    end.
+
+wait_for_task_status(_ActorPid, _TaskId, Status, 0) ->
+    ct:fail({task_status_timeout, Status});
+wait_for_task_status(ActorPid, TaskId, Status, N) ->
+    case soma_actor:get_task_status(ActorPid, TaskId) of
+        #{status := Status} ->
+            ok;
+        _ ->
+            timer:sleep(20),
+            wait_for_task_status(ActorPid, TaskId, Status, N - 1)
+    end.
 
 assert_equal(Expected, Actual) when Expected =:= Actual ->
     ok;
