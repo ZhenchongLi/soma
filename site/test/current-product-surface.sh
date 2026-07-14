@@ -316,6 +316,27 @@ test_cli_documents_builtin_name_protection() {
   echo "PASS: test_cli_documents_builtin_name_protection"
 }
 
+test_decision_layer_documents_configured_planning_path() {
+  local decision_layer_text
+
+  decision_layer_text="$(normalize_visible_text "${SITE_DIR}/dist/concepts/decision-layer/index.html")"
+
+  if ! assert_fragments_in_order "${decision_layer_text}" \
+    "OpenAI-compatible" \
+    "[llm]" \
+    "plan = true" \
+    "(run-steps ...)" \
+    "proposal normalization" \
+    "policy gate" \
+    "budget gate" \
+    "actor-owned supervised execution"; then
+    echo "FAIL: test_decision_layer_documents_configured_planning_path" >&2
+    return 1
+  fi
+
+  echo "PASS: test_decision_layer_documents_configured_planning_path"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
@@ -332,3 +353,4 @@ test_cli_documents_live_register_persist_reload
 test_cli_documents_tool_list_fields
 test_cli_documents_live_remove_delete_restart
 test_cli_documents_builtin_name_protection
+test_decision_layer_documents_configured_planning_path
