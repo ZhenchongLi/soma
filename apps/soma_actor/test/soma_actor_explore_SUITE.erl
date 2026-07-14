@@ -20,6 +20,10 @@
 -export([default_round_limit_is_five/1]).
 -export([explore_rounds_consume_existing_llm_call_budget/1]).
 -export([in_loop_llm_crash_is_terminal_failed/1]).
+-export([policy_rejected_explore_becomes_bounded_observation_and_continues/1]).
+-export([unknown_tool_explore_becomes_bounded_observation_and_continues/1]).
+-export([in_loop_llm_error_result_is_terminal_failed/1]).
+-export([finished_llm_call_bookkeeping_cleared_between_rounds/1]).
 -export([in_loop_llm_timeout_is_terminal_timeout/1]).
 -export([cancel_during_llm_round_kills_worker_and_cancels_task/1]).
 -export([cancel_during_explore_run_kills_tool_worker_and_cancels_task/1]).
@@ -56,7 +60,11 @@ all() ->
      terminal_reply_completes_without_run,
      terminal_policy_rejection_starts_no_run,
      terminal_max_steps_failure_starts_no_run,
-     round_events_use_bounded_schema_and_order].
+     round_events_use_bounded_schema_and_order,
+     policy_rejected_explore_becomes_bounded_observation_and_continues,
+     unknown_tool_explore_becomes_bounded_observation_and_continues,
+     in_loop_llm_error_result_is_terminal_failed,
+     finished_llm_call_bookkeeping_cleared_between_rounds].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -1205,3 +1213,150 @@ event_store_pid() ->
     {soma_event_store, Pid, _Type, _Mods} =
         lists:keyfind(soma_event_store, 1, Children),
     Pid.
+
+%% Review finding 1 (#231): an admission rejection that is not the
+%% non-reader case must still close the round as a bounded observation --
+%% a policy-denied tool must not strand the task in `running'.
+policy_rejected_explore_becomes_bounded_observation_and_continues(_Config) ->
+    Store = event_store_pid(),
+    ExploreSource =
+        <<"(explore (step (id mutate) (tool file_write) "
+          "(args (path \"blocked.txt\") (bytes \"blocked\"))))">>,
+    {_Store, ActorPid, TaskId, CorrelationId, Prompt,
+     _FirstCallOpts, SecondCallOpts} =
+        two_round_explore(<<"policy-rejected">>, [echo],
+                          #{max_explore_rounds => 3}, ExploreSource),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+
+    [#{role := <<"system">>},
+     #{role := <<"user">>, content := Prompt},
+     #{role := <<"assistant">>, content := ExploreSource},
+     #{role := <<"user">>, content := Observation}] =
+        maps:get(messages, SecondCallOpts),
+    ExpectedObservation =
+        <<"(observation (status rejected) "
+          "(policy tools_not_allowed) (tools file_write))">>,
+    ok = assert_equal(ExpectedObservation, Observation),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    RunStarted =
+        [Event || #{event_type := <<"run.started">>} = Event <- Events],
+    ok = assert_equal([], RunStarted),
+    Completed =
+        [Event || #{event_type := <<"explore.round.completed">>,
+                    round := 1} = Event <- Events],
+    [#{action := explore, status := rejected}] = Completed,
+    ok = assert_equal({ok, #{kind => reply, text => <<"done">>}},
+                      soma_actor:get_task_result(ActorPid, TaskId)),
+    ok.
+
+%% Review finding 1 (#231), second admission shape: a tool with no live
+%% descriptor closes the round as a bounded observation instead of leaving
+%% the task `running' with no completion event.
+unknown_tool_explore_becomes_bounded_observation_and_continues(_Config) ->
+    Store = event_store_pid(),
+    ExploreSource =
+        <<"(explore (step (id ghost) (tool text_vanished) "
+          "(args (text \"x\"))))">>,
+    {_Store, ActorPid, TaskId, CorrelationId, _Prompt,
+     _FirstCallOpts, SecondCallOpts} =
+        two_round_explore(<<"unknown-tool">>, [text_vanished],
+                          #{max_explore_rounds => 3}, ExploreSource),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+
+    [_, _, _, #{role := <<"user">>, content := Observation}] =
+        maps:get(messages, SecondCallOpts),
+    ExpectedObservation =
+        <<"(observation (status rejected) "
+          "(tool text_vanished) (error not_found))">>,
+    ok = assert_equal(ExpectedObservation, Observation),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    RunStarted =
+        [Event || #{event_type := <<"run.started">>} = Event <- Events],
+    ok = assert_equal([], RunStarted),
+    Completed =
+        [Event || #{event_type := <<"explore.round.completed">>,
+                    round := 1} = Event <- Events],
+    [#{action := explore, status := rejected}] = Completed,
+    ok = assert_equal({ok, #{kind => reply, text => <<"done">>}},
+                      soma_actor:get_task_result(ActorPid, TaskId)),
+    ok.
+
+%% Review finding 2 (#231): a normal provider `{error, Reason}' result (an
+%% HTTP 500, not a worker crash) must become terminal failed task data
+%% immediately instead of being swallowed and later mislabelled `timeout'.
+in_loop_llm_error_result_is_terminal_failed(_Config) ->
+    Store = event_store_pid(),
+    TestPid = self(),
+    ExploreSource =
+        <<"(explore (step (id inspect) (tool text_head) "
+          "(args (text \"observed\") (lines 1))))">>,
+    SecondResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_request, 2, CallOpts},
+                {500, <<"boom">>}
+        end,
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response_sequence =>
+              [fixed_response(ExploreSource), SecondResponder]},
+    {ok, ActorPid} =
+        soma_actor_sup:start_actor(
+          #{actor_id => <<"actor-explore-llm-error">>,
+            model_config => ModelConfig,
+            tool_policy => #{allowed_tools => [text_head]},
+            budget => #{max_explore_rounds => 3},
+            event_store => Store}),
+    TaskId = <<"task-explore-llm-error">>,
+    CorrelationId = <<"corr-explore-llm-error">>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => <<"inspect before answering">>},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    _SecondCallOpts = wait_for_provider_request(2),
+    ok = wait_for_task_status(ActorPid, TaskId, failed, 100),
+
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    LlmFailed =
+        [Event || #{event_type := <<"llm.failed">>} = Event <- Events],
+    ok = assert_equal(1, length(LlmFailed)),
+    TerminalRounds =
+        [Event || #{event_type := <<"explore.round.completed">>,
+                    round := 2, action := invalid_reply,
+                    status := failed} = Event <- Events],
+    ok = assert_equal(1, length(TerminalRounds)),
+    %% The status must not be rewritten to `timeout' by a stale call timer.
+    timer:sleep(100),
+    Status = soma_actor:get_task_status(ActorPid, TaskId),
+    ok = assert_equal(failed, maps:get(status, Status)),
+    ok.
+
+%% Review finding 3 (#231): a finished LLM call must leave no bookkeeping
+%% behind -- no `llm_calls' entry and no stale call fields on the task --
+%% so a queued timeout for an old call can never target the next round's
+%% worker.
+finished_llm_call_bookkeeping_cleared_between_rounds(_Config) ->
+    ExploreSource =
+        <<"(explore (step (id inspect) (tool text_head) "
+          "(args (text \"observed\") (lines 1))))">>,
+    {_Store, ActorPid, TaskId, _CorrelationId, _Prompt,
+     _FirstCallOpts, _SecondCallOpts} =
+        two_round_explore(<<"bookkeeping">>, [text_head],
+                          #{max_explore_rounds => 3}, ExploreSource),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+
+    {idle, Data} = sys:get_state(ActorPid),
+    LlmCalls = element(10, Data),
+    ok = assert_equal(#{}, LlmCalls),
+    Tasks = element(6, Data),
+    Task = maps:get(TaskId, Tasks),
+    ok = assert_equal(false, maps:is_key(llm_call_id, Task)),
+    ok = assert_equal(false, maps:is_key(llm_call_pid, Task)),
+    ok = assert_equal(false, maps:is_key(llm_call_mref, Task)),
+    ok = assert_equal(false, maps:is_key(llm_timer_ref, Task)),
+    ok.
