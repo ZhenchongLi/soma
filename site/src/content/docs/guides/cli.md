@@ -107,6 +107,9 @@ succeeds, the tool becomes live immediately. Soma then writes the normalized
 `<name>.lisp` form under `~/.soma/tools/` and returns only after that persisted
 form is ready for boot reload.
 
+<p><code>soma tool list</code> prints each tool's name, effect, idempotent, and
+adapter, plus its optional description.</p>
+
 ## `soma run` — deterministic supervised execution (client)
 
 ```
