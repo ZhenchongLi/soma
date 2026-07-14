@@ -60,4 +60,20 @@ test_landing_names_packaged_bin_soma_entry_point() {
   echo "PASS: test_landing_names_packaged_bin_soma_entry_point"
 }
 
+test_landing_presents_lisp_task_files_as_run_input() {
+  local landing_text
+  local expected="Soma Lisp .lisp task files are deterministic soma run input: each (task ...) form compiles to the exact step list the runtime executes."
+
+  landing_text="$(normalize_visible_text "${SITE_DIR}/dist/index.html")"
+
+  if [[ "${landing_text}" != *"${expected}"* ]]; then
+    echo "FAIL: test_landing_presents_lisp_task_files_as_run_input" >&2
+    printf 'Expected normalized visible text fragment:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_landing_presents_lisp_task_files_as_run_input"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
+test_landing_presents_lisp_task_files_as_run_input
