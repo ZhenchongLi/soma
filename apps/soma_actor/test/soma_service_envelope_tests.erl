@@ -243,6 +243,84 @@ test_invalid_invoke_classes_return_fixed_typed_errors() ->
 invalid_invoke_classes_return_fixed_typed_errors_test() ->
     test_invalid_invoke_classes_return_fixed_typed_errors().
 
+%% Issue #243 criterion 5: invoke compilation and normalization stay process-
+%% and event-free, while the compile/render applications and touched sources
+%% retain their dependency and atom-creation boundaries.
+test_invoke_compile_normalize_boundary_is_pure() ->
+    {module, soma_lfe} = code:ensure_loaded(soma_lfe),
+    {module, soma_lfe_reader} = code:ensure_loaded(soma_lfe_reader),
+    {module, soma_lfe_parser} = code:ensure_loaded(soma_lfe_parser),
+    {module, soma_service_envelope} =
+        code:ensure_loaded(soma_service_envelope),
+    {ok, Store} = soma_event_store:start_link(),
+    try
+        ProcessesBefore = lists:sort(erlang:processes()),
+        EventsBefore = soma_event_store:all(Store),
+        Tracee = self(),
+        1 = erlang:trace(Tracee, true, [procs, {tracer, Tracee}]),
+        NormalizeResult =
+            try
+                {ok, Candidate} = soma_lfe:compile(
+                    <<"(invoke "
+                      "  (api-version \"1\") "
+                      "  (request-id \"request-pure-1\") "
+                      "  (tool (name echo) (args (value \"hello\"))))">>,
+                    #{}
+                ),
+                soma_service_envelope:normalize(Candidate)
+            after
+                1 = erlang:trace(Tracee, false, [procs])
+            end,
+        TraceDelivery = erlang:trace_delivered(Tracee),
+        SpawnTraces = collect_spawn_traces(Tracee, TraceDelivery, []),
+
+        ?assertMatch(
+            {ok,
+             #{kind := invoke,
+               request_id := <<"request-pure-1">>,
+               operation := #{kind := tool}}},
+            NormalizeResult
+        ),
+        ?assertEqual([], SpawnTraces),
+        ?assertEqual(ProcessesBefore, lists:sort(erlang:processes())),
+        ?assertEqual(EventsBefore, soma_event_store:all(Store)),
+
+        {ok, [{application, soma_lfe, LfeProps}]} =
+            file:consult("apps/soma_lfe/src/soma_lfe.app.src"),
+        ?assertEqual(
+            [kernel, stdlib],
+            proplists:get_value(applications, LfeProps)
+        ),
+        {ok, [{application, soma_event_store, EventStoreProps}]} =
+            file:consult(
+                "apps/soma_event_store/src/soma_event_store.app.src"
+            ),
+        ?assertEqual(
+            [kernel],
+            proplists:get_value(applications, EventStoreProps)
+        ),
+
+        BoundarySources =
+            [read_source("apps/soma_lfe/src/soma_lfe.erl"),
+             read_source("apps/soma_lfe/src/soma_lfe_parser.erl"),
+             read_source(
+                 "apps/soma_actor/src/soma_service_envelope.erl"
+             ),
+             read_source("apps/soma_event_store/src/soma_lisp.erl")],
+        AtomCreationBifs =
+            [<<"list_to_atom(">>,
+             <<"binary_to_atom(">>,
+             <<"list_to_existing_atom(">>,
+             <<"binary_to_existing_atom(">>],
+        [?assertEqual(nomatch, binary:match(Source, Bif))
+         || Source <- BoundarySources, Bif <- AtomCreationBifs]
+    after
+        gen_server:stop(Store)
+    end.
+
+invoke_compile_normalize_boundary_is_pure_test() ->
+    test_invoke_compile_normalize_boundary_is_pure().
+
 assert_invalid_class(Code, Pairs) ->
     [assert_fixed_error_pair(Code, Boundary, Small, Large)
      || {Boundary, Small, Large} <- Pairs],
@@ -335,4 +413,22 @@ read_source(Path) ->
     case file:read_file(Path) of
         {ok, Source} -> Source;
         {error, Reason} -> erlang:error({cannot_read, Path, Reason})
+    end.
+
+collect_spawn_traces(Tracee, TraceDelivery, Acc) ->
+    receive
+        {trace, Tracee, spawn, Spawned, MFA} ->
+            collect_spawn_traces(
+                Tracee,
+                TraceDelivery,
+                [{Spawned, MFA} | Acc]
+            );
+        {trace, Tracee, _Tag, _Info} ->
+            collect_spawn_traces(Tracee, TraceDelivery, Acc);
+        {trace, Tracee, _Tag, _Info1, _Info2} ->
+            collect_spawn_traces(Tracee, TraceDelivery, Acc);
+        {trace_delivered, Tracee, TraceDelivery} ->
+            lists:reverse(Acc)
+    after 1000 ->
+        erlang:error(trace_delivery_timeout)
     end.
