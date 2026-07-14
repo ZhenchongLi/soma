@@ -6,6 +6,8 @@
 
 -export([describe/0, manifest/0, invoke/2]).
 
+-define(REGEX_DIAGNOSTIC_LIMIT, 128).
+
 -spec describe() -> soma_tool:spec().
 describe() ->
     #{name => text_grep,
@@ -19,13 +21,31 @@ manifest() ->
                   module => ?MODULE}.
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
-    {ok, soma_tool:output()}.
+    {ok, soma_tool:output()} | {error, soma_tool:error()}.
 invoke(#{text := Text, pattern := Pattern}, _Ctx) ->
-    {ok, CompiledPattern} = re:compile(Pattern),
+    case re:compile(Pattern) of
+        {ok, CompiledPattern} ->
+            grep(Text, CompiledPattern);
+        {error, {Diagnostic, Offset}} ->
+            {error, {invalid_pattern,
+                     #{offset => Offset,
+                       diagnostic => bounded_diagnostic(Diagnostic)}}}
+    end.
+
+grep(Text, CompiledPattern) ->
     {MatchingLines, MatchCount} = matching_lines(Text, CompiledPattern, [], 0),
     {ok, #{text => iolist_to_binary(lists:reverse(MatchingLines)),
            match_count => MatchCount,
            truncated => false}}.
+
+bounded_diagnostic(Diagnostic) ->
+    Binary = unicode:characters_to_binary(Diagnostic),
+    case byte_size(Binary) =< ?REGEX_DIAGNOSTIC_LIMIT of
+        true ->
+            Binary;
+        false ->
+            binary:part(Binary, 0, ?REGEX_DIAGNOSTIC_LIMIT)
+    end.
 
 matching_lines(<<>>, _CompiledPattern, Acc, MatchCount) ->
     {Acc, MatchCount};
