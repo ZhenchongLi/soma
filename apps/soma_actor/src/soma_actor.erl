@@ -382,9 +382,15 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                                                     CorrelationId, Purpose,
                                                     Data1),
                             {keep_state, Data2};
-                        {error, _Reason} ->
+                        {error, {non_reader_tool, Tool, Effect}} ->
                             %% A rejected action is nonterminal, but it must not
-                            %% cross the run boundary.
+                            %% cross the run boundary. Feed the live descriptor
+                            %% effect back as a fixed, bounded observation and
+                            %% continue with the next provider round.
+                            Data2 = continue_explore_after_non_reader_rejection(
+                                      TaskId, Tool, Effect, Data1),
+                            {keep_state, Data2};
+                        {error, _Reason} ->
                             {keep_state, Data1}
                     end;
                 {proposal, Proposal} ->
@@ -1393,6 +1399,27 @@ completed_observation_step(#{id := StepId}, Outputs) ->
     RenderedOutput = iolist_to_binary(soma_lisp:render(Output)),
     [<<"(step (id ">>, observation_step_id(StepId), <<") (output ">>,
      soma_lisp:render(RenderedOutput), <<"))">>].
+
+continue_explore_after_non_reader_rejection(TaskId, Tool, Effect, Data) ->
+    Task0 = maps:get(TaskId, Data#data.tasks),
+    Round = maps:get(explore_round, Task0, 1),
+    AssistantReply = maps:get(explore_assistant_reply, Task0),
+    Observation =
+        iolist_to_binary(
+          [<<"(observation (status rejected) (tool ">>,
+           observation_step_id(Tool), <<") (effect ">>,
+           observation_step_id(Effect), <<"))">>]),
+    Transcript0 = maps:get(explore_transcript, Task0, []),
+    Transcript = Transcript0
+        ++ [#{role => <<"assistant">>, content => AssistantReply},
+            #{role => <<"user">>, content => Observation}],
+    Task1 = Task0#{explore_round => Round + 1,
+                   explore_transcript => Transcript},
+    Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+    Data1 = Data#data{tasks = Tasks},
+    Envelope = maps:get(explore_envelope, Task1),
+    CorrelationId = maps:get(correlation_id, Task1),
+    maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data1).
 
 observation_step_id(StepId) when is_atom(StepId) ->
     atom_to_binary(StepId, utf8);
