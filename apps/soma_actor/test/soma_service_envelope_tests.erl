@@ -41,3 +41,69 @@ test_valid_tool_invoke_compiles_and_normalizes() ->
 
 valid_tool_invoke_compiles_and_normalizes_test() ->
     test_valid_tool_invoke_compiles_and_normalizes().
+
+%% Issue #243 criterion 2: invoke and run-steps must use one private parser
+%% production and yield byte-identical, source-ordered canonical step lists.
+test_valid_steps_invoke_matches_run_steps_production() ->
+    StepForms =
+        <<"(step (id read_file) (tool file_read) "
+          "      (args (path \"input.txt\"))) "
+          "(step (id echo_all) (tool echo) "
+          "      (args (from_step read_file)) (timeout_ms 500))">>,
+    InvokeSource =
+        <<"(invoke "
+          "  (api-version \"1\") "
+          "  (request-id \"request-steps-1\") "
+          "  (steps ", StepForms/binary, "))">>,
+    RunStepsSource = <<"(run-steps ", StepForms/binary, ")">>,
+    ExpectedSteps =
+        [#{id => read_file,
+           tool => file_read,
+           args => #{path => <<"input.txt">>}},
+         #{id => echo_all,
+           tool => echo,
+           args => #{from_step => read_file},
+           timeout_ms => 500}],
+
+    {ok, InvokeCandidate} = soma_lfe:compile(InvokeSource, #{}),
+    {ok, Envelope} = soma_service_envelope:normalize(InvokeCandidate),
+    {ok, #{kind := run_steps, steps := RunSteps}} =
+        soma_lfe:compile(RunStepsSource, #{}),
+    #{operation := #{kind := steps, steps := InvokeSteps}} = Envelope,
+
+    ?assertEqual(ExpectedSteps, InvokeSteps),
+    ?assertEqual(term_to_binary(RunSteps), term_to_binary(InvokeSteps)),
+
+    Parser = read_source("apps/soma_lfe/src/soma_lfe_parser.erl"),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            Parser,
+            <<"parse_invoke_fields\\(\\[\\[steps \\| StepForms\\] \\| Rest\\], Acc\\).*?"
+              "parse_proposal_steps\\(StepForms\\)">>,
+            [dotall]
+        )
+    ),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            Parser,
+            <<"parse_proposal\\(\\['run-steps' \\| StepForms\\]\\).*?"
+              "parse_proposal_steps\\(StepForms\\)">>,
+            [dotall]
+        )
+    ),
+    ?assertNot(erlang:function_exported(
+        soma_lfe_parser,
+        parse_proposal_steps,
+        1
+    )).
+
+valid_steps_invoke_matches_run_steps_production_test() ->
+    test_valid_steps_invoke_matches_run_steps_production().
+
+read_source(Path) ->
+    case file:read_file(Path) of
+        {ok, Source} -> Source;
+        {error, Reason} -> erlang:error({cannot_read, Path, Reason})
+    end.
