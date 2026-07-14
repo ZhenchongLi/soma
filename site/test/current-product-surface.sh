@@ -91,7 +91,7 @@ test_landing_presents_lisp_task_files_as_run_input() {
 
 test_landing_marks_boot_auto_resume_shipped() {
   local landing_text
-  local expected="Boot auto-resume is shipped: interrupted durable runs resume automatically when Soma starts."
+  local expected="Boot auto-resume is shipped: interrupted durable runs resume automatically when safe; a non-idempotent in-flight state step fails clearly instead."
 
   landing_text="$(normalize_visible_text "${SITE_DIR}/dist/index.html")"
 
@@ -258,9 +258,10 @@ test_cli_documents_live_register_persist_reload() {
 
   if ! assert_fragments_in_order "${cli_text}" \
     "soma tool register <file>" \
-    "becomes live immediately" \
-    "normalized <name>.lisp" \
+    "writes the normalized <name>.lisp form" \
     "~/.soma/tools/" \
+    "registers the tool live" \
+    "write failure leaves the live registry unchanged" \
     "boot reload"; then
     echo "FAIL: test_cli_documents_live_register_persist_reload" >&2
     return 1
@@ -291,14 +292,41 @@ test_cli_documents_live_remove_delete_restart() {
 
   if ! assert_fragments_in_order "${cli_text}" \
     "soma tool remove <name>" \
-    "removes the live config tool immediately" \
     "deletes only its owned <name>.lisp file" \
+    "unregisters the live config tool" \
+    "delete failure leaves the live registry unchanged" \
     "name remains absent after restart"; then
     echo "FAIL: test_cli_documents_live_remove_delete_restart" >&2
     return 1
   fi
 
   echo "PASS: test_cli_documents_live_remove_delete_restart"
+}
+
+test_cli_advertises_tool_management_commands() {
+  local cli_text
+  local status_summary="run / ask / status / cancel / trace / stop / daemon / tool register / tool list / tool remove wrapper described below."
+
+  cli_text="$(normalize_visible_text "${SITE_DIR}/dist/guides/cli/index.html")"
+
+  if [[ "${cli_text}" != *"${status_summary}"* ]]; then
+    echo "FAIL: test_cli_advertises_tool_management_commands" >&2
+    printf 'Expected status summary fragment:\n  %s\n' "${status_summary}" >&2
+    return 1
+  fi
+
+  if ! assert_fragments_in_order "${cli_text}" \
+    "soma tool register <file>" \
+    "Validate, persist, and register a config tool." \
+    "soma tool list" \
+    "List live tools and their public descriptors." \
+    "soma tool remove <name>" \
+    "Delete and unregister a config tool."; then
+    echo "FAIL: test_cli_advertises_tool_management_commands" >&2
+    return 1
+  fi
+
+  echo "PASS: test_cli_advertises_tool_management_commands"
 }
 
 test_cli_documents_builtin_name_protection() {
@@ -427,6 +455,7 @@ test_tools_documents_actor_owned_ask_actor
 test_cli_documents_live_register_persist_reload
 test_cli_documents_tool_list_fields
 test_cli_documents_live_remove_delete_restart
+test_cli_advertises_tool_management_commands
 test_cli_documents_builtin_name_protection
 test_decision_layer_documents_configured_planning_path
 test_decision_layer_documents_fixed_response_gate
