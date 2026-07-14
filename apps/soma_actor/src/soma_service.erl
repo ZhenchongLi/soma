@@ -6,7 +6,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([invoke/1, status/1]).
+-export([invoke/1, status/1, cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(state, {event_store,
@@ -24,6 +24,9 @@ invoke(Envelope) ->
 
 status(TaskId) ->
     gen_server:call(?MODULE, {status, TaskId}).
+
+cancel(TaskId) ->
+    gen_server:call(?MODULE, {cancel, TaskId}).
 
 init([]) ->
     Policy = application:get_env(
@@ -45,6 +48,8 @@ handle_call({status, TaskId}, _From, State = #state{tasks = Tasks}) ->
                 error -> {error, not_found}
             end,
     {reply, Reply, State};
+handle_call({cancel, TaskId}, _From, State) ->
+    cancel_task(TaskId, State);
 handle_call(_Request, _From, State) ->
     {reply, {error, bad_request}, State}.
 
@@ -231,7 +236,7 @@ finish_run(RunId, Terminal,
             Task1 = maps:merge(
                       maps:without(
                         [run_pid, run_mref, deadline_tref,
-                         deadline_expired],
+                         deadline_expired, cancel_requested],
                         Task),
                       terminal_for_task(Terminal, Task)),
             ok = emit_service_task(EventStore, <<"service.task.terminal">>,
@@ -307,6 +312,28 @@ expire_deadline(TRef, TaskId, RunId,
             State#state{tasks = maps:put(TaskId, ExpiredTask, Tasks)};
         _StaleOrTerminal ->
             State
+    end.
+
+cancel_task(TaskId,
+            State = #state{event_store = EventStore,
+                           tasks = Tasks}) ->
+    case maps:get(TaskId, Tasks, undefined) of
+        undefined ->
+            {reply, {error, not_found}, State};
+        #{status := running, run_pid := RunPid} = Task ->
+            cancel_deadline(Task),
+            CancellingTask = maps:remove(
+                               deadline_tref,
+                               Task#{cancel_requested => true}),
+            ok = emit_service_task(
+                   EventStore, <<"service.task.cancel_requested">>,
+                   CancellingTask, #{}),
+            RunPid ! cancel,
+            {reply, ok,
+             State#state{tasks = maps:put(
+                                   TaskId, CancellingTask, Tasks)}};
+        _NotRunning ->
+            {reply, {error, not_running}, State}
     end.
 
 cancel_deadline(#{deadline_tref := TRef}) ->
