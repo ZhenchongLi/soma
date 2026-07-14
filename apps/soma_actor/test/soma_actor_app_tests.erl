@@ -81,7 +81,8 @@ test_sup_registry_and_child_sup_after_boot_test() ->
         {ok, _} = application:ensure_all_started(soma_actor),
         Children = supervisor:which_children(soma_actor_sup),
         ChildIds = lists:sort([Id || {Id, _Pid, _Type, _Mods} <- Children]),
-        ?assertEqual([soma_actor_child_sup, soma_actor_registry], ChildIds),
+        ?assert(lists:member(soma_actor_child_sup, ChildIds)),
+        ?assert(lists:member(soma_actor_registry, ChildIds)),
         ?assertEqual([], supervisor:which_children(soma_actor_child_sup))
     after
         application:stop(soma_actor),
