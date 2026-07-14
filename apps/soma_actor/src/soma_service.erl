@@ -62,6 +62,8 @@ handle_info({run_timeout, RunId}, State) ->
      finish_run(RunId, #{status => failed, reason => timeout}, State)};
 handle_info({run_cancelled, RunId}, State) ->
     {noreply, finish_run(RunId, #{status => cancelled}, State)};
+handle_info({timeout, TRef, {task_deadline, TaskId, RunId}}, State) ->
+    {noreply, expire_deadline(TRef, TaskId, RunId, State)};
 handle_info({'DOWN', MRef, process, RunPid, Reason},
             State = #state{monitors = Monitors}) ->
     case maps:get(MRef, Monitors, undefined) of
@@ -107,7 +109,8 @@ start_invocation(Envelope, EnvelopeHash,
               envelope_hash => EnvelopeHash,
               status => accepted,
               run_id => RunId},
-    Task = maybe_add_max_output_bytes(Envelope, Task0),
+    Task = maybe_add_deadline(
+             Envelope, maybe_add_max_output_bytes(Envelope, Task0)),
     Request = #{envelope_hash => EnvelopeHash,
                 task_id => TaskId,
                 accepted_handle => Handle},
@@ -146,9 +149,10 @@ start_allowed_invocation(Envelope, Steps, Task, Handle,
     case soma_run_sup:start_run(RunOpts) of
         {ok, RunPid} ->
             MRef = erlang:monitor(process, RunPid),
-            RunningTask = Task#{status => running,
-                                run_pid => RunPid,
-                                run_mref => MRef},
+            RunningTask0 = Task#{status => running,
+                                 run_pid => RunPid,
+                                 run_mref => MRef},
+            RunningTask = arm_deadline(RunningTask0),
             ok = emit_service_task(EventStore, <<"service.task.running">>,
                                    RunningTask,
                                    accepted_event_payload(RunningTask)),
@@ -221,10 +225,14 @@ finish_run(RunId, Terminal,
             Task = maps:get(TaskId, Tasks),
             RunPid = maps:get(run_pid, Task),
             MRef = maps:get(run_mref, Task),
+            cancel_deadline(Task),
             erlang:demonitor(MRef, [flush]),
             terminate_run_child(RunPid),
             Task1 = maps:merge(
-                      maps:without([run_pid, run_mref], Task),
+                      maps:without(
+                        [run_pid, run_mref, deadline_tref,
+                         deadline_expired],
+                        Task),
                       terminal_for_task(Terminal, Task)),
             ok = emit_service_task(EventStore, <<"service.task.terminal">>,
                                    Task1, terminal_event_payload(Task1)),
@@ -234,6 +242,8 @@ finish_run(RunId, Terminal,
               monitors = maps:remove(MRef, Monitors)}
     end.
 
+terminal_for_task(_Terminal, #{deadline_expired := true}) ->
+    #{status => failed, reason => deadline_exceeded};
 terminal_for_task({completed, Outputs}, Task) ->
     case maps:find(max_output_bytes, Task) of
         {ok, MaxOutputBytes} ->
@@ -257,6 +267,53 @@ maybe_add_max_output_bytes(Envelope, Task) ->
         error ->
             Task
     end.
+
+maybe_add_deadline(Envelope, Task) ->
+    case maps:find(deadline_ms, Envelope) of
+        {ok, DeadlineMs} ->
+            Task#{deadline_at_ms =>
+                      erlang:system_time(millisecond) + DeadlineMs};
+        error ->
+            Task
+    end.
+
+arm_deadline(#{deadline_at_ms := DeadlineAtMs,
+               task_id := TaskId,
+               run_id := RunId} = Task) ->
+    RemainingMs = max(
+                    0,
+                    DeadlineAtMs - erlang:system_time(millisecond)),
+    TRef = erlang:start_timer(
+             RemainingMs, self(), {task_deadline, TaskId, RunId}),
+    Task#{deadline_tref => TRef};
+arm_deadline(Task) ->
+    Task.
+
+expire_deadline(TRef, TaskId, RunId,
+                State = #state{event_store = EventStore,
+                               tasks = Tasks}) ->
+    case maps:get(TaskId, Tasks, undefined) of
+        #{status := running,
+          run_id := RunId,
+          run_pid := RunPid,
+          deadline_tref := TRef} = Task ->
+            ExpiredTask = maps:remove(
+                            deadline_tref,
+                            Task#{deadline_expired => true}),
+            ok = emit_service_task(
+                   EventStore, <<"service.task.deadline_expired">>,
+                   ExpiredTask, #{}),
+            RunPid ! cancel,
+            State#state{tasks = maps:put(TaskId, ExpiredTask, Tasks)};
+        _StaleOrTerminal ->
+            State
+    end.
+
+cancel_deadline(#{deadline_tref := TRef}) ->
+    _ = erlang:cancel_timer(TRef, [{async, false}, {info, false}]),
+    ok;
+cancel_deadline(_Task) ->
+    ok.
 
 terminate_run_child(RunPid) ->
     _ = supervisor:terminate_child(soma_run_sup, RunPid),
@@ -427,7 +484,7 @@ maybe_restore_max_output_bytes(_Payload, Task) ->
     Task.
 
 accepted_event_payload(Task) ->
-    maps:with([envelope_hash, max_output_bytes], Task).
+    maps:with([envelope_hash, max_output_bytes, deadline_at_ms], Task).
 
 terminal_event_payload(Task) ->
     maps:with([status, reason], Task).
