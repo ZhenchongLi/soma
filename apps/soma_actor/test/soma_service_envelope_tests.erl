@@ -243,6 +243,18 @@ test_invalid_invoke_classes_return_fixed_typed_errors() ->
 invalid_invoke_classes_return_fixed_typed_errors_test() ->
     test_invalid_invoke_classes_return_fixed_typed_errors().
 
+mixed_bare_from_step_arg_entries_are_rejected_test() ->
+    Source =
+          <<"(invoke (api-version \"1\") (request-id \"r\") "
+          "(tool (name echo) "
+          "(args (from_step prior) (value 1))))">>,
+    Expected =
+        {error,
+         [#{code => invalid_operation,
+            message => <<"invoke operation is invalid">>,
+            line => 0}]},
+    ?assertEqual(Expected, soma_lfe:compile(Source, #{})).
+
 %% Issue #243 criterion 5: invoke compilation and normalization stay process-
 %% and event-free, while the compile/render applications and touched sources
 %% retain their dependency and atom-creation boundaries.
