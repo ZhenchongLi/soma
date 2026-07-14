@@ -106,8 +106,9 @@ release node-control script is `bin/somad`.
 
 ## Quick start
 
-Use the packaged `soma` command. It speaks Lisp at the edge and auto-starts the
-local daemon on the first client command.
+Use the packaged `soma` command. It speaks Lisp at the edge. `run`, `ask`,
+`status`, `cancel`, `trace`, and the three `tool` commands auto-start the local
+daemon when needed; `stop` and `daemon` do not.
 
 From a release, put `bin/soma` on your `PATH`. From this checkout, build the
 local release once and point `SOMA` at the bundled command:

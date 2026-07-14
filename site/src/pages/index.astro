@@ -12,7 +12,7 @@ const quickStart = `rebar3 release
 SOMA="_build/default/rel/somad/bin/soma"
 
 mkdir -p /tmp/soma-demo
-printf 'hi soma\n' > /tmp/soma-demo/input.txt
+printf 'hi soma\\n' > /tmp/soma-demo/input.txt
 
 cat > /tmp/soma-demo/pipeline.lisp <<'EOF'
 (task
