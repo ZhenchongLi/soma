@@ -25,8 +25,8 @@ manifest() ->
     {ok, soma_tool:output()} | {error, soma_tool:error()}.
 invoke(Input, _Ctx) ->
     case validate_input(Input) of
-        {ok, Text, Pattern, _MaxMatches} ->
-            compile_and_grep(Text, Pattern);
+        {ok, Text, Pattern, MaxMatches} ->
+            compile_and_grep(Text, Pattern, MaxMatches);
         {error, _Reason} = Error ->
             Error
     end.
@@ -56,21 +56,22 @@ validate_max_matches(Input, Text, Pattern) ->
             Error
     end.
 
-compile_and_grep(Text, Pattern) ->
+compile_and_grep(Text, Pattern, MaxMatches) ->
     case re:compile(Pattern) of
         {ok, CompiledPattern} ->
-            grep(Text, CompiledPattern);
+            grep(Text, CompiledPattern, MaxMatches);
         {error, {Diagnostic, Offset}} ->
             {error, {invalid_pattern,
                      #{offset => Offset,
                        diagnostic => bounded_diagnostic(Diagnostic)}}}
     end.
 
-grep(Text, CompiledPattern) ->
-    {MatchingLines, MatchCount} = matching_lines(Text, CompiledPattern, [], 0),
+grep(Text, CompiledPattern, MaxMatches) ->
+    {MatchingLines, MatchCount, Truncated} =
+        matching_lines(Text, CompiledPattern, MaxMatches, [], 0),
     {ok, #{text => iolist_to_binary(lists:reverse(MatchingLines)),
            match_count => MatchCount,
-           truncated => false}}.
+           truncated => Truncated}}.
 
 bounded_diagnostic(Diagnostic) ->
     Binary = unicode:characters_to_binary(Diagnostic),
@@ -81,16 +82,18 @@ bounded_diagnostic(Diagnostic) ->
             binary:part(Binary, 0, ?REGEX_DIAGNOSTIC_LIMIT)
     end.
 
-matching_lines(<<>>, _CompiledPattern, Acc, MatchCount) ->
-    {Acc, MatchCount};
-matching_lines(Text, CompiledPattern, Acc, MatchCount) ->
+matching_lines(<<>>, _CompiledPattern, _MaxMatches, Acc, MatchCount) ->
+    {Acc, MatchCount, false};
+matching_lines(Text, CompiledPattern, MaxMatches, Acc, MatchCount) ->
     {LineBody, ReturnedLine, Rest} = next_line(Text),
     case re:run(LineBody, CompiledPattern, [{capture, none}]) of
-        match ->
-            matching_lines(Rest, CompiledPattern,
+        match when MatchCount < MaxMatches ->
+            matching_lines(Rest, CompiledPattern, MaxMatches,
                            [ReturnedLine | Acc], MatchCount + 1);
+        match ->
+            {Acc, MatchCount, true};
         nomatch ->
-            matching_lines(Rest, CompiledPattern, Acc, MatchCount)
+            matching_lines(Rest, CompiledPattern, MaxMatches, Acc, MatchCount)
     end.
 
 next_line(Text) ->
