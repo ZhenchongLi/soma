@@ -221,6 +221,21 @@ test_tools_documents_whole_argument_placeholders() {
   echo "PASS: test_tools_documents_whole_argument_placeholders"
 }
 
+test_tools_documents_config_tool_defaults() {
+  local tools_text
+  local expected="When a config tool omits safety metadata, Soma defaults effect to state, idempotent to false, and timeout_ms to 30000 ms."
+
+  tools_text="$(normalize_visible_text "${SITE_DIR}/dist/concepts/tools/index.html")"
+
+  if [[ "${tools_text}" != *"${expected}"* ]]; then
+    echo "FAIL: test_tools_documents_config_tool_defaults" >&2
+    printf 'Expected normalized visible text fragment:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_tools_documents_config_tool_defaults"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
@@ -231,3 +246,4 @@ test_quick_start_uses_pipeline_lisp
 test_tools_documents_model_facing_catalog
 test_tools_documents_config_manifest_registration_path
 test_tools_documents_whole_argument_placeholders
+test_tools_documents_config_tool_defaults
