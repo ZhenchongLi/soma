@@ -453,7 +453,7 @@ handle_lfe_request(Bytes, Socket, ModelConfig, Listener) ->
         {ok, #{run := #{steps := Steps}}} ->
             run_steps(Steps, Socket);
         {ok, #{ask := Ask}} ->
-            handle_ask(Ask, ModelConfig);
+            handle_ask(Ask, ModelConfig, Socket);
         {ok, #{trace := #{correlation_id := CorrId}}} ->
             handle_trace(CorrId);
         {ok, #{status := #{task_id := TaskId}}} ->
@@ -475,7 +475,7 @@ handle_lfe_request(Bytes, Socket, ModelConfig, Listener) ->
 %% `llm' map). A `reply' proposal completes the task with `{ok, #{kind => reply,
 %% text => Text}}', which renders as a completed `(result ...)' whose outputs
 %% carry the reply text.
-handle_ask(Ask, ModelConfig) ->
+handle_ask(Ask, ModelConfig, Socket) ->
     TaskId = mint_id("task"),
     CorrId = mint_id("corr"),
     case has_model(ModelConfig) of
@@ -492,7 +492,7 @@ handle_ask(Ask, ModelConfig) ->
                                correlation_id => CorrId,
                                error => no_model_configured});
         true ->
-            handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId)
+            handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId, Socket)
     end.
 
 %% A `model_config' is usable when it is a map carrying a mock `directive' or a
@@ -502,7 +502,7 @@ has_model(ModelConfig) when is_map(ModelConfig) ->
 has_model(_ModelConfig) ->
     false.
 
-handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId) ->
+handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId, Socket) ->
     Intent = maps:get(intent, Ask),
     Opts0 = #{actor_id => mint_id("actor"),
               model_config => ModelConfig,
@@ -520,7 +520,25 @@ handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId) ->
     {ok, ActorPid} = soma_actor_sup:start_actor(Opts2),
     Llm = mock_llm_opts(ModelConfig),
     Envelope = ask_envelope(Intent, TaskId, CorrId, Llm),
-    Result = case soma_actor:ask(ActorPid, Envelope, 60000) of
+    Handler = self(),
+    AskTag = make_ref(),
+    {AskPid, AskMRef} =
+        spawn_monitor(
+          fun() ->
+                  Handler ! {ask_result, AskTag,
+                             soma_actor:ask(ActorPid, Envelope, 60000)}
+          end),
+    ok = inet:setopts(Socket, [{active, once}]),
+    case await_ask(AskTag, AskPid, AskMRef, Socket) of
+        noreply ->
+            noreply;
+        AskResult ->
+            Result = ask_result(AskResult, TaskId, CorrId),
+            soma_lisp:render(Result)
+    end.
+
+ask_result(AskResult, TaskId, CorrId) ->
+    case AskResult of
                  {ok, #{kind := reply, text := Text}} ->
                      #{status => completed,
                        task_id => TaskId,
@@ -559,8 +577,23 @@ handle_ask_with_model(Ask, ModelConfig, TaskId, CorrId) ->
                      #{status => timeout,
                        task_id => TaskId,
                        correlation_id => CorrId}
-             end,
-    soma_lisp:render(Result).
+    end.
+
+await_ask(AskTag, AskPid, AskMRef, Socket) ->
+    receive
+        {ask_result, AskTag, AskResult} ->
+            erlang:demonitor(AskMRef, [flush]),
+            AskResult;
+        {'DOWN', AskMRef, process, AskPid, _Reason} ->
+            noreply;
+        {tcp, Socket, _Ignored} ->
+            ok = inet:setopts(Socket, [{active, once}]),
+            await_ask(AskTag, AskPid, AskMRef, Socket);
+        {tcp_closed, Socket} ->
+            exit(AskPid, kill),
+            erlang:demonitor(AskMRef, [flush]),
+            noreply
+    end.
 
 %% Exploration limits are daemon configuration, while the actor remains their
 %% enforcement owner. Only an enabled explore model contributes these fields;
