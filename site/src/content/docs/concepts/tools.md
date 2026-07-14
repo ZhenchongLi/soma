@@ -55,6 +55,11 @@ live registry.
   argv, **no shell**), captures stdout as the step output, and treats exit 0 as
   success.
 
+A placeholder such as `"{param}"` occupies one complete `argv` element and
+must name an entry in the declared `params` list. Soma replaces that whole
+`argv` element with the parameter value; it does not perform substring
+interpolation.
+
 The `cli` execution protocol delivers the step input as the **final argv
 argument** (Erlang ports cannot half-close stdin), captures stdout as the
 output, and gives the child a minimal environment (only `PATH`) and a fixed cwd.
