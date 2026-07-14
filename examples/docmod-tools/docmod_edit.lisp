@@ -1,0 +1,11 @@
+(tool
+  (name "docmod_edit")
+  (description "Edit a document with changes from an HTML file.")
+  (effect state)
+  (idempotent false)
+  (timeout-ms 30000)
+  (adapter cli)
+  (executable "/REPLACE/WITH/PATH/TO/docmod")
+  (argv "edit" "{input}" "{changes}")
+  (params (("input" string required "Input document path")
+           ("changes" string required "Changes HTML file path"))))

@@ -1,0 +1,10 @@
+(tool
+  (name "docmod_help")
+  (description "Show docmod help for a topic.")
+  (effect reader)
+  (idempotent true)
+  (timeout-ms 30000)
+  (adapter cli)
+  (executable "/REPLACE/WITH/PATH/TO/docmod")
+  (argv "help" "{topic}")
+  (params (("topic" string required "Help topic"))))
