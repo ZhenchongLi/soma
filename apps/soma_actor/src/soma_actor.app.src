@@ -1,9 +1,9 @@
 {application, soma_actor, [
     {description, "Soma actor: agent-entity supervision skeleton"},
     {vsn, "0.1.0"},
-    {registered, []},
+    {registered, [soma_service]},
     {mod, {soma_actor_app, []}},
     {applications, [kernel, stdlib, soma_runtime, soma_lfe]},
-    {env, []},
+    {env, [{service_policy, #{allowed_tools => []}}]},
     {modules, []}
 ]}.
