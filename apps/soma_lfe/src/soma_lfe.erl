@@ -30,6 +30,8 @@ dispatch([[task | _] = Form]) ->
     soma_lfe_parser:parse_task(Form);
 dispatch([[explore | _] = Form]) ->
     soma_lfe_parser:parse_explore(Form);
+dispatch([[invoke | _] = Form]) ->
+    soma_lfe_parser:parse_invoke(Form);
 dispatch([[reply | _] = Form]) ->
     soma_lfe_parser:parse_proposal(Form);
 dispatch([['run-steps' | _] = Form]) ->

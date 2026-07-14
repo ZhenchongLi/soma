@@ -3,10 +3,70 @@
 -module(soma_lfe_parser).
 
 -export([parse_run/1, parse_task/1, parse_msg/1, parse_explore/1,
-         parse_proposal/1, parse_ask/1, parse_trace/1, parse_status/1,
-         parse_cancel/1, parse_stop/1]).
+         parse_invoke/1, parse_proposal/1, parse_ask/1, parse_trace/1,
+         parse_status/1, parse_cancel/1, parse_stop/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
+
+%% @doc Parse a service invocation into the candidate map accepted by the
+%% actor-layer service-envelope normalizer.
+-spec parse_invoke([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_invoke([invoke | SubForms]) ->
+    case parse_invoke_fields(SubForms, #{kind => invoke}) of
+        {ok, #{request_id := RequestId,
+               operation := {tool, Tool, Args}} = Envelope} ->
+            Step = #{id => RequestId, tool => Tool, args => Args},
+            {ok, Envelope#{operation => #{kind => tool, step => Step}}};
+        {error, Diags} ->
+            {error, Diags};
+        {ok, _Envelope} ->
+            invalid_invoke_operation()
+    end.
+
+parse_invoke_fields([], Acc) ->
+    {ok, Acc};
+parse_invoke_fields([['api-version', Value] | Rest], Acc) ->
+    parse_invoke_fields(Rest, Acc#{api_version => Value});
+parse_invoke_fields([['request-id', Value] | Rest], Acc) ->
+    parse_invoke_fields(Rest, Acc#{request_id => Value});
+parse_invoke_fields([[tool | ToolFields] | Rest], Acc) ->
+    case parse_invoke_tool(ToolFields, #{}) of
+        {ok, Tool, Args} ->
+            parse_invoke_fields(Rest, Acc#{operation => {tool, Tool, Args}});
+        {error, Diags} ->
+            {error, Diags}
+    end;
+parse_invoke_fields([[scope | Values] | Rest], Acc) ->
+    parse_invoke_fields(Rest, Acc#{scope => Values});
+parse_invoke_fields([['deadline-ms', Value] | Rest], Acc) ->
+    parse_invoke_fields(Rest, Acc#{deadline_ms => Value});
+parse_invoke_fields([['max-output-bytes', Value] | Rest], Acc) ->
+    parse_invoke_fields(Rest, Acc#{max_output_bytes => Value});
+parse_invoke_fields([['correlation-id', Value] | Rest], Acc) ->
+    parse_invoke_fields(Rest, Acc#{correlation_id => Value});
+parse_invoke_fields([[artifacts | Values] | Rest], Acc) ->
+    parse_invoke_fields(Rest, Acc#{artifacts => Values});
+parse_invoke_fields([_Other | _], _Acc) ->
+    invalid_invoke_operation().
+
+parse_invoke_tool([], #{name := Tool, args := Args}) ->
+    {ok, Tool, Args};
+parse_invoke_tool([[name, Tool] | Rest], Acc) when is_atom(Tool) ->
+    parse_invoke_tool(Rest, Acc#{name => Tool});
+parse_invoke_tool([[args | ArgForms] | Rest], Acc) ->
+    case parse_args(ArgForms, #{}) of
+        {ok, Args} ->
+            parse_invoke_tool(Rest, Acc#{args => Args});
+        {error, _Diags} ->
+            invalid_invoke_operation()
+    end;
+parse_invoke_tool(_Other, _Acc) ->
+    invalid_invoke_operation().
+
+invalid_invoke_operation() ->
+    {error, [#{code => invalid_operation,
+               message => <<"invoke operation is invalid">>,
+               line => 0}]}.
 
 %% @doc Parse a single (msg ...) form into an actor envelope map.
 -spec parse_msg([term()]) -> {ok, map()} | {error, [diagnostic()]}.
