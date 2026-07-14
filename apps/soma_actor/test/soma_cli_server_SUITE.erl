@@ -47,6 +47,7 @@
 -export([test_ask_real_provider_plan_rejects_disallowed_tool/1]).
 -export([test_real_provider_plan_api_key_leaks_nowhere/1]).
 -export([test_explore_ask_uses_configured_round_and_observation_budgets/1]).
+-export([test_unparseable_explore_setting_keeps_daemon_reachable_and_off/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -91,7 +92,8 @@ all() ->
      test_ask_real_provider_plan_returns_step_outputs,
      test_ask_real_provider_plan_rejects_disallowed_tool,
      test_real_provider_plan_api_key_leaks_nowhere,
-     test_explore_ask_uses_configured_round_and_observation_budgets].
+     test_explore_ask_uses_configured_round_and_observation_budgets,
+     test_unparseable_explore_setting_keeps_daemon_reachable_and_off].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -1371,6 +1373,31 @@ test_explore_ask_uses_configured_round_and_observation_budgets(Config) ->
         end
     end.
 
+%% Criterion 4 (#232): a bare, unparseable `explore' value is an invalid
+%% optional setting, not a daemon boot failure. The real daemon path must still
+%% bind its local socket, while loading the same complete provider file omits
+%% the explore key so actor asks stay on the non-explore path.
+test_unparseable_explore_setting_keeps_daemon_reachable_and_off(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = unparseable_explore_provider_config_file(Config),
+    DaemonOpts = #{socket => Path, config_path => ConfigPath},
+    KeyEnv = "SOMA_LLM_API_KEY",
+    Prev = os:getenv(KeyEnv),
+    os:putenv(KeyEnv, "sk-unparseable-explore-test"),
+    application:stop(soma_runtime),
+    try
+        {ok, Path} = soma_cli:daemon(DaemonOpts),
+        %% Staged-red expectation: the daemon is required to be reachable.
+        1 = soma_cli:ping(DaemonOpts),
+        Loaded = soma_config:load(DaemonOpts),
+        false = maps:is_key(explore, Loaded)
+    after
+        case Prev of
+            false -> os:unsetenv(KeyEnv);
+            _ -> os:putenv(KeyEnv, Prev)
+        end
+    end.
+
 %% True when the sentinel binary appears anywhere inside Term (a map's keys or
 %% values, a list, or a tuple, however nested).
 term_contains(Term, Sentinel) when is_binary(Term) ->
@@ -1430,6 +1457,21 @@ explore_budget_provider_config_file(Config) ->
               "explore = true\n",
               "max_explore_rounds = 1\n",
               "max_observation_bytes = 7\n"]),
+    ok = file:write_file(File, Toml),
+    File.
+
+%% Complete provider config with an intentionally unparseable bare optional
+%% explore token. Provider requirements remain valid so only explore handling
+%% can decide whether daemon boot succeeds.
+unparseable_explore_provider_config_file(Config) ->
+    Dir = ?config(priv_dir, Config),
+    File = filename:join(Dir, "unparseable_explore_provider.config"),
+    Toml = iolist_to_binary(
+             ["[llm]\n",
+              "provider = \"openai_compat\"\n",
+              "base", "_url = \"api.example/v1\"\n",
+              "model = \"test-model\"\n",
+              "explore = definitely-not-a-boolean\n"]),
     ok = file:write_file(File, Toml),
     File.
 
