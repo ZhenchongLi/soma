@@ -612,8 +612,8 @@ test_docmod_help_stub_receives_help_then_substituted_topic(Config) ->
                         maps:get(step_id, E) =:= help],
     Output = maps:get(output, maps:get(payload, StepEvent)),
     ?assertEqual(<<"argc=2\n"
-                   "arg1=formatting\n"
-                   "arg2=help\n">>,
+                   "arg1=help\n"
+                   "arg2=formatting\n">>,
                  Output),
     ok.
 
