@@ -11,12 +11,16 @@
 -export([reader_explore_run_and_tool_worker_are_distinct_children/1]).
 -export([reader_then_terminal_run_steps_carries_observation_and_outputs/1]).
 -export([non_reader_explore_rejected_with_effect_and_no_run/1]).
+-export([configured_observation_cap_counts_only_retained_output_bytes/1]).
+-export([default_observation_cap_is_16384_bytes/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
      reader_explore_run_and_tool_worker_are_distinct_children,
      reader_then_terminal_run_steps_carries_observation_and_outputs,
-     non_reader_explore_rejected_with_effect_and_no_run].
+     non_reader_explore_rejected_with_effect_and_no_run,
+     configured_observation_cap_counts_only_retained_output_bytes,
+     default_observation_cap_is_16384_bytes].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -268,6 +272,98 @@ non_reader_explore_rejected_with_effect_and_no_run(_Config) ->
     ok = assert_equal({ok, #{kind => reply, text => <<"done">>}},
                       soma_actor:get_task_result(ActorPid, TaskId)),
     ok.
+
+configured_observation_cap_counts_only_retained_output_bytes(_Config) ->
+    Cap = 31,
+    Text = binary:copy(<<"x">>, 128),
+    {Observation, SerializedOutput} =
+        completed_observation_for_cap(#{max_observation_bytes => Cap},
+                                      Text, <<"configured">>),
+
+    ok = assert_equal(true, byte_size(SerializedOutput) > Cap),
+    ok = assert_truncated_observation(Observation, SerializedOutput, Cap).
+
+default_observation_cap_is_16384_bytes(_Config) ->
+    DefaultCap = 16384,
+    Text = binary:copy(<<"y">>, 20000),
+    {Observation, SerializedOutput} =
+        completed_observation_for_cap(omitted, Text, <<"default">>),
+
+    ok = assert_equal(true, byte_size(SerializedOutput) > DefaultCap),
+    ok = assert_truncated_observation(Observation, SerializedOutput,
+                                      DefaultCap).
+
+completed_observation_for_cap(Budget, Text, Suffix) ->
+    Store = event_store_pid(),
+    TestPid = self(),
+    ExploreSource =
+        iolist_to_binary(
+          [<<"(explore (step (id inspect) (tool text_head) "
+             "(args (text \"">>, Text, <<"\") (lines 1))))">>]),
+    TerminalSource = <<"(reply (text \"done\"))">>,
+    SecondResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_request, 2, CallOpts},
+                fixed_response(TerminalSource)
+        end,
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response_sequence =>
+              [fixed_response(ExploreSource), SecondResponder]},
+    ActorOpts0 =
+        #{actor_id => <<"actor-observation-cap-", Suffix/binary>>,
+          model_config => ModelConfig,
+          tool_policy => #{allowed_tools => [text_head]},
+          event_store => Store},
+    ActorOpts =
+        case Budget of
+            omitted -> ActorOpts0;
+            _ -> ActorOpts0#{budget => Budget}
+        end,
+    {ok, ActorPid} = soma_actor_sup:start_actor(ActorOpts),
+    TaskId = <<"task-observation-cap-", Suffix/binary>>,
+    CorrelationId = <<"corr-observation-cap-", Suffix/binary>>,
+    Prompt = <<"inspect a large value">>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => Prompt},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    SecondCallOpts = wait_for_provider_request(2),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+    [#{role := <<"system">>},
+     #{role := <<"user">>, content := Prompt},
+     #{role := <<"assistant">>, content := ExploreSource},
+     #{role := <<"user">>, content := Observation}] =
+        maps:get(messages, SecondCallOpts),
+    SerializedOutput =
+        iolist_to_binary(
+          soma_lisp:render(#{text => Text, truncated => false})),
+    {Observation, SerializedOutput}.
+
+assert_truncated_observation(Observation, SerializedOutput, Cap) ->
+    Marker = <<"(truncated true)">>,
+    case binary:match(Observation, Marker) of
+        nomatch ->
+            ct:fail({missing_observation_truncation_marker, Cap});
+        _ ->
+            ok
+    end,
+    RetainedOutput = binary:part(SerializedOutput, 0, Cap),
+    ExpectedObservation =
+        iolist_to_binary(
+          [<<"(observation (status completed) (outputs "
+             "(step (id inspect) (output ">>,
+           soma_lisp:render(RetainedOutput),
+           <<"))) (truncated true))">>]),
+    ok = assert_equal(Cap, byte_size(RetainedOutput)),
+    assert_equal(ExpectedObservation, Observation).
 
 fixed_response(Content) ->
     Body =
