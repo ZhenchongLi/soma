@@ -102,6 +102,235 @@ test_valid_steps_invoke_matches_run_steps_production() ->
 valid_steps_invoke_matches_run_steps_production_test() ->
     test_valid_steps_invoke_matches_run_steps_production().
 
+%% Issue #243 criterion 3: every rejected invoke class has one distinct,
+%% fixed-size diagnostic, including compiler-only structural failures.
+test_invalid_invoke_classes_return_fixed_typed_errors() ->
+    Large = binary:copy(<<"x">>, 64 * 1024),
+    Base = valid_tool_candidate(),
+    Classes =
+        [{missing_api_version,
+          [{normalizer,
+            soma_service_envelope:normalize(
+                maps:remove(api_version, Base#{artifacts => [<<"x">>]})
+            ),
+            soma_service_envelope:normalize(
+                maps:remove(api_version, Base#{artifacts => [Large]})
+            )}]},
+         {unsupported_api_version,
+          [{normalizer,
+            soma_service_envelope:normalize(Base#{api_version => <<"2">>}),
+            soma_service_envelope:normalize(Base#{api_version => Large})},
+           {normalizer,
+            soma_service_envelope:normalize(Base#{api_version => 1}),
+            soma_service_envelope:normalize(
+                Base#{api_version => {invalid, Large}}
+            )}]},
+         {missing_request_id,
+          [{normalizer,
+            soma_service_envelope:normalize(
+                maps:remove(request_id, Base#{artifacts => [<<"x">>]})
+            ),
+            soma_service_envelope:normalize(
+                maps:remove(request_id, Base#{artifacts => [Large]})
+            )}]},
+         {invalid_request_id,
+          [{normalizer,
+            soma_service_envelope:normalize(
+                Base#{request_id => invalid_request_id}
+            ),
+            soma_service_envelope:normalize(
+                Base#{request_id => {invalid_request_id, Large}}
+            )}]},
+         {duplicate_field,
+          [{compiler,
+            soma_lfe:compile(duplicate_request_source(<<"x">>), #{}),
+            soma_lfe:compile(duplicate_request_source(Large), #{})},
+           {compiler,
+            soma_lfe:compile(duplicate_tool_name_source(<<"x">>), #{}),
+            soma_lfe:compile(duplicate_tool_name_source(Large), #{})},
+           {compiler,
+            soma_lfe:compile(duplicate_operation_source(<<"x">>), #{}),
+            soma_lfe:compile(duplicate_operation_source(Large), #{})}]},
+         {unknown_field,
+          [{compiler,
+            soma_lfe:compile(unknown_field_source(<<"x">>), #{}),
+            soma_lfe:compile(unknown_field_source(Large), #{})},
+           {normalizer,
+            soma_service_envelope:normalize(Base#{credential => <<"x">>}),
+            soma_service_envelope:normalize(Base#{credential => Large})}]},
+         {invalid_operation,
+          [{compiler,
+            soma_lfe:compile(malformed_tool_source(<<"x">>), #{}),
+            soma_lfe:compile(malformed_tool_source(Large), #{})},
+           {compiler,
+            soma_lfe:compile(mixed_operation_source(<<"x">>), #{}),
+            soma_lfe:compile(mixed_operation_source(Large), #{})},
+           {normalizer,
+            soma_service_envelope:normalize(invalid_operation),
+            soma_service_envelope:normalize({invalid_operation, Large})},
+           {normalizer,
+            soma_service_envelope:normalize(
+                maps:remove(operation, Base#{artifacts => [<<"x">>]})
+            ),
+            soma_service_envelope:normalize(
+                maps:remove(operation, Base#{artifacts => [Large]})
+            )},
+           {normalizer,
+            soma_service_envelope:normalize(
+                Base#{operation => invalid_tool_operation(<<"x">>)}
+            ),
+            soma_service_envelope:normalize(
+                Base#{operation => invalid_tool_operation(Large)}
+            )}]},
+         {invalid_budget,
+          [{normalizer,
+            soma_service_envelope:normalize(Base#{deadline_ms => 0}),
+            soma_service_envelope:normalize(
+                Base#{deadline_ms => {invalid, Large}}
+            )},
+           {normalizer,
+            soma_service_envelope:normalize(Base#{max_output_bytes => false}),
+            soma_service_envelope:normalize(
+                Base#{max_output_bytes => {invalid, Large}}
+            )}]},
+         {scope_entry_too_large,
+          [{normalizer,
+            soma_service_envelope:normalize(
+                Base#{scope => [binary:copy(<<"s">>, 256)]}
+            ),
+            soma_service_envelope:normalize(Base#{scope => [Large]})},
+           {normalizer,
+            soma_service_envelope:normalize(Base#{scope => [not_binary]}),
+            soma_service_envelope:normalize(
+                Base#{scope => [{not_binary, Large}]}
+            )}]},
+         {invalid_artifacts,
+          [{normalizer,
+            soma_service_envelope:normalize(Base#{artifacts => not_a_list}),
+            soma_service_envelope:normalize(
+                Base#{artifacts => {not_a_list, Large}}
+            )},
+           {normalizer,
+            soma_service_envelope:normalize(Base#{artifacts => [not_binary]}),
+            soma_service_envelope:normalize(
+                Base#{artifacts => [{not_binary, Large}]}
+            )}]},
+         {invalid_correlation_id,
+          [{normalizer,
+            soma_service_envelope:normalize(
+                Base#{correlation_id => not_binary}
+            ),
+            soma_service_envelope:normalize(
+                Base#{correlation_id => {not_binary, Large}}
+            )}]}],
+
+    Codes = [assert_invalid_class(Code, Pairs) || {Code, Pairs} <- Classes],
+    ExpectedCodes =
+        [missing_api_version,
+         unsupported_api_version,
+         missing_request_id,
+         invalid_request_id,
+         duplicate_field,
+         unknown_field,
+         invalid_operation,
+         invalid_budget,
+         scope_entry_too_large,
+         invalid_artifacts,
+         invalid_correlation_id],
+    ?assertEqual(lists:sort(ExpectedCodes), lists:sort(Codes)),
+    ?assertEqual(length(Codes), length(lists:usort(Codes))).
+
+invalid_invoke_classes_return_fixed_typed_errors_test() ->
+    test_invalid_invoke_classes_return_fixed_typed_errors().
+
+assert_invalid_class(Code, Pairs) ->
+    [assert_fixed_error_pair(Code, Boundary, Small, Large)
+     || {Boundary, Small, Large} <- Pairs],
+    Code.
+
+assert_fixed_error_pair(Code, Boundary, Small, Large) ->
+    ?assertMatch({error, [#{code := Code}]}, Small),
+    ?assertMatch({error, [#{code := Code}]}, Large),
+    ?assertEqual(Small, Large),
+    ?assertEqual(term_to_binary(Small), term_to_binary(Large)),
+    {error, [Diagnostic]} = Small,
+    ExpectedKeys =
+        case Boundary of
+            compiler -> [code, line, message];
+            normalizer -> [code, message]
+        end,
+    ?assertEqual(ExpectedKeys, lists:sort(maps:keys(Diagnostic))),
+    case Boundary of
+        compiler -> ?assertEqual(0, maps:get(line, Diagnostic));
+        normalizer -> ok
+    end,
+    Message = maps:get(message, Diagnostic),
+    ?assert(is_binary(Message)),
+    ?assert(byte_size(Message) =< 128),
+    ?assert(byte_size(term_to_binary(Small)) =< 256).
+
+valid_tool_candidate() ->
+    #{kind => invoke,
+      api_version => <<"1">>,
+      request_id => <<"request-1">>,
+      operation =>
+          #{kind => tool,
+            step =>
+                #{id => <<"request-1">>,
+                  tool => echo,
+                  args => #{value => <<"hello">>}}}}.
+
+invalid_tool_operation(Rejected) ->
+    #{kind => tool,
+      step =>
+          #{id => <<"request-1">>,
+            tool => echo,
+            args => #{},
+            rejected => Rejected}}.
+
+duplicate_request_source(Rejected) ->
+    iolist_to_binary(
+        [<<"(invoke (api-version \"1\") (request-id \"request-1\") ">>,
+         <<"(request-id \"">>, Rejected, <<"\") ">>,
+         <<"(tool (name echo) (args (value \"hello\"))))">>]
+    ).
+
+duplicate_tool_name_source(Rejected) ->
+    iolist_to_binary(
+        [<<"(invoke (api-version \"1\") (request-id \"request-1\") ">>,
+         <<"(tool (name echo) (name \"">>, Rejected,
+         <<"\") (args (value \"hello\"))))">>]
+    ).
+
+duplicate_operation_source(Rejected) ->
+    iolist_to_binary(
+        [<<"(invoke (api-version \"1\") (request-id \"request-1\") ">>,
+         <<"(tool (name echo) (args (value \"hello\"))) ">>,
+         <<"(tool (name echo) (args (value \"">>, Rejected,
+         <<"\"))))">>]
+    ).
+
+unknown_field_source(Rejected) ->
+    iolist_to_binary(
+        [<<"(invoke (api-version \"1\") (request-id \"request-1\") ">>,
+         <<"(tool (name echo) (args)) (credential \"">>, Rejected,
+         <<"\"))">>]
+    ).
+
+malformed_tool_source(Rejected) ->
+    iolist_to_binary(
+        [<<"(invoke (api-version \"1\") (request-id \"request-1\") ">>,
+         <<"(tool (name echo) (args \"">>, Rejected, <<"\")))">>]
+    ).
+
+mixed_operation_source(Rejected) ->
+    iolist_to_binary(
+        [<<"(invoke (api-version \"1\") (request-id \"request-1\") ">>,
+         <<"(tool (name echo) (args)) ">>,
+         <<"(steps (step (id one) (tool echo) (args (value \"">>,
+         Rejected, <<"\")))))">>]
+    ).
+
 read_source(Path) ->
     case file:read_file(Path) of
         {ok, Source} -> Source;
