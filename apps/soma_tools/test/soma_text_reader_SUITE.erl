@@ -259,8 +259,8 @@ test_text_grep_filters_cli_stdout_from_step(Config) ->
     Events = soma_event_store:by_run(StorePid, RunId),
     ?assertEqual(<<"keep alpha\nskip beta\nkeep gamma\n">>,
                  step_output(Events, cli_step)),
-    ?assertEqual(#{text => <<"keep alpha\n">>,
-                   match_count => 1,
+    ?assertEqual(#{text => <<"keep alpha\nkeep gamma\n">>,
+                   match_count => 2,
                    truncated => false},
                  step_output(Events, grep_step)),
     ok.
