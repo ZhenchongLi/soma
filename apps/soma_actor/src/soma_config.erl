@@ -99,7 +99,7 @@ build_model_config(Llm) ->
     },
     Base = carry_api_key(Base0),
     lists:foldl(fun(Key, Acc) -> carry_optional(Key, Llm, Acc) end,
-                Base, ["enable_thinking", "max_tokens", "plan"]).
+                Base, ["enable_thinking", "max_tokens", "plan", "explore"]).
 
 require(Key, Llm, ErrorName) ->
     case maps:find(Key, Llm) of
