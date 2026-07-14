@@ -19,6 +19,8 @@
 -export([configured_round_limit_stops_before_next_llm_start/1]).
 -export([default_round_limit_is_five/1]).
 -export([explore_rounds_consume_existing_llm_call_budget/1]).
+-export([in_loop_llm_crash_is_terminal_failed/1]).
+-export([in_loop_llm_timeout_is_terminal_timeout/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
@@ -32,7 +34,9 @@ all() ->
      invalid_round_reply_becomes_bounded_next_observation,
      configured_round_limit_stops_before_next_llm_start,
      default_round_limit_is_five,
-     explore_rounds_consume_existing_llm_call_budget].
+     explore_rounds_consume_existing_llm_call_budget,
+     in_loop_llm_crash_is_terminal_failed,
+     in_loop_llm_timeout_is_terminal_timeout].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -431,6 +435,119 @@ explore_rounds_consume_existing_llm_call_budget(_Config) ->
                                      <<"llm.started">>)),
     ok.
 
+in_loop_llm_crash_is_terminal_failed(_Config) ->
+    TestPid = self(),
+    CrashResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_worker_request, 2, self(), CallOpts},
+                exit(in_loop_llm_crashed)
+        end,
+    {Store, ActorPid, TaskId, CorrelationId, ExploreSource,
+     WorkerPid, SecondCallOpts} =
+        in_loop_llm_terminal_task(<<"crash">>, CrashResponder),
+
+    ok = assert_completed_observation(SecondCallOpts, ExploreSource),
+    Status = wait_for_terminal_task_status(ActorPid, TaskId, 100),
+    ok = assert_equal(failed, maps:get(status, Status)),
+    ok = assert_equal(true, maps:is_key(reason, Status)),
+    ok = assert_equal(false, is_process_alive(WorkerPid)),
+    ok = assert_equal(true, is_process_alive(ActorPid)),
+    ok = assert_equal(2, event_count(Store, CorrelationId,
+                                     <<"llm.started">>)),
+    RoundCompleted = wait_for_round_completed(
+                       Store, CorrelationId, 2, 100),
+    ok = assert_terminal_llm_round(RoundCompleted, TaskId,
+                                   CorrelationId, failed),
+    ok.
+
+in_loop_llm_timeout_is_terminal_timeout(_Config) ->
+    PreviousTimeout = application:get_env(soma_actor,
+                                          llm_default_timeout_ms),
+    application:set_env(soma_actor, llm_default_timeout_ms, 50),
+    TestPid = self(),
+    BlockingResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_worker_request, 2, self(), CallOpts},
+                receive
+                    never_release -> fixed_response(<<"(reply (text \"late\"))">>)
+                end
+        end,
+    try
+        {Store, ActorPid, TaskId, CorrelationId, ExploreSource,
+         WorkerPid, SecondCallOpts} =
+            in_loop_llm_terminal_task(<<"timeout">>, BlockingResponder),
+
+        ok = assert_completed_observation(SecondCallOpts, ExploreSource),
+        ok = wait_for_task_status(ActorPid, TaskId, timeout, 100),
+        Status = soma_actor:get_task_status(ActorPid, TaskId),
+        ok = assert_equal(timeout, maps:get(status, Status)),
+        ok = assert_equal(false, is_process_alive(WorkerPid)),
+        ok = assert_equal(true, is_process_alive(ActorPid)),
+        ok = assert_equal(2, event_count(Store, CorrelationId,
+                                         <<"llm.started">>)),
+        RoundCompleted = wait_for_round_completed(
+                           Store, CorrelationId, 2, 100),
+        ok = assert_terminal_llm_round(RoundCompleted, TaskId,
+                                       CorrelationId, timeout),
+        ok
+    after
+        restore_llm_default_timeout(PreviousTimeout)
+    end.
+
+in_loop_llm_terminal_task(Suffix, SecondResponder) ->
+    Store = event_store_pid(),
+    ExploreSource =
+        <<"(explore (step (id inspect) (tool text_head) "
+          "(args (text \"observed\") (lines 1))))">>,
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response_sequence =>
+              [fixed_response(ExploreSource), SecondResponder]},
+    {ok, ActorPid} =
+        soma_actor_sup:start_actor(
+          #{actor_id => <<"actor-in-loop-llm-", Suffix/binary>>,
+            model_config => ModelConfig,
+            tool_policy => #{allowed_tools => [text_head]},
+            budget => #{max_explore_rounds => 3},
+            event_store => Store}),
+    TaskId = <<"task-in-loop-llm-", Suffix/binary>>,
+    CorrelationId = <<"corr-in-loop-llm-", Suffix/binary>>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => <<"inspect before answering">>},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    {WorkerPid, SecondCallOpts} = wait_for_provider_worker_request(2),
+    {Store, ActorPid, TaskId, CorrelationId, ExploreSource,
+     WorkerPid, SecondCallOpts}.
+
+assert_completed_observation(CallOpts, ExploreSource) ->
+    [#{role := <<"system">>},
+     #{role := <<"user">>},
+     #{role := <<"assistant">>, content := ExploreSource},
+     #{role := <<"user">>, content := Observation}] =
+        maps:get(messages, CallOpts),
+    assert_contains(Observation, <<"(observation (status completed)">>).
+
+assert_terminal_llm_round(Event, TaskId, CorrelationId, Status) ->
+    Expected =
+        #{task_id => TaskId,
+          correlation_id => CorrelationId,
+          round => 2,
+          remaining_rounds => 2,
+          action => invalid_reply,
+          status => Status,
+          observation_bytes => 0,
+          truncated => false},
+    Actual = maps:with(maps:keys(Expected), Event),
+    assert_equal(Expected, Actual).
+
 nonterminal_round_budget_task(Suffix, Budget, NonterminalRounds) ->
     Store = event_store_pid(),
     NonterminalResponse = fixed_response(<<"not-a-lisp-form">>),
@@ -620,6 +737,14 @@ wait_for_provider_request(Round) ->
         ct:fail({provider_request_timeout, Round})
     end.
 
+wait_for_provider_worker_request(Round) ->
+    receive
+        {provider_worker_request, Round, WorkerPid, CallOpts} ->
+            {WorkerPid, CallOpts}
+    after 2000 ->
+        ct:fail({provider_worker_request_timeout, Round})
+    end.
+
 wait_for_task_status(_ActorPid, _TaskId, Status, 0) ->
     ct:fail({task_status_timeout, Status});
 wait_for_task_status(ActorPid, TaskId, Status, N) ->
@@ -689,6 +814,26 @@ wait_for_event_map(Store, CorrelationId, EventType, N) ->
             timer:sleep(20),
             wait_for_event_map(Store, CorrelationId, EventType, N - 1)
     end.
+
+wait_for_round_completed(_Store, _CorrelationId, Round, 0) ->
+    error({timeout, <<"explore.round.completed">>, Round});
+wait_for_round_completed(Store, CorrelationId, Round, N) ->
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    case [Event || Event <- Events,
+                   maps:get(event_type, Event, undefined) =:=
+                       <<"explore.round.completed">>,
+                   maps:get(round, Event, undefined) =:= Round] of
+        [Event | _] ->
+            Event;
+        [] ->
+            timer:sleep(20),
+            wait_for_round_completed(Store, CorrelationId, Round, N - 1)
+    end.
+
+restore_llm_default_timeout(undefined) ->
+    application:unset_env(soma_actor, llm_default_timeout_ms);
+restore_llm_default_timeout({ok, TimeoutMs}) ->
+    application:set_env(soma_actor, llm_default_timeout_ms, TimeoutMs).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
