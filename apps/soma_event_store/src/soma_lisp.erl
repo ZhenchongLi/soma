@@ -7,9 +7,11 @@
 -export([render/1]).
 
 -spec render(term()) -> iodata().
+render(#{kind := invoke} = Invoke) ->
+    render_invoke(Invoke);
 render(#{kind := explore, steps := Steps}) when is_list(Steps) ->
     ["(explore ",
-     lists:join(" ", [render_explore_step(Step) || Step <- Steps]),
+     lists:join(" ", [render_canonical_step(Step) || Step <- Steps]),
      ")"];
 render(Map) when is_map(Map) ->
     case is_event_map(Map) of
@@ -82,24 +84,50 @@ render_envelope_pair(steps, Steps) when is_list(Steps) ->
 render_envelope_pair(Key, Value) ->
     render_pair(Key, Value).
 
+render_invoke(Invoke) ->
+    Fields =
+        [render_pair(api_version, maps:get(api_version, Invoke)),
+         render_pair(request_id, maps:get(request_id, Invoke)),
+         render_invoke_operation(maps:get(operation, Invoke))]
+        ++ [render_invoke_list(scope, Value)
+            || {ok, Value} <- [maps:find(scope, Invoke)]]
+        ++ [render_pair(deadline_ms, Value)
+            || {ok, Value} <- [maps:find(deadline_ms, Invoke)]]
+        ++ [render_pair(max_output_bytes, Value)
+            || {ok, Value} <- [maps:find(max_output_bytes, Invoke)]]
+        ++ [render_pair(correlation_id, Value)
+            || {ok, Value} <- [maps:find(correlation_id, Invoke)]]
+        ++ [render_invoke_list(artifacts, Value)
+            || {ok, Value} <- [maps:find(artifacts, Invoke)]],
+    ["(invoke ", lists:join(" ", Fields), ")"].
+
+render_invoke_operation(#{kind := tool, step := #{tool := Tool, args := Args}}) ->
+    ["(tool (name ", render_canonical_symbol(Tool), ") ",
+     render_canonical_args(Args), ")"];
+render_invoke_operation(#{kind := steps, steps := Steps}) ->
+    ["(steps", [[" ", render_canonical_step(Step)] || Step <- Steps], ")"].
+
+render_invoke_list(Key, Values) ->
+    ["(", render_symbol(Key), [[" ", render(Value)] || Value <- Values], ")"].
+
 %% A step map renders as `(step (id ...) (tool ...) (args ...))'.
 render_step(Step) when is_map(Step) ->
     Pairs = [render_pair(K, V) || {K, V} <- maps:to_list(Step)],
     ["(step ", lists:join(" ", Pairs), ")"].
 
-render_explore_step(#{id := Id, tool := Tool, args := Args} = Step) ->
+render_canonical_step(#{id := Id, tool := Tool, args := Args} = Step) ->
     Fields =
-        [["(id ", render_explore_symbol(Id), ")"],
-         ["(tool ", render_explore_symbol(Tool), ")"],
-         render_explore_args(Args)]
+        [["(id ", render_canonical_symbol(Id), ")"],
+         ["(tool ", render_canonical_symbol(Tool), ")"],
+         render_canonical_args(Args)]
         ++ [["(timeout_ms ", integer_to_list(TimeoutMs), ")"]
             || {ok, TimeoutMs} <- [maps:find(timeout_ms, Step)]],
     ["(step ", lists:join(" ", Fields), ")"].
 
-render_explore_args(#{from_step := Id} = Args) when map_size(Args) =:= 1 ->
-    ["(args (from_step ", render_explore_symbol(Id), "))"];
-render_explore_args(Args) when is_map(Args) ->
-    Pairs = [render_explore_arg(Key, Value)
+render_canonical_args(#{from_step := Id} = Args) when map_size(Args) =:= 1 ->
+    ["(args (from_step ", render_canonical_symbol(Id), "))"];
+render_canonical_args(Args) when is_map(Args) ->
+    Pairs = [render_canonical_arg(Key, Value)
              || {Key, Value} <- maps:to_list(Args)],
     case Pairs of
         [] ->
@@ -108,21 +136,21 @@ render_explore_args(Args) when is_map(Args) ->
             ["(args ", lists:join(" ", Pairs), ")"]
     end.
 
-render_explore_arg(Key, {from_step, Id}) ->
-    ["(", render_explore_symbol(Key), " (from_step ",
-     render_explore_symbol(Id), "))"];
-render_explore_arg(Key, Value) ->
-    ["(", render_explore_symbol(Key), " ",
-     render_explore_value(Value), ")"].
+render_canonical_arg(Key, {from_step, Id}) ->
+    ["(", render_canonical_symbol(Key), " (from_step ",
+     render_canonical_symbol(Id), "))"];
+render_canonical_arg(Key, Value) ->
+    ["(", render_canonical_symbol(Key), " ",
+     render_canonical_value(Value), ")"].
 
-render_explore_value(Atom) when is_atom(Atom) ->
-    render_explore_symbol(Atom);
-render_explore_value(List) when is_list(List) ->
-    ["(", lists:join(" ", [render_explore_value(Value) || Value <- List]), ")"];
-render_explore_value(Value) ->
+render_canonical_value(Atom) when is_atom(Atom) ->
+    render_canonical_symbol(Atom);
+render_canonical_value(List) when is_list(List) ->
+    ["(", lists:join(" ", [render_canonical_value(Value) || Value <- List]), ")"];
+render_canonical_value(Value) ->
     render(Value).
 
-render_explore_symbol(Atom) when is_atom(Atom) ->
+render_canonical_symbol(Atom) when is_atom(Atom) ->
     atom_to_list(Atom).
 
 %% A result map is marked by a `status' whose value is one of the terminal
