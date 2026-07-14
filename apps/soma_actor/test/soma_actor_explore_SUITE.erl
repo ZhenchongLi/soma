@@ -23,6 +23,7 @@
 -export([in_loop_llm_timeout_is_terminal_timeout/1]).
 -export([cancel_during_llm_round_kills_worker_and_cancels_task/1]).
 -export([cancel_during_explore_run_kills_tool_worker_and_cancels_task/1]).
+-export([actor_reusable_after_round_exhaustion/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
@@ -40,7 +41,8 @@ all() ->
      in_loop_llm_crash_is_terminal_failed,
      in_loop_llm_timeout_is_terminal_timeout,
      cancel_during_llm_round_kills_worker_and_cancels_task,
-     cancel_during_explore_run_kills_tool_worker_and_cancels_task].
+     cancel_during_explore_run_kills_tool_worker_and_cancels_task,
+     actor_reusable_after_round_exhaustion].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -576,6 +578,34 @@ cancel_during_explore_run_kills_tool_worker_and_cancels_task(_Config) ->
                        Store, CorrelationId, 1, 100),
     ok = assert_cancelled_explore_run_round(
            RoundCompleted, TaskId, CorrelationId),
+    ok.
+
+actor_reusable_after_round_exhaustion(_Config) ->
+    {_Store, ActorPid, TaskId, _CorrelationId} =
+        nonterminal_round_budget_task(
+          <<"reusable-after-round-exhaustion">>,
+          #{max_explore_rounds => 1, max_llm_calls => 5}, 1),
+    Status = wait_for_terminal_task_status(ActorPid, TaskId, 100),
+    ok = assert_equal(failed, maps:get(status, Status)),
+    ok = assert_equal({budget_exceeded, max_explore_rounds},
+                      maps:get(reason, Status, undefined)),
+
+    LaterTaskId = <<"task-after-round-exhaustion">>,
+    LaterEnvelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => <<"run after exhaustion">>},
+          task_id => LaterTaskId,
+          correlation_id => <<"corr-after-round-exhaustion">>,
+          steps => [#{id => follow_up,
+                      tool => echo,
+                      args => #{value => <<"still reusable">>}}]},
+    {ok, LaterTaskId} = soma_actor:send(ActorPid, LaterEnvelope),
+    ok = wait_for_task_status(ActorPid, LaterTaskId, completed, 100),
+    %% Deliberately wrong (staged red): the completed follow-up already has its
+    %% echo result, so expecting `not_ready' proves this new path reaches the
+    %% final behavior assertion before the staged correction.
+    ok = assert_equal(not_ready,
+                      soma_actor:get_task_result(ActorPid, LaterTaskId)),
     ok.
 
 in_loop_llm_terminal_task(Suffix, SecondResponder) ->
