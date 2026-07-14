@@ -10,13 +10,15 @@
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
+-export([test_conflicting_request_id_rejected_before_new_run/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
      test_single_tool_invocation_runs_without_llm_worker,
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
-     test_identical_duplicate_reuses_running_handle_and_terminal_result].
+     test_identical_duplicate_reuses_running_handle_and_terminal_result,
+     test_conflicting_request_id_rejected_before_new_run].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
@@ -24,7 +26,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
-           test_identical_duplicate_reuses_running_handle_and_terminal_result ->
+           test_identical_duplicate_reuses_running_handle_and_terminal_result;
+       TestCase =:= test_conflicting_request_id_rejected_before_new_run ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -38,7 +41,8 @@ end_per_testcase(TestCase, _Config)
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
-           test_identical_duplicate_reuses_running_handle_and_terminal_result ->
+           test_identical_duplicate_reuses_running_handle_and_terminal_result;
+       TestCase =:= test_conflicting_request_id_rejected_before_new_run ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
@@ -185,6 +189,24 @@ test_identical_duplicate_reuses_running_handle_and_terminal_result(_Config) ->
                   maps:get(steps, maps:get(payload, Event)) =:= [Step]],
     ?assertEqual(1, length(MatchingRunStarts)).
 
+test_conflicting_request_id_rejected_before_new_run(_Config) ->
+    RequestId = <<"service-request-id-conflict">>,
+    FirstEnvelope = tool_envelope(RequestId, sleep, #{ms => 300}),
+    ConflictingEnvelope = tool_envelope(RequestId, sleep, #{ms => 301}),
+    {ok, FirstNormalized} =
+        soma_service_envelope:normalize(FirstEnvelope),
+    FirstStep = maps:get(step, maps:get(operation, FirstNormalized)),
+
+    {ok, #{status := accepted}} = soma_service:invoke(FirstEnvelope),
+    StorePid = runtime_event_store(),
+    _RunId = wait_for_run_started(StorePid, [FirstStep], 100),
+    RunStartCount = count_run_started(StorePid),
+
+    ?assertEqual(
+       {error, request_id_conflict},
+       soma_service:invoke(ConflictingEnvelope)),
+    ?assertEqual(RunStartCount, count_run_started(StorePid)).
+
 ensure_loaded(App) ->
     case application:load(App) of
         ok -> ok;
@@ -259,6 +281,11 @@ wait_for_run_event(StorePid, RunId, Type, Attempts) ->
             timer:sleep(10),
             wait_for_run_event(StorePid, RunId, Type, Attempts - 1)
     end.
+
+count_run_started(StorePid) ->
+    length(
+      [Event || Event <- soma_event_store:all(StorePid),
+                maps:get(event_type, Event) =:= <<"run.started">>]).
 
 wait_for_monitored_run(_ServicePid, 0) ->
     error(service_did_not_monitor_owned_run);
