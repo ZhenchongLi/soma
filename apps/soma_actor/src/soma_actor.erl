@@ -343,6 +343,13 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
             %% the v0.5.1 opaque-output contract.
             case proposal_result(planning_output(Output, Task),
                                  planning_directive(Task)) of
+                {explore_round, RoundReply} ->
+                    %% A valid `(explore ...)' provider reply is nonterminal.
+                    %% Retain the canonical compiler output as round state; the
+                    %% reader admission/execution loop is added by later slices.
+                    Task1 = Task#{explore_round_reply => RoundReply},
+                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+                    {keep_state, Data0#data{tasks = Tasks}};
                 {proposal, Proposal} ->
                     Tasks0 = maps:put(TaskId, Task#{result => Proposal},
                                       Data0#data.tasks),
@@ -877,7 +884,8 @@ build_call_opts(#{provider := openai_compat,
     %% soma_llm_openai:chat/1 to parse a {Status, Body} pair directly and open no
     %% socket (the same no-socket seam node B.1 exposed). Each is copied only when
     %% present, so a config without one leaves that key off the opts.
-    Opts1 = copy_optional([api_key, response, enable_thinking, max_tokens],
+    Opts1 = copy_optional([api_key, response, enable_thinking, max_tokens,
+                           explore],
                           ModelConfig, Opts),
     %% Planning mode (`plan => true' on the model_config) marks the call so the
     %% result handler reads the provider's content as a `(run-steps ...)' plan
@@ -1092,6 +1100,7 @@ start_llm_call(Llm, TaskId, CorrelationId, Data) ->
                   llm_timer_ref => TimerRef,
                   llm_directive => maps:get(directive, Llm, undefined),
                   plan => maps:get(plan, Llm, false),
+                  explore => maps:get(explore, Llm, false),
                   repair_output => maps:get(repair_output, Llm, undefined)},
     Tasks = maps:put(TaskId, Task1, Data#data.tasks),
     %% The count increments only when a call actually starts, so it tracks the
@@ -1118,8 +1127,9 @@ start_llm_call(Llm, TaskId, CorrelationId, Data) ->
 %% non-planning task's output is passed through untouched, so the off-path is
 %% byte-for-byte unchanged.
 planning_output(#{kind := reply, text := Content}, Task) ->
-    case maps:get(plan, Task, false) of
-        true -> Content;
+    case {maps:get(explore, Task, false), maps:get(plan, Task, false)} of
+        {true, _} -> Content;
+        {_, true} -> Content;
         _ -> #{kind => reply, text => Content}
     end;
 planning_output(Output, _Task) ->
@@ -1130,9 +1140,13 @@ planning_output(Output, _Task) ->
 %% through soma_lfe:compile/2 -> soma_proposal:normalize/1. Off the planning path
 %% the task's real `llm_directive' is used, so nothing moves.
 planning_directive(Task) ->
-    case maps:get(plan, Task, false) of
-        true -> proposal;
-        _ -> maps:get(llm_directive, Task, undefined)
+    case maps:get(explore, Task, false) of
+        true -> explore;
+        _ ->
+            case maps:get(plan, Task, false) of
+                true -> proposal;
+                _ -> maps:get(llm_directive, Task, undefined)
+            end
     end.
 
 proposal_result(Output, _Directive) when is_map(Output) ->
@@ -1152,6 +1166,15 @@ proposal_result(Output, _Directive) when is_map(Output) ->
 %% `{invalid_proposal, _}', reusing the failed-normalize handling. Gated on the
 %% `proposal' directive because the v0.5 `success' directive also returns a
 %% binary `output' that must stay opaque -- only a proposal is parsed as Lisp.
+proposal_result(Output, explore) when is_binary(Output); is_list(Output) ->
+    case soma_lfe:compile(Output, #{}) of
+        {ok, #{kind := explore} = RoundReply} ->
+            {explore_round, RoundReply};
+        {ok, Other} ->
+            {invalid_proposal, {unexpected_explore_reply, Other}};
+        {error, Diagnostics} ->
+            {invalid_proposal, Diagnostics}
+    end;
 proposal_result(Output, proposal) when is_binary(Output); is_list(Output) ->
     case soma_lfe:compile(Output, #{}) of
         {ok, ProposalMap} ->
