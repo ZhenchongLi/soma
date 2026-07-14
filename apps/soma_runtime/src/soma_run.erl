@@ -10,12 +10,13 @@
 
 -behaviour(gen_statem).
 
--export([start_link/1]).
+-export([start_link/1, identity/1, adopt_owner/2]).
 -export([callback_mode/0, init/1]).
 -export([executing/3, waiting_tool/3, completed/3, failed/3, timeout/3,
          cancelled/3]).
 
 -record(data, {run_id,
+               task_id,
                session_id,
                session_pid,
                correlation_id,
@@ -34,11 +35,18 @@
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
 
+identity(Pid) when is_pid(Pid) ->
+    gen_statem:call(Pid, identity).
+
+adopt_owner(Pid, Owner) when is_pid(Pid), is_pid(Owner) ->
+    gen_statem:call(Pid, {adopt_owner, Owner}).
+
 callback_mode() ->
     state_functions.
 
 init(Opts) ->
     Data = #data{run_id = maps:get(run_id, Opts),
+                 task_id = maps:get(task_id, Opts, undefined),
                  session_id = maps:get(session_id, Opts, undefined),
                  session_pid = maps:get(session_pid, Opts, undefined),
                  correlation_id = maps:get(correlation_id, Opts, undefined),
@@ -82,6 +90,10 @@ first_pending_step([]) ->
     undefined.
 
 %% Drive the next step, or finish the run when none remain.
+executing({call, From}, identity, Data) ->
+    reply_identity(From, executing, Data);
+executing({call, From}, {adopt_owner, Owner}, Data) ->
+    adopt_owner_reply(From, Owner, Data);
 executing(internal, next_step, Data = #data{pending = []}) ->
     emit(Data, <<"run.completed">>, #{}),
     notify_session(Data),
@@ -172,6 +184,10 @@ start_tool_call(Data, Step, StepId, ToolCallId, Descriptor, Input, CtxExtra) ->
 %% Record it so the timeout/cancel teardown can kill the external process, not
 %% just the BEAM worker. An `erlang_module' worker never sends this, so the
 %% stored pid stays `undefined' and the in-BEAM teardown is unchanged.
+waiting_tool({call, From}, identity, Data) ->
+    reply_identity(From, waiting_tool, Data);
+waiting_tool({call, From}, {adopt_owner, Owner}, Data) ->
+    adopt_owner_reply(From, Owner, Data);
 waiting_tool(info, {tool_started_os_pid, ToolCallId, _WorkerPid, OsPid},
              Data = #data{tool_call_id = ToolCallId}) ->
     {keep_state, Data#data{os_pid = OsPid}};
@@ -254,25 +270,54 @@ waiting_tool(info, cancel,
                                       worker_mref = undefined,
                                       os_pid = undefined}}.
 
+completed({call, From}, identity, Data) ->
+    reply_identity(From, completed, Data);
+completed({call, From}, {adopt_owner, _Owner}, Data) ->
+    terminal_adoption_reply(From, completed, Data);
 completed(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
+failed({call, From}, identity, Data) ->
+    reply_identity(From, failed, Data);
+failed({call, From}, {adopt_owner, _Owner}, Data) ->
+    terminal_adoption_reply(From, failed, Data);
 failed(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
 %% Terminal `timeout' state: the run stays alive holding its final state, like
 %% `completed/3'. A stray `'DOWN'' from the worker the timeout killed is just
 %% noise here and is ignored.
+timeout({call, From}, identity, Data) ->
+    reply_identity(From, timeout, Data);
+timeout({call, From}, {adopt_owner, _Owner}, Data) ->
+    terminal_adoption_reply(From, timeout, Data);
 timeout(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
 %% Terminal `cancelled' state: the run stays alive holding its final state, like
 %% `completed/3'. A stray `'DOWN'' from the worker the cancel killed is just
 %% noise here and is ignored.
+cancelled({call, From}, identity, Data) ->
+    reply_identity(From, cancelled, Data);
+cancelled({call, From}, {adopt_owner, _Owner}, Data) ->
+    terminal_adoption_reply(From, cancelled, Data);
 cancelled(_EventType, _Event, Data) ->
     {keep_state, Data}.
 
 %%% Internal
+
+reply_identity(From, Status, Data) ->
+    {keep_state, Data,
+     [{reply, From, {ok, #{run_id => Data#data.run_id,
+                          status => Status}}}]}.
+
+adopt_owner_reply(From, Owner, Data) ->
+    {keep_state, Data#data{session_pid = Owner},
+     [{reply, From, ok}]}.
+
+terminal_adoption_reply(From, Status, Data) ->
+    {keep_state, Data,
+     [{reply, From, {error, {terminal, Status}}}]}.
 
 %% Translate a resolved descriptor into the worker opts that name how to run it.
 %% An `erlang_module' descriptor hands the worker its backing `module'; a `cli'
@@ -418,17 +463,20 @@ render_cli_placeholder_value(Name, Type, _Value) ->
     {error, {invalid_cli_placeholder_value, Name, Type}}.
 
 durable_run_options(#data{run_id = RunId,
+                          task_id = TaskId,
                           session_id = SessionId,
                           correlation_id = CorrelationId,
                           request_id = RequestId,
                           envelope_hash = EnvelopeHash}) ->
     add_optional(
-      envelope_hash, EnvelopeHash,
+      task_id, TaskId,
       add_optional(
-        request_id, RequestId,
+        envelope_hash, EnvelopeHash,
         add_optional(
-          correlation_id, CorrelationId,
-          add_optional(session_id, SessionId, #{run_id => RunId})))).
+          request_id, RequestId,
+          add_optional(
+            correlation_id, CorrelationId,
+            add_optional(session_id, SessionId, #{run_id => RunId}))))).
 
 add_optional(_Key, undefined, Acc) ->
     Acc;
