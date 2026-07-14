@@ -15,9 +15,9 @@ manifest rules; it covers the parts only readable from source.
 ```
 
 This starts the full supervision tree: `soma_sup` → `soma_event_store`,
-`soma_tool_registry`, `soma_session_sup`, `soma_run_sup`. The five built-in
-tools (`echo`, `sleep`, `fail`, `file_read`, `file_write`) are seeded into
-the registry automatically.
+`soma_tool_registry`, `soma_session_sup`, `soma_run_sup`. The seven built-in
+tools (`echo`, `sleep`, `fail`, `file_read`, `file_write`, `text_grep`,
+`text_head`) are seeded into the registry automatically.
 
 ## Registering a tool
 
