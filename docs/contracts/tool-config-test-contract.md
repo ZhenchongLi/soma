@@ -42,11 +42,15 @@ appending bounded `tool.registered` / `tool.removed` events.
 Proved by `soma_tool_management_SUITE` (`apps/soma_actor/test/`), which boots a
 real daemon per case with a temp `socket`, a temp `tools_dir`, and a stub
 executable; the pure registry list-projection cases live in
-`soma_tool_registry_tests` (`apps/soma_tools/test/`).
+`soma_tool_registry_tests` (`apps/soma_tools/test/`). The packaged-entry
+auto-start proof lives in `soma_cli_main_tests`: it executes the exact
+`scripts/soma` release overlay from a release-shaped tree with isolated home,
+config, tools, and socket paths.
 
 | Behavior | Proof |
 | --- | --- |
 | `soma tool register <file>` reads the `(tool …)` manifest file and sends it over the socket as a `(tool-register (tool …))` frame. | `test_register_sends_manifest_over_socket` |
+| From a cold socket, the packaged `soma` entry auto-starts the daemon for `tool list`, `tool register`, and `tool remove`; register persists the tool and the later remove boot-reloads then deletes it. | `soma_cli_main_tests:test_packaged_tool_verbs_autostart_daemon` |
 | A valid register resolves via `resolve_descriptor/1` in the running daemon before any restart. | `test_register_tool_resolves_before_restart` |
 | A successful register writes exactly one normalized `<name>.lisp` into the configured tools directory. | `test_register_writes_normalized_manifest_file` |
 | A restart after register re-registers the tool from the persisted file through the existing `load_dir/1` boot path — the rendered manifest round-trips. | `test_restart_after_register_resolves_from_file` |

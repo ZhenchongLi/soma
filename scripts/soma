@@ -9,6 +9,9 @@
 #   soma status <task-id> [--socket P]
 #   soma cancel <task-id> [--socket P]
 #   soma trace  <correlation-id> [--socket P]
+#   soma tool register <file> [--socket P]
+#   soma tool list [--socket P]
+#   soma tool remove <name> [--socket P]
 #   soma stop   [--socket P]
 #
 # The wire is all-Lisp over $XDG_RUNTIME_DIR/soma.sock (else /tmp/soma-$USER.sock).

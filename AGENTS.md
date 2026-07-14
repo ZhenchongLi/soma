@@ -9,7 +9,7 @@ are built. `README.md` remains the authoritative high-level spec; read it before
 changing runtime behaviour. The docs under `docs/contracts/` map behavioural
 guarantees to the tests that prove them.
 
-Current local gate observed in this checkout: EUnit 386 and Common Test 425
+Current local gate observed in this checkout: EUnit 387 and Common Test 425
 green on Erlang/OTP 29. A self-contained macOS arm64 release is built and
 verified. Linux x86_64 and Linux arm64 release artifacts remain packaging/CI
 work, not runtime logic.
