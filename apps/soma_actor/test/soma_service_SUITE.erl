@@ -15,6 +15,7 @@
 -export([test_durable_restart_rebuilds_dedupe_without_new_run_started/1]).
 -export([test_out_of_scope_invocation_rejected_through_policy/1]).
 -export([test_unscoped_invocation_uses_configured_or_empty_default_policy/1]).
+-export([test_unknown_scope_entry_does_not_create_atom/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -26,7 +27,8 @@ all() ->
      test_run_started_journals_request_id_and_envelope_hash,
      test_durable_restart_rebuilds_dedupe_without_new_run_started,
      test_out_of_scope_invocation_rejected_through_policy,
-     test_unscoped_invocation_uses_configured_or_empty_default_policy].
+     test_unscoped_invocation_uses_configured_or_empty_default_policy,
+     test_unknown_scope_entry_does_not_create_atom].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_run_started_journals_request_id_and_envelope_hash;
@@ -52,6 +54,7 @@ init_per_testcase(TestCase, Config)
        TestCase =:= test_out_of_scope_invocation_rejected_through_policy;
        TestCase =:=
            test_unscoped_invocation_uses_configured_or_empty_default_policy;
+       TestCase =:= test_unknown_scope_entry_does_not_create_atom;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -74,6 +77,7 @@ end_per_testcase(TestCase, Config)
        TestCase =:= test_out_of_scope_invocation_rejected_through_policy;
        TestCase =:=
            test_unscoped_invocation_uses_configured_or_empty_default_policy;
+       TestCase =:= test_unknown_scope_entry_does_not_create_atom;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -382,6 +386,28 @@ test_unscoped_invocation_uses_configured_or_empty_default_policy(_Config) ->
                  count_run_started(StorePid) - RunStartsBefore)
       end,
       Cases).
+
+test_unknown_scope_entry_does_not_create_atom(_Config) ->
+    ok = code:ensure_modules_loaded(
+           [soma_service, soma_service_envelope, soma_tool_registry,
+            soma_policy, soma_event_store, crypto]),
+    Unique = integer_to_binary(
+               erlang:unique_integer([positive, monotonic])),
+    UnknownScopeEntry = <<"unknown-service-scope-", Unique/binary>>,
+    Envelope =
+        (tool_envelope(
+           <<"service-unknown-scope">>, echo,
+           #{value => <<"must not run">>}))#{scope => [UnknownScopeEntry]},
+    AtomCountBefore = erlang:system_info(atom_count),
+
+    {ok, #{status := rejected,
+           reason := {policy_rejected,
+                      {tools_not_allowed, [echo]}}}} =
+        soma_service:invoke(Envelope),
+
+    ?assertEqual(
+       AtomCountBefore + 1,
+       erlang:system_info(atom_count)).
 
 ensure_loaded(App) ->
     case application:load(App) of
