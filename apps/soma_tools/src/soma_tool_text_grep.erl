@@ -68,7 +68,7 @@ compile_and_grep(Text, Pattern, MaxMatches) ->
 
 grep(Text, CompiledPattern, MaxMatches) ->
     {MatchingLines, MatchCount, Truncated} =
-        matching_lines(Text, CompiledPattern, MaxMatches, [], 0),
+        matching_lines(Text, CompiledPattern, MaxMatches, [], 0, 0),
     {ok, #{text => iolist_to_binary(lists:reverse(MatchingLines)),
            match_count => MatchCount,
            truncated => Truncated}}.
@@ -82,18 +82,27 @@ bounded_diagnostic(Diagnostic) ->
             binary:part(Binary, 0, ?REGEX_DIAGNOSTIC_LIMIT)
     end.
 
-matching_lines(<<>>, _CompiledPattern, _MaxMatches, Acc, MatchCount) ->
+matching_lines(<<>>, _CompiledPattern, _MaxMatches, Acc, MatchCount,
+               _OutputBytes) ->
     {Acc, MatchCount, false};
-matching_lines(Text, CompiledPattern, MaxMatches, Acc, MatchCount) ->
+matching_lines(Text, CompiledPattern, MaxMatches, Acc, MatchCount,
+               OutputBytes) ->
     {LineBody, ReturnedLine, Rest} = next_line(Text),
     case re:run(LineBody, CompiledPattern, [{capture, none}]) of
         match when MatchCount < MaxMatches ->
-            matching_lines(Rest, CompiledPattern, MaxMatches,
-                           [ReturnedLine | Acc], MatchCount + 1);
+            case soma_tool_text:fits_output(OutputBytes, ReturnedLine) of
+                true ->
+                    matching_lines(Rest, CompiledPattern, MaxMatches,
+                                   [ReturnedLine | Acc], MatchCount + 1,
+                                   OutputBytes + byte_size(ReturnedLine));
+                false ->
+                    {Acc, MatchCount, true}
+            end;
         match ->
             {Acc, MatchCount, true};
         nomatch ->
-            matching_lines(Rest, CompiledPattern, MaxMatches, Acc, MatchCount)
+            matching_lines(Rest, CompiledPattern, MaxMatches, Acc, MatchCount,
+                           OutputBytes)
     end.
 
 next_line(Text) ->

@@ -1,7 +1,11 @@
-%% @doc Shared validation helpers for the built-in text readers.
+%% @doc Shared validation and output-bound helpers for the built-in text
+%% readers.
 -module(soma_tool_text).
 
--export([required_binary/2, positive_integer/3]).
+-export([required_binary/2, positive_integer/3,
+         cap_prefix/1, fits_output/2]).
+
+-define(TEXT_OUTPUT_LIMIT, 65_536).
 
 -spec required_binary(term(), atom()) ->
     {ok, binary()} | {error, term()}.
@@ -30,3 +34,17 @@ positive_integer(Input, Field, Default) ->
         {ok, _Value} ->
             {error, {invalid_limit, Field, positive_integer}}
     end.
+
+-spec cap_prefix(binary()) -> {binary(), boolean()}.
+cap_prefix(Text) ->
+    case fits_output(0, Text) of
+        true ->
+            {Text, false};
+        false ->
+            <<Prefix:?TEXT_OUTPUT_LIMIT/binary, _/binary>> = Text,
+            {Prefix, true}
+    end.
+
+-spec fits_output(non_neg_integer(), binary()) -> boolean().
+fits_output(OutputBytes, Chunk) ->
+    OutputBytes + byte_size(Chunk) =< ?TEXT_OUTPUT_LIMIT.
