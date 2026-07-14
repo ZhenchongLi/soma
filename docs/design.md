@@ -236,8 +236,9 @@ The `erlang_module` adapter runs trusted in-BEAM tools. The `cli` adapter runs a
 single external executable through an Erlang port. Both adapters still cross the
 same `soma_tool_call` worker boundary.
 
-Built-in tools include `echo`, `sleep`, `fail`, `file_read`, and `file_write`.
-Tool manifest details are in [tool-manifest.md](tool-manifest.md).
+Built-in tools include `echo`, `sleep`, `fail`, `file_read`, `file_write`,
+`text_grep`, and `text_head`. Tool manifest details are in
+[tool-manifest.md](tool-manifest.md).
 
 ## External Processes
 

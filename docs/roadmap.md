@@ -365,7 +365,7 @@ apps, and cross-cutting policy as process ownership, never a decorator layer.
   `description`/`params` validated fail-closed by `normalize/1` (a v1
   manifest normalizes byte-for-byte unchanged);
   `soma_tool_registry:catalog/0` exposes exactly `#{name, description,
-  params}` per described tool; the five built-ins declare descriptions.
+  params}` per described tool; the seven built-ins declare descriptions.
   Proofs in [contracts/tool-catalog-test-contract.md](contracts/tool-catalog-test-contract.md).
 - `T.2` — config-registered cli tools [done] (#205, hardened by #208): one
   `(tool …)` form per file in `~/.soma/tools/`, loaded at daemon boot
