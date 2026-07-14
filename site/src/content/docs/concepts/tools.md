@@ -37,6 +37,15 @@ A manifest can add a prose `description` and a declared `params` list as its
 model-facing half. soma_tool_registry:catalog/0 provides a model-facing catalog
 of described tools using only name, description, and params.
 
+## Config manifests
+
+At daemon boot, `soma_tool_config:load_dir/1` reads each
+`~/.soma/tools/*.lisp` file with the Soma Lisp reader, compiles its `(tool ...)`
+form to a manifest, and sends it through
+`soma_tool_registry:register_tool/1`. That call runs
+`soma_tool_manifest:normalize/1` before the normalized descriptor enters the
+live registry.
+
 ## Two adapters
 
 - **`erlang_module`** — the in-BEAM built-ins. The worker runs
