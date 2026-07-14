@@ -125,7 +125,7 @@ render_canonical_step(#{id := Id, tool := Tool, args := Args} = Step) ->
     ["(step ", lists:join(" ", Fields), ")"].
 
 render_canonical_args(#{from_step := Id} = Args) when map_size(Args) =:= 1 ->
-    ["(args (from_step ", render_canonical_symbol(Id), "))"];
+    ["(args (from_step ", render_canonical_value(Id), "))"];
 render_canonical_args(Args) when is_map(Args) ->
     Pairs = [render_canonical_arg(Key, Value)
              || {Key, Value} <- maps:to_list(Args)],
@@ -138,7 +138,7 @@ render_canonical_args(Args) when is_map(Args) ->
 
 render_canonical_arg(Key, {from_step, Id}) ->
     ["(", render_canonical_symbol(Key), " (from_step ",
-     render_canonical_symbol(Id), "))"];
+     render_canonical_value(Id), "))"];
 render_canonical_arg(Key, Value) ->
     ["(", render_canonical_symbol(Key), " ",
      render_canonical_value(Value), ")"].
