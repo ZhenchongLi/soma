@@ -26,7 +26,7 @@ passes the bytes through `echo`, and writes the result back out:
 mkdir -p /tmp/soma-demo
 printf 'hi soma\n' > /tmp/soma-demo/input.txt
 
-cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
+cat > /tmp/soma-demo/pipeline.lisp <<'EOF'
 (task
   (let* ((read (tool file_read
                  (path "input.txt")
@@ -40,7 +40,7 @@ cat > /tmp/soma-demo/pipeline.lfe <<'EOF'
     (return write)))
 EOF
 
-$SOMA run /tmp/soma-demo/pipeline.lfe
+$SOMA run /tmp/soma-demo/pipeline.lisp
 cat /tmp/soma-demo/output.txt
 ```
 
