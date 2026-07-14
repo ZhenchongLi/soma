@@ -44,6 +44,10 @@ test_as3_contract_names_every_acceptance_proof() ->
          <<"soma_actor_explore_SUITE:round_events_use_bounded_schema_and_order">>,
          <<"soma_trace_tests:test_timeline_renders_explore_round_number">>,
          <<"soma_trace_tests:test_render_prints_explore_rounds_in_order_before_terminal_suffix">>,
+         <<"soma_actor_explore_SUITE:policy_rejected_explore_becomes_bounded_observation_and_continues">>,
+         <<"soma_actor_explore_SUITE:unknown_tool_explore_becomes_bounded_observation_and_continues">>,
+         <<"soma_actor_explore_SUITE:in_loop_llm_error_result_is_terminal_failed">>,
+         <<"soma_actor_explore_SUITE:finished_llm_call_bookkeeping_cleared_between_rounds">>,
          <<"soma_as3_contract_doc_tests:test_as3_contract_names_every_acceptance_proof">>],
     lists:foreach(
         fun(Proof) ->
