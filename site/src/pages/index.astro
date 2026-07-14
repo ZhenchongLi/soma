@@ -105,7 +105,8 @@ $SOMA trace "<correlation-id-from-result>"`;
         <h3>Resume journal</h3>
         <p>
           Boot auto-resume is shipped: interrupted durable runs resume automatically
-          when Soma starts.
+          when safe; a non-idempotent in-flight <code>state</code> step fails clearly
+          instead.
         </p>
       </article>
       <article class="card">
