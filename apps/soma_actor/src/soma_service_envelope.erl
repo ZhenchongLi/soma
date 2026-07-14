@@ -222,18 +222,22 @@ valid_step(_Step) ->
 
 %% Canonical args must stay inside the reader-representable set: atom keys,
 %% and values the Lisp grammar can render AND recompile (atoms, binaries,
-%% integers, lists thereof, and the two from_step forms). A binary key
+%% integers, lists thereof, and the two from_step forms — whose reference the
+%% grammar produces as an atom symbol or a string binary). A binary key
 %% crashes the canonical renderer; a float renders but can never recompile —
 %% neither may normalize into a canonical envelope.
 valid_canonical_args(#{from_step := Reference} = Args) ->
-    map_size(Args) =:= 1 andalso is_atom(Reference);
+    map_size(Args) =:= 1 andalso valid_from_step_reference(Reference);
 valid_canonical_args(Args) when is_map(Args) ->
     lists:all(fun valid_canonical_arg_entry/1, maps:to_list(Args));
 valid_canonical_args(_Args) ->
     false.
 
+valid_from_step_reference(Reference) ->
+    is_atom(Reference) orelse is_binary(Reference).
+
 valid_canonical_arg_entry({Key, {from_step, Reference}}) when is_atom(Key) ->
-    is_atom(Reference);
+    valid_from_step_reference(Reference);
 valid_canonical_arg_entry({Key, Value}) when is_atom(Key) ->
     valid_canonical_value(Value);
 valid_canonical_arg_entry(_Entry) ->
