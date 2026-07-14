@@ -383,13 +383,31 @@ invalid_proposal_step() ->
 
 %% @doc Parse a single explore form to canonical, compile-only step data.
 -spec parse_explore([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_explore([explore]) ->
+    {error, [#{code => empty_explore,
+               message => <<"explore requires at least one step">>,
+               line => 0}]};
 parse_explore([explore | StepForms]) ->
     case parse_proposal_steps(StepForms) of
         {ok, Steps} ->
             {ok, #{kind => explore, steps => Steps}};
-        {error, Diags} ->
-            {error, Diags}
+        {error, _Diags} ->
+            {error, [first_explore_diagnostic(StepForms)]}
     end.
+
+first_explore_diagnostic([[step | StepChildren] | Rest]) ->
+    case parse_proposal_step(StepChildren, #{args => #{}}) of
+        {ok, _Step} ->
+            first_explore_diagnostic(Rest);
+        {error, _Diags} ->
+            #{code => invalid_explore_step,
+              message => <<"explore contains a malformed step">>,
+              line => 0}
+    end;
+first_explore_diagnostic([_Other | _]) ->
+    #{code => unknown_explore_form,
+      message => <<"explore accepts only step forms">>,
+      line => 0}.
 
 %% @doc Parse a single proposal form into the #{kind => ...} map
 %% soma_proposal:normalize/1 accepts.
