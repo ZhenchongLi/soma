@@ -338,7 +338,7 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
         undefined ->
             {keep_state, Data};
         TaskId ->
-            Data0 = clear_llm_timer(TaskId, clear_llm_monitor(TaskId, Data)),
+            Data0 = clear_finished_llm_call(TaskId, LlmCallId, Data),
             Task = maps:get(TaskId, Data0#data.tasks),
             CorrelationId = maps:get(correlation_id, Task),
             emit(Data0, <<"llm.succeeded">>,
@@ -385,8 +385,14 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                             Data2 = continue_explore_after_non_reader_rejection(
                                       TaskId, Tool, Effect, Data1),
                             {keep_state, Data2};
-                        {error, _Reason} ->
-                            {keep_state, Data1}
+                        {error, Rejection} ->
+                            %% Every other admission rejection (a policy-denied
+                            %% tool, a tool with no live descriptor) must also
+                            %% close the round as a bounded observation; a
+                            %% dropped rejection would strand the task running.
+                            Data2 = continue_explore_after_admission_rejection(
+                                      TaskId, Rejection, Data1),
+                            {keep_state, Data2}
                     end;
                 {proposal, Proposal} ->
                     maybe_emit_explore_round_completed(
@@ -534,6 +540,32 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                     maybe_repair(TaskId, CorrelationId, Diagnostics, Task, Data0)
             end
     end;
+%% The LLM worker reported a normal provider failure (a non-200 status, a
+%% malformed body, a failed request) as an `{error, Reason}' result and then
+%% exited normally. This is terminal failed task data, handled immediately:
+%% retire the child's bookkeeping so its normal `'DOWN'' and any queued
+%% call-timeout are inert, close an open exploration round, and release any
+%% parked waiter. Reason shapes from the provider are bounded and named.
+idle(info, {llm_result, LlmCallId, _WorkerPid, {error, Reason}}, Data) ->
+    case maps:get(LlmCallId, Data#data.llm_calls, undefined) of
+        undefined ->
+            {keep_state, Data};
+        TaskId ->
+            Data0 = clear_finished_llm_call(TaskId, LlmCallId, Data),
+            Task = maps:get(TaskId, Data0#data.tasks),
+            CorrelationId = maps:get(correlation_id, Task),
+            Task1 = Task#{status => failed, reason => {llm_failed, Reason}},
+            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+            Data1 = Data0#data{tasks = Tasks},
+            emit(Data1, <<"llm.failed">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId,
+                   llm_call_id => LlmCallId, reason => Reason}),
+            maybe_emit_terminal_explore_llm_round(TaskId, failed, Data1),
+            emit(Data1, <<"actor.task.failed">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId,
+                   reason => {llm_failed, Reason}}),
+            reply_waiter(TaskId, {error, {llm_failed, Reason}}, Data1)
+    end;
 %% The call-timeout timer the actor armed fired before the worker reported a
 %% result -- a `slow' mock that ignored the timer. The actor enforces the bound:
 %% it kills the worker (exit(WorkerPid, kill), since the bare worker has no state
@@ -546,23 +578,14 @@ idle(info, {timeout, _TimerRef, {llm_timeout, LlmCallId}}, Data) ->
             {keep_state, Data};
         TaskId ->
             Task = maps:get(TaskId, Data#data.tasks),
-            case maps:get(llm_call_pid, Task, undefined) of
-                WorkerPid when is_pid(WorkerPid) ->
-                    exit(WorkerPid, kill);
+            case maps:get(llm_call_id, Task, undefined) of
+                LlmCallId ->
+                    handle_llm_timeout(TaskId, LlmCallId, Task, Data);
                 _ ->
-                    ok
-            end,
-            Data0 = clear_llm_monitor(TaskId, Data),
-            Task0 = maps:get(TaskId, Data0#data.tasks),
-            CorrelationId = maps:get(correlation_id, Task0),
-            Task1 = Task0#{status => timeout},
-            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
-            Data1 = Data0#data{tasks = Tasks},
-            emit(Data1, <<"llm.timeout">>,
-                 #{task_id => TaskId, correlation_id => CorrelationId,
-                   llm_call_id => LlmCallId}),
-            maybe_emit_terminal_explore_llm_round(TaskId, timeout, Data1),
-            reply_waiter(TaskId, {error, timeout}, Data1)
+                    %% A timeout for a call that is no longer the task's
+                    %% active call must never touch the current worker.
+                    {keep_state, Data}
+            end
     end;
 %% A parked ask/3 caller died while the task was still in flight. Cancel the
 %% target's owned work from inside the target actor; the runtime only observes
@@ -1541,6 +1564,32 @@ continue_explore_after_non_reader_rejection(TaskId, Tool, Effect, Data) ->
       TaskId, Round, AssistantReply, Observation,
       explore, rejected, 0, false, Data).
 
+%% Any admission rejection that is not the non-reader case (a policy-denied
+%% tool list, a tool with no live descriptor) also closes the round with a
+%% fixed, bounded observation so the loop always advances.
+continue_explore_after_admission_rejection(TaskId, Rejection, Data) ->
+    Task0 = maps:get(TaskId, Data#data.tasks),
+    Round = maps:get(explore_round, Task0, 1),
+    AssistantReply = maps:get(explore_assistant_reply, Task0),
+    Observation = admission_rejection_observation(Rejection),
+    continue_explore_with_observation(
+      TaskId, Round, AssistantReply, Observation,
+      explore, rejected, 0, false, Data).
+
+admission_rejection_observation({policy_rejected,
+                                 {tools_not_allowed, Tools}}) ->
+    Rendered = lists:join(<<" ">>,
+                          [observation_step_id(Tool) || Tool <- Tools]),
+    iolist_to_binary(
+      [<<"(observation (status rejected) (policy tools_not_allowed) "
+         "(tools ">>, Rendered, <<"))">>]);
+admission_rejection_observation({policy_rejected, _Reason}) ->
+    <<"(observation (status rejected) (policy rejected))">>;
+admission_rejection_observation({tool_not_found, Tool}) ->
+    iolist_to_binary(
+      [<<"(observation (status rejected) (tool ">>,
+       observation_step_id(Tool), <<") (error not_found))">>]).
+
 continue_explore_after_failure(RunId, Reason,
                                #{task_id := TaskId, round := Round}, Data) ->
     Data0 = clear_finished_explore_run(RunId, TaskId, Data),
@@ -1706,6 +1755,44 @@ clear_llm_call(TaskId, Data) ->
             LlmCalls = maps:remove(LlmCallId, Data0#data.llm_calls),
             Data0#data{llm_calls = LlmCalls}
     end.
+
+%% The active call's timeout fired: the actor enforces the bound. Kill the
+%% worker (a bare worker has no teardown protocol), demonitor-and-flush so the
+%% kill's `'DOWN'' never reaches the backstop, record terminal `timeout',
+%% close an open exploration round, and release any parked waiter.
+handle_llm_timeout(TaskId, LlmCallId, Task, Data) ->
+    case maps:get(llm_call_pid, Task, undefined) of
+        WorkerPid when is_pid(WorkerPid) ->
+            exit(WorkerPid, kill);
+        _ ->
+            ok
+    end,
+    Data0 = clear_llm_monitor(TaskId, Data),
+    Task0 = maps:get(TaskId, Data0#data.tasks),
+    CorrelationId = maps:get(correlation_id, Task0),
+    Task1 = Task0#{status => timeout},
+    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+    Data1 = Data0#data{tasks = Tasks},
+    emit(Data1, <<"llm.timeout">>,
+         #{task_id => TaskId, correlation_id => CorrelationId,
+           llm_call_id => LlmCallId}),
+    maybe_emit_terminal_explore_llm_round(TaskId, timeout, Data1),
+    reply_waiter(TaskId, {error, timeout}, Data1).
+
+%% A finished LLM call (a delivered `{ok, _}' or `{error, _}' result) must
+%% leave no bookkeeping behind: cancel its timer, demonitor-and-flush its ref,
+%% drop the `llm_calls' entry, and scrub the call fields from the task. A
+%% queued timeout or `'DOWN'' for the finished call is then inert and can
+%% never target a later round's worker.
+clear_finished_llm_call(TaskId, LlmCallId, Data) ->
+    Data0 = clear_llm_timer(TaskId, clear_llm_monitor(TaskId, Data)),
+    Task0 = maps:get(TaskId, Data0#data.tasks),
+    Task1 = maps:without(
+              [llm_call_id, llm_call_pid, llm_call_mref, llm_timer_ref],
+              Task0),
+    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+    LlmCalls = maps:remove(LlmCallId, Data0#data.llm_calls),
+    Data0#data{tasks = Tasks, llm_calls = LlmCalls}.
 
 %% Cancellation is terminal, so remove every identifier for the killed LLM
 %% child after cancelling its timer and monitor. This leaves later cancellation
