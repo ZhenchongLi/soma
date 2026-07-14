@@ -181,6 +181,28 @@ test_invalid_invoke_classes_return_fixed_typed_errors() ->
             ),
             soma_service_envelope:normalize(
                 Base#{operation => invalid_tool_operation(Large)}
+            )},
+           %% Non-reader-representable raw argument terms must be rejected:
+           %% a binary arg key crashes the canonical renderer, and a float
+           %% value renders but can never recompile. Neither may normalize.
+           {normalizer,
+            soma_service_envelope:normalize(
+                Base#{operation =>
+                          tool_operation_with_args(#{<<"value">> => <<"x">>})}
+            ),
+            soma_service_envelope:normalize(
+                Base#{operation =>
+                          tool_operation_with_args(#{<<"value">> => Large})}
+            )},
+           {normalizer,
+            soma_service_envelope:normalize(
+                Base#{operation =>
+                          tool_operation_with_args(#{value => 1.5})}
+            ),
+            soma_service_envelope:normalize(
+                Base#{operation =>
+                          tool_operation_with_args(#{value => 1.5,
+                                                     pad => Large})}
             )}]},
          {invalid_budget,
           [{normalizer,
@@ -386,6 +408,13 @@ valid_tool_candidate() ->
                 #{id => <<"request-1">>,
                   tool => echo,
                   args => #{value => <<"hello">>}}}}.
+
+tool_operation_with_args(Args) ->
+    #{kind => tool,
+      step =>
+          #{id => <<"request-1">>,
+            tool => echo,
+            args => Args}}.
 
 invalid_tool_operation(Rejected) ->
     #{kind => tool,
