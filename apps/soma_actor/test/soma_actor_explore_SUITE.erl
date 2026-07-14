@@ -10,11 +10,13 @@
 -export([explore_mode_provider_text_is_parsed_as_round_reply/1]).
 -export([reader_explore_run_and_tool_worker_are_distinct_children/1]).
 -export([reader_then_terminal_run_steps_carries_observation_and_outputs/1]).
+-export([non_reader_explore_rejected_with_effect_and_no_run/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
      reader_explore_run_and_tool_worker_are_distinct_children,
-     reader_then_terminal_run_steps_carries_observation_and_outputs].
+     reader_then_terminal_run_steps_carries_observation_and_outputs,
+     non_reader_explore_rejected_with_effect_and_no_run].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -201,6 +203,69 @@ reader_then_terminal_run_steps_carries_observation_and_outputs(_Config) ->
           "(output \"((text \\\"observed\\\") (truncated false))\"))))">>,
     ok = assert_equal(ExpectedObservation, Observation),
     ok = assert_equal({ok, #{finish => #{value => <<"done">>}}},
+                      soma_actor:get_task_result(ActorPid, TaskId)),
+    ok.
+
+non_reader_explore_rejected_with_effect_and_no_run(_Config) ->
+    Store = event_store_pid(),
+    TestPid = self(),
+    ExploreSource =
+        <<"(explore (step (id mutate) (tool file_write) "
+          "(args (path \"output.txt\") (bytes \"blocked\"))))">>,
+    TerminalSource = <<"(reply (text \"done\"))">>,
+    FirstResponse = fixed_response(ExploreSource),
+    SecondResponse = fixed_response(TerminalSource),
+    FirstResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_request, 1, CallOpts},
+                FirstResponse
+        end,
+    SecondResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_request, 2, CallOpts},
+                SecondResponse
+        end,
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response_sequence => [FirstResponder, SecondResponder]},
+    {ok, ActorPid} =
+        soma_actor_sup:start_actor(
+          #{actor_id => <<"actor-explore-non-reader">>,
+            model_config => ModelConfig,
+            tool_policy => #{allowed_tools => [file_write]},
+            event_store => Store}),
+    TaskId = <<"task-explore-non-reader">>,
+    CorrelationId = <<"corr-explore-non-reader">>,
+    Prompt = <<"inspect without making changes">>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => Prompt},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    _FirstCallOpts = wait_for_provider_request(1),
+    SecondCallOpts = wait_for_provider_request(2),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+
+    [#{role := <<"system">>},
+     #{role := <<"user">>, content := Prompt},
+     #{role := <<"assistant">>, content := ExploreSource},
+     #{role := <<"user">>, content := Observation}] =
+        maps:get(messages, SecondCallOpts),
+    ExpectedObservation =
+        <<"(observation (status rejected) "
+          "(tool file_write) (effect state))">>,
+    ok = assert_equal(ExpectedObservation, Observation),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    RunStarted =
+        [Event || #{event_type := <<"run.started">>} = Event <- Events],
+    ok = assert_equal([], RunStarted),
+    ok = assert_equal({ok, #{kind => reply, text => <<"done">>}},
                       soma_actor:get_task_result(ActorPid, TaskId)),
     ok.
 
