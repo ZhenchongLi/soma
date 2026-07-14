@@ -29,7 +29,8 @@ init([]) ->
     Policy = application:get_env(
                soma_actor, service_policy,
                #{allowed_tools => []}),
-    {ok, #state{event_store = runtime_event_store(), policy = Policy}}.
+    State = #state{event_store = runtime_event_store(), policy = Policy},
+    {ok, rebuild_dedupe_index(State)}.
 
 handle_call({invoke, Envelope}, _From, State) ->
     case soma_service_envelope:normalize(Envelope) of
@@ -110,7 +111,19 @@ start_allowed_invocation(Envelope, EnvelopeHash, Steps,
     TaskId = mint_id("service-task-"),
     RunId = mint_id("service-run-"),
     RequestId = maps:get(request_id, Envelope),
+    Handle = #{task_id => TaskId,
+               request_id => RequestId,
+               status => accepted},
+    Task0 = #{task_id => TaskId,
+              request_id => RequestId,
+              envelope_hash => EnvelopeHash,
+              status => accepted,
+              run_id => RunId},
+    Task1 = maybe_add_max_output_bytes(Envelope, Task0),
+    ok = emit_service_task(EventStore, <<"service.task.accepted">>,
+                           Task1, accepted_event_payload(Task1)),
     RunOpts0 = #{run_id => RunId,
+                 task_id => TaskId,
                  request_id => RequestId,
                  envelope_hash => EnvelopeHash,
                  session_pid => self(),
@@ -120,19 +133,14 @@ start_allowed_invocation(Envelope, EnvelopeHash, Steps,
     case soma_run_sup:start_run(RunOpts) of
         {ok, RunPid} ->
             MRef = erlang:monitor(process, RunPid),
-            Handle = #{task_id => TaskId,
-                       request_id => RequestId,
-                       status => accepted},
-            Task0 = #{task_id => TaskId,
-                      request_id => RequestId,
-                      status => running,
-                      run_id => RunId,
-                      run_pid => RunPid,
-                      run_mref => MRef},
-            Task = maybe_add_max_output_bytes(Envelope, Task0),
+            Task = Task1#{status => running,
+                          run_pid => RunPid,
+                          run_mref => MRef},
             Request = #{envelope_hash => EnvelopeHash,
                         task_id => TaskId,
                         accepted_handle => Handle},
+            ok = emit_service_task(EventStore, <<"service.task.running">>,
+                                   Task, accepted_event_payload(Task)),
             NewState =
                 State#state{
                   tasks = maps:put(TaskId, Task, Tasks),
@@ -174,7 +182,8 @@ maybe_add_correlation(Envelope, RunOpts) ->
 finish_run(RunId, Terminal,
            State = #state{tasks = Tasks,
                           runs = Runs,
-                          monitors = Monitors}) ->
+                          monitors = Monitors,
+                          event_store = EventStore}) ->
     case maps:take(RunId, Runs) of
         error ->
             State;
@@ -187,6 +196,8 @@ finish_run(RunId, Terminal,
             Task1 = maps:merge(
                       maps:without([run_pid, run_mref], Task),
                       terminal_for_task(Terminal, Task)),
+            ok = emit_service_task(EventStore, <<"service.task.terminal">>,
+                                   Task1, terminal_event_payload(Task1)),
             State#state{
               tasks = maps:put(TaskId, Task1, Tasks),
               runs = NewRuns,
@@ -223,6 +234,181 @@ terminate_run_child(RunPid) ->
 
 public_task(Task) ->
     maps:with([task_id, request_id, status, result, reason], Task).
+
+%% Rebuild the request-id index from the bounded service lifecycle trail. The
+%% event store is the source of truth; task and request maps are only the live
+%% cache owned by this service process.
+rebuild_dedupe_index(State = #state{event_store = undefined}) ->
+    State;
+rebuild_dedupe_index(State = #state{event_store = EventStore}) ->
+    Events = soma_event_store:all(EventStore),
+    Accepted =
+        [Event || Event <- Events,
+                  maps:get(event_type, Event, undefined) =:=
+                      <<"service.task.accepted">>],
+    lists:foldl(
+      fun(Event, Acc) -> recover_accepted_task(Event, Events, Acc) end,
+      State,
+      Accepted).
+
+recover_accepted_task(Event, Events, State) ->
+    case accepted_task(Event) of
+        {ok, Task, Request} ->
+            TaskId = maps:get(task_id, Task),
+            case last_terminal_event(TaskId, Events) of
+                {ok, TerminalEvent} ->
+                    recover_recorded_terminal(
+                      Task, Request, TerminalEvent, State);
+                error ->
+                    recover_unfinished_task(Task, Request, State)
+            end;
+        error ->
+            State
+    end.
+
+accepted_task(#{task_id := TaskId,
+                request_id := RequestId,
+                run_id := RunId,
+                payload := #{envelope_hash := EnvelopeHash} = Payload}) ->
+    Handle = #{task_id => TaskId,
+               request_id => RequestId,
+               status => accepted},
+    Task0 = #{task_id => TaskId,
+              request_id => RequestId,
+              run_id => RunId,
+              envelope_hash => EnvelopeHash,
+              status => running},
+    Task = maybe_restore_max_output_bytes(Payload, Task0),
+    Request = #{envelope_hash => EnvelopeHash,
+                task_id => TaskId,
+                accepted_handle => Handle},
+    {ok, Task, Request};
+accepted_task(_Event) ->
+    error.
+
+last_terminal_event(TaskId, Events) ->
+    lists:foldl(
+      fun(#{event_type := <<"service.task.terminal">>,
+            task_id := EventTaskId} = Event, _Acc)
+            when EventTaskId =:= TaskId ->
+              {ok, Event};
+         (_Event, Acc) ->
+              Acc
+      end,
+      error,
+      Events).
+
+recover_recorded_terminal(Task, Request,
+                          #{payload := #{status := succeeded}}, State) ->
+    case reconstructed_terminal(Task, State) of
+        {ok, Recovered} -> put_terminal_task(Recovered, Request, State);
+        error -> put_terminal_task(
+                   Task#{status => failed,
+                         reason => service_result_reconstruction_failed},
+                   Request, State)
+    end;
+recover_recorded_terminal(Task, Request,
+                          #{payload := Payload}, State) ->
+    Status = maps:get(status, Payload, failed),
+    Terminal0 = Task#{status => Status},
+    Terminal = case maps:find(reason, Payload) of
+                   {ok, Reason} -> Terminal0#{reason => Reason};
+                   error -> Terminal0
+               end,
+    put_terminal_task(Terminal, Request, State).
+
+recover_unfinished_task(Task, Request, State) ->
+    RunId = maps:get(run_id, Task),
+    case soma_run_sup:find_run(RunId) of
+        {ok, RunPid} ->
+            case soma_run:adopt_owner(RunPid, self()) of
+                ok ->
+                    monitor_recovered_run(Task, Request, RunPid, State);
+                {error, {terminal, _Status}} ->
+                    terminate_run_child(RunPid),
+                    recover_from_run_trail(Task, Request, State)
+            end;
+        {error, not_found} ->
+            recover_from_run_trail(Task, Request, State)
+    end.
+
+monitor_recovered_run(Task, Request, RunPid,
+                      State = #state{tasks = Tasks,
+                                     requests = Requests,
+                                     runs = Runs,
+                                     monitors = Monitors}) ->
+    MRef = erlang:monitor(process, RunPid),
+    RunId = maps:get(run_id, Task),
+    TaskId = maps:get(task_id, Task),
+    Running = Task#{status => running,
+                    run_pid => RunPid,
+                    run_mref => MRef},
+    State#state{
+      tasks = maps:put(TaskId, Running, Tasks),
+      requests = maps:put(maps:get(request_id, Task), Request, Requests),
+      runs = maps:put(RunId, TaskId, Runs),
+      monitors = maps:put(MRef,
+                          #{run_id => RunId, run_pid => RunPid},
+                          Monitors)}.
+
+recover_from_run_trail(Task, Request,
+                       State = #state{event_store = EventStore}) ->
+    case reconstructed_terminal(Task, State) of
+        {ok, Terminal} ->
+            ok = emit_service_task(EventStore,
+                                   <<"service.task.terminal">>,
+                                   Terminal,
+                                   terminal_event_payload(Terminal)),
+            put_terminal_task(Terminal, Request, State);
+        error ->
+            %% Keep the immutable dedupe identity even when the trail is still
+            %% nonterminal. Later recovery criteria decide whether such a run is
+            %% resumable or in doubt; an identical request must never start a
+            %% replacement merely because the in-memory owner restarted.
+            put_terminal_task(Task#{status => running}, Request, State)
+    end.
+
+reconstructed_terminal(Task, #state{event_store = EventStore}) ->
+    RunId = maps:get(run_id, Task),
+    case soma_run_resume:reconstruct(EventStore, RunId) of
+        {ok, #{terminal_status := completed, outputs := Outputs}} ->
+            {ok, maps:merge(Task, terminal_for_task(
+                                    {completed, Outputs}, Task))};
+        {ok, #{terminal_status := failed}} ->
+            {ok, Task#{status => failed, reason => run_failed}};
+        {ok, #{terminal_status := timeout}} ->
+            {ok, Task#{status => failed, reason => timeout}};
+        {ok, #{terminal_status := cancelled}} ->
+            {ok, Task#{status => cancelled}};
+        _ ->
+            error
+    end.
+
+put_terminal_task(Task, Request,
+                  State = #state{tasks = Tasks, requests = Requests}) ->
+    TaskId = maps:get(task_id, Task),
+    RequestId = maps:get(request_id, Task),
+    State#state{tasks = maps:put(TaskId, Task, Tasks),
+                requests = maps:put(RequestId, Request, Requests)}.
+
+maybe_restore_max_output_bytes(#{max_output_bytes := MaxOutputBytes}, Task) ->
+    Task#{max_output_bytes => MaxOutputBytes};
+maybe_restore_max_output_bytes(_Payload, Task) ->
+    Task.
+
+accepted_event_payload(Task) ->
+    maps:with([envelope_hash, max_output_bytes], Task).
+
+terminal_event_payload(Task) ->
+    maps:with([status, reason], Task).
+
+emit_service_task(undefined, _Type, _Task, _Payload) ->
+    ok;
+emit_service_task(EventStore, Type, Task, Payload) ->
+    StableIds = maps:with([task_id, request_id, run_id], Task),
+    soma_event_store:append(
+      EventStore,
+      StableIds#{event_type => Type, payload => Payload}).
 
 runtime_event_store() ->
     case whereis(soma_sup) of
