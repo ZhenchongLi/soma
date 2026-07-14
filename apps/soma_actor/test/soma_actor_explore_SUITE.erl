@@ -26,6 +26,7 @@
 -export([actor_reusable_after_round_exhaustion/1]).
 -export([actor_reusable_after_in_loop_llm_failure/1]).
 -export([actor_reusable_after_exploration_cancel/1]).
+-export([terminal_run_steps_reuses_proposal_execution_suffix/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
@@ -46,7 +47,8 @@ all() ->
      cancel_during_explore_run_kills_tool_worker_and_cancels_task,
      actor_reusable_after_round_exhaustion,
      actor_reusable_after_in_loop_llm_failure,
-     actor_reusable_after_exploration_cancel].
+     actor_reusable_after_exploration_cancel,
+     terminal_run_steps_reuses_proposal_execution_suffix].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -645,6 +647,53 @@ actor_reusable_after_exploration_cancel(_Config) ->
     ok = wait_for_task_status(ActorPid, TaskId, cancelled, 100),
     assert_later_direct_task_completes(ActorPid,
                                        <<"exploration-cancel">>).
+
+terminal_run_steps_reuses_proposal_execution_suffix(_Config) ->
+    Store = event_store_pid(),
+    Source =
+        <<"(run-steps (step (id finish) (tool echo) "
+          "(args (value \"done\"))))">>,
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response => fixed_response(Source)},
+    {ok, ActorPid} =
+        soma_actor_sup:start_actor(
+          #{actor_id => <<"actor-terminal-run-steps">>,
+            model_config => ModelConfig,
+            tool_policy => #{allowed_tools => [echo]},
+            event_store => Store}),
+    TaskId = <<"task-terminal-run-steps">>,
+    CorrelationId = <<"corr-terminal-run-steps">>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => <<"finish the task">>},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+    ok = assert_equal({ok, #{finish => #{value => <<"done">>}}},
+                      soma_actor:get_task_result(ActorPid, TaskId)),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    ProposalSuffix =
+        [Type || #{event_type := Type} <- Events,
+                 lists:member(Type,
+                              [<<"proposal.created">>,
+                               <<"proposal.approved">>,
+                               <<"proposal.executed">>,
+                               <<"proposal.rejected">>])],
+    %% Deliberately wrong (staged red): this allowed proposal is executed, not
+    %% rejected, so the mismatch proves the terminal explore reply reached the
+    %% shared proposal suffix assertion before the staged correction.
+    ok = assert_equal([<<"proposal.created">>,
+                       <<"proposal.approved">>,
+                       <<"proposal.rejected">>],
+                      ProposalSuffix),
+    ok.
 
 assert_later_direct_task_completes(ActorPid, Suffix) ->
     LaterTaskId = <<"task-reuse-follow-up-", Suffix/binary>>,
