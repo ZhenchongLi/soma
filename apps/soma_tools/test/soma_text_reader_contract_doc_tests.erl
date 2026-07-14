@@ -34,6 +34,8 @@ live_builtin_docs_track_seven_tool_seed_test() ->
           [<<"| `text_grep` |">>,
            <<"| `text_head` |">>,
            <<"`file_write`, `text_grep`, `text_head`)">>]},
+         {"site/src/content/docs/guides/usage.md",
+          [<<"seven built-in">>, <<"`text_grep`">>, <<"`text_head`">>]},
          {"docs/roadmap.md", [<<"the seven built-ins declare descriptions">>]},
          {"examples/cli-demo/README.md",
           [<<"All seven built-in tools">>,
