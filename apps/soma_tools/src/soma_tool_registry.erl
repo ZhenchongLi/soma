@@ -62,14 +62,15 @@
 
 -export_type([descriptor/0, registry/0, catalog_entry/0, tool_summary/0]).
 
-%% The backing modules for the five built-in tools. Each one exports
+%% The backing modules for the built-in tools. Each one exports
 %% `manifest/0'; the seed is built by normalizing those manifests, so the
 %% registry descriptors come from the same contract the manifest tests check.
 -define(BUILTIN_MODULES, [soma_tool_echo,
                           soma_tool_sleep,
                           soma_tool_fail,
                           soma_tool_file_read,
-                          soma_tool_file_write]).
+                          soma_tool_file_write,
+                          soma_tool_text_grep]).
 
 -spec register(registry(), atom(), descriptor()) -> registry().
 register(Registry, Name, Descriptor) ->
