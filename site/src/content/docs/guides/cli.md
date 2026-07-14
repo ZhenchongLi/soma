@@ -100,6 +100,13 @@ The module APIs above back the packaged `bin/soma` task command. The release
 keeps `bin/soma` for user tasks and `bin/somad` for relx node control so the two
 surfaces do not collide.
 
+## Live tool registration
+
+Run `soma tool register <file>` to validate the manifest once. After validation
+succeeds, the tool becomes live immediately. Soma then writes the normalized
+`<name>.lisp` form under `~/.soma/tools/` and returns only after that persisted
+form is ready for boot reload.
+
 ## `soma run` — deterministic supervised execution (client)
 
 ```

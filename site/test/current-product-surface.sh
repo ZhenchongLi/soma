@@ -36,8 +36,8 @@ normalize_visible_text() {
     s/<[^>]+>/ /g;
     s/(?:&nbsp;|&#160;|&#xA0;)/ /gi;
     s/&amp;/&/gi;
-    s/&lt;/</gi;
-    s/&gt;/>/gi;
+    s/(?:&lt;|&#60;|&#x3C;)/</gi;
+    s/(?:&gt;|&#62;|&#x3E;)/>/gi;
     s/(?:&quot;|&#34;|&#x22;)/chr(34)/gei;
     s/(?:&apos;|&#39;|&#x27;)/chr(39)/gei;
     s/\s+/ /g;
