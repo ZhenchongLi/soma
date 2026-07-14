@@ -114,6 +114,9 @@ adapter, plus its optional description.</p>
 only its owned `<name>.lisp` file under `~/.soma/tools/`, so the name remains
 absent after restart.
 
+**Tool-management invariant:** built-in names are protected. Config tools cannot
+replace or remove built-ins, or change their safety metadata.
+
 ## `soma run` — deterministic supervised execution (client)
 
 ```
