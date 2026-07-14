@@ -36,6 +36,8 @@ before actor-owned supervised execution starts the approved steps as a
 
 Planning gate tests use fixed provider responses and open no network socket.
 
+`SOMA_LLM_API_KEY` belongs in the environment that starts the daemon.
+
 ## Proposals
 
 `soma_proposal:normalize/1` is a pure validate-and-normalize boundary. It tags
