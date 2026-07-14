@@ -14,6 +14,7 @@
 -export([test_run_started_journals_request_id_and_envelope_hash/1]).
 -export([test_durable_restart_rebuilds_dedupe_without_new_run_started/1]).
 -export([test_out_of_scope_invocation_rejected_through_policy/1]).
+-export([test_unscoped_invocation_uses_configured_or_empty_default_policy/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -24,7 +25,8 @@ all() ->
      test_conflicting_request_id_rejected_before_new_run,
      test_run_started_journals_request_id_and_envelope_hash,
      test_durable_restart_rebuilds_dedupe_without_new_run_started,
-     test_out_of_scope_invocation_rejected_through_policy].
+     test_out_of_scope_invocation_rejected_through_policy,
+     test_unscoped_invocation_uses_configured_or_empty_default_policy].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_run_started_journals_request_id_and_envelope_hash;
@@ -49,6 +51,8 @@ init_per_testcase(TestCase, Config)
        TestCase =:= test_conflicting_request_id_rejected_before_new_run;
        TestCase =:= test_out_of_scope_invocation_rejected_through_policy;
        TestCase =:=
+           test_unscoped_invocation_uses_configured_or_empty_default_policy;
+       TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
            test_durable_restart_rebuilds_dedupe_without_new_run_started ->
@@ -68,6 +72,8 @@ end_per_testcase(TestCase, Config)
            test_identical_duplicate_reuses_running_handle_and_terminal_result;
        TestCase =:= test_conflicting_request_id_rejected_before_new_run;
        TestCase =:= test_out_of_scope_invocation_rejected_through_policy;
+       TestCase =:=
+           test_unscoped_invocation_uses_configured_or_empty_default_policy;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -347,6 +353,36 @@ test_out_of_scope_invocation_rejected_through_policy(_Config) ->
         clear_policy_check_trace(ServicePid)
     end.
 
+test_unscoped_invocation_uses_configured_or_empty_default_policy(_Config) ->
+    Cases =
+        [{configured, #{allowed_tools => [echo]}, succeeded, 1},
+         {empty_default, application_default, succeeded, 0}],
+    lists:foreach(
+      fun({Name, PolicySetting, ExpectedStatus, ExpectedRunStarts}) ->
+              ok = restart_actor_with_service_policy(PolicySetting),
+              StorePid = runtime_event_store(),
+              RunStartsBefore = count_run_started(StorePid),
+              RequestId = <<"service-unscoped-",
+                            (atom_to_binary(Name, utf8))/binary>>,
+              Envelope = tool_envelope(
+                           RequestId, echo,
+                           #{value => <<"unscoped policy">>}),
+
+              {ok, InitialTask} = soma_service:invoke(Envelope),
+              TaskId = maps:get(task_id, InitialTask),
+              {ok, Terminal} =
+                  case maps:get(status, InitialTask) of
+                      accepted -> wait_for_terminal(TaskId, 100);
+                      _Terminal -> {ok, InitialTask}
+                  end,
+
+              ?assertEqual(ExpectedStatus, maps:get(status, Terminal)),
+              ?assertEqual(
+                 ExpectedRunStarts,
+                 count_run_started(StorePid) - RunStartsBefore)
+      end,
+      Cases).
+
 ensure_loaded(App) ->
     case application:load(App) of
         ok -> ok;
@@ -412,6 +448,17 @@ runtime_event_store() ->
     {soma_event_store, StorePid, _Type, _Modules} =
         lists:keyfind(soma_event_store, 1, Children),
     StorePid.
+
+restart_actor_with_service_policy(PolicySetting) ->
+    ok = application:stop(soma_actor),
+    ok = application:unload(soma_actor),
+    ok = ensure_loaded(soma_actor),
+    case PolicySetting of
+        application_default -> ok;
+        Policy -> application:set_env(soma_actor, service_policy, Policy)
+    end,
+    {ok, _Started} = application:ensure_all_started(soma_actor),
+    ok.
 
 tool_envelope(RequestId, Tool, Args) ->
     #{kind => invoke,
