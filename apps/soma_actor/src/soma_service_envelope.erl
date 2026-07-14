@@ -80,11 +80,16 @@ normalize_operation_value(
     case Step of
         #{id := RequestId, tool := Tool, args := Args}
                 when map_size(Step) =:= 3,
-                     is_atom(Tool),
-                     is_map(Args) ->
-            {ok,
-             #{kind => tool,
-               step => #{id => RequestId, tool => Tool, args => Args}}};
+                     is_atom(Tool) ->
+            case valid_canonical_args(Args) of
+                true ->
+                    {ok,
+                     #{kind => tool,
+                       step =>
+                           #{id => RequestId, tool => Tool, args => Args}}};
+                false ->
+                    invalid_operation()
+            end;
         _InvalidStep ->
             invalid_operation()
     end;
@@ -204,18 +209,21 @@ valid_step(
 ) when map_size(Step) =:= 4,
        is_atom(Id),
        is_atom(Tool),
-       is_map(Args),
        is_integer(TimeoutMs),
        TimeoutMs > 0 ->
-    true;
+    valid_canonical_args(Args);
 valid_step(#{id := Id, tool := Tool, args := Args} = Step)
         when map_size(Step) =:= 3,
              is_atom(Id),
-             is_atom(Tool),
-             is_map(Args) ->
-    true;
+             is_atom(Tool) ->
+    valid_canonical_args(Args);
 valid_step(_Step) ->
     false.
+
+valid_canonical_args(#{from_step := _Reference} = Args) ->
+    map_size(Args) =:= 1;
+valid_canonical_args(Args) ->
+    is_map(Args).
 
 invalid_operation() ->
     fixed_error(invalid_operation, <<"invoke operation is invalid">>).
