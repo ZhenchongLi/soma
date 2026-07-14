@@ -34,6 +34,8 @@ passes proposal normalization, the tool-name policy gate, and the budget gate
 before actor-owned supervised execution starts the approved steps as a
 `soma_run`.
 
+Planning gate tests use fixed provider responses and open no network socket.
+
 ## Proposals
 
 `soma_proposal:normalize/1` is a pure validate-and-normalize boundary. It tags
