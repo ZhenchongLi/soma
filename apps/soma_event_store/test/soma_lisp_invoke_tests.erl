@@ -51,3 +51,19 @@ test_canonical_invoke_maps_round_trip_through_render_and_compile() ->
 
 canonical_invoke_maps_round_trip_through_render_and_compile_test() ->
     test_canonical_invoke_maps_round_trip_through_render_and_compile().
+
+binary_from_step_reference_round_trips_through_invoke_render_test() ->
+    Source =
+        <<"(invoke (api-version \"1\") (request-id \"request-binary-ref\") "
+          "(tool (name echo) (args (from_step \"prior\"))))">>,
+    {ok, Candidate} = soma_lfe:compile(Source, #{}),
+    {ok, Canonical} = soma_service_envelope:normalize(Candidate),
+    RenderResult =
+        try
+            {ok, iolist_to_binary(soma_lisp:render(Canonical))}
+        catch
+            error:function_clause -> {error, renderer_function_clause}
+        end,
+    ?assertMatch({ok, _}, RenderResult),
+    {ok, Rendered} = RenderResult,
+    ?assertEqual({ok, Canonical}, soma_lfe:compile(Rendered, #{})).
