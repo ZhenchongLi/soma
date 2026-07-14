@@ -200,6 +200,35 @@ Rules that keep this safe:
 - Descriptions may contain any UTF-8 text; the file itself must be saved as
   UTF-8.
 
+### Register The Docmod Examples
+
+Three ready-to-copy manifests show how to expose focused docmod operations:
+
+- `examples/docmod-tools/docmod_help.lisp` registers `docmod_help`.
+- `examples/docmod-tools/docmod_read.lisp` registers `docmod_read`.
+- `examples/docmod-tools/docmod_edit.lisp` registers `docmod_edit`.
+
+Copy them to a working directory first:
+
+```bash
+mkdir -p /tmp/soma-docmod-tools
+cp examples/docmod-tools/docmod_help.lisp /tmp/soma-docmod-tools/docmod_help.lisp
+cp examples/docmod-tools/docmod_read.lisp /tmp/soma-docmod-tools/docmod_read.lisp
+cp examples/docmod-tools/docmod_edit.lisp /tmp/soma-docmod-tools/docmod_edit.lisp
+cd /tmp/soma-docmod-tools
+```
+
+Before registration, edit all three copies and replace the literal executable
+`/REPLACE/WITH/PATH/TO/docmod` with the absolute path to your docmod binary.
+Then register each tool under its manifest name:
+
+```bash
+mkdir -p ~/.soma/tools
+cp docmod_help.lisp ~/.soma/tools/docmod_help.lisp
+cp docmod_read.lisp ~/.soma/tools/docmod_read.lisp
+cp docmod_edit.lisp ~/.soma/tools/docmod_edit.lisp
+```
+
 Changes take effect on the next daemon start (`soma stop`, then any client
 command auto-starts it again).
 
@@ -287,6 +316,9 @@ model = "gpt-4.1-mini"
 # enable_thinking = false
 # max_tokens = 1024
 # plan = true
+# explore = true
+# max_explore_rounds = 5
+# max_observation_bytes = 16384
 ```
 
 With `plan = true` the daemon asks the model for a `(run-steps ...)` plan,
@@ -294,6 +326,13 @@ and the planning prompt carries the live tool catalog — every registered
 tool's name, description, and params, including tools you added under
 `~/.soma/tools/` — so the model plans against tools that actually exist.
 The policy allowlist still gates the plan after the model proposes it.
+
+Set `explore = true` to let `soma ask` make bounded reader-tool rounds before
+the model returns its terminal reply. `explore` must be the boolean `true` or
+`false`. The two limits must be positive integers: `max_explore_rounds` and
+`max_observation_bytes`. If any value in this group is invalid, Soma logs a
+keyed warning. Soma then ignores all three explore settings, so exploration
+stays off instead of running with a partially accepted limit.
 
 Then export the API key in the environment that starts the daemon:
 
