@@ -6,6 +6,7 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_between_steps_resumes_with_pending_suffix_outputs_and_options/1]).
 -export([test_in_flight_safe_step_resumes/1]).
+-export([test_in_flight_text_readers_resume_from_live_descriptors/1]).
 -export([test_in_flight_unsafe_state_step_is_unsafe/1]).
 -export([test_terminal_trail_returns_terminal_status_over_next_step/1]).
 -export([test_all_committed_no_terminal_is_nothing_to_do/1]).
@@ -16,6 +17,7 @@
 all() ->
     [test_between_steps_resumes_with_pending_suffix_outputs_and_options,
      test_in_flight_safe_step_resumes,
+     test_in_flight_text_readers_resume_from_live_descriptors,
      test_in_flight_unsafe_state_step_is_unsafe,
      test_terminal_trail_returns_terminal_status_over_next_step,
      test_all_committed_no_terminal_is_nothing_to_do,
@@ -89,6 +91,47 @@ test_in_flight_safe_step_resumes(_Config) ->
     Verdict = soma_run_resume_plan:plan(StorePid, RunId),
 
     ?assertMatch({resume, _}, Verdict).
+
+test_in_flight_text_readers_resume_from_live_descriptors(_Config) ->
+    StorePid = event_store_pid(),
+    ExpectedDescriptor = #{adapter => erlang_module,
+                           effect => reader,
+                           idempotent => true},
+    Readers = [{text_grep, grep_step,
+                <<"run-plan-in-flight-text-grep-1">>,
+                <<"sess-plan-in-flight-text-grep-1">>},
+               {text_head, head_step,
+                <<"run-plan-in-flight-text-head-1">>,
+                <<"sess-plan-in-flight-text-head-1">>}],
+    lists:foreach(
+      fun({Tool, StepId, RunId, SessionId}) ->
+          {ok, Descriptor} = soma_tool_registry:resolve_descriptor(Tool),
+          ?assertEqual(ExpectedDescriptor,
+                       maps:with([adapter, effect, idempotent], Descriptor)),
+          Step = #{id => StepId, tool => Tool, args => #{}},
+          RunOptions = #{run_id => RunId, session_id => SessionId},
+          ok = soma_event_store:append(
+                 StorePid,
+                 #{run_id => RunId,
+                   session_id => SessionId,
+                   event_type => <<"run.started">>,
+                   payload => #{steps => [Step],
+                                run_options => RunOptions}}),
+          ok = soma_event_store:append(
+                 StorePid,
+                 #{run_id => RunId,
+                   session_id => SessionId,
+                   step_id => StepId,
+                   event_type => <<"tool.started">>,
+                   payload => #{}}),
+
+          Verdict = soma_run_resume_plan:plan(StorePid, RunId),
+
+          ?assertMatch({resume, _}, Verdict),
+          {resume, Plan} = Verdict,
+          ?assertEqual([Step], maps:get(pending, Plan))
+      end,
+      Readers).
 
 test_in_flight_unsafe_state_step_is_unsafe(_Config) ->
     StorePid = event_store_pid(),

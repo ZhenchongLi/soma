@@ -239,9 +239,11 @@ planning_prompt_renders_allowed_catalog_entries_test_() ->
 test_planning_prompt_all_policy_renders_full_catalog() ->
     Catalog = soma_tool_registry:catalog(),
     CatalogNames = lists:sort([Name || #{name := Name} <- Catalog]),
-    %% The registry seeds the five described built-ins -- the loop below is
+    %% The registry seeds the seven described built-ins -- the loop below is
     %% not vacuous.
-    ?assertEqual([echo, fail, file_read, file_write, sleep], CatalogNames),
+    ?assertEqual([echo, fail, file_read, file_write, sleep, text_grep,
+                  text_head],
+                 CatalogNames),
     ModelConfig = #{provider => openai_compat,
                     base_url => <<"https://api.example.test/v1">>,
                     model => <<"deepseek-v4">>,

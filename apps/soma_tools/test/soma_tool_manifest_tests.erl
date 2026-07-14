@@ -499,7 +499,7 @@ test_normalize_rejects_cli_without_executable_or_argv() ->
 normalize_rejects_cli_without_executable_or_argv_test() ->
     test_normalize_rejects_cli_without_executable_or_argv().
 
-%% Each of the five built-in tools exposes a production manifest/0 whose output
+%% Each built-in tool exposes a production manifest/0 whose output
 %% normalizes to {ok, _}. The manifest is read live from the module, not a
 %% hand-written fixture.
 test_builtin_manifests_normalize() ->
@@ -508,7 +508,9 @@ test_builtin_manifests_normalize() ->
         soma_tool_sleep,
         soma_tool_fail,
         soma_tool_file_read,
-        soma_tool_file_write
+        soma_tool_file_write,
+        soma_tool_text_grep,
+        soma_tool_text_head
     ],
     lists:foreach(
         fun(Module) ->
@@ -532,7 +534,9 @@ test_builtin_manifest_metadata_matches_describe() ->
         soma_tool_sleep,
         soma_tool_fail,
         soma_tool_file_read,
-        soma_tool_file_write
+        soma_tool_file_write,
+        soma_tool_text_grep,
+        soma_tool_text_head
     ],
     MetaKeys = [name, effect, idempotent, timeout_ms],
     lists:foreach(
@@ -559,7 +563,9 @@ test_builtin_manifest_names_erlang_module_adapter() ->
         {soma_tool_sleep, soma_tool_sleep},
         {soma_tool_fail, soma_tool_fail},
         {soma_tool_file_read, soma_tool_file_read},
-        {soma_tool_file_write, soma_tool_file_write}
+        {soma_tool_file_write, soma_tool_file_write},
+        {soma_tool_text_grep, soma_tool_text_grep},
+        {soma_tool_text_head, soma_tool_text_head}
     ],
     lists:foreach(
         fun({Module, BackingModule}) ->
