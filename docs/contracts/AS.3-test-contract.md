@@ -101,6 +101,18 @@ tool execution still crosses `soma_run -> soma_tool_call`.
 | A rendered trace line shows an exploration event's round number. | `soma_trace_tests:test_timeline_renders_explore_round_number` |
 | `soma_trace:render/2` prints every exploration round number in ascending order before the terminal proposal/run suffix. | `soma_trace_tests:test_render_prints_explore_rounds_in_order_before_terminal_suffix` |
 
+## Review hardening — admission rejections, provider errors, call bookkeeping
+
+Three review findings on the criteria above, each pinned by a regression
+test:
+
+| Guarantee | Proof |
+| --- | --- |
+| A policy-denied tool in an explore reply closes the round as a bounded `(observation (status rejected) (policy tools_not_allowed) ...)` observation — the task is never stranded `running` (extends criteria 5, 8, and 13 to every admission-rejection shape). | `soma_actor_explore_SUITE:policy_rejected_explore_becomes_bounded_observation_and_continues` |
+| A tool with no live descriptor closes the round as a bounded `(observation (status rejected) (tool ...) (error not_found))` observation. | `soma_actor_explore_SUITE:unknown_tool_explore_becomes_bounded_observation_and_continues` |
+| A normal provider `{error, Reason}` result (a non-200 status — not a worker crash) becomes terminal `failed` task data immediately, with `llm.failed` emitted and the open round closed; it is never mislabelled `timeout` by the call timer (extends criteria 9 and 11). | `soma_actor_explore_SUITE:in_loop_llm_error_result_is_terminal_failed` |
+| A finished LLM call leaves no bookkeeping behind — no `llm_calls` entry and no stale call fields on the task — and the call-timeout handler acts only on the task's active call, so a queued stale timeout can never target a later round's worker. | `soma_actor_explore_SUITE:finished_llm_call_bookkeeping_cleared_between_rounds` |
+
 ## Criterion 14 — this contract
 
 | Guarantee | Proof |
