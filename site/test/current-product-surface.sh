@@ -439,7 +439,7 @@ test_roadmap_marks_cli_config_planning_shipped() {
 
 test_roadmap_marks_tool_track_shipped() {
   local roadmap_text
-  local expected="tools tool abstraction track [done — T.1 manifest v2 + catalog/0; T.2 config tools; catalog-fed planning prompt; T.4 ask_actor]"
+  local expected="tools shipped tool slices [done — T.1 manifest v2 + catalog/0; T.2 config tools; catalog-fed planning prompt; T.4 ask_actor]"
 
   roadmap_text="$(normalize_visible_text "${SITE_DIR}/dist/reference/roadmap/index.html")"
 
@@ -450,6 +450,29 @@ test_roadmap_marks_tool_track_shipped() {
   fi
 
   echo "PASS: test_roadmap_marks_tool_track_shipped"
+}
+
+test_roadmap_keeps_unshipped_tool_slices_open() {
+  local roadmap_text
+  local false_whole_track="tools tool abstraction track [done"
+
+  roadmap_text="$(normalize_visible_text "${SITE_DIR}/dist/reference/roadmap/index.html")"
+
+  if ! assert_fragments_in_order "${roadmap_text}" \
+    "Remaining tool slices:" \
+    "T.3 memory as tools [deferred — not scheduled]" \
+    "T.5 MCP capability app [future — post-validation]"; then
+    echo "FAIL: test_roadmap_keeps_unshipped_tool_slices_open" >&2
+    return 1
+  fi
+
+  if [[ "${roadmap_text}" == *"${false_whole_track}"* ]]; then
+    echo "FAIL: test_roadmap_keeps_unshipped_tool_slices_open" >&2
+    printf 'Unexpected whole-track completion claim:\n  %s\n' "${false_whole_track}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_roadmap_keeps_unshipped_tool_slices_open"
 }
 
 test_roadmap_marks_live_tool_management_shipped() {
@@ -506,5 +529,6 @@ test_decision_layer_places_api_key_in_daemon_environment
 test_cli_documents_default_reply_and_opt_in_planning
 test_roadmap_marks_cli_config_planning_shipped
 test_roadmap_marks_tool_track_shipped
+test_roadmap_keeps_unshipped_tool_slices_open
 test_roadmap_marks_live_tool_management_shipped
 test_roadmap_labels_completed_tracks
