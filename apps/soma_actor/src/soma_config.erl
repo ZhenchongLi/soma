@@ -72,21 +72,29 @@ classify(Line) ->
     case string:split(Line, "=") of
         [RawKey, RawValue] ->
             Key = string:trim(RawKey),
-            Value = parse_value(string:trim(RawValue)),
+            Value = parse_value(Key, string:trim(RawValue)),
             {kv, Key, Value};
         _ ->
             blank
     end.
 
-parse_value([$" | _] = Quoted) ->
+parse_value(_Key, [$" | _] = Quoted) ->
     Stripped = string:trim(Quoted, both, "\""),
     list_to_binary(Stripped);
-parse_value("true") ->
+parse_value(_Key, "true") ->
     true;
-parse_value("false") ->
+parse_value(_Key, "false") ->
     false;
-parse_value(Raw) ->
-    list_to_integer(Raw).
+parse_value(Key, Raw) ->
+    case is_explore_key(Key) of
+        true ->
+            case string:to_integer(Raw) of
+                {Integer, []} -> Integer;
+                _ -> {invalid_llm_value, Raw}
+            end;
+        false ->
+            list_to_integer(Raw)
+    end.
 
 build_model_config(Llm) when map_size(Llm) =:= 0 ->
     undefined;
@@ -98,9 +106,10 @@ build_model_config(Llm) ->
         model => require("model", Llm, missing_openai_model)
     },
     Base = carry_api_key(Base0),
-    lists:foldl(fun(Key, Acc) -> carry_optional(Key, Llm, Acc) end,
-                Base, ["enable_thinking", "max_tokens", "plan", "explore",
-                       "max_explore_rounds", "max_observation_bytes"]).
+    WithExistingOptions =
+        lists:foldl(fun(Key, Acc) -> carry_optional(Key, Llm, Acc) end,
+                    Base, ["enable_thinking", "max_tokens", "plan"]),
+    carry_explore_settings(Llm, WithExistingOptions).
 
 require(Key, Llm, ErrorName) ->
     case maps:find(Key, Llm) of
@@ -120,6 +129,44 @@ carry_optional(Key, Llm, Acc) ->
         {ok, Value} -> Acc#{list_to_atom(Key) => Value};
         error -> Acc
     end.
+
+carry_explore_settings(Llm, Acc) ->
+    {AllValid, Settings} =
+        lists:foldl(
+          fun({TextKey, Key, Expected}, {ValidSoFar, Found}) ->
+                  case maps:find(TextKey, Llm) of
+                      error ->
+                          {ValidSoFar, Found};
+                      {ok, Value} ->
+                          case valid_explore_setting(Expected, Value) of
+                              true ->
+                                  {ValidSoFar, Found#{Key => Value}};
+                              false ->
+                                  logger:warning(
+                                    "soma config: ~p",
+                                    [{invalid_llm_setting, Key, Expected}]),
+                                  {false, Found}
+                          end
+                  end
+          end,
+          {true, #{}}, explore_setting_specs()),
+    case AllValid of
+        true -> maps:merge(Acc, Settings);
+        false -> Acc
+    end.
+
+valid_explore_setting(boolean, Value) ->
+    is_boolean(Value);
+valid_explore_setting(positive_integer, Value) ->
+    is_integer(Value) andalso Value > 0.
+
+is_explore_key(Key) ->
+    lists:keymember(Key, 1, explore_setting_specs()).
+
+explore_setting_specs() ->
+    [{"explore", explore, boolean},
+     {"max_explore_rounds", max_explore_rounds, positive_integer},
+     {"max_observation_bytes", max_observation_bytes, positive_integer}].
 
 provider_atom(<<"openai_compat">>) ->
     openai_compat;
