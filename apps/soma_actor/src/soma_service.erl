@@ -91,23 +91,11 @@ invoke_normalized(Envelope,
     end.
 
 start_invocation(Envelope, EnvelopeHash,
-                 State = #state{policy = Policy}) ->
+                 State = #state{event_store = EventStore,
+                                policy = ConfiguredPolicy,
+                                tasks = Tasks,
+                                requests = Requests}) ->
     Steps = operation_steps(maps:get(operation, Envelope)),
-    Proposal = #{kind => run_steps, steps => Steps},
-    case soma_policy:check(Proposal, Policy) of
-        allow ->
-            start_allowed_invocation(
-              Envelope, EnvelopeHash, Steps, State);
-        {reject, Reason} ->
-            {reply, {error, {policy_rejected, Reason}}, State}
-    end.
-
-start_allowed_invocation(Envelope, EnvelopeHash, Steps,
-                         State = #state{event_store = EventStore,
-                                        tasks = Tasks,
-                                        requests = Requests,
-                                        runs = Runs,
-                                        monitors = Monitors}) ->
     TaskId = mint_id("service-task-"),
     RunId = mint_id("service-run-"),
     RequestId = maps:get(request_id, Envelope),
@@ -119,9 +107,34 @@ start_allowed_invocation(Envelope, EnvelopeHash, Steps,
               envelope_hash => EnvelopeHash,
               status => accepted,
               run_id => RunId},
-    Task1 = maybe_add_max_output_bytes(Envelope, Task0),
+    Task = maybe_add_max_output_bytes(Envelope, Task0),
+    Request = #{envelope_hash => EnvelopeHash,
+                task_id => TaskId,
+                accepted_handle => Handle},
     ok = emit_service_task(EventStore, <<"service.task.accepted">>,
-                           Task1, accepted_event_payload(Task1)),
+                           Task, accepted_event_payload(Task)),
+    AdmittedState =
+        State#state{tasks = maps:put(TaskId, Task, Tasks),
+                    requests = maps:put(RequestId, Request, Requests)},
+    Proposal = #{kind => run_steps, steps => Steps},
+    Policy = invocation_policy(Envelope, ConfiguredPolicy),
+    case soma_policy:check(Proposal, Policy) of
+        allow ->
+            start_allowed_invocation(
+              Envelope, Steps, Task, Handle, AdmittedState);
+        {reject, Reason} ->
+            reject_invocation(Reason, Task, AdmittedState)
+    end.
+
+start_allowed_invocation(Envelope, Steps, Task, Handle,
+                         State = #state{event_store = EventStore,
+                                        tasks = Tasks,
+                                        runs = Runs,
+                                        monitors = Monitors}) ->
+    TaskId = maps:get(task_id, Task),
+    RunId = maps:get(run_id, Task),
+    RequestId = maps:get(request_id, Task),
+    EnvelopeHash = maps:get(envelope_hash, Task),
     RunOpts0 = #{run_id => RunId,
                  task_id => TaskId,
                  request_id => RequestId,
@@ -133,18 +146,15 @@ start_allowed_invocation(Envelope, EnvelopeHash, Steps,
     case soma_run_sup:start_run(RunOpts) of
         {ok, RunPid} ->
             MRef = erlang:monitor(process, RunPid),
-            Task = Task1#{status => running,
-                          run_pid => RunPid,
-                          run_mref => MRef},
-            Request = #{envelope_hash => EnvelopeHash,
-                        task_id => TaskId,
-                        accepted_handle => Handle},
+            RunningTask = Task#{status => running,
+                                run_pid => RunPid,
+                                run_mref => MRef},
             ok = emit_service_task(EventStore, <<"service.task.running">>,
-                                   Task, accepted_event_payload(Task)),
+                                   RunningTask,
+                                   accepted_event_payload(RunningTask)),
             NewState =
                 State#state{
-                  tasks = maps:put(TaskId, Task, Tasks),
-                  requests = maps:put(RequestId, Request, Requests),
+                  tasks = maps:put(TaskId, RunningTask, Tasks),
                   runs = maps:put(RunId, TaskId, Runs),
                   monitors = maps:put(
                                MRef,
@@ -154,6 +164,17 @@ start_allowed_invocation(Envelope, EnvelopeHash, Steps,
         {error, Reason} ->
             {reply, {error, {run_start_failed, Reason}}, State}
     end.
+
+reject_invocation(Reason, Task,
+                  State = #state{event_store = EventStore,
+                                 tasks = Tasks}) ->
+    Rejection = {policy_rejected, Reason},
+    Terminal = Task#{status => rejected, reason => Rejection},
+    ok = emit_service_task(EventStore, <<"service.task.terminal">>,
+                           Terminal, terminal_event_payload(Terminal)),
+    TaskId = maps:get(task_id, Task),
+    NewState = State#state{tasks = maps:put(TaskId, Terminal, Tasks)},
+    {reply, {ok, public_task(Terminal)}, NewState}.
 
 duplicate_reply(#{task_id := TaskId,
                   accepted_handle := Handle}, Tasks) ->
@@ -170,6 +191,15 @@ operation_steps(#{kind := tool, step := Step}) ->
     [Step];
 operation_steps(#{kind := steps, steps := Steps}) ->
     Steps.
+
+invocation_policy(#{scope := Scope}, _ConfiguredPolicy) ->
+    #{allowed_tools => projected_scope_tools(Scope)};
+invocation_policy(_Envelope, ConfiguredPolicy) ->
+    ConfiguredPolicy.
+
+projected_scope_tools(Scope) ->
+    [Name || #{name := Name} <- soma_tool_registry:list_tools(),
+             lists:member(atom_to_binary(Name, utf8), Scope)].
 
 maybe_add_correlation(Envelope, RunOpts) ->
     case maps:find(correlation_id, Envelope) of
