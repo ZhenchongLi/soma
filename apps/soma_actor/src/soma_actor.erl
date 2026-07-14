@@ -17,6 +17,7 @@
 -export([idle/3]).
 
 -define(DEFAULT_LLM_TIMEOUT_MS, 60000).
+-define(DEFAULT_MAX_OBSERVATION_BYTES, 16384).
 
 -record(data, {actor_id, model_config, tool_policy, event_store, tasks = #{},
                runs = #{}, waiters = #{}, monitors = #{}, llm_calls = #{},
@@ -1365,9 +1366,10 @@ run_context_task_id(TaskId) ->
     TaskId.
 
 %% Turn a completed reader run into the next exploration request. Source-step
-%% order, rather than map order, controls the observation. Each rendered output
-%% is embedded as a quoted string so the observation remains a valid outer Lisp
-%% form even when a later slice applies a byte cap to that value.
+%% order, rather than map order, controls the observation. Each retained prefix
+%% is embedded as a quoted string so a byte cut cannot break the outer Lisp
+%% form. The single allowance counts only serialized output bytes; step ids,
+%% quoting, the envelope, and the fixed truncation marker stay outside it.
 continue_explore_after_completion(RunId, Outputs,
                                   #{task_id := TaskId,
                                     round := Round,
@@ -1375,7 +1377,11 @@ continue_explore_after_completion(RunId, Outputs,
     Data0 = clear_finished_explore_run(RunId, TaskId, Data),
     Task0 = maps:get(TaskId, Data0#data.tasks),
     AssistantReply = maps:get(explore_assistant_reply, Task0),
-    Observation = completed_explore_observation(Steps, Outputs),
+    MaxObservationBytes =
+        maps:get(max_observation_bytes, Data0#data.budget,
+                 ?DEFAULT_MAX_OBSERVATION_BYTES),
+    Observation = completed_explore_observation(
+                    Steps, Outputs, MaxObservationBytes),
     Transcript0 = maps:get(explore_transcript, Task0, []),
     Transcript = Transcript0
         ++ [#{role => <<"assistant">>, content => AssistantReply},
@@ -1388,17 +1394,53 @@ continue_explore_after_completion(RunId, Outputs,
     CorrelationId = maps:get(correlation_id, Task1),
     maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data1).
 
-completed_explore_observation(Steps, Outputs) ->
-    StepForms = [completed_observation_step(Step, Outputs) || Step <- Steps],
+completed_explore_observation(Steps, Outputs, MaxBytes) ->
+    {StepForms, Truncated} =
+        completed_observation_steps(Steps, Outputs, MaxBytes),
+    Marker = case Truncated of
+                 true -> <<" (truncated true)">>;
+                 false -> <<>>
+             end,
     iolist_to_binary(
       [<<"(observation (status completed) (outputs ">>,
-       lists:join(<<" ">>, StepForms), <<"))">>]).
+       lists:join(<<" ">>, StepForms), <<")">>, Marker, <<")">>]).
 
-completed_observation_step(#{id := StepId}, Outputs) ->
+completed_observation_steps(Steps, Outputs, MaxBytes) ->
+    completed_observation_steps(Steps, Outputs, MaxBytes, false, []).
+
+completed_observation_steps([], _Outputs, _Remaining, Truncated, Acc) ->
+    {lists:reverse(Acc), Truncated};
+completed_observation_steps([#{id := StepId} | Rest], Outputs, Remaining,
+                            Truncated0, Acc) ->
     Output = maps:get(StepId, Outputs),
     RenderedOutput = iolist_to_binary(soma_lisp:render(Output)),
+    {RetainedOutput, Remaining1, Truncated1} =
+        retain_observation_output(RenderedOutput, Remaining),
+    StepForm = completed_observation_step(StepId, RetainedOutput),
+    completed_observation_steps(Rest, Outputs, Remaining1,
+                                Truncated0 orelse Truncated1,
+                                [StepForm | Acc]).
+
+completed_observation_step(StepId, RetainedOutput) ->
     [<<"(step (id ">>, observation_step_id(StepId), <<") (output ">>,
-     soma_lisp:render(RenderedOutput), <<"))">>].
+     soma_lisp:render(RetainedOutput), <<"))">>].
+
+retain_observation_output(RenderedOutput, Remaining)
+  when byte_size(RenderedOutput) =< Remaining ->
+    {RenderedOutput, Remaining - byte_size(RenderedOutput), false};
+retain_observation_output(RenderedOutput, Remaining) ->
+    Candidate = binary:part(RenderedOutput, 0, Remaining),
+    {complete_utf8_prefix(Candidate), 0, true}.
+
+complete_utf8_prefix(Candidate) ->
+    case unicode:characters_to_binary(Candidate) of
+        Complete when is_binary(Complete) ->
+            Complete;
+        {incomplete, Complete, _Rest} ->
+            Complete;
+        {error, Complete, _Rest} ->
+            Complete
+    end.
 
 continue_explore_after_non_reader_rejection(TaskId, Tool, Effect, Data) ->
     Task0 = maps:get(TaskId, Data#data.tasks),
