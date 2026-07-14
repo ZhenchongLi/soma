@@ -206,6 +206,21 @@ test_tools_documents_config_manifest_registration_path() {
   echo "PASS: test_tools_documents_config_manifest_registration_path"
 }
 
+test_tools_documents_whole_argument_placeholders() {
+  local tools_text
+  local expected='A placeholder such as "{param}" occupies one complete argv element and must name an entry in the declared params list. Soma replaces that whole argv element with the parameter value; it does not perform substring interpolation.'
+
+  tools_text="$(normalize_visible_text "${SITE_DIR}/dist/concepts/tools/index.html")"
+
+  if [[ "${tools_text}" != *"${expected}"* ]]; then
+    echo "FAIL: test_tools_documents_whole_argument_placeholders" >&2
+    printf 'Expected normalized visible text fragment:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_tools_documents_whole_argument_placeholders"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
@@ -215,3 +230,4 @@ test_landing_labels_run_model_free
 test_quick_start_uses_pipeline_lisp
 test_tools_documents_model_facing_catalog
 test_tools_documents_config_manifest_registration_path
+test_tools_documents_whole_argument_placeholders
