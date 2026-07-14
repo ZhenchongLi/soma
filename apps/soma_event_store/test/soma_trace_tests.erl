@@ -140,3 +140,53 @@ count_occurrences(Needle, Haystack) ->
             Rest = lists:nthtail(Pos - 1 + length(Needle), Haystack),
             1 + count_occurrences(Needle, Rest)
     end.
+
+test_timeline_renders_explore_round_number() ->
+    %% An exploration event carries its round number top-level (the actor
+    %% emits flat events); the rendered line must show it.
+    Events = [#{event_type => <<"explore.round.started">>, timestamp => 1,
+                task_id => <<"task-r">>, round => 2, remaining_rounds => 4}],
+    Output = soma_trace:timeline(Events),
+    Lines = string:split(iolist_to_binary(Output), <<"\n">>, all),
+    Line = binary_to_list(hd([L || L <- Lines, L =/= <<>>])),
+    ?assertEqual(true, string:str(Line, "explore.round.started") > 0),
+    ?assertEqual(true, string:str(Line, "round=2") > 0).
+
+timeline_renders_explore_round_number_test() ->
+    test_timeline_renders_explore_round_number().
+
+test_render_prints_explore_rounds_in_order_before_terminal_suffix() ->
+    %% render/2 over one correlation must print every exploration round
+    %% number in ascending order before the terminal proposal/run suffix.
+    {ok, Store} = soma_event_store:start_link(),
+    Corr = <<"corr-explore-trace">>,
+    Emit = fun(Type, Ts, Extra) ->
+                   Event = maps:merge(#{event_type => Type,
+                                        timestamp => Ts,
+                                        correlation_id => Corr},
+                                      Extra),
+                   ok = soma_event_store:append(Store, Event)
+           end,
+    Emit(<<"explore.round.started">>, 100, #{round => 1, remaining_rounds => 3}),
+    Emit(<<"explore.round.completed">>, 110,
+         #{round => 1, remaining_rounds => 3, action => explore,
+           status => completed, observation_bytes => 12, truncated => false}),
+    Emit(<<"explore.round.started">>, 200, #{round => 2, remaining_rounds => 2}),
+    Emit(<<"explore.round.completed">>, 210,
+         #{round => 2, remaining_rounds => 2, action => proposal,
+           status => completed, observation_bytes => 0, truncated => false}),
+    Emit(<<"proposal.executed">>, 300, #{}),
+    Emit(<<"run.started">>, 310, #{}),
+    Out = binary_to_list(iolist_to_binary(soma_trace:render(Store, Corr))),
+    Round1 = string:str(Out, "round=1"),
+    Round2 = string:str(Out, "round=2"),
+    Terminal = string:str(Out, "proposal.executed"),
+    ?assertEqual(true, Round1 > 0),
+    ?assertEqual(true, Round2 > 0),
+    ?assertEqual(true, Terminal > 0),
+    ?assertEqual(true, Round1 < Round2),
+    ?assertEqual(true, Round2 < Terminal),
+    gen_server:stop(Store).
+
+render_prints_explore_rounds_in_order_before_terminal_suffix_test() ->
+    test_render_prints_explore_rounds_in_order_before_terminal_suffix().
