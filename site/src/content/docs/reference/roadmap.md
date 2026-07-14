@@ -37,7 +37,7 @@ v0.7    persistent resume                              [done — journal + recon
 v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
-node B  real LLM provider behind the perform_call seam   [provider + actor planning done; product surface next]
+node B  real LLM provider behind the perform_call seam   [done — provider + actor planning + CLI/config planning surface]
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
 ```
@@ -151,8 +151,8 @@ v0.4 contract's P12 and P13 are now delivered. The **one remaining deferred proo
 is P14** (the policy proactively asks a human before executing) — there is no
 human-in-the-loop ask path yet.
 
-Structured real-provider planning (`run_steps` / tool-use proposals from a real
-model) and an effect-aware policy gate remain future work beyond this layer.
+A human-in-the-loop ask path and an effect-aware policy gate remain future work
+beyond this layer.
 
 ## v0.6 — trace tooling + persistent event store [done]
 
@@ -270,8 +270,14 @@ the gate default; real calls are opt-in and **off the test gate** (no network in
   call opts from the envelope payload, routes through `soma_llm_call`, and keeps
   the API key out of emitted events. Gate tests use a fixed-response seam, not a
   real socket.
-- Later: structured proposals from the model (`run_steps` / tool-use planning, not
-  just `reply`) and an effect-aware policy gate.
+- actor-level planning mode [done]: a real-provider `model_config` carrying
+  `plan => true` adds a system instruction, reads the provider's reply content as
+  a Lisp `(run-steps ...)` proposal, sends it through `soma_lfe:compile/2`,
+  `soma_proposal:normalize/1`, policy, and budget, then runs approved steps. Gate
+  tests use fixed responses and open no model socket.
+- planning surface productized [done]: `~/.soma/config` and the CLI drive
+  real-provider planning mode through the daemon.
+- Later: an effect-aware policy gate.
 
 Provider `base_url` / `model` live in local config; the **API key is only ever
 read from an env var / a gitignored file, never committed**.
