@@ -367,6 +367,21 @@ test_decision_layer_places_api_key_in_daemon_environment() {
   echo "PASS: test_decision_layer_places_api_key_in_daemon_environment"
 }
 
+test_roadmap_marks_cli_config_planning_shipped() {
+  local roadmap_text
+  local expected="node B real LLM provider behind the perform_call seam [done — provider + actor planning + CLI/config planning surface]"
+
+  roadmap_text="$(normalize_visible_text "${SITE_DIR}/dist/reference/roadmap/index.html")"
+
+  if [[ "${roadmap_text}" != *"${expected}"* ]]; then
+    echo "FAIL: test_roadmap_marks_cli_config_planning_shipped" >&2
+    printf 'Expected normalized visible text fragment:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_roadmap_marks_cli_config_planning_shipped"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
@@ -386,3 +401,4 @@ test_cli_documents_builtin_name_protection
 test_decision_layer_documents_configured_planning_path
 test_decision_layer_documents_fixed_response_gate
 test_decision_layer_places_api_key_in_daemon_environment
+test_roadmap_marks_cli_config_planning_shipped
