@@ -1583,8 +1583,6 @@ admission_rejection_observation({policy_rejected,
     iolist_to_binary(
       [<<"(observation (status rejected) (policy tools_not_allowed) "
          "(tools ">>, Rendered, <<"))">>]);
-admission_rejection_observation({policy_rejected, _Reason}) ->
-    <<"(observation (status rejected) (policy rejected))">>;
 admission_rejection_observation({tool_not_found, Tool}) ->
     iolist_to_binary(
       [<<"(observation (status rejected) (tool ">>,
