@@ -70,7 +70,8 @@
                           soma_tool_fail,
                           soma_tool_file_read,
                           soma_tool_file_write,
-                          soma_tool_text_grep]).
+                          soma_tool_text_grep,
+                          soma_tool_text_head]).
 
 -spec register(registry(), atom(), descriptor()) -> registry().
 register(Registry, Name, Descriptor) ->
