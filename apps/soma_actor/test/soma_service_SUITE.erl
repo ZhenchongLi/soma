@@ -75,9 +75,7 @@ test_single_tool_invocation_runs_without_llm_worker(_Config) ->
         {ok, #{task_id := TaskId, status := accepted}} =
             soma_service:invoke(NormalizedEnvelope),
         {ok, Terminal} = wait_for_status(TaskId, succeeded, 100),
-        ?assertEqual(
-           #{RequestId => #{value => <<"wrong service output">>}},
-           maps:get(result, Terminal)),
+        ?assertEqual(#{RequestId => Args}, maps:get(result, Terminal)),
 
         StorePid = runtime_event_store(),
         Events = soma_event_store:all(StorePid),
