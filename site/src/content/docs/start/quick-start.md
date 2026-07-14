@@ -3,8 +3,8 @@ title: Quick start
 description: Run Soma through the packaged CLI and Soma Lisp task files.
 ---
 
-Soma's public edge is the `soma` command plus Soma Lisp task files. The first
-client command auto-starts the local daemon; you do not need a separate server
+Soma's public edge is the `soma` command plus Soma Lisp task files. The `run`
+command below auto-starts the local daemon; you do not need a separate server
 ritual.
 
 ## Get the command

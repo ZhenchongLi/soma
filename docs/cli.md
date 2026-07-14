@@ -1,8 +1,9 @@
 # Soma CLI
 
 `soma` is the user command. It reads Soma Lisp task files, talks to the local Soma
-daemon, and prints Lisp replies. Client commands auto-start the daemon when it is
-not already listening.
+daemon, and prints Lisp replies. The `run`, `ask`, `status`, `cancel`, `trace`,
+and three `tool` commands auto-start the daemon when it is not already
+listening; `stop` and `daemon` do not.
 
 The release also contains `somad`, the OTP node-control script. Use `soma` for
 tasks; use `somad` only when you need release/node operations.

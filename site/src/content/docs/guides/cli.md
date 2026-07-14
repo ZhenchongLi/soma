@@ -10,11 +10,11 @@ description: The single-user soma command and its long-lived daemon — run task
 > `tool remove` wrapper described below. To avoid
 > colliding with relx's generated node-control verbs, the OTP release is named
 > `somad`: `bin/somad` is the node-control script (`console`, `foreground`,
-> `daemon`, `stop`, …) and `bin/soma` is the task client. Every client command,
-> including `tool register` / `tool list` / `tool remove`, **auto-starts** the
-> daemon if none is up (no separate `soma daemon` ritual), and
-> a real model is wired by **`~/.soma/config`** (TOML), key only from the daemon's
-> env. Proven through the test gate and an end-to-end release smoke test
+> `daemon`, `stop`, …) and `bin/soma` is the task client. The `run` / `ask` /
+> `status` / `cancel` / `trace` and `tool register` / `tool list` / `tool remove`
+> client commands **auto-start** the daemon if none is up; `stop` and `daemon` do
+> not. A real model is wired by **`~/.soma/config`** (TOML), key only from the
+> daemon's env. Proven through the test gate and an end-to-end release smoke test
 > (`soma daemon` → `soma run` → `soma stop`, plus the auto-start path).
 
 ## Scope: single-user, trusted, local
@@ -383,9 +383,10 @@ documented now, fixed later, not v1 blockers:
 
 ## Decisions (settled)
 
-- **Auto-start** (done): every client verb, including `tool register` / `tool
-  list` / `tool remove`, auto-starts the daemon if absent —
-  `soma_cli:ensure_daemon/2` (a `soma_cli:ping/1` probe → detached launch → bounded
+- **Auto-start** (done): `run` / `ask` / `status` / `cancel` / `trace` and
+  `tool register` / `tool list` / `tool remove` auto-start the daemon if absent;
+  `stop` and `daemon` do not. The path uses `soma_cli:ensure_daemon/2` (a
+  `soma_cli:ping/1` probe → detached launch → bounded
   wait), wired into `soma_cli_main:main_argv/0` — single-user low-risk, rather than
   erroring with "run `soma daemon`".
 - **`soma ask` config file** (done): a small TOML at `~/.soma/config`
