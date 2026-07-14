@@ -6,12 +6,14 @@
 -export([test_text_grep_compilable_pattern_and_zero_match/1,
          test_text_grep_invalid_regex_fails_bounded_session_alive/1,
          test_text_grep_input_validation_fails_named_session_alive/1,
+         test_text_grep_default_and_explicit_match_caps/1,
          test_text_head_input_validation_fails_named_session_alive/1]).
 
 all() ->
     [test_text_grep_compilable_pattern_and_zero_match,
      test_text_grep_invalid_regex_fails_bounded_session_alive,
      test_text_grep_input_validation_fails_named_session_alive,
+     test_text_grep_default_and_explicit_match_caps,
      test_text_head_input_validation_fails_named_session_alive].
 
 init_per_testcase(_Case, Config) ->
@@ -109,6 +111,40 @@ test_text_grep_input_validation_fails_named_session_alive(_Config) ->
     ok = assert_validation_failures(SessionPid, StorePid, text_grep, Cases),
     ok = assert_session_completes_echo(SessionPid, StorePid,
                                        echo_after_grep_validation),
+    ok.
+
+test_text_grep_default_and_explicit_match_caps(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    ExplicitText = <<"match one\nskip\nmatch two\nmatch three\n">>,
+    DefaultText = binary:copy(<<"match\n">>, 101),
+    Steps = [#{id => explicit_match_cap,
+               tool => text_grep,
+               args => #{text => ExplicitText,
+                         pattern => <<"^match">>,
+                         max_matches => 2}},
+             #{id => exact_match_cap,
+               tool => text_grep,
+               args => #{text => <<"match one\nmatch two\n">>,
+                         pattern => <<"^match">>,
+                         max_matches => 2}},
+             #{id => default_match_cap,
+               tool => text_grep,
+               args => #{text => DefaultText,
+                         pattern => <<"^match$">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    #{text := <<"match one\nmatch two\n">>,
+      match_count := 2,
+      truncated := true} = step_output(Events, explicit_match_cap),
+    #{text := <<"match one\nmatch two\n">>,
+      match_count := 2,
+      truncated := false} = step_output(Events, exact_match_cap),
+    #{text := ExpectedDefaultText,
+      match_count := 100,
+      truncated := true} = step_output(Events, default_match_cap),
+    ExpectedDefaultText = binary:copy(<<"match\n">>, 100),
     ok.
 
 test_text_head_input_validation_fails_named_session_alive(_Config) ->
