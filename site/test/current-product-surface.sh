@@ -337,6 +337,21 @@ test_decision_layer_documents_configured_planning_path() {
   echo "PASS: test_decision_layer_documents_configured_planning_path"
 }
 
+test_decision_layer_documents_fixed_response_gate() {
+  local decision_layer_text
+  local expected="Planning gate tests use fixed provider responses and open no network socket."
+
+  decision_layer_text="$(normalize_visible_text "${SITE_DIR}/dist/concepts/decision-layer/index.html")"
+
+  if [[ "${decision_layer_text}" != *"${expected}"* ]]; then
+    echo "FAIL: test_decision_layer_documents_fixed_response_gate" >&2
+    printf 'Expected normalized visible text fragment:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_decision_layer_documents_fixed_response_gate"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
@@ -354,3 +369,4 @@ test_cli_documents_tool_list_fields
 test_cli_documents_live_remove_delete_restart
 test_cli_documents_builtin_name_protection
 test_decision_layer_documents_configured_planning_path
+test_decision_layer_documents_fixed_response_gate
