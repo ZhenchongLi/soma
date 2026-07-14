@@ -31,6 +31,12 @@ manifest() ->
     (describe())#{adapter => erlang_module, module => ?MODULE}.
 ```
 
+## Model-facing catalog
+
+A manifest can add a prose `description` and a declared `params` list as its
+model-facing half. soma_tool_registry:catalog/0 provides a model-facing catalog
+of described tools using only name, description, and params.
+
 ## Two adapters
 
 - **`erlang_module`** — the in-BEAM built-ins. The worker runs
