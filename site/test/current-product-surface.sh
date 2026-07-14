@@ -395,6 +395,32 @@ test_decision_layer_places_api_key_in_daemon_environment() {
   echo "PASS: test_decision_layer_places_api_key_in_daemon_environment"
 }
 
+test_cli_documents_default_reply_and_opt_in_planning() {
+  local cli_text
+
+  cli_text="$(normalize_visible_text "${SITE_DIR}/dist/guides/cli/index.html")"
+
+  if ! assert_fragments_in_order "${cli_text}" \
+    "By default, the real provider returns reply proposals, so soma ask answers in text without executing tools." \
+    "With [llm] plan = true in ~/.soma/config, structured planning is opt-in:" \
+    "provider content compiles as (run-steps ...)" \
+    "proposal normalization, policy, and budget gates" \
+    "starts a supervised run."; then
+    echo "FAIL: test_cli_documents_default_reply_and_opt_in_planning" >&2
+    return 1
+  fi
+
+  if [[ "${cli_text}" == *"does not yet execute tools"* ]] || \
+     [[ "${cli_text}" == *"run_steps proposals land"* ]] || \
+     [[ "${cli_text}" == *"until then they are accepted"* ]]; then
+    echo "FAIL: test_cli_documents_default_reply_and_opt_in_planning" >&2
+    echo "Found stale pre-planning CLI copy." >&2
+    return 1
+  fi
+
+  echo "PASS: test_cli_documents_default_reply_and_opt_in_planning"
+}
+
 test_roadmap_marks_cli_config_planning_shipped() {
   local roadmap_text
   local expected="node B real LLM provider behind the perform_call seam [done — provider + actor planning + CLI/config planning surface]"
@@ -440,6 +466,22 @@ test_roadmap_marks_live_tool_management_shipped() {
   echo "PASS: test_roadmap_marks_live_tool_management_shipped"
 }
 
+test_roadmap_labels_completed_tracks() {
+  local roadmap_text
+  local expected="Shipped tracks (parallel to v0.7+):"
+
+  roadmap_text="$(normalize_visible_text "${SITE_DIR}/dist/reference/roadmap/index.html")"
+
+  if [[ "${roadmap_text}" != *"${expected}"* ]] || \
+     [[ "${roadmap_text}" == *"building now"* ]]; then
+    echo "FAIL: test_roadmap_labels_completed_tracks" >&2
+    printf 'Expected shipped-track heading without stale building-now copy:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_roadmap_labels_completed_tracks"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
@@ -460,6 +502,8 @@ test_cli_documents_builtin_name_protection
 test_decision_layer_documents_configured_planning_path
 test_decision_layer_documents_fixed_response_gate
 test_decision_layer_places_api_key_in_daemon_environment
+test_cli_documents_default_reply_and_opt_in_planning
 test_roadmap_marks_cli_config_planning_shipped
 test_roadmap_marks_tool_track_shipped
 test_roadmap_marks_live_tool_management_shipped
+test_roadmap_labels_completed_tracks
