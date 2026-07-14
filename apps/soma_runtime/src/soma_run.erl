@@ -19,6 +19,8 @@
                session_id,
                session_pid,
                correlation_id,
+               request_id,
+               envelope_hash,
                event_store,
                steps = [],
                pending = [],
@@ -40,6 +42,8 @@ init(Opts) ->
                  session_id = maps:get(session_id, Opts, undefined),
                  session_pid = maps:get(session_pid, Opts, undefined),
                  correlation_id = maps:get(correlation_id, Opts, undefined),
+                 request_id = maps:get(request_id, Opts, undefined),
+                 envelope_hash = maps:get(envelope_hash, Opts, undefined),
                  event_store = maps:get(event_store, Opts, undefined),
                  steps = maps:get(steps, Opts, []),
                  %% `pending' is the not-yet-committed suffix the state machine
@@ -415,9 +419,16 @@ render_cli_placeholder_value(Name, Type, _Value) ->
 
 durable_run_options(#data{run_id = RunId,
                           session_id = SessionId,
-                          correlation_id = CorrelationId}) ->
-    add_optional(correlation_id, CorrelationId,
-                 add_optional(session_id, SessionId, #{run_id => RunId})).
+                          correlation_id = CorrelationId,
+                          request_id = RequestId,
+                          envelope_hash = EnvelopeHash}) ->
+    add_optional(
+      envelope_hash, EnvelopeHash,
+      add_optional(
+        request_id, RequestId,
+        add_optional(
+          correlation_id, CorrelationId,
+          add_optional(session_id, SessionId, #{run_id => RunId})))).
 
 add_optional(_Key, undefined, Acc) ->
     Acc;
