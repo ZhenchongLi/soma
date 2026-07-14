@@ -255,6 +255,23 @@ mixed_bare_from_step_arg_entries_are_rejected_test() ->
             line => 0}]},
     ?assertEqual(Expected, soma_lfe:compile(Source, #{})).
 
+raw_mixed_bare_from_step_arg_map_is_rejected_test() ->
+    Candidate =
+        #{kind => invoke,
+          api_version => <<"1">>,
+          request_id => <<"r">>,
+          operation =>
+              #{kind => tool,
+                step =>
+                    #{id => <<"r">>,
+                      tool => echo,
+                      args => #{from_step => prior, value => 1}}}},
+    Expected =
+        {error,
+         [#{code => invalid_operation,
+            message => <<"invoke operation is invalid">>}]},
+    ?assertEqual(Expected, soma_service_envelope:normalize(Candidate)).
+
 %% Issue #243 criterion 5: invoke compilation and normalization stay process-
 %% and event-free, while the compile/render applications and touched sources
 %% retain their dependency and atom-creation boundaries.
