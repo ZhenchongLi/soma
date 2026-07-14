@@ -17,6 +17,8 @@ parse_invoke([invoke | SubForms]) ->
                operation := {tool, Tool, Args}} = Envelope} ->
             Step = #{id => RequestId, tool => Tool, args => Args},
             {ok, Envelope#{operation => #{kind => tool, step => Step}}};
+        {ok, #{operation := {steps, Steps}} = Envelope} ->
+            {ok, Envelope#{operation => #{kind => steps, steps => Steps}}};
         {error, Diags} ->
             {error, Diags};
         {ok, _Envelope} ->
@@ -35,6 +37,13 @@ parse_invoke_fields([[tool | ToolFields] | Rest], Acc) ->
             parse_invoke_fields(Rest, Acc#{operation => {tool, Tool, Args}});
         {error, Diags} ->
             {error, Diags}
+    end;
+parse_invoke_fields([[steps | StepForms] | Rest], Acc) ->
+    case parse_proposal_steps(StepForms) of
+        {ok, Steps} ->
+            parse_invoke_fields(Rest, Acc#{operation => {steps, Steps}});
+        {error, _Diags} ->
+            invalid_invoke_operation()
     end;
 parse_invoke_fields([[scope | Values] | Rest], Acc) ->
     parse_invoke_fields(Rest, Acc#{scope => Values});
