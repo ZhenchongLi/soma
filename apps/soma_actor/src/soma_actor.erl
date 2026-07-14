@@ -285,8 +285,10 @@ idle(info, {run_failed, RunId, Reason}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
             {keep_state, Data};
-        #{purpose := explore_run, task_id := TaskId} ->
-            {keep_state, clear_finished_explore_run(RunId, TaskId, Data)};
+        #{purpose := explore_run} = RunContext ->
+            Data1 = continue_explore_after_failure(RunId, Reason,
+                                                   RunContext, Data),
+            {keep_state, Data1};
         TaskId ->
             Data0 = clear_monitor(TaskId, Data),
             Task = maps:get(TaskId, Data0#data.tasks),
@@ -303,8 +305,9 @@ idle(info, {run_timeout, RunId}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
             {keep_state, Data};
-        #{purpose := explore_run, task_id := TaskId} ->
-            {keep_state, clear_finished_explore_run(RunId, TaskId, Data)};
+        #{purpose := explore_run} = RunContext ->
+            Data1 = continue_explore_after_timeout(RunId, RunContext, Data),
+            {keep_state, Data1};
         TaskId ->
             Data0 = clear_monitor(TaskId, Data),
             Task = maps:get(TaskId, Data0#data.tasks),
@@ -523,6 +526,10 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                     Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
                     Data1 = Data0#data{tasks = Tasks},
                     reply_waiter(TaskId, {ok, Result}, Data1);
+                {invalid_round_reply, Diagnostics} ->
+                    Data1 = continue_explore_after_invalid_reply(
+                              TaskId, Candidate, Diagnostics, Data0),
+                    {keep_state, Data1};
                 {invalid_proposal, Diagnostics} ->
                     %% A malformed proposal is the entry of the bounded repair
                     %% loop (L.5). With repair on (the default), a repair budget
@@ -1342,10 +1349,10 @@ proposal_result(Output, explore) when is_binary(Output); is_list(Output) ->
             %% remain owned by the single proposal branch above.
             case soma_proposal:normalize(ProposalMap) of
                 {ok, Proposal} -> {proposal, Proposal};
-                {error, Diagnostics} -> {invalid_proposal, Diagnostics}
+                {error, Diagnostics} -> {invalid_round_reply, Diagnostics}
             end;
         {error, Diagnostics} ->
-            {invalid_proposal, Diagnostics}
+            {invalid_round_reply, Diagnostics}
     end;
 proposal_result(Output, proposal) when is_binary(Output); is_list(Output) ->
     case soma_lfe:compile(Output, #{}) of
@@ -1382,17 +1389,8 @@ continue_explore_after_completion(RunId, Outputs,
                  ?DEFAULT_MAX_OBSERVATION_BYTES),
     Observation = completed_explore_observation(
                     Steps, Outputs, MaxObservationBytes),
-    Transcript0 = maps:get(explore_transcript, Task0, []),
-    Transcript = Transcript0
-        ++ [#{role => <<"assistant">>, content => AssistantReply},
-            #{role => <<"user">>, content => Observation}],
-    Task1 = Task0#{explore_round => Round + 1,
-                   explore_transcript => Transcript},
-    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
-    Data1 = Data0#data{tasks = Tasks},
-    Envelope = maps:get(explore_envelope, Task1),
-    CorrelationId = maps:get(correlation_id, Task1),
-    maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data1).
+    continue_explore_with_observation(TaskId, Round, AssistantReply,
+                                      Observation, Data0).
 
 completed_explore_observation(Steps, Outputs, MaxBytes) ->
     {StepForms, Truncated} =
@@ -1451,6 +1449,46 @@ continue_explore_after_non_reader_rejection(TaskId, Tool, Effect, Data) ->
           [<<"(observation (status rejected) (tool ">>,
            observation_step_id(Tool), <<") (effect ">>,
            observation_step_id(Effect), <<"))">>]),
+    continue_explore_with_observation(TaskId, Round, AssistantReply,
+                                      Observation, Data).
+
+continue_explore_after_failure(RunId, Reason,
+                               #{task_id := TaskId, round := Round}, Data) ->
+    Data0 = clear_finished_explore_run(RunId, TaskId, Data),
+    Task = maps:get(TaskId, Data0#data.tasks),
+    AssistantReply = maps:get(explore_assistant_reply, Task),
+    MaxObservationBytes =
+        maps:get(max_observation_bytes, Data0#data.budget,
+                 ?DEFAULT_MAX_OBSERVATION_BYTES),
+    Observation = bounded_explore_term_observation(
+                    failed, reason, Reason, MaxObservationBytes),
+    continue_explore_with_observation(TaskId, Round, AssistantReply,
+                                      Observation, Data0).
+
+continue_explore_after_timeout(RunId,
+                               #{task_id := TaskId, round := Round}, Data) ->
+    Data0 = clear_finished_explore_run(RunId, TaskId, Data),
+    Task = maps:get(TaskId, Data0#data.tasks),
+    AssistantReply = maps:get(explore_assistant_reply, Task),
+    Observation = <<"(observation (status timeout))">>,
+    continue_explore_with_observation(TaskId, Round, AssistantReply,
+                                      Observation, Data0).
+
+continue_explore_after_invalid_reply(TaskId, AssistantReply, Diagnostics,
+                                     Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    Round = maps:get(explore_round, Task, 1),
+    MaxObservationBytes =
+        maps:get(max_observation_bytes, Data#data.budget,
+                 ?DEFAULT_MAX_OBSERVATION_BYTES),
+    Observation = bounded_explore_term_observation(
+                    failed, diagnostic, Diagnostics, MaxObservationBytes),
+    continue_explore_with_observation(TaskId, Round, AssistantReply,
+                                      Observation, Data).
+
+continue_explore_with_observation(TaskId, Round, AssistantReply, Observation,
+                                  Data) ->
+    Task0 = maps:get(TaskId, Data#data.tasks),
     Transcript0 = maps:get(explore_transcript, Task0, []),
     Transcript = Transcript0
         ++ [#{role => <<"assistant">>, content => AssistantReply},
@@ -1462,6 +1500,19 @@ continue_explore_after_non_reader_rejection(TaskId, Tool, Effect, Data) ->
     Envelope = maps:get(explore_envelope, Task1),
     CorrelationId = maps:get(correlation_id, Task1),
     maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data1).
+
+bounded_explore_term_observation(Status, Field, Term, MaxBytes) ->
+    Serialized = iolist_to_binary(soma_lisp:render(Term)),
+    {Retained, _Remaining, Truncated} =
+        retain_observation_output(Serialized, MaxBytes),
+    Marker = case Truncated of
+                 true -> <<" (truncated true)">>;
+                 false -> <<>>
+             end,
+    iolist_to_binary(
+      [<<"(observation (status ">>, observation_step_id(Status),
+       <<") (">>, observation_step_id(Field), <<" ">>,
+       soma_lisp:render(Retained), <<")">>, Marker, <<")">>]).
 
 observation_step_id(StepId) when is_atom(StepId) ->
     atom_to_binary(StepId, utf8);
