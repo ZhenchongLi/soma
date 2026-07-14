@@ -12,14 +12,14 @@ render(#{kind := explore, steps := Steps}) when is_list(Steps) ->
      lists:join(" ", [render_explore_step(Step) || Step <- Steps]),
      ")"];
 render(Map) when is_map(Map) ->
-    case is_result_map(Map) of
+    case is_event_map(Map) of
         true ->
-            ["(result ", lists:join(" ", result_pairs(Map)), ")"];
+            Pairs = [render_pair(K, V) || {K, V} <- maps:to_list(Map)],
+            ["(event ", lists:join(" ", Pairs), ")"];
         false ->
-            case is_event_map(Map) of
+            case is_result_map(Map) of
                 true ->
-                    Pairs = [render_pair(K, V) || {K, V} <- maps:to_list(Map)],
-                    ["(event ", lists:join(" ", Pairs), ")"];
+                    ["(result ", lists:join(" ", result_pairs(Map)), ")"];
                 false ->
                     case is_envelope_map(Map) of
                         true ->
@@ -132,10 +132,10 @@ render_explore_symbol(Atom) when is_atom(Atom) ->
 %% A payload-less terminal map (a timed-out or cancelled run carries neither
 %% `outputs' nor `error') is still a result map -- it renders as
 %% `(result (status timeout) ...)' so the reply stays a recognizable terminal
-%% result rather than a headless pair list. The status-whitelist keeps the
-%% event-map and envelope-map branches below cleanly separate: an event map's
-%% `status' (if any) is not a terminal status, and a `#{status => running}'
-%% registry map is not terminal either, so neither is wrongly headed `result'.
+%% result rather than a headless pair list. Event maps are classified first
+%% because an event such as `explore.round.completed' can itself carry a
+%% terminal-looking status. The whitelist keeps a `#{status => running}'
+%% registry map from being wrongly headed `result'.
 is_result_map(Map) ->
     case maps:find(status, Map) of
         {ok, Status} -> is_terminal_status(Status);
