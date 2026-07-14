@@ -58,6 +58,9 @@ idempotent to false, and timeout_ms to 30000 ms.
   argv, **no shell**), captures stdout as the step output, and treats exit 0 as
   success.
 
+`ask_actor` is an actor-owned `erlang_module` tool, registered by the actor
+application at boot.
+
 A placeholder such as `"{param}"` occupies one complete `argv` element and
 must name an entry in the declared `params` list. Soma replaces that whole
 `argv` element with the parameter value; it does not perform substring
