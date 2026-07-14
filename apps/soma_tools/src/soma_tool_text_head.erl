@@ -24,9 +24,12 @@ manifest() ->
     {ok, soma_tool:output()} | {error, soma_tool:error()}.
 invoke(Input, _Ctx) ->
     case validate_input(Input) of
-        {ok, Text, _Lines} ->
-            {Prefix, Truncated} = soma_tool_text:cap_prefix(Text),
-            {ok, #{text => Prefix, truncated => Truncated}};
+        {ok, Text, Lines} ->
+            {LinePrefix, LinesTruncated} =
+                soma_tool_text:prefix_lines(Text, Lines),
+            {Prefix, BytesTruncated} = soma_tool_text:cap_prefix(LinePrefix),
+            {ok, #{text => Prefix,
+                   truncated => LinesTruncated orelse BytesTruncated}};
         {error, _Reason} = Error ->
             Error
     end.
