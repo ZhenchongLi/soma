@@ -9,18 +9,22 @@
 -export([test_single_tool_invocation_runs_without_llm_worker/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
+-export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
      test_single_tool_invocation_runs_without_llm_worker,
      test_oversized_result_fails_with_max_output_reason,
-     test_flat_plan_preserves_order_and_from_step_output].
+     test_flat_plan_preserves_order_and_from_step_output,
+     test_identical_duplicate_reuses_running_handle_and_terminal_result].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
-       TestCase =:= test_flat_plan_preserves_order_and_from_step_output ->
+       TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
+       TestCase =:=
+           test_identical_duplicate_reuses_running_handle_and_terminal_result ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -32,7 +36,9 @@ end_per_testcase(TestCase, _Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
-       TestCase =:= test_flat_plan_preserves_order_and_from_step_output ->
+       TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
+       TestCase =:=
+           test_identical_duplicate_reuses_running_handle_and_terminal_result ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
@@ -155,6 +161,30 @@ test_flat_plan_preserves_order_and_from_step_output(_Config) ->
             maps:get(event_type, Event) =:= <<"step.started">>],
     ?assertEqual([FirstStepId, SecondStepId], StartedStepIds).
 
+test_identical_duplicate_reuses_running_handle_and_terminal_result(_Config) ->
+    RequestId = <<"service-identical-duplicate">>,
+    Envelope = tool_envelope(RequestId, sleep, #{ms => 300}),
+    {ok, NormalizedEnvelope} =
+        soma_service_envelope:normalize(Envelope),
+    Step = maps:get(step, maps:get(operation, NormalizedEnvelope)),
+
+    {ok, #{task_id := TaskId, status := accepted} = Handle} =
+        soma_service:invoke(Envelope),
+    StorePid = runtime_event_store(),
+    RunId = wait_for_run_started(StorePid, [Step], 100),
+    ok = wait_for_run_event(StorePid, RunId, <<"tool.started">>, 100),
+
+    ?assertEqual({ok, Handle}, soma_service:invoke(Envelope)),
+
+    {ok, Terminal} = wait_for_status(TaskId, succeeded, 100),
+    ?assertEqual({ok, Terminal}, soma_service:invoke(Envelope)),
+
+    MatchingRunStarts =
+        [Event || Event <- soma_event_store:all(StorePid),
+                  maps:get(event_type, Event) =:= <<"run.started">>,
+                  maps:get(steps, maps:get(payload, Event)) =:= [Step]],
+    ?assertEqual(1, length(MatchingRunStarts)).
+
 ensure_loaded(App) ->
     case application:load(App) of
         ok -> ok;
@@ -202,6 +232,33 @@ tool_envelope(RequestId, Tool, Args) ->
       operation =>
           #{kind => tool,
             step => #{id => RequestId, tool => Tool, args => Args}}}.
+
+wait_for_run_started(_StorePid, _Steps, 0) ->
+    error(service_run_did_not_start);
+wait_for_run_started(StorePid, Steps, Attempts) ->
+    case [maps:get(run_id, Event)
+          || Event <- soma_event_store:all(StorePid),
+             maps:get(event_type, Event) =:= <<"run.started">>,
+             maps:get(steps, maps:get(payload, Event)) =:= Steps] of
+        [RunId] ->
+            RunId;
+        [] ->
+            timer:sleep(10),
+            wait_for_run_started(StorePid, Steps, Attempts - 1)
+    end.
+
+wait_for_run_event(_StorePid, _RunId, _Type, 0) ->
+    {error, timeout};
+wait_for_run_event(StorePid, RunId, Type, Attempts) ->
+    case lists:any(
+           fun(Event) -> maps:get(event_type, Event) =:= Type end,
+           soma_event_store:by_run(StorePid, RunId)) of
+        true ->
+            ok;
+        false ->
+            timer:sleep(10),
+            wait_for_run_event(StorePid, RunId, Type, Attempts - 1)
+    end.
 
 wait_for_monitored_run(_ServicePid, 0) ->
     error(service_did_not_monitor_owned_run);
