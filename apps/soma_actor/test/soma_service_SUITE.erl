@@ -16,6 +16,7 @@
 -export([test_out_of_scope_invocation_rejected_through_policy/1]).
 -export([test_unscoped_invocation_uses_configured_or_empty_default_policy/1]).
 -export([test_unknown_scope_entry_does_not_create_atom/1]).
+-export([test_deadline_exceeded_cleans_run_worker_and_cli_process/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -28,8 +29,18 @@ all() ->
      test_durable_restart_rebuilds_dedupe_without_new_run_started,
      test_out_of_scope_invocation_rejected_through_policy,
      test_unscoped_invocation_uses_configured_or_empty_default_policy,
-     test_unknown_scope_entry_does_not_create_atom].
+     test_unknown_scope_entry_does_not_create_atom,
+     test_deadline_exceeded_cleans_run_worker_and_cli_process].
 
+init_per_testcase(
+  test_deadline_exceeded_cleans_run_worker_and_cli_process, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [service_deadline_cli]}),
+    TmpDir = make_tmp_dir(),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {tmp_dir, TmpDir} | Config];
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -78,6 +89,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:=
            test_unscoped_invocation_uses_configured_or_empty_default_policy;
        TestCase =:= test_unknown_scope_entry_does_not_create_atom;
+       TestCase =:=
+           test_deadline_exceeded_cleans_run_worker_and_cli_process;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -409,6 +422,54 @@ test_unknown_scope_entry_does_not_create_atom(_Config) ->
        AtomCountBefore,
        erlang:system_info(atom_count)).
 
+test_deadline_exceeded_cleans_run_worker_and_cli_process(Config) ->
+    ServicePid = whereis(soma_service),
+    {Helper, PidFile} = write_deadline_cli_stub(?config(tmp_dir, Config)),
+    ok = soma_tool_registry:register_tool(
+           #{name => service_deadline_cli,
+             effect => reader,
+             idempotent => true,
+             timeout_ms => 60000,
+             adapter => cli,
+             executable => Helper,
+             argv => [PidFile]}),
+    Step = #{id => deadline_step,
+             tool => service_deadline_cli,
+             args => #{value => <<"ignored">>},
+             timeout_ms => 60000},
+    Envelope = #{kind => invoke,
+                 api_version => <<"1">>,
+                 request_id => <<"service-deadline-cli">>,
+                 operation => #{kind => steps, steps => [Step]},
+                 deadline_ms => 1000},
+
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(Envelope),
+    RunPid = wait_for_monitored_run(ServicePid, 100),
+    StorePid = runtime_event_store(),
+    RunId = wait_for_run_started(StorePid, [Step], 100),
+    ok = wait_for_run_event(StorePid, RunId, <<"tool.started">>, 100),
+    WorkerPid = tool_call_pid_from(StorePid, RunId),
+    OsPid = wait_for_os_pid(PidFile, 100),
+    try
+        ?assert(is_process_alive(RunPid)),
+        ?assert(is_process_alive(WorkerPid)),
+        ?assert(os_process_alive(OsPid)),
+
+        {ok, Terminal} = wait_for_status(TaskId, failed, 300),
+        ?assertEqual(deadline_exceeded, maps:get(reason, Terminal)),
+        ?assertEqual(ServicePid, whereis(soma_service)),
+        ?assert(is_process_alive(ServicePid)),
+        ok = wait_for_process_dead(RunPid, 100),
+        ok = wait_for_process_dead(WorkerPid, 100),
+        ok = wait_for_os_process_dead(OsPid, 100),
+        ?assertNot(is_process_alive(RunPid)),
+        ?assertNot(is_process_alive(WorkerPid)),
+        ?assertNot(os_process_alive(OsPid))
+    after
+        maybe_cancel_run(RunPid)
+    end.
+
 ensure_loaded(App) ->
     case application:load(App) of
         ok -> ok;
@@ -493,6 +554,87 @@ tool_envelope(RequestId, Tool, Args) ->
       operation =>
           #{kind => tool,
             step => #{id => RequestId, tool => Tool, args => Args}}}.
+
+write_deadline_cli_stub(TmpDir) ->
+    Helper = filename:join(TmpDir, "deadline-cli.sh"),
+    PidFile = filename:join(TmpDir, "deadline-cli.pid"),
+    Script = <<"#!/bin/sh\n"
+               "printf '%s\\n' \"$$\" > \"$1\"\n"
+               "sleep 30\n">>,
+    ok = file:write_file(Helper, Script),
+    ok = file:change_mode(Helper, 8#755),
+    {Helper, PidFile}.
+
+tool_call_pid_from(StorePid, RunId) ->
+    [WorkerPid] =
+        [maps:get(tool_call_pid, Event)
+         || Event <- soma_event_store:by_run(StorePid, RunId),
+            maps:get(event_type, Event) =:= <<"tool.started">>],
+    WorkerPid.
+
+wait_for_os_pid(_PidFile, 0) ->
+    error(cli_stub_did_not_write_os_pid);
+wait_for_os_pid(PidFile, Attempts) ->
+    case file:read_file(PidFile) of
+        {ok, Bytes} ->
+            list_to_integer(string:trim(binary_to_list(Bytes)));
+        {error, enoent} ->
+            timer:sleep(10),
+            wait_for_os_pid(PidFile, Attempts - 1)
+    end.
+
+wait_for_process_dead(_Pid, 0) ->
+    {error, process_still_alive};
+wait_for_process_dead(Pid, Attempts) ->
+    case is_process_alive(Pid) of
+        false ->
+            ok;
+        true ->
+            timer:sleep(10),
+            wait_for_process_dead(Pid, Attempts - 1)
+    end.
+
+wait_for_os_process_dead(_OsPid, 0) ->
+    {error, os_process_still_alive};
+wait_for_os_process_dead(OsPid, Attempts) ->
+    case os_process_alive(OsPid) of
+        false ->
+            ok;
+        true ->
+            timer:sleep(10),
+            wait_for_os_process_dead(OsPid, Attempts - 1)
+    end.
+
+os_process_alive(OsPid) ->
+    Kill = os:find_executable("kill"),
+    Port = open_port(
+             {spawn_executable, Kill},
+             [{args, ["-0", integer_to_list(OsPid)]},
+              exit_status, binary, use_stdio, stderr_to_stdout]),
+    os_process_probe_result(Port).
+
+os_process_probe_result(Port) ->
+    receive
+        {Port, {data, _Bytes}} ->
+            os_process_probe_result(Port);
+        {Port, {exit_status, 0}} ->
+            true;
+        {Port, {exit_status, _NonZero}} ->
+            false
+    after 1000 ->
+        erlang:port_close(Port),
+        error(os_process_probe_timeout)
+    end.
+
+maybe_cancel_run(RunPid) ->
+    case is_process_alive(RunPid) of
+        true ->
+            RunPid ! cancel,
+            _ = wait_for_process_dead(RunPid, 100),
+            ok;
+        false ->
+            ok
+    end.
 
 wait_for_run_started(_StorePid, _Steps, 0) ->
     error(service_run_did_not_start);
