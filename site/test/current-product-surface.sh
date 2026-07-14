@@ -138,8 +138,24 @@ test_landing_quick_start_matches_readme_checkout_flow() {
   echo "PASS: test_landing_quick_start_matches_readme_checkout_flow"
 }
 
+test_landing_labels_run_model_free() {
+  local landing_text
+  local expected="Deterministic soma run is model-free."
+
+  landing_text="$(normalize_visible_text "${SITE_DIR}/dist/index.html")"
+
+  if [[ "${landing_text}" != *"${expected}"* ]]; then
+    echo "FAIL: test_landing_labels_run_model_free" >&2
+    printf 'Expected normalized visible text fragment:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_landing_labels_run_model_free"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
 test_landing_marks_config_registered_cli_tools_shipped
 test_landing_quick_start_matches_readme_checkout_flow
+test_landing_labels_run_model_free
