@@ -50,6 +50,7 @@
 -export([test_unparseable_explore_setting_keeps_daemon_reachable_and_off/1]).
 -export([test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation/1]).
 -export([test_trace_after_explore_ask_returns_rounds_in_event_order/1]).
+-export([test_explore_ask_client_disconnect_cancels_actor_task/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -97,7 +98,8 @@ all() ->
      test_explore_ask_uses_configured_round_and_observation_budgets,
      test_unparseable_explore_setting_keeps_daemon_reachable_and_off,
      test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation,
-     test_trace_after_explore_ask_returns_rounds_in_event_order].
+     test_trace_after_explore_ask_returns_rounds_in_event_order,
+     test_explore_ask_client_disconnect_cancels_actor_task].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -1537,6 +1539,58 @@ test_trace_after_explore_ask_returns_rounds_in_event_order(Config) ->
         end
     end.
 
+%% Criterion 7 (#232): a raw local client closes its socket while a configured
+%% explore ask owns a live reader run. The server must bridge that socket death
+%% to the actor's parked `ask/3' caller so the actor cancels the task and records
+%% `actor.task.cancelled' on the same correlation trail.
+test_explore_ask_client_disconnect_cancels_actor_task(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = terminal_explore_provider_config_file(Config),
+    KeyEnv = "SOMA_LLM_API_KEY",
+    Prev = os:getenv(KeyEnv),
+    os:putenv(KeyEnv, "sk-explore-disconnect-test"),
+    ExploreSource =
+        <<"(explore (step (id wait) (tool sleep) "
+          "(args (ms 5000)) (timeout_ms 10000)))">>,
+    try
+        Loaded = soma_config:load(#{config_path => ConfigPath}),
+        ModelConfig =
+            Loaded#{response_sequence =>
+                        [{200, provider_response_body(ExploreSource)}]},
+        {ok, _Server} =
+            soma_cli_server:start_link(#{socket => Path,
+                                         model_config => ModelConfig}),
+        StorePid = event_store_pid(),
+        Before = tool_started_runs(StorePid),
+        {ok, Client} = connect(Path),
+        Request = <<"(ask (intent \"inspect slowly\") (allow sleep))">>,
+        ok = gen_tcp:send(Client, Request),
+        RunId = wait_for_new_tool_started_run(StorePid, Before, 100),
+        [Started | _] =
+            [Event || Event <- soma_event_store:by_run(StorePid, RunId),
+                      maps:get(event_type, Event) =:= <<"tool.started">>],
+        CorrelationId = maps:get(correlation_id, Started),
+        [Accepted] =
+            [Event || Event <-
+                          soma_event_store:by_correlation(StorePid,
+                                                          CorrelationId),
+                      maps:get(event_type, Event) =:=
+                          <<"actor.task.accepted">>],
+        TaskId = maps:get(task_id, Accepted),
+
+        ok = gen_tcp:close(Client),
+        Cancelled = wait_for_correlation_event(
+                      StorePid, CorrelationId,
+                      <<"actor.task.cancelled">>, 100),
+        TaskId = maps:get(task_id, Cancelled),
+        CorrelationId = maps:get(correlation_id, Cancelled)
+    after
+        case Prev of
+            false -> os:unsetenv(KeyEnv);
+            _ -> os:putenv(KeyEnv, Prev)
+        end
+    end.
+
 %% True when the sentinel binary appears anywhere inside Term (a map's keys or
 %% values, a list, or a tuple, however nested).
 term_contains(Term, Sentinel) when is_binary(Term) ->
@@ -1690,6 +1744,18 @@ wait_for_event(StorePid, RunId, Type, N) ->
         false ->
             timer:sleep(20),
             wait_for_event(StorePid, RunId, Type, N - 1)
+    end.
+
+wait_for_correlation_event(_StorePid, _CorrelationId, _Type, 0) ->
+    {error, timeout};
+wait_for_correlation_event(StorePid, CorrelationId, Type, N) ->
+    Events = soma_event_store:by_correlation(StorePid, CorrelationId),
+    case [Event || Event <- Events,
+                   maps:get(event_type, Event) =:= Type] of
+        [Event | _] -> Event;
+        [] ->
+            timer:sleep(20),
+            wait_for_correlation_event(StorePid, CorrelationId, Type, N - 1)
     end.
 
 terminal_events_for_task(StorePid, TaskId) ->
