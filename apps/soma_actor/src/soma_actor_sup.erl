@@ -1,5 +1,6 @@
 %% @doc Root supervisor for the `soma_actor' application. It owns the actor-layer
-%% registry and a dynamic child supervisor for actor instances.
+%% registry, the permanent runtime service, and a dynamic child supervisor for
+%% actor instances.
 -module(soma_actor_sup).
 
 -behaviour(supervisor).
@@ -25,13 +26,17 @@ init([]) ->
                  start => {soma_actor_registry, start_link, []},
                  restart => permanent,
                  type => worker},
+    Service = #{id => soma_service,
+                start => {soma_service, start_link, []},
+                restart => permanent,
+                type => worker},
     ActorChildSup = #{id => ?ACTOR_CHILD_SUP,
                       start => {supervisor, start_link,
                                 [{local, ?ACTOR_CHILD_SUP}, ?MODULE,
                                  actor_children]},
                       restart => permanent,
                       type => supervisor},
-    {ok, {SupFlags, [Registry, ActorChildSup]}};
+    {ok, {SupFlags, [Registry, Service, ActorChildSup]}};
 init(actor_children) ->
     SupFlags = #{strategy => simple_one_for_one,
                  intensity => 1,
