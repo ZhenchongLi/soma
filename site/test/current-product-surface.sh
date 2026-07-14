@@ -301,6 +301,21 @@ test_cli_documents_live_remove_delete_restart() {
   echo "PASS: test_cli_documents_live_remove_delete_restart"
 }
 
+test_cli_documents_builtin_name_protection() {
+  local cli_text
+  local expected="Tool-management invariant: built-in names are protected. Config tools cannot replace or remove built-ins, or change their safety metadata."
+
+  cli_text="$(normalize_visible_text "${SITE_DIR}/dist/guides/cli/index.html")"
+
+  if [[ "${cli_text}" != *"${expected}"* ]]; then
+    echo "FAIL: test_cli_documents_builtin_name_protection" >&2
+    printf 'Expected normalized visible text fragment:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_cli_documents_builtin_name_protection"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
@@ -316,3 +331,4 @@ test_tools_documents_actor_owned_ask_actor
 test_cli_documents_live_register_persist_reload
 test_cli_documents_tool_list_fields
 test_cli_documents_live_remove_delete_restart
+test_cli_documents_builtin_name_protection
