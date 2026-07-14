@@ -887,30 +887,35 @@ build_call_opts(#{provider := openai_compat,
     Opts1 = copy_optional([api_key, response, enable_thinking, max_tokens,
                            explore],
                           ModelConfig, Opts),
-    %% Planning mode (`plan => true' on the model_config) marks the call so the
-    %% result handler reads the provider's content as a `(run-steps ...)' plan
-    %% rather than storing it as a plain reply. The marker rides on the worker
-    %% opts and is stamped onto the task when the call starts. The request also
-    %% gains a system message ahead of the user prompt, instructing the model to
-    %% emit a `(run-steps ...)' plan over the allowed tool names (threaded in from
-    %% the actor's tool_policy as `allowed_tools'). Off or absent, the opts are
-    %% byte-for-byte the B.1/B.2 reply opts.
-    case maps:get(plan, ModelConfig, false) of
-        true ->
+    %% Exploration mode takes precedence over planning mode. Both modes read the
+    %% live catalog, filter it through the same policy helper, and insert their
+    %% dynamic system message immediately before the user message. Exploration
+    %% also reports the live round context; until the actor loop supplies later
+    %% values, an initial request defaults to round one with five rounds left.
+    case {maps:get(explore, ModelConfig, false),
+          maps:get(plan, ModelConfig, false)} of
+        {true, _} ->
             AllowedTools = maps:get(allowed_tools, ModelConfig, all),
-            Catalog = soma_tool_registry:catalog(),
+            Catalog = policy_filtered_catalog(
+                        AllowedTools, soma_tool_registry:catalog()),
+            Round = maps:get(round, ModelConfig, 1),
+            RemainingRounds =
+                maps:get(remaining_rounds, ModelConfig,
+                         maps:get(max_explore_rounds, ModelConfig, 5)
+                         - Round + 1),
+            System = #{role => <<"system">>,
+                       content => explore_system_prompt(Round,
+                                                        RemainingRounds,
+                                                        Catalog)},
+            insert_system_message(System, Opts1);
+        {_, true} ->
+            AllowedTools = maps:get(allowed_tools, ModelConfig, all),
+            Catalog = policy_filtered_catalog(
+                        AllowedTools, soma_tool_registry:catalog()),
             System = #{role => <<"system">>,
                        content => planning_system_prompt(AllowedTools,
                                                          Catalog)},
-            %% BaseMessages ends with the user message and, when a custom
-            %% system_prompt was set above, leads with that custom system
-            %% message. Insert the planning system message right before the
-            %% trailing user message so a custom system_prompt stays first.
-            UserMessages = maps:get(messages, Opts1),
-            {Leading, [LastMessage]} =
-                lists:split(length(UserMessages) - 1, UserMessages),
-            Opts1#{plan => true,
-                   messages => Leading ++ [System, LastMessage]};
+            insert_system_message(System, Opts1#{plan => true});
         _ -> Opts1
     end;
 %% A non-real-provider `model_config' -- empty or carrying a `directive' (the
@@ -941,6 +946,14 @@ copy_optional(Keys, Src, Dst) ->
       Dst,
       Keys).
 
+%% Base messages end with the user prompt and may lead with a caller-supplied
+%% system prompt. Keep that custom instruction first and place Soma's dynamic
+%% mode instruction immediately before the trailing user message.
+insert_system_message(System, Opts) ->
+    Messages = maps:get(messages, Opts),
+    {Leading, [LastMessage]} = lists:split(length(Messages) - 1, Messages),
+    Opts#{messages => Leading ++ [System, LastMessage]}.
+
 %% Build the planning-mode system prompt: plain text instructing the model to
 %% answer with a `(run-steps ...)' Lisp plan, listing the allowed tool names when
 %% the policy names concrete tools, followed by one Lisp `(tool ...)' block per
@@ -954,16 +967,38 @@ copy_optional(Keys, Src, Dst) ->
 planning_system_prompt(AllowedTools, Catalog) when is_list(AllowedTools) ->
     Names = [atom_to_binary(T, utf8) || T <- AllowedTools],
     Joined = iolist_to_binary(lists:join(<<", ">>, Names)),
-    Allowed = [Entry || Entry = #{name := Name} <- Catalog,
-                        lists:member(Name, AllowedTools)],
     iolist_to_binary(
       [<<"Answer with a Lisp plan of the form (run-steps ...) using only ">>,
        <<"these tools: ">>, Joined, <<".">>,
-       catalog_blocks(Allowed)]);
+       catalog_blocks(Catalog)]);
 planning_system_prompt(_All, Catalog) ->
     iolist_to_binary(
       [<<"Answer with a Lisp plan of the form (run-steps ...).">>,
        catalog_blocks(Catalog)]).
+
+%% Build the exploration-mode instruction around the same catalog blocks used
+%% by planning. One reply is exactly one Lisp form: a nonterminal reader-only
+%% action or a terminal proposal. The remaining allowance includes the round
+%% whose reply this request asks for.
+explore_system_prompt(Round, RemainingRounds, Catalog) ->
+    iolist_to_binary(
+      [<<"Return exactly one Lisp form: either a reader-only (explore ...) ">>,
+       <<"action or a terminal proposal such as (run-steps ...), ">>,
+       <<"(reply ...), or (reject ...). Current exploration round: ">>,
+       integer_to_binary(Round),
+       <<". Remaining max_explore_rounds allowance (including this round): ">>,
+       integer_to_binary(RemainingRounds), <<".">>,
+       catalog_blocks(Catalog)]).
+
+%% Select the model-visible catalog once through the actor's name policy. Both
+%% planning and exploration pass this exact list to catalog_blocks/1. An `all'
+%% policy exposes the full catalog; a concrete allowlist preserves catalog order
+%% and drops entries whose names are outside the policy.
+policy_filtered_catalog(AllowedTools, Catalog) when is_list(AllowedTools) ->
+    [Entry || Entry = #{name := Name} <- Catalog,
+              lists:member(Name, AllowedTools)];
+policy_filtered_catalog(_All, Catalog) ->
+    Catalog.
 
 %% Render catalog entries as newline-separated Lisp `(tool ...)' blocks,
 %% mirroring the `(tool ...)' config form from docs/tool-abstraction.md section 5.
