@@ -12,6 +12,7 @@
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
 -export([test_conflicting_request_id_rejected_before_new_run/1]).
 -export([test_run_started_journals_request_id_and_envelope_hash/1]).
+-export([test_durable_restart_rebuilds_dedupe_without_new_run_started/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -20,10 +21,13 @@ all() ->
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
      test_conflicting_request_id_rejected_before_new_run,
-     test_run_started_journals_request_id_and_envelope_hash].
+     test_run_started_journals_request_id_and_envelope_hash,
+     test_durable_restart_rebuilds_dedupe_without_new_run_started].
 
-init_per_testcase(test_run_started_journals_request_id_and_envelope_hash,
-                  Config) ->
+init_per_testcase(TestCase, Config)
+  when TestCase =:= test_run_started_journals_request_id_and_envelope_hash;
+       TestCase =:=
+           test_durable_restart_rebuilds_dedupe_without_new_run_started ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -42,7 +46,9 @@ init_per_testcase(TestCase, Config)
            test_identical_duplicate_reuses_running_handle_and_terminal_result;
        TestCase =:= test_conflicting_request_id_rejected_before_new_run;
        TestCase =:=
-           test_run_started_journals_request_id_and_envelope_hash ->
+           test_run_started_journals_request_id_and_envelope_hash;
+       TestCase =:=
+           test_durable_restart_rebuilds_dedupe_without_new_run_started ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -59,7 +65,9 @@ end_per_testcase(TestCase, Config)
            test_identical_duplicate_reuses_running_handle_and_terminal_result;
        TestCase =:= test_conflicting_request_id_rejected_before_new_run;
        TestCase =:=
-           test_run_started_journals_request_id_and_envelope_hash ->
+           test_run_started_journals_request_id_and_envelope_hash;
+       TestCase =:=
+           test_durable_restart_rebuilds_dedupe_without_new_run_started ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
@@ -257,6 +265,39 @@ test_run_started_journals_request_id_and_envelope_hash(Config) ->
     ?assertEqual(
        #{request_id => RequestId, envelope_hash => EnvelopeHash},
        maps:with([request_id, envelope_hash], RunOptions)).
+
+test_durable_restart_rebuilds_dedupe_without_new_run_started(Config) ->
+    RequestId = <<"service-durable-restart-dedupe">>,
+    Envelope = tool_envelope(RequestId, sleep, #{ms => 1000}),
+    {ok, NormalizedEnvelope} =
+        soma_service_envelope:normalize(Envelope),
+    Step = maps:get(step, maps:get(operation, NormalizedEnvelope)),
+
+    ServicePid = whereis(soma_service),
+    {ok, #{task_id := TaskId, status := accepted} = Handle} =
+        soma_service:invoke(Envelope),
+    StorePid = runtime_event_store(),
+    RunId = wait_for_run_started(StorePid, [Step], 100),
+    ok = wait_for_run_event(StorePid, RunId, <<"tool.started">>, 100),
+    OwnedRunPid = wait_for_monitored_run(ServicePid, 100),
+
+    exit(ServicePid, kill),
+    ReplacementPid = wait_for_replacement(ServicePid, 100),
+    ?assertEqual({ok, Handle}, soma_service:invoke(Envelope)),
+    ?assertEqual(OwnedRunPid, wait_for_monitored_run(ReplacementPid, 100)),
+
+    {ok, Terminal} = wait_for_status(TaskId, succeeded, 200),
+    ?assertEqual(1, count_run_started(StorePid)),
+
+    ok = application:stop(soma_actor),
+    ok = application:stop(soma_runtime),
+    ok = application:set_env(
+           soma_runtime, event_store_log, ?config(log_path, Config)),
+    {ok, _Started} = application:ensure_all_started(soma_actor),
+
+    ReplayedStorePid = runtime_event_store(),
+    ?assertEqual({ok, Terminal}, soma_service:invoke(Envelope)),
+    ?assertEqual(1, count_run_started(ReplayedStorePid)).
 
 ensure_loaded(App) ->
     case application:load(App) of
