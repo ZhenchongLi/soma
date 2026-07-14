@@ -6,11 +6,15 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([test_supervised_service_restarts_and_serves_again/1]).
+-export([test_single_tool_invocation_runs_without_llm_worker/1]).
 
 all() ->
-    [test_supervised_service_restarts_and_serves_again].
+    [test_supervised_service_restarts_and_serves_again,
+     test_single_tool_invocation_runs_without_llm_worker].
 
-init_per_testcase(test_supervised_service_restarts_and_serves_again, Config) ->
+init_per_testcase(TestCase, Config)
+  when TestCase =:= test_supervised_service_restarts_and_serves_again;
+       TestCase =:= test_single_tool_invocation_runs_without_llm_worker ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -18,7 +22,9 @@ init_per_testcase(test_supervised_service_restarts_and_serves_again, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started} | Config].
 
-end_per_testcase(test_supervised_service_restarts_and_serves_again, _Config) ->
+end_per_testcase(TestCase, _Config)
+  when TestCase =:= test_supervised_service_restarts_and_serves_again;
+       TestCase =:= test_single_tool_invocation_runs_without_llm_worker ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
@@ -54,11 +60,83 @@ test_supervised_service_restarts_and_serves_again(_Config) ->
        maps:get(result, Terminal)),
     ?assertEqual(ReplacementPid, whereis(soma_service)).
 
+test_single_tool_invocation_runs_without_llm_worker(_Config) ->
+    {module, soma_llm_call} = code:ensure_loaded(soma_llm_call),
+    ok = start_llm_start_trace(),
+    try
+        RequestId = <<"service-single-tool">>,
+        Args = #{value => <<"exact service output">>},
+        RawEnvelope = tool_envelope(RequestId, echo, Args),
+        {ok, NormalizedEnvelope} =
+            soma_service_envelope:normalize(RawEnvelope),
+        Step = maps:get(
+                 step, maps:get(operation, NormalizedEnvelope)),
+
+        {ok, #{task_id := TaskId, status := accepted}} =
+            soma_service:invoke(NormalizedEnvelope),
+        {ok, Terminal} = wait_for_status(TaskId, succeeded, 100),
+        ?assertEqual(
+           #{RequestId => #{value => <<"wrong service output">>}},
+           maps:get(result, Terminal)),
+
+        StorePid = runtime_event_store(),
+        Events = soma_event_store:all(StorePid),
+        [RunStarted] =
+            [Event || Event <- Events,
+                      maps:get(event_type, Event) =:= <<"run.started">>,
+                      maps:get(steps, maps:get(payload, Event)) =:= [Step]],
+        RunId = maps:get(run_id, RunStarted),
+        RunEvents = soma_event_store:by_run(StorePid, RunId),
+        ?assert(lists:any(
+                  fun(Event) ->
+                          maps:get(event_type, Event) =:= <<"tool.started">>
+                  end,
+                  RunEvents)),
+
+        ?assertEqual([], stop_llm_start_trace())
+    after
+        clear_llm_start_trace()
+    end.
+
 ensure_loaded(App) ->
     case application:load(App) of
         ok -> ok;
         {error, {already_loaded, App}} -> ok
     end.
+
+start_llm_start_trace() ->
+    1 = erlang:trace_pattern({soma_llm_call, start, 1}, true, [local]),
+    _ = erlang:trace(all, true, [call, {tracer, self()}]),
+    _ = erlang:trace(new, true, [call, {tracer, self()}]),
+    ok.
+
+stop_llm_start_trace() ->
+    _ = erlang:trace(all, false, [call]),
+    _ = erlang:trace(new, false, [call]),
+    Ref = erlang:trace_delivered(all),
+    collect_llm_start_calls(Ref, []).
+
+collect_llm_start_calls(Ref, Calls) ->
+    receive
+        {trace_delivered, all, Ref} ->
+            lists:reverse(Calls);
+        {trace, _Pid, call, {soma_llm_call, start, Args}} ->
+            collect_llm_start_calls(Ref, [Args | Calls])
+    after 1000 ->
+        error(llm_start_trace_not_delivered)
+    end.
+
+clear_llm_start_trace() ->
+    _ = erlang:trace(all, false, [call]),
+    _ = erlang:trace(new, false, [call]),
+    _ = erlang:trace_pattern({soma_llm_call, start, 1}, false, [local]),
+    ok.
+
+runtime_event_store() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, StorePid, _Type, _Modules} =
+        lists:keyfind(soma_event_store, 1, Children),
+    StorePid.
 
 tool_envelope(RequestId, Tool, Args) ->
     #{kind => invoke,
