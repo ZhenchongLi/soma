@@ -27,6 +27,9 @@
 -export([actor_reusable_after_in_loop_llm_failure/1]).
 -export([actor_reusable_after_exploration_cancel/1]).
 -export([terminal_run_steps_reuses_proposal_execution_suffix/1]).
+-export([terminal_reply_completes_without_run/1]).
+-export([terminal_policy_rejection_starts_no_run/1]).
+-export([terminal_max_steps_failure_starts_no_run/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
@@ -48,7 +51,10 @@ all() ->
      actor_reusable_after_round_exhaustion,
      actor_reusable_after_in_loop_llm_failure,
      actor_reusable_after_exploration_cancel,
-     terminal_run_steps_reuses_proposal_execution_suffix].
+     terminal_run_steps_reuses_proposal_execution_suffix,
+     terminal_reply_completes_without_run,
+     terminal_policy_rejection_starts_no_run,
+     terminal_max_steps_failure_starts_no_run].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -649,32 +655,11 @@ actor_reusable_after_exploration_cancel(_Config) ->
                                        <<"exploration-cancel">>).
 
 terminal_run_steps_reuses_proposal_execution_suffix(_Config) ->
-    Store = event_store_pid(),
     Source =
         <<"(run-steps (step (id finish) (tool echo) "
           "(args (value \"done\"))))">>,
-    ModelConfig =
-        #{provider => openai_compat,
-          base_url => <<"api.example.test/v1">>,
-          model => <<"test-model">>,
-          explore => true,
-          response => fixed_response(Source)},
-    {ok, ActorPid} =
-        soma_actor_sup:start_actor(
-          #{actor_id => <<"actor-terminal-run-steps">>,
-            model_config => ModelConfig,
-            tool_policy => #{allowed_tools => [echo]},
-            event_store => Store}),
-    TaskId = <<"task-terminal-run-steps">>,
-    CorrelationId = <<"corr-terminal-run-steps">>,
-    Envelope =
-        #{type => <<"chat">>,
-          payload => #{prompt => <<"finish the task">>},
-          task_id => TaskId,
-          correlation_id => CorrelationId,
-          llm => #{}},
-
-    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    {Store, ActorPid, TaskId, CorrelationId} =
+        terminal_explore_task(<<"run-steps">>, Source, [echo], omitted),
     ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
     ok = assert_equal({ok, #{finish => #{value => <<"done">>}}},
                       soma_actor:get_task_result(ActorPid, TaskId)),
@@ -686,14 +671,86 @@ terminal_run_steps_reuses_proposal_execution_suffix(_Config) ->
                                <<"proposal.approved">>,
                                <<"proposal.executed">>,
                                <<"proposal.rejected">>])],
-    %% Deliberately wrong (staged red): this allowed proposal is executed, not
-    %% rejected, so the mismatch proves the terminal explore reply reached the
-    %% shared proposal suffix assertion before the staged correction.
     ok = assert_equal([<<"proposal.created">>,
                        <<"proposal.approved">>,
-                       <<"proposal.rejected">>],
+                       <<"proposal.executed">>],
                       ProposalSuffix),
     ok.
+
+terminal_reply_completes_without_run(_Config) ->
+    Source = <<"(reply (text \"done\"))">>,
+    {Store, ActorPid, TaskId, CorrelationId} =
+        terminal_explore_task(<<"reply">>, Source, [echo], omitted),
+
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+    ok = assert_equal({ok, #{kind => reply, text => <<"done">>}},
+                      soma_actor:get_task_result(ActorPid, TaskId)),
+    ok = assert_equal(0, event_count(Store, CorrelationId,
+                                     <<"run.started">>)),
+    ok.
+
+terminal_policy_rejection_starts_no_run(_Config) ->
+    Source =
+        <<"(run-steps (step (id blocked) (tool sleep) "
+          "(args (ms 1))))">>,
+    {Store, ActorPid, TaskId, CorrelationId} =
+        terminal_explore_task(<<"policy-rejection">>, Source, [echo], omitted),
+
+    Status = wait_for_terminal_task_status(ActorPid, TaskId, 100),
+    ok = assert_equal(rejected, maps:get(status, Status)),
+    ok = assert_equal({tools_not_allowed, [sleep]},
+                      maps:get(reason, Status, undefined)),
+    ok = assert_equal(0, event_count(Store, CorrelationId,
+                                     <<"run.started">>)),
+    ok.
+
+terminal_max_steps_failure_starts_no_run(_Config) ->
+    Source =
+        <<"(run-steps "
+          "(step (id first) (tool echo) (args (value \"one\"))) "
+          "(step (id second) (tool echo) (args (value \"two\"))))">>,
+    {Store, ActorPid, TaskId, CorrelationId} =
+        terminal_explore_task(<<"max-steps">>, Source, [echo],
+                              #{max_steps => 1}),
+
+    Status = wait_for_terminal_task_status(ActorPid, TaskId, 100),
+    ok = assert_equal(failed, maps:get(status, Status)),
+    ok = assert_equal({budget_exceeded, max_steps},
+                      maps:get(reason, Status, undefined)),
+    ok = assert_equal(0, event_count(Store, CorrelationId,
+                                     <<"run.started">>)),
+    ok.
+
+terminal_explore_task(Suffix, Source, AllowedTools, Budget) ->
+    Store = event_store_pid(),
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response => fixed_response(Source)},
+    ActorOpts0 =
+        #{actor_id => <<"actor-terminal-", Suffix/binary>>,
+          model_config => ModelConfig,
+          tool_policy => #{allowed_tools => AllowedTools},
+          event_store => Store},
+    ActorOpts =
+        case Budget of
+            omitted -> ActorOpts0;
+            _ -> ActorOpts0#{budget => Budget}
+        end,
+    {ok, ActorPid} = soma_actor_sup:start_actor(ActorOpts),
+    TaskId = <<"task-terminal-", Suffix/binary>>,
+    CorrelationId = <<"corr-terminal-", Suffix/binary>>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => <<"finish the task">>},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    {Store, ActorPid, TaskId, CorrelationId}.
 
 assert_later_direct_task_completes(ActorPid, Suffix) ->
     LaterTaskId = <<"task-reuse-follow-up-", Suffix/binary>>,
