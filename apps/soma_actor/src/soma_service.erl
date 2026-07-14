@@ -51,7 +51,7 @@ handle_cast(_Request, State) ->
 
 handle_info({run_completed, RunId, Outputs}, State) ->
     {noreply,
-     finish_run(RunId, #{status => succeeded, result => Outputs}, State)};
+     finish_run(RunId, {completed, Outputs}, State)};
 handle_info({run_failed, RunId, Reason}, State) ->
     {noreply,
      finish_run(RunId, #{status => failed, reason => Reason}, State)};
@@ -104,12 +104,13 @@ start_allowed_invocation(Envelope, Steps,
             Handle = #{task_id => TaskId,
                        request_id => RequestId,
                        status => accepted},
-            Task = #{task_id => TaskId,
-                     request_id => RequestId,
-                     status => running,
-                     run_id => RunId,
-                     run_pid => RunPid,
-                     run_mref => MRef},
+            Task0 = #{task_id => TaskId,
+                      request_id => RequestId,
+                      status => running,
+                      run_id => RunId,
+                      run_pid => RunPid,
+                      run_mref => MRef},
+            Task = maybe_add_max_output_bytes(Envelope, Task0),
             NewState =
                 State#state{
                   tasks = maps:put(TaskId, Task, Tasks),
@@ -151,11 +152,35 @@ finish_run(RunId, Terminal,
             terminate_run_child(RunPid),
             Task1 = maps:merge(
                       maps:without([run_pid, run_mref], Task),
-                      Terminal),
+                      terminal_for_task(Terminal, Task)),
             State#state{
               tasks = maps:put(TaskId, Task1, Tasks),
               runs = NewRuns,
               monitors = maps:remove(MRef, Monitors)}
+    end.
+
+terminal_for_task({completed, Outputs}, Task) ->
+    case maps:find(max_output_bytes, Task) of
+        {ok, MaxOutputBytes} ->
+            case erlang:external_size(Outputs) > MaxOutputBytes of
+                true ->
+                    #{status => failed,
+                      reason => max_output_bytes_exceeded};
+                false ->
+                    #{status => succeeded, result => Outputs}
+            end;
+        error ->
+            #{status => succeeded, result => Outputs}
+    end;
+terminal_for_task(Terminal, _Task) ->
+    Terminal.
+
+maybe_add_max_output_bytes(Envelope, Task) ->
+    case maps:find(max_output_bytes, Envelope) of
+        {ok, MaxOutputBytes} ->
+            Task#{max_output_bytes => MaxOutputBytes};
+        error ->
+            Task
     end.
 
 terminate_run_child(RunPid) ->
