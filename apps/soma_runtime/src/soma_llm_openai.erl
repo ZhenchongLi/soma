@@ -73,6 +73,8 @@ parse_response({Status, _Body}) ->
 %% network. Without a `response', `build_request/1' shapes the POST and
 %% `httpc:request/4' sends it (the live path, exercised only by the opt-in smoke
 %% test).
+chat(#{response := Responder} = Config) when is_function(Responder, 1) ->
+    parse_response(Responder(Config));
 chat(#{response := Response}) ->
     parse_response(Response);
 chat(Config) ->

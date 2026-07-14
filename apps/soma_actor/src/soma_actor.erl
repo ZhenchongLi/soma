@@ -260,11 +260,13 @@ idle(info, {run_completed, RunId, Outputs}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
             {keep_state, Data};
-        #{purpose := explore_run, task_id := TaskId} ->
-            %% Reader work is a nonterminal exploration action. Clear the
-            %% finished child while leaving the task running; the observation
-            %% and next-round handoff are owned by later loop slices.
-            {keep_state, clear_finished_explore_run(RunId, TaskId, Data)};
+        #{purpose := explore_run} = RunContext ->
+            %% Reader work is a nonterminal exploration action. Serialize its
+            %% outputs as a structured observation, append the assistant/action
+            %% pair to the transcript, and start the next provider round.
+            Data1 = continue_explore_after_completion(RunId, Outputs,
+                                                      RunContext, Data),
+            {keep_state, Data1};
         TaskId ->
             Data0 = clear_monitor(TaskId, Data),
             Task = maps:get(TaskId, Data0#data.tasks),
@@ -351,8 +353,8 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
             %% raw output) becomes the task result so get_task_result/2 returns it.
             %% Output that is not a proposal candidate is stored verbatim, keeping
             %% the v0.5.1 opaque-output contract.
-            case proposal_result(planning_output(Output, Task),
-                                 planning_directive(Task)) of
+            Candidate = planning_output(Output, Task),
+            case proposal_result(Candidate, planning_directive(Task)) of
                 {explore_round, RoundReply} ->
                     %% A valid `(explore ...)' provider reply is nonterminal.
                     %% Retain the canonical compiler output, gate every step
@@ -361,7 +363,8 @@ idle(info, {llm_result, LlmCallId, _WorkerPid, {ok, Output}}, Data) ->
                     %% ordinary owned soma_run path. The run context is tagged
                     %% so its terminal message cannot be mistaken for the
                     %% task's final proposal run.
-                    Task1 = Task#{explore_round_reply => RoundReply},
+                    Task1 = Task#{explore_round_reply => RoundReply,
+                                  explore_assistant_reply => Candidate},
                     Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
                     Data1 = Data0#data{tasks = Tasks},
                     Steps = maps:get(steps, RoundReply),
@@ -981,7 +984,9 @@ build_call_opts(#{provider := openai_compat,
                        content => explore_system_prompt(Round,
                                                         RemainingRounds,
                                                         Catalog)},
-            insert_system_message(System, Opts1);
+            Opts2 = insert_system_message(System, Opts1),
+            append_explore_transcript(
+              maps:get(explore_transcript, ModelConfig, []), Opts2);
         {_, true} ->
             AllowedTools = maps:get(allowed_tools, ModelConfig, all),
             Catalog = policy_filtered_catalog(
@@ -1027,6 +1032,12 @@ insert_system_message(System, Opts) ->
     Messages = maps:get(messages, Opts),
     {Leading, [LastMessage]} = lists:split(length(Messages) - 1, Messages),
     Opts#{messages => Leading ++ [System, LastMessage]}.
+
+append_explore_transcript([], Opts) ->
+    Opts;
+append_explore_transcript(Transcript, Opts) when is_list(Transcript) ->
+    Messages = maps:get(messages, Opts),
+    Opts#{messages => Messages ++ Transcript}.
 
 %% Build the planning-mode system prompt: plain text instructing the model to
 %% answer with a `(run-steps ...)' Lisp plan, listing the allowed tool names when
@@ -1117,6 +1128,41 @@ planning_tools(ModelConfig, Policy) when is_map(ModelConfig), is_map(Policy) ->
 planning_tools(ModelConfig, _Policy) ->
     ModelConfig.
 
+%% Prepare one exploration request from task-owned loop state. The original
+%% envelope stays fixed, while the live round, remaining allowance, transcript,
+%% and one deterministic response-sequence entry are rebuilt for each call.
+prepare_explore_call(#{explore := true} = ModelConfig, Envelope, TaskId, Data) ->
+    Task0 = maps:get(TaskId, Data#data.tasks),
+    Round = maps:get(explore_round, Task0, 1),
+    Transcript = maps:get(explore_transcript, Task0, []),
+    MaxRounds = maps:get(max_explore_rounds, Data#data.budget, 5),
+    Task1 = Task0#{explore_round => Round,
+                   explore_transcript => Transcript,
+                   explore_envelope => Envelope},
+    Tasks = maps:put(TaskId, Task1, Data#data.tasks),
+    Config0 = ModelConfig#{round => Round,
+                           remaining_rounds => MaxRounds - Round + 1,
+                           explore_transcript => Transcript},
+    {select_round_response(Config0, Round), Data#data{tasks = Tasks}};
+prepare_explore_call(ModelConfig, _Envelope, _TaskId, Data) ->
+    {ModelConfig, Data}.
+
+select_round_response(#{response_sequence := Responses} = ModelConfig, Round)
+  when is_list(Responses), is_integer(Round), Round > 0 ->
+    case response_at_round(Responses, Round) of
+        {ok, Response} -> ModelConfig#{response => Response};
+        error -> maps:remove(response, ModelConfig)
+    end;
+select_round_response(ModelConfig, _Round) ->
+    ModelConfig.
+
+response_at_round([Response | _], 1) ->
+    {ok, Response};
+response_at_round([_ | Rest], Round) when Round > 1 ->
+    response_at_round(Rest, Round - 1);
+response_at_round([], _Round) ->
+    error.
+
 maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
     case maps:get(llm, Envelope, undefined) of
         Llm when is_map(Llm) ->
@@ -1133,10 +1179,13 @@ maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data) ->
                     %% planning-mode request can list the allowed tool names in
                     %% its system message. A model_config without `plan => true'
                     %% ignores it, so non-planning opts are unchanged.
-                    ModelConfig = planning_tools(Data#data.model_config,
-                                                 Data#data.tool_policy),
+                    ModelConfig0 = planning_tools(Data#data.model_config,
+                                                  Data#data.tool_policy),
+                    {ModelConfig, Data0} =
+                        prepare_explore_call(ModelConfig0, Envelope, TaskId,
+                                             Data),
                     CallOpts = build_call_opts(ModelConfig, Envelope),
-                    start_llm_call(CallOpts, TaskId, CorrelationId, Data);
+                    start_llm_call(CallOpts, TaskId, CorrelationId, Data0);
                 false ->
                     %% Spend point one: the task's LLM-call count is at the
                     %% max_llm_calls cap, so no call is made. The task fails as
@@ -1279,8 +1328,15 @@ proposal_result(Output, explore) when is_binary(Output); is_list(Output) ->
     case soma_lfe:compile(Output, #{}) of
         {ok, #{kind := explore} = RoundReply} ->
             {explore_round, RoundReply};
-        {ok, Other} ->
-            {invalid_proposal, {unexpected_explore_reply, Other}};
+        {ok, ProposalMap} ->
+            %% Exploration replies may terminate the loop with any proposal
+            %% accepted by the existing normalizer. Return the same tag as the
+            %% planning path so policy, budgets, execution, and result handling
+            %% remain owned by the single proposal branch above.
+            case soma_proposal:normalize(ProposalMap) of
+                {ok, Proposal} -> {proposal, Proposal};
+                {error, Diagnostics} -> {invalid_proposal, Diagnostics}
+            end;
         {error, Diagnostics} ->
             {invalid_proposal, Diagnostics}
     end;
@@ -1301,6 +1357,47 @@ run_context_task_id(#{task_id := TaskId}) ->
     TaskId;
 run_context_task_id(TaskId) ->
     TaskId.
+
+%% Turn a completed reader run into the next exploration request. Source-step
+%% order, rather than map order, controls the observation. Each rendered output
+%% is embedded as a quoted string so the observation remains a valid outer Lisp
+%% form even when a later slice applies a byte cap to that value.
+continue_explore_after_completion(RunId, Outputs,
+                                  #{task_id := TaskId,
+                                    round := Round,
+                                    steps := Steps}, Data) ->
+    Data0 = clear_finished_explore_run(RunId, TaskId, Data),
+    Task0 = maps:get(TaskId, Data0#data.tasks),
+    AssistantReply = maps:get(explore_assistant_reply, Task0),
+    Observation = completed_explore_observation(Steps, Outputs),
+    Transcript0 = maps:get(explore_transcript, Task0, []),
+    Transcript = Transcript0
+        ++ [#{role => <<"assistant">>, content => AssistantReply},
+            #{role => <<"user">>, content => Observation}],
+    Task1 = Task0#{explore_round => Round + 1,
+                   explore_transcript => Transcript},
+    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+    Data1 = Data0#data{tasks = Tasks},
+    Envelope = maps:get(explore_envelope, Task1),
+    CorrelationId = maps:get(correlation_id, Task1),
+    maybe_start_llm_call(Envelope, TaskId, CorrelationId, Data1).
+
+completed_explore_observation(Steps, Outputs) ->
+    StepForms = [completed_observation_step(Step, Outputs) || Step <- Steps],
+    iolist_to_binary(
+      [<<"(observation (status completed) (outputs ">>,
+       lists:join(<<" ">>, StepForms), <<"))">>]).
+
+completed_observation_step(#{id := StepId}, Outputs) ->
+    Output = maps:get(StepId, Outputs),
+    RenderedOutput = iolist_to_binary(soma_lisp:render(Output)),
+    [<<"(step (id ">>, observation_step_id(StepId), <<") (output ">>,
+     soma_lisp:render(RenderedOutput), <<"))">>].
+
+observation_step_id(StepId) when is_atom(StepId) ->
+    atom_to_binary(StepId, utf8);
+observation_step_id(StepId) when is_binary(StepId) ->
+    StepId.
 
 %% An explore run is not the task's final answer. Once its ordinary runtime
 %% terminal message arrives, release the monitor and active-run fields while
