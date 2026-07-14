@@ -443,3 +443,110 @@ planning_system_prompt_orders_custom_then_planning_then_user_test_() ->
          ?_test(
             test_planning_system_prompt_orders_custom_then_planning_then_user())
      end}.
+
+%% Criterion 2 (#231): exploration and planning must expose the same exact
+%% policy-filtered catalog blocks. Register one described reader inside the
+%% allowlist and one described state tool outside it, then pin both complete
+%% system-message binaries. The shared allowed block must be byte-identical in
+%% both modes and the denied block must be absent from both expected messages.
+test_explore_prompt_reuses_policy_filtered_catalog_blocks() ->
+    Allowed = #{
+        name => explore_catalog_reader,
+        effect => reader,
+        idempotent => true,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo,
+        description => <<"Reads a deterministic catalog probe.">>,
+        params => [#{name => <<"path">>,
+                     type => string,
+                     required => true,
+                     doc => <<"Path to inspect.">>}]
+    },
+    Denied = #{
+        name => explore_catalog_writer,
+        effect => state,
+        idempotent => false,
+        timeout_ms => 1000,
+        adapter => erlang_module,
+        module => soma_tool_echo,
+        description => <<"Writes a denied catalog probe.">>
+    },
+    ok = soma_tool_registry:register_tool(Allowed),
+    ok = soma_tool_registry:register_tool(Denied),
+    BaseConfig = #{provider => openai_compat,
+                   base_url => <<"https://api.example.test/v1">>,
+                   model => <<"deepseek-v4">>,
+                   allowed_tools => [explore_catalog_reader]},
+    Envelope = #{payload => #{prompt => <<"inspect the probe">>}},
+    CatalogBlock =
+        <<"\n(tool (name explore_catalog_reader) "
+          "(description \"Reads a deterministic catalog probe.\") "
+          "(params (param (name \"path\") (type string) (required true) "
+          "(doc \"Path to inspect.\"))))">>,
+    PlanningContent =
+        <<"Answer with a Lisp plan of the form (run-steps ...) using only "
+          "these tools: explore_catalog_reader.", CatalogBlock/binary>>,
+    ExploreContent =
+        <<"Return exactly one Lisp form: either a reader-only (explore ...) "
+          "action or a terminal proposal such as (run-steps ...), "
+          "(reply ...), or (reject ...). Current exploration round: 1. "
+          "Remaining max_explore_rounds allowance (including this round): 5.",
+          CatalogBlock/binary>>,
+    User = #{role => <<"user">>, content => <<"inspect the probe">>},
+    PlanningOpts =
+        soma_actor:build_call_opts(BaseConfig#{plan => true}, Envelope),
+    ExploreOpts =
+        soma_actor:build_call_opts(BaseConfig#{explore => true}, Envelope),
+    ?assertEqual([#{role => <<"system">>, content => PlanningContent}, User],
+                 maps:get(messages, PlanningOpts)),
+    ?assertEqual([#{role => <<"system">>, content => ExploreContent}, User],
+                 maps:get(messages, ExploreOpts)).
+
+explore_prompt_reuses_policy_filtered_catalog_blocks_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_explore_prompt_reuses_policy_filtered_catalog_blocks())
+     end}.
+
+%% Criterion 2 (#231): the live exploration system message states the complete
+%% one-form round protocol and reports both counters. Supplying internal round
+%% context directly to the pure request builder pins the exact bytes without
+%% starting a provider worker.
+test_explore_prompt_states_protocol_round_and_remaining_allowance() ->
+    ModelConfig = #{provider => openai_compat,
+                    base_url => <<"https://api.example.test/v1">>,
+                    model => <<"deepseek-v4">>,
+                    explore => true,
+                    allowed_tools => [],
+                    round => 3,
+                    remaining_rounds => 2},
+    Prompt = <<"inspect one more source">>,
+    Envelope = #{payload => #{prompt => Prompt}},
+    ExpectedSystem =
+        #{role => <<"system">>,
+          content =>
+              <<"Return exactly one Lisp form: either a reader-only "
+                "(explore ...) action or a terminal proposal such as "
+                "(run-steps ...), (reply ...), or (reject ...). Current "
+                "exploration round: 3. Remaining max_explore_rounds allowance "
+                "(including this round): 2.">>},
+    Opts = soma_actor:build_call_opts(ModelConfig, Envelope),
+    ?assertEqual([ExpectedSystem,
+                  #{role => <<"user">>, content => Prompt}],
+                 maps:get(messages, Opts)).
+
+explore_prompt_states_protocol_round_and_remaining_allowance_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(
+            test_explore_prompt_states_protocol_round_and_remaining_allowance())
+     end}.
