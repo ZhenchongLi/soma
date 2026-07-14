@@ -36,7 +36,7 @@ v0.6    trace tooling + persistent event store         [done]
 v0.7    persistent resume                              [done — journal + reconstruct + executor + boot auto-resume]
 v0.8    DAG / parallel execution, only if still needed
 
-Active tracks (parallel to v0.7+, building now):
+Shipped tracks (parallel to v0.7+):
 node B  real LLM provider behind the perform_call seam   [done — provider + actor planning + CLI/config planning surface]
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
