@@ -22,7 +22,8 @@
          test_config_tool_runs_end_to_end/1,
          test_reserved_name_skipped_builtin_and_neighbour_intact/1,
          test_shadowed_file_write_keeps_resume_safety_fields/1,
-         test_duplicate_name_first_sorted_file_wins/1]).
+         test_duplicate_name_first_sorted_file_wins/1,
+         test_docmod_example_manifests_normalize_with_expected_metadata/1]).
 
 %% Logger handler callback (the boot-log capture used by
 %% test_broken_file_skipped_daemon_serves).
@@ -42,7 +43,8 @@ all() ->
      test_config_tool_runs_end_to_end,
      test_reserved_name_skipped_builtin_and_neighbour_intact,
      test_shadowed_file_write_keeps_resume_safety_fields,
-     test_duplicate_name_first_sorted_file_wins].
+     test_duplicate_name_first_sorted_file_wins,
+     test_docmod_example_manifests_normalize_with_expected_metadata].
 
 init_per_testcase(_Case, Config) ->
     %% The entry point under test is `soma_cli:daemon/1', which boots the
@@ -546,6 +548,27 @@ test_duplicate_name_first_sorted_file_wins(Config) ->
     {ok, #{executable := Executable}} =
         soma_tool_registry:resolve_descriptor(cfg_dup),
     <<"/bin/echo">> = unicode:characters_to_binary(Executable),
+    ok.
+
+%% Criterion 8 (#232): the three copyable docmod examples enter through the
+%% same directory loader users run at daemon boot. Successful registration
+%% proves each source form compiles and passes the shared manifest normalizer;
+%% the resolved descriptors then prove the examples declare their real command
+%% shapes and do not soften the read/edit safety boundary.
+test_docmod_example_manifests_normalize_with_expected_metadata(_Config) ->
+    {ok, _} = application:ensure_all_started(soma_runtime),
+    ToolsDir = filename:join("examples", "docmod-tools"),
+    #{registered := [docmod_edit, docmod_help, docmod_read], skipped := []} =
+        soma_tool_config:load_dir(ToolsDir),
+    {ok, Help} = soma_tool_registry:resolve_descriptor(docmod_help),
+    #{adapter := cli, effect := reader, idempotent := true,
+      argv := [<<"help">>, <<"{topic}">>]} = Help,
+    {ok, Read} = soma_tool_registry:resolve_descriptor(docmod_read),
+    #{adapter := cli, effect := reader, idempotent := true,
+      argv := [<<"read">>, <<"{input}">>]} = Read,
+    {ok, Edit} = soma_tool_registry:resolve_descriptor(docmod_edit),
+    #{adapter := cli, effect := state, idempotent := false,
+      argv := [<<"edit">>, <<"{input}">>, <<"{changes}">>]} = Edit,
     ok.
 
 %% Write a tiny cli helper into the case's priv_dir: uppercase the last argv
