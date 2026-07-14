@@ -21,6 +21,8 @@
 -export([explore_rounds_consume_existing_llm_call_budget/1]).
 -export([in_loop_llm_crash_is_terminal_failed/1]).
 -export([in_loop_llm_timeout_is_terminal_timeout/1]).
+-export([cancel_during_llm_round_kills_worker_and_cancels_task/1]).
+-export([cancel_during_explore_run_kills_tool_worker_and_cancels_task/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
@@ -36,7 +38,9 @@ all() ->
      default_round_limit_is_five,
      explore_rounds_consume_existing_llm_call_budget,
      in_loop_llm_crash_is_terminal_failed,
-     in_loop_llm_timeout_is_terminal_timeout].
+     in_loop_llm_timeout_is_terminal_timeout,
+     cancel_during_llm_round_kills_worker_and_cancels_task,
+     cancel_during_explore_run_kills_tool_worker_and_cancels_task].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -494,6 +498,86 @@ in_loop_llm_timeout_is_terminal_timeout(_Config) ->
         restore_llm_default_timeout(PreviousTimeout)
     end.
 
+cancel_during_llm_round_kills_worker_and_cancels_task(_Config) ->
+    TestPid = self(),
+    BlockingResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_worker_request, 2, self(), CallOpts},
+                receive
+                    never_release -> fixed_response(<<"(reply (text \"late\"))">>)
+                end
+        end,
+    {Store, ActorPid, TaskId, CorrelationId, ExploreSource,
+     WorkerPid, SecondCallOpts} =
+        in_loop_llm_terminal_task(<<"cancel">>, BlockingResponder),
+
+    ok = assert_completed_observation(SecondCallOpts, ExploreSource),
+    ok = soma_actor:cancel(ActorPid, TaskId),
+    ok = wait_for_task_status(ActorPid, TaskId, cancelled, 100),
+    ok = wait_for_process_dead(WorkerPid, 100),
+    ok = assert_equal(true, is_process_alive(ActorPid)),
+    ok = assert_equal(1, event_count(Store, CorrelationId,
+                                     <<"llm.cancelled">>)),
+    RoundCompleted = wait_for_round_completed(
+                       Store, CorrelationId, 2, 100),
+    ok = assert_terminal_llm_round(RoundCompleted, TaskId,
+                                   CorrelationId, cancelled),
+    ok = assert_equal(1, event_count(Store, CorrelationId,
+                                     <<"actor.task.cancelled">>)),
+    ok.
+
+cancel_during_explore_run_kills_tool_worker_and_cancels_task(_Config) ->
+    Store = event_store_pid(),
+    Source =
+        <<"(explore (step (id wait) (tool sleep) "
+          "(args (ms 5000)) (timeout_ms 10000)))">>,
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response_sequence => [fixed_response(Source)]},
+    {ok, ActorPid} =
+        soma_actor_sup:start_actor(
+          #{actor_id => <<"actor-cancel-explore-run">>,
+            model_config => ModelConfig,
+            tool_policy => #{allowed_tools => [sleep]},
+            budget => #{max_explore_rounds => 3},
+            event_store => Store}),
+    TaskId = <<"task-cancel-explore-run">>,
+    CorrelationId = <<"corr-cancel-explore-run">>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => <<"wait while inspecting">>},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    Started = wait_for_event_map(Store, CorrelationId,
+                                 <<"tool.started">>, 100),
+    RunId = maps:get(run_id, Started),
+    WorkerPid = maps:get(tool_call_pid, Started),
+    {idle, Data} = sys:get_state(ActorPid),
+    Tasks = element(6, Data),
+    RunPid = maps:get(run_pid, maps:get(TaskId, Tasks)),
+
+    ok = soma_actor:cancel(ActorPid, TaskId),
+    Cancelled = wait_for_event_map(Store, CorrelationId,
+                                   <<"run.cancelled">>, 100),
+    ok = assert_equal(RunId, maps:get(run_id, Cancelled)),
+    ok = wait_for_task_status(ActorPid, TaskId, cancelled, 100),
+    ok = wait_for_process_dead(WorkerPid, 100),
+    ok = wait_for_run_state(RunPid, cancelled, 100),
+    ok = assert_equal(true, is_process_alive(ActorPid)),
+    ok = assert_equal(1, event_count(Store, CorrelationId,
+                                     <<"actor.task.cancelled">>)),
+    RoundCompleted = wait_for_round_completed(
+                       Store, CorrelationId, 1, 100),
+    ok = assert_cancelled_explore_run_round(
+           RoundCompleted, TaskId, CorrelationId),
+    ok.
+
 in_loop_llm_terminal_task(Suffix, SecondResponder) ->
     Store = event_store_pid(),
     ExploreSource =
@@ -543,6 +627,19 @@ assert_terminal_llm_round(Event, TaskId, CorrelationId, Status) ->
           remaining_rounds => 2,
           action => invalid_reply,
           status => Status,
+          observation_bytes => 0,
+          truncated => false},
+    Actual = maps:with(maps:keys(Expected), Event),
+    assert_equal(Expected, Actual).
+
+assert_cancelled_explore_run_round(Event, TaskId, CorrelationId) ->
+    Expected =
+        #{task_id => TaskId,
+          correlation_id => CorrelationId,
+          round => 1,
+          remaining_rounds => 3,
+          action => explore,
+          status => cancelled,
           observation_bytes => 0,
           truncated => false},
     Actual = maps:with(maps:keys(Expected), Event),
@@ -754,6 +851,28 @@ wait_for_task_status(ActorPid, TaskId, Status, N) ->
         _ ->
             timer:sleep(20),
             wait_for_task_status(ActorPid, TaskId, Status, N - 1)
+    end.
+
+wait_for_process_dead(_Pid, 0) ->
+    ct:fail(process_still_alive);
+wait_for_process_dead(Pid, N) ->
+    case is_process_alive(Pid) of
+        false ->
+            ok;
+        true ->
+            timer:sleep(20),
+            wait_for_process_dead(Pid, N - 1)
+    end.
+
+wait_for_run_state(_RunPid, Target, 0) ->
+    ct:fail({run_state_timeout, Target});
+wait_for_run_state(RunPid, Target, N) ->
+    case sys:get_state(RunPid) of
+        {Target, _Data} ->
+            ok;
+        {_Other, _Data} ->
+            timer:sleep(20),
+            wait_for_run_state(RunPid, Target, N - 1)
     end.
 
 wait_for_terminal_task_status(_ActorPid, _TaskId, 0) ->
