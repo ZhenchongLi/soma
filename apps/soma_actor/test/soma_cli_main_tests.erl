@@ -117,6 +117,85 @@ daemon_autostart_socket_metacharacters_do_not_execute_command_test_() ->
     {timeout, 15,
      fun test_daemon_autostart_socket_metacharacters_do_not_execute_command/0}.
 
+%% Review finding (#237): every packaged tool-management verb is a client verb,
+%% so it must take the same cold-start path as run/ask/status/cancel/trace. Build
+%% a release-shaped tree from the exact `scripts/soma' overlay plus this test
+%% profile's application libs, then drive the wrapper as an external executable.
+%% Each command starts with no listener: list boots a daemon, register boots a
+%% fresh daemon and persists a tool, and remove boots once more, reloads that
+%% tool, and removes it. This catches omissions in `main_argv/0' that direct
+%% `dispatch/1' and socket-client tests cannot see.
+test_packaged_tool_verbs_autostart_daemon() ->
+    Base = filename:join(
+             tmp_dir(),
+             "soma_cli_packaged_tools_" ++ os:getpid() ++ "_"
+             ++ integer_to_list(erlang:unique_integer([positive]))),
+    Release = filename:join(Base, "somad"),
+    BinDir = filename:join(Release, "bin"),
+    Wrapper = filename:join(BinDir, "soma"),
+    LibLink = filename:join(Release, "lib"),
+    Home = filename:join(Base, "home"),
+    Runtime = filename:join(Base, "runtime"),
+    Socket = filename:join(Runtime, "soma.sock"),
+    Config = filename:join(Base, "soma.config"),
+    Manifest = filename:join(Base, "cold_tool.lisp"),
+    ToolsDir = filename:join([Home, ".soma", "tools"]),
+    Persisted = filename:join(ToolsDir, "cold_tool.lisp"),
+    RepoRoot = repo_root(),
+    SourceWrapper = filename:join([RepoRoot, "scripts", "soma"]),
+    TestLibRoot = filename:dirname(code:lib_dir(soma_actor)),
+    ok = filelib:ensure_dir(filename:join(BinDir, "placeholder")),
+    ok = filelib:ensure_dir(filename:join(Home, "placeholder")),
+    ok = filelib:ensure_dir(filename:join(Runtime, "placeholder")),
+    {ok, _} = file:copy(SourceWrapper, Wrapper),
+    ok = file:change_mode(Wrapper, 8#755),
+    ok = file:make_symlink(TestLibRoot, LibLink),
+    ok = file:write_file(Config, <<"# hermetic: no llm config\n">>),
+    ok = file:write_file(
+           Manifest,
+           <<"(tool\n"
+             "  (name \"cold_tool\")\n"
+             "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+             "  (adapter cli)\n"
+             "  (executable \"/bin/echo\")\n"
+             "  (argv \"hello\"))\n">>),
+    Env = [{"HOME", Home},
+           {"XDG_RUNTIME_DIR", Runtime},
+           {"SOMA_CONFIG", Config},
+           {"ERL_CRASH_DUMP", filename:join(Base, "erl_crash.dump")}],
+    try
+        {0, ListOutput} =
+            run_packaged_soma(Wrapper,
+                              ["tool", "list", "--socket", Socket], Env),
+        match = re:run(ListOutput, "\\(tool-list", [{capture, none}]),
+        ok = stop_packaged_daemon(Wrapper, Socket, Env),
+
+        {0, RegisterOutput} =
+            run_packaged_soma(Wrapper,
+                              ["tool", "register", Manifest,
+                               "--socket", Socket], Env),
+        match = re:run(RegisterOutput, "\\(status registered\\)",
+                       [{capture, none}]),
+        true = filelib:is_regular(Persisted),
+        ok = stop_packaged_daemon(Wrapper, Socket, Env),
+
+        {0, RemoveOutput} =
+            run_packaged_soma(Wrapper,
+                              ["tool", "remove", "cold_tool",
+                               "--socket", Socket], Env),
+        match = re:run(RemoveOutput, "\\(status removed\\)",
+                       [{capture, none}]),
+        false = filelib:is_regular(Persisted),
+        ok = stop_packaged_daemon(Wrapper, Socket, Env)
+    after
+        _ = maybe_stop_packaged_daemon(Wrapper, Socket, Env),
+        _ = file:delete(LibLink),
+        _ = file:del_dir_r(Base)
+    end.
+
+packaged_tool_verbs_autostart_daemon_test_() ->
+    {timeout, 90, fun test_packaged_tool_verbs_autostart_daemon/0}.
+
 %% Criterion #16: `soma_cli_main:main(Argv)' halts the OS process with the
 %% `dispatch/1' integer as the exit status, and routes any diagnostics to
 %% stderr. A real `halt/1' would kill the test runner, so this is a
@@ -202,6 +281,45 @@ run_main_argv_subprocess(PlainArgv) ->
                       {args, erl_main_argv_args(PlainArgv)}]),
     collect_port(Port, []).
 
+run_packaged_soma(Wrapper, Argv, Env) ->
+    Port = open_port({spawn_executable, Wrapper},
+                     [binary, exit_status, stderr_to_stdout, use_stdio,
+                      {args, Argv}, {env, Env}]),
+    collect_port(Port, []).
+
+stop_packaged_daemon(Wrapper, Socket, Env) ->
+    {0, _Output} = run_packaged_soma(
+                     Wrapper, ["stop", "--socket", Socket], Env),
+    wait_until_path_absent(Socket, 80).
+
+maybe_stop_packaged_daemon(Wrapper, Socket, Env) ->
+    case file:read_file_info(Socket) of
+        {ok, _} ->
+            _ = run_packaged_soma(
+                  Wrapper, ["stop", "--socket", Socket], Env),
+            wait_until_path_absent(Socket, 80);
+        {error, enoent} ->
+            ok;
+        {error, _} ->
+            ok
+    end.
+
+wait_until_path_absent(_Path, 0) ->
+    {error, socket_not_removed};
+wait_until_path_absent(Path, N) ->
+    case file:read_file_info(Path) of
+        {error, enoent} -> ok;
+        _ ->
+            timer:sleep(25),
+            wait_until_path_absent(Path, N - 1)
+    end.
+
+repo_root() ->
+    filename:dirname(
+      filename:dirname(
+        filename:dirname(
+          filename:dirname(code:lib_dir(soma_actor))))).
+
 erl_main_argv_args(PlainArgv) ->
     ["-noshell"] ++ code_path_args(code:get_path())
         ++ ["-s", "soma_cli_main", "main_argv", "-extra"] ++ PlainArgv.
@@ -215,7 +333,7 @@ collect_port(Port, Acc) ->
             collect_port(Port, [Data | Acc]);
         {Port, {exit_status, Status}} ->
             {Status, iolist_to_binary(lists:reverse(Acc))}
-    after 10000 ->
+    after 30000 ->
         erlang:error(cli_subprocess_timeout)
     end.
 
