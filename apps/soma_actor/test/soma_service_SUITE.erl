@@ -7,14 +7,17 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([test_supervised_service_restarts_and_serves_again/1]).
 -export([test_single_tool_invocation_runs_without_llm_worker/1]).
+-export([test_oversized_result_fails_with_max_output_reason/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
-     test_single_tool_invocation_runs_without_llm_worker].
+     test_single_tool_invocation_runs_without_llm_worker,
+     test_oversized_result_fails_with_max_output_reason].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
-       TestCase =:= test_single_tool_invocation_runs_without_llm_worker ->
+       TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
+       TestCase =:= test_oversized_result_fails_with_max_output_reason ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -24,7 +27,8 @@ init_per_testcase(TestCase, Config)
 
 end_per_testcase(TestCase, _Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
-       TestCase =:= test_single_tool_invocation_runs_without_llm_worker ->
+       TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
+       TestCase =:= test_oversized_result_fails_with_max_output_reason ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
@@ -95,6 +99,21 @@ test_single_tool_invocation_runs_without_llm_worker(_Config) ->
     after
         clear_llm_start_trace()
     end.
+
+test_oversized_result_fails_with_max_output_reason(_Config) ->
+    RequestId = <<"service-oversized-result">>,
+    Envelope =
+        (tool_envelope(
+           RequestId, echo,
+           #{value => <<"larger than the service result budget">>}))#{
+          max_output_bytes => 16},
+
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(Envelope),
+    {ok, Terminal} = wait_for_terminal(TaskId, 100),
+    ?assertEqual(failed, maps:get(status, Terminal)),
+    ?assertEqual(max_output_bytes_exceeded, maps:get(reason, Terminal)),
+    ?assertNot(maps:is_key(result, Terminal)).
 
 ensure_loaded(App) ->
     case application:load(App) of
@@ -180,4 +199,20 @@ wait_for_status(TaskId, Expected, Attempts) ->
         {ok, _Task} ->
             timer:sleep(10),
             wait_for_status(TaskId, Expected, Attempts - 1)
+    end.
+
+wait_for_terminal(_TaskId, 0) ->
+    error(service_task_did_not_reach_terminal_status);
+wait_for_terminal(TaskId, Attempts) ->
+    case soma_service:status(TaskId) of
+        {ok, #{status := Status} = Task}
+          when Status =:= succeeded;
+               Status =:= failed;
+               Status =:= rejected;
+               Status =:= cancelled;
+               Status =:= in_doubt ->
+            {ok, Task};
+        {ok, _Task} ->
+            timer:sleep(10),
+            wait_for_terminal(TaskId, Attempts - 1)
     end.
