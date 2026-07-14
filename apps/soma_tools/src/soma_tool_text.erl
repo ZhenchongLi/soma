@@ -3,7 +3,7 @@
 -module(soma_tool_text).
 
 -export([required_binary/2, positive_integer/3,
-         cap_prefix/1, fits_output/2]).
+         prefix_lines/2, cap_prefix/1, fits_output/2]).
 
 -define(TEXT_OUTPUT_LIMIT, 65_536).
 
@@ -33,6 +33,32 @@ positive_integer(Input, Field, Default) ->
             {ok, Value};
         {ok, _Value} ->
             {error, {invalid_limit, Field, positive_integer}}
+    end.
+
+-spec prefix_lines(binary(), pos_integer()) -> {binary(), boolean()}.
+prefix_lines(Text, Lines) ->
+    case line_boundary(Text, Lines, 0) of
+        eof ->
+            {Text, false};
+        Boundary when Boundary =:= byte_size(Text) ->
+            {Text, false};
+        Boundary ->
+            <<Prefix:Boundary/binary, _/binary>> = Text,
+            {Prefix, true}
+    end.
+
+line_boundary(_Text, 0, Offset) ->
+    Offset;
+line_boundary(<<>>, _Lines, _Offset) ->
+    eof;
+line_boundary(Text, Lines, Offset) ->
+    case binary:match(Text, <<"\n">>) of
+        {NewlineAt, 1} ->
+            ChunkSize = NewlineAt + 1,
+            <<_Chunk:ChunkSize/binary, Rest/binary>> = Text,
+            line_boundary(Rest, Lines - 1, Offset + ChunkSize);
+        nomatch ->
+            eof
     end.
 
 -spec cap_prefix(binary()) -> {binary(), boolean()}.
