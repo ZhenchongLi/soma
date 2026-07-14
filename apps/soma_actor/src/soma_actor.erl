@@ -97,14 +97,12 @@ get_task_status(ActorRef, TaskId) ->
 get_task_result(ActorRef, TaskId) ->
     gen_statem:call(ActorRef, {get_task_result, TaskId}).
 
-%% @doc Requests cancellation of a task's in-flight run. Looks the task up and
-%% sends the atom `cancel' to the live run pid, which kills the active tool-call
-%% worker, records `run.cancelled', and reports back with `{run_cancelled,
-%% RunId}'. Returns `ok' for "cancel requested" (not "cancel finished") when
-%% there is a live run, `{error, not_found}' for an unknown task, and
-%% `{error, not_running}' for a task with no live run. The actor never kills the
-%% worker itself -- that crosses a process boundary, which is the design. The
-%% call runs inside the actor via `idle/3', so the actor is never bypassed.
+%% @doc Requests cancellation of a task's active child. A live run receives the
+%% atom `cancel' and owns teardown of its tool-call worker; a bare LLM worker is
+%% killed directly by the actor. Returns `ok' for "cancel requested" (not
+%% "cancel finished") when there is an active child, `{error, not_found}' for an
+%% unknown task, and `{error, not_running}' otherwise. The call runs inside the
+%% actor via `idle/3', so the actor is never bypassed.
 cancel(ActorRef, TaskId) ->
     gen_statem:call(ActorRef, {cancel, TaskId}).
 
@@ -233,26 +231,7 @@ idle({call, From}, {cancel, TaskId}, Data) ->
                     RunPid1 ! cancel,
                     {keep_state, Data, [{reply, From, ok}]};
                 {running, _, WorkerPid1} when is_pid(WorkerPid1) ->
-                    %% Cancel of an in-flight LLM call. Unlike a soma_run, the
-                    %% bare worker has no state machine to receive a `cancel'
-                    %% message, so the actor does the kill itself
-                    %% (exit(WorkerPid, kill)) -- the same brutal teardown the
-                    %% timeout path uses. Demonitor-and-flush the worker ref so
-                    %% the kill's `'DOWN'' never reaches the backstop, cancel the
-                    %% call-timeout timer, record the task `cancelled', and emit
-                    %% `llm.cancelled'. The actor stays alive.
-                    exit(WorkerPid1, kill),
-                    LlmCallId = maps:get(llm_call_id, Task),
-                    Data0 = clear_llm_timer(TaskId,
-                                            clear_llm_monitor(TaskId, Data)),
-                    Task0 = maps:get(TaskId, Data0#data.tasks),
-                    CorrelationId = maps:get(correlation_id, Task0),
-                    Task1 = Task0#{status => cancelled},
-                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
-                    Data1 = Data0#data{tasks = Tasks},
-                    emit(Data1, <<"llm.cancelled">>,
-                         #{task_id => TaskId, correlation_id => CorrelationId,
-                           llm_call_id => LlmCallId}),
+                    Data1 = cancel_active_llm(TaskId, WorkerPid1, Data),
                     {keep_state, Data1, [{reply, From, ok}]};
                 _ ->
                     {keep_state, Data, [{reply, From, {error, not_running}}]}
@@ -325,6 +304,18 @@ idle(info, {run_cancelled, RunId}, Data) ->
     case maps:get(RunId, Data#data.runs, undefined) of
         undefined ->
             {keep_state, Data};
+        #{purpose := explore_run} = RunContext ->
+            TaskId = run_context_task_id(RunContext),
+            Data0 = clear_finished_explore_run(RunId, TaskId, Data),
+            Task = maps:get(TaskId, Data0#data.tasks),
+            CorrelationId = maps:get(correlation_id, Task),
+            Task1 = Task#{status => cancelled},
+            Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+            Data1 = Data0#data{tasks = Tasks},
+            emit_cancelled_explore_run_round(RunContext, TaskId, Data1),
+            emit(Data1, <<"actor.task.cancelled">>,
+                 #{task_id => TaskId, correlation_id => CorrelationId}),
+            reply_waiter(TaskId, {error, cancelled}, Data1);
         RunContext ->
             TaskId = run_context_task_id(RunContext),
             Data0 = clear_monitor(TaskId, Data),
@@ -1267,6 +1258,19 @@ maybe_emit_terminal_explore_llm_round(TaskId, Status, Data) ->
             ok
     end.
 
+emit_cancelled_explore_run_round(
+  #{round := Round, remaining_rounds := RemainingRounds}, TaskId, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    emit(Data, <<"explore.round.completed">>,
+         #{task_id => TaskId,
+           correlation_id => maps:get(correlation_id, Task),
+           round => Round,
+           remaining_rounds => RemainingRounds,
+           action => explore,
+           status => cancelled,
+           observation_bytes => 0,
+           truncated => false}).
+
 explore_round_budget_available(#{explore := true}, TaskId, Data) ->
     Task = maps:get(TaskId, Data#data.tasks),
     Round = maps:get(explore_round, Task, 1),
@@ -1672,6 +1676,51 @@ clear_llm_call(TaskId, Data) ->
             Data0#data{llm_calls = LlmCalls}
     end.
 
+%% Cancellation is terminal, so remove every identifier for the killed LLM
+%% child after cancelling its timer and monitor. This leaves later cancellation
+%% and monitor handling with one unambiguous active child.
+clear_cancelled_llm_child(TaskId, Data) ->
+    Data0 = clear_llm_timer(TaskId, clear_llm_monitor(TaskId, Data)),
+    Task0 = maps:get(TaskId, Data0#data.tasks),
+    LlmCallId = maps:get(llm_call_id, Task0),
+    Task1 = maps:without(
+              [llm_call_id, llm_call_pid, llm_call_mref, llm_timer_ref],
+              Task0),
+    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+    LlmCalls = maps:remove(LlmCallId, Data0#data.llm_calls),
+    Data0#data{tasks = Tasks, llm_calls = LlmCalls}.
+
+%% A bare LLM worker has no cancellation protocol, so its actor owner kills it,
+%% closes the open exploration round when present, records terminal task data,
+%% and releases a parked ask waiter. Both explicit cancel/2 and asker-death
+%% cleanup use this one path.
+cancel_active_llm(TaskId, WorkerPid, Data) ->
+    Task = maps:get(TaskId, Data#data.tasks),
+    LlmCallId = maps:get(llm_call_id, Task),
+    CorrelationId = maps:get(correlation_id, Task),
+    exit(WorkerPid, kill),
+    Data0 = clear_cancelled_llm_child(TaskId, Data),
+    Task0 = maps:get(TaskId, Data0#data.tasks),
+    Task1 = Task0#{status => cancelled},
+    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
+    Data1 = Data0#data{tasks = Tasks},
+    emit(Data1, <<"llm.cancelled">>,
+         #{task_id => TaskId, correlation_id => CorrelationId,
+           llm_call_id => LlmCallId}),
+    maybe_emit_terminal_explore_llm_round(TaskId, cancelled, Data1),
+    emit(Data1, <<"actor.task.cancelled">>,
+         #{task_id => TaskId, correlation_id => CorrelationId}),
+    reply_cancelled_waiter(TaskId, Data1).
+
+reply_cancelled_waiter(TaskId, Data) ->
+    case maps:get(TaskId, Data#data.waiters, undefined) of
+        undefined ->
+            clear_waiter_monitor(TaskId, Data);
+        From ->
+            gen_statem:reply(From, {error, cancelled}),
+            clear_waiter_monitor(TaskId, Data)
+    end.
+
 park_waiter(TaskId, From = {CallerPid, _Tag}, Data) when is_pid(CallerPid) ->
     MRef = erlang:monitor(process, CallerPid),
     Waiters = maps:put(TaskId, From, Data#data.waiters),
@@ -1708,19 +1757,7 @@ cancel_waiter_task(TaskId, Data) ->
                     RunPid1 ! cancel,
                     Data;
                 {running, _, WorkerPid1} when is_pid(WorkerPid1) ->
-                    exit(WorkerPid1, kill),
-                    LlmCallId = maps:get(llm_call_id, Task),
-                    Data0 = clear_llm_timer(TaskId,
-                                            clear_llm_monitor(TaskId, Data)),
-                    Task0 = maps:get(TaskId, Data0#data.tasks),
-                    CorrelationId = maps:get(correlation_id, Task0),
-                    Task1 = Task0#{status => cancelled},
-                    Tasks = maps:put(TaskId, Task1, Data0#data.tasks),
-                    Data1 = Data0#data{tasks = Tasks},
-                    emit(Data1, <<"llm.cancelled">>,
-                         #{task_id => TaskId, correlation_id => CorrelationId,
-                           llm_call_id => LlmCallId}),
-                    Data1;
+                    cancel_active_llm(TaskId, WorkerPid1, Data);
                 _ ->
                     Data
             end
