@@ -66,8 +66,21 @@ extract_pipeline_lfe(Doc) ->
             erlang:error({missing_heredoc_start, Start})
     end.
 
+extract_pipeline_lisp(Doc) ->
+    Start = <<"cat > /tmp/soma-demo/pipeline.lisp <<'EOF'\n">>,
+    End = <<"\nEOF">>,
+    case binary:split(Doc, Start) of
+        [_Before, Rest] ->
+            case binary:split(Rest, End) of
+                [Source, _After] -> Source;
+                [_] -> erlang:error({missing_heredoc_end, End})
+            end;
+        [_] ->
+            erlang:error({missing_heredoc_start, Start})
+    end.
+
 test_site_quick_start_task_example_compiles() ->
-    Source = extract_pipeline_lfe(read_doc("site/src/content/docs/start/quick-start.md")),
+    Source = extract_pipeline_lisp(read_doc("site/src/content/docs/start/quick-start.md")),
     ?assert(starts_with(Source, <<"(task">>)),
     {ok, #{run := #{steps := Steps}}} = soma_lfe:compile(Source, #{}),
     ?assertEqual(
