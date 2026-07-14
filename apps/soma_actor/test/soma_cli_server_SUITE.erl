@@ -49,6 +49,7 @@
 -export([test_explore_ask_uses_configured_round_and_observation_budgets/1]).
 -export([test_unparseable_explore_setting_keeps_daemon_reachable_and_off/1]).
 -export([test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation/1]).
+-export([test_trace_after_explore_ask_returns_rounds_in_event_order/1]).
 
 all() ->
     [test_start_link_listens_and_accepts_connect,
@@ -95,7 +96,8 @@ all() ->
      test_real_provider_plan_api_key_leaks_nowhere,
      test_explore_ask_uses_configured_round_and_observation_budgets,
      test_unparseable_explore_setting_keeps_daemon_reachable_and_off,
-     test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation].
+     test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation,
+     test_trace_after_explore_ask_returns_rounds_in_event_order].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -1471,6 +1473,63 @@ test_config_loaded_explore_ask_returns_terminal_result_with_bounded_observation(
                soma_lisp:render(RetainedOutput),
                <<"))) (truncated true))">>]),
         ExpectedObservation = Observation
+    after
+        case Prev of
+            false -> os:unsetenv(KeyEnv);
+            _ -> os:putenv(KeyEnv, Prev)
+        end
+    end.
+
+%% Criterion 6 (#232): a completed two-round explore ask is traced through the
+%% thin `soma ask' and `soma trace' clients. The correlation id printed by the
+%% ask selects the same task trail, whose round events must remain in stored
+%% event order at the CLI boundary.
+test_trace_after_explore_ask_returns_rounds_in_event_order(Config) ->
+    Path = socket_path(Config),
+    ConfigPath = terminal_explore_provider_config_file(Config),
+    KeyEnv = "SOMA_LLM_API_KEY",
+    Prev = os:getenv(KeyEnv),
+    os:putenv(KeyEnv, "sk-explore-trace-test"),
+    ExploreSource =
+        <<"(explore (step (id inspect) (tool text_head) "
+          "(args (text \"reader output\") (lines 1))))">>,
+    TerminalSource = <<"(reply (text \"done after inspection\"))">>,
+    try
+        Loaded = soma_config:load(#{config_path => ConfigPath}),
+        ModelConfig =
+            Loaded#{response_sequence =>
+                        [{200, provider_response_body(ExploreSource)},
+                         {200, provider_response_body(TerminalSource)}]},
+        {ok, _Server} =
+            soma_cli_server:start_link(#{socket => Path,
+                                         model_config => ModelConfig}),
+
+        ct:capture_start(),
+        0 = soma_cli:ask(#{intent => "inspect before answering",
+                           socket => Path}),
+        ct:capture_stop(),
+        AskPrinted = iolist_to_binary(ct:capture_get()),
+        {match, [CorrelationId]} =
+            re:run(AskPrinted, "\\(correlation-id \"([^\"]+)\"\\)",
+                   [{capture, all_but_first, binary}]),
+
+        ct:capture_start(),
+        0 = soma_cli:trace(#{correlation_id => CorrelationId,
+                             socket => Path}),
+        ct:capture_stop(),
+        TracePrinted = iolist_to_binary(ct:capture_get()),
+        {match, RoundEvents} =
+            re:run(TracePrinted,
+                   "\\(round ([0-9]+)\\)[^\\n]*"
+                   "\\(event-type \"explore\\.round\\.(started|completed)\"\\)",
+                   [global, {capture, all_but_first, binary}]),
+
+        %% Each start is followed by its matching completion before the next
+        %% round starts in the user-visible trace.
+        [[<<"1">>, <<"started">>],
+         [<<"1">>, <<"completed">>],
+         [<<"2">>, <<"started">>],
+         [<<"2">>, <<"completed">>]] = RoundEvents
     after
         case Prev of
             false -> os:unsetenv(KeyEnv);
