@@ -13,6 +13,9 @@
 -export([non_reader_explore_rejected_with_effect_and_no_run/1]).
 -export([configured_observation_cap_counts_only_retained_output_bytes/1]).
 -export([default_observation_cap_is_16384_bytes/1]).
+-export([failed_explore_run_becomes_next_round_observation/1]).
+-export([timed_out_explore_run_becomes_next_round_observation/1]).
+-export([invalid_round_reply_becomes_bounded_next_observation/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
@@ -20,7 +23,10 @@ all() ->
      reader_then_terminal_run_steps_carries_observation_and_outputs,
      non_reader_explore_rejected_with_effect_and_no_run,
      configured_observation_cap_counts_only_retained_output_bytes,
-     default_observation_cap_is_16384_bytes].
+     default_observation_cap_is_16384_bytes,
+     failed_explore_run_becomes_next_round_observation,
+     timed_out_explore_run_becomes_next_round_observation,
+     invalid_round_reply_becomes_bounded_next_observation].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -293,6 +299,154 @@ default_observation_cap_is_16384_bytes(_Config) ->
     ok = assert_truncated_observation(Observation, SerializedOutput,
                                       DefaultCap).
 
+failed_explore_run_becomes_next_round_observation(_Config) ->
+    Cap = 12,
+    ExploreSource =
+        <<"(explore (step (id inspect) (tool text_head) "
+          "(args (text \"x\") (lines 0))))">>,
+    {Store, ActorPid, TaskId, CorrelationId, Prompt,
+     FirstCallOpts, SecondCallOpts} =
+        two_round_explore(<<"failed-run">>, [text_head],
+                          #{max_explore_rounds => 3,
+                            max_observation_bytes => Cap},
+                          ExploreSource),
+
+    ok = assert_round_allowance(FirstCallOpts, 1, 3),
+    ok = assert_round_allowance(SecondCallOpts, 2, 2),
+    [#{role := <<"system">>},
+     #{role := <<"user">>, content := Prompt},
+     #{role := <<"assistant">>, content := ExploreSource},
+     #{role := <<"user">>, content := Observation}] =
+        maps:get(messages, SecondCallOpts),
+    Reason = {invalid_limit, lines, positive_integer},
+    ExpectedObservation =
+        bounded_term_observation(failed, reason, Reason, Cap),
+    ok = assert_equal(ExpectedObservation, Observation),
+    ok = wait_for_event(Store, CorrelationId, <<"run.failed">>, 100),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+    ok = assert_equal({ok, #{kind => reply, text => <<"done">>}},
+                      soma_actor:get_task_result(ActorPid, TaskId)),
+    ok.
+
+timed_out_explore_run_becomes_next_round_observation(_Config) ->
+    ExploreSource =
+        <<"(explore (step (id wait) (tool sleep) "
+          "(args (ms 1000)) (timeout_ms 20)))">>,
+    {Store, ActorPid, TaskId, CorrelationId, Prompt,
+     FirstCallOpts, SecondCallOpts} =
+        two_round_explore(<<"timed-out-run">>, [sleep],
+                          #{max_explore_rounds => 3}, ExploreSource),
+
+    ok = assert_round_allowance(FirstCallOpts, 1, 3),
+    ok = assert_round_allowance(SecondCallOpts, 2, 2),
+    [#{role := <<"system">>},
+     #{role := <<"user">>, content := Prompt},
+     #{role := <<"assistant">>, content := ExploreSource},
+     #{role := <<"user">>, content := Observation}] =
+        maps:get(messages, SecondCallOpts),
+    ok = assert_equal(<<"(observation (status timeout))">>, Observation),
+    ok = wait_for_event(Store, CorrelationId, <<"run.timeout">>, 100),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+    ok = assert_equal({ok, #{kind => reply, text => <<"done">>}},
+                      soma_actor:get_task_result(ActorPid, TaskId)),
+    ok.
+
+invalid_round_reply_becomes_bounded_next_observation(_Config) ->
+    Cap = 19,
+    InvalidSource = <<"not-a-lisp-form">>,
+    {error, Diagnostics} = soma_lfe:compile(InvalidSource, #{}),
+    {Store, ActorPid, TaskId, CorrelationId, Prompt,
+     FirstCallOpts, SecondCallOpts} =
+        two_round_explore(<<"invalid-reply">>, [text_head],
+                          #{max_explore_rounds => 3,
+                            max_observation_bytes => Cap},
+                          InvalidSource),
+
+    ok = assert_round_allowance(FirstCallOpts, 1, 3),
+    ok = assert_round_allowance(SecondCallOpts, 2, 2),
+    [#{role := <<"system">>},
+     #{role := <<"user">>, content := Prompt},
+     #{role := <<"assistant">>, content := InvalidSource},
+     #{role := <<"user">>, content := Observation}] =
+        maps:get(messages, SecondCallOpts),
+    ExpectedObservation =
+        bounded_term_observation(failed, diagnostic, Diagnostics, Cap),
+    ok = assert_equal(ExpectedObservation, Observation),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    RunStarted =
+        [Event || #{event_type := <<"run.started">>} = Event <- Events],
+    ok = assert_equal([], RunStarted),
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+    ok = assert_equal({ok, #{kind => reply, text => <<"done">>}},
+                      soma_actor:get_task_result(ActorPid, TaskId)),
+    ok.
+
+two_round_explore(Suffix, AllowedTools, Budget, FirstSource) ->
+    Store = event_store_pid(),
+    TestPid = self(),
+    FirstResponse = fixed_response(FirstSource),
+    SecondResponse = fixed_response(<<"(reply (text \"done\"))">>),
+    FirstResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_request, 1, CallOpts},
+                FirstResponse
+        end,
+    SecondResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_request, 2, CallOpts},
+                SecondResponse
+        end,
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response_sequence => [FirstResponder, SecondResponder]},
+    {ok, ActorPid} =
+        soma_actor_sup:start_actor(
+          #{actor_id => <<"actor-explore-", Suffix/binary>>,
+            model_config => ModelConfig,
+            tool_policy => #{allowed_tools => AllowedTools},
+            budget => Budget,
+            event_store => Store}),
+    TaskId = <<"task-explore-", Suffix/binary>>,
+    CorrelationId = <<"corr-explore-", Suffix/binary>>,
+    Prompt = <<"inspect, then answer">>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => Prompt},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    FirstCallOpts = wait_for_provider_request(1),
+    SecondCallOpts = wait_for_provider_request(2),
+    {Store, ActorPid, TaskId, CorrelationId, Prompt,
+     FirstCallOpts, SecondCallOpts}.
+
+assert_round_allowance(CallOpts, Round, RemainingRounds) ->
+    [#{role := <<"system">>, content := SystemPrompt} | _] =
+        maps:get(messages, CallOpts),
+    RoundText = iolist_to_binary(
+                  [<<"Current exploration round: ">>,
+                   integer_to_binary(Round), <<".">>]),
+    RemainingText =
+        iolist_to_binary(
+          [<<"Remaining max_explore_rounds allowance (including this round): ">>,
+           integer_to_binary(RemainingRounds), <<".">>]),
+    ok = assert_contains(SystemPrompt, RoundText),
+    assert_contains(SystemPrompt, RemainingText).
+
+bounded_term_observation(Status, Field, Term, Cap) ->
+    Serialized = iolist_to_binary(soma_lisp:render(Term)),
+    true = byte_size(Serialized) > Cap,
+    Retained = binary:part(Serialized, 0, Cap),
+    iolist_to_binary(
+      [<<"(observation (status ">>, atom_to_binary(Status, utf8),
+       <<") (">>, atom_to_binary(Field, utf8), <<" ">>,
+       soma_lisp:render(Retained), <<") (truncated true))">>]).
+
 completed_observation_for_cap(Budget, Text, Suffix) ->
     Store = event_store_pid(),
     TestPid = self(),
@@ -396,6 +550,14 @@ assert_equal(Expected, Actual) when Expected =:= Actual ->
     ok;
 assert_equal(Expected, Actual) ->
     ct:fail({assert_equal, [{expected, Expected}, {actual, Actual}]}).
+
+assert_contains(Haystack, Needle) ->
+    case binary:match(Haystack, Needle) of
+        nomatch ->
+            ct:fail({missing_binary, Needle, Haystack});
+        _ ->
+            ok
+    end.
 
 wait_for_event(_Store, _CorrelationId, EventType, 0) ->
     error({timeout, EventType});
