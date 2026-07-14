@@ -302,13 +302,57 @@ tool_without_description_absent_from_catalog_test_() ->
          ?_test(test_tool_without_description_absent_from_catalog())
      end}.
 
-%% Each of the five built-in tool manifests declares a `description', so a
-%% freshly seeded registry (start_link/0 runs the same init/seed the
-%% supervisor runs) lists all five built-ins in catalog/0, every entry
-%% carrying a non-empty binary description.
-test_seeded_catalog_lists_all_five_builtins() ->
+%% Each text reader's live catalog entry is exactly the model-facing projection
+%% of its production manifest. The typed params are pinned independently so a
+%% manifest and catalog cannot drift together to the wrong public signature.
+test_text_reader_catalog_entries_equal_manifest_projections() ->
     Catalog = soma_tool_registry:catalog(),
-    ?assertEqual([echo, fail, file_read, file_write, sleep],
+    Readers =
+        [{soma_tool_text_grep,
+          [#{name => <<"text">>, type => string, required => true},
+           #{name => <<"pattern">>, type => string, required => true},
+           #{name => <<"max_matches">>, type => integer, required => false}]},
+         {soma_tool_text_head,
+          [#{name => <<"text">>, type => string, required => true},
+           #{name => <<"lines">>, type => integer, required => false}]}],
+    lists:foreach(
+      fun({Module, ExpectedTypedParams}) ->
+          Projection =
+              maps:with([name, description, params], Module:manifest()),
+          ?assertEqual([description, name, params],
+                       lists:sort(maps:keys(Projection))),
+          Description = maps:get(description, Projection),
+          ?assert(is_binary(Description)),
+          ?assert(byte_size(Description) > 0),
+          TypedParams =
+              [maps:with([name, type, required], Param)
+               || Param <- maps:get(params, Projection)],
+          ?assertEqual(ExpectedTypedParams, TypedParams),
+          Name = maps:get(name, Projection),
+          Entries = [Entry || #{name := EntryName} = Entry <- Catalog,
+                              EntryName =:= Name],
+          ?assertEqual([Projection], Entries)
+      end,
+      Readers).
+
+text_reader_catalog_entries_equal_manifest_projections_test_() ->
+    {setup,
+     fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
+     fun(Pid) ->
+         gen_server:stop(Pid)
+     end,
+     fun(_Pid) ->
+         ?_test(test_text_reader_catalog_entries_equal_manifest_projections())
+     end}.
+
+%% Each of the seven built-in tool manifests declares a `description', so a
+%% freshly seeded registry (start_link/0 runs the same init/seed the
+%% supervisor runs) lists all seven built-ins in catalog/0, every entry
+%% carrying a non-empty binary description.
+test_seeded_catalog_lists_all_seven_builtins() ->
+    Catalog = soma_tool_registry:catalog(),
+    ?assertEqual([echo, fail, file_read, file_write, sleep, text_grep,
+                  text_head],
                  lists:sort([Name || #{name := Name} <- Catalog])),
     lists:foreach(
       fun(#{description := Description}) ->
@@ -317,12 +361,12 @@ test_seeded_catalog_lists_all_five_builtins() ->
       end,
       Catalog).
 
-seeded_catalog_lists_all_five_builtins_test_() ->
+seeded_catalog_lists_all_seven_builtins_test_() ->
     {setup,
      fun() -> {ok, Pid} = soma_tool_registry:start_link(), Pid end,
      fun(Pid) ->
          gen_server:stop(Pid)
      end,
      fun(_Pid) ->
-         ?_test(test_seeded_catalog_lists_all_five_builtins())
+         ?_test(test_seeded_catalog_lists_all_seven_builtins())
      end}.
