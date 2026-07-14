@@ -7,6 +7,10 @@
 -export([render/1]).
 
 -spec render(term()) -> iodata().
+render(#{kind := explore, steps := Steps}) when is_list(Steps) ->
+    ["(explore ",
+     lists:join(" ", [render_explore_step(Step) || Step <- Steps]),
+     ")"];
 render(Map) when is_map(Map) ->
     case is_result_map(Map) of
         true ->
@@ -82,6 +86,44 @@ render_envelope_pair(Key, Value) ->
 render_step(Step) when is_map(Step) ->
     Pairs = [render_pair(K, V) || {K, V} <- maps:to_list(Step)],
     ["(step ", lists:join(" ", Pairs), ")"].
+
+render_explore_step(#{id := Id, tool := Tool, args := Args} = Step) ->
+    Fields =
+        [["(id ", render_explore_symbol(Id), ")"],
+         ["(tool ", render_explore_symbol(Tool), ")"],
+         render_explore_args(Args)]
+        ++ [["(timeout_ms ", integer_to_list(TimeoutMs), ")"]
+            || {ok, TimeoutMs} <- [maps:find(timeout_ms, Step)]],
+    ["(step ", lists:join(" ", Fields), ")"].
+
+render_explore_args(#{from_step := Id} = Args) when map_size(Args) =:= 1 ->
+    ["(args (from_step ", render_explore_symbol(Id), "))"];
+render_explore_args(Args) when is_map(Args) ->
+    Pairs = [render_explore_arg(Key, Value)
+             || {Key, Value} <- maps:to_list(Args)],
+    case Pairs of
+        [] ->
+            "(args)";
+        _ ->
+            ["(args ", lists:join(" ", Pairs), ")"]
+    end.
+
+render_explore_arg(Key, {from_step, Id}) ->
+    ["(", render_explore_symbol(Key), " (from_step ",
+     render_explore_symbol(Id), "))"];
+render_explore_arg(Key, Value) ->
+    ["(", render_explore_symbol(Key), " ",
+     render_explore_value(Value), ")"].
+
+render_explore_value(Atom) when is_atom(Atom) ->
+    render_explore_symbol(Atom);
+render_explore_value(List) when is_list(List) ->
+    ["(", lists:join(" ", [render_explore_value(Value) || Value <- List]), ")"];
+render_explore_value(Value) ->
+    render(Value).
+
+render_explore_symbol(Atom) when is_atom(Atom) ->
+    atom_to_list(Atom).
 
 %% A result map is marked by a `status' whose value is one of the terminal
 %% statuses the CLI emits. The completed case keeps its fixed
