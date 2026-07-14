@@ -33,7 +33,8 @@ The real **OpenAI-compatible LLM provider** path is built (opt-in, off the
 gate), including an actor-level planning mode — productized at the CLI /
 config surface — that can parse model text as `run_steps`, and the packaged
 **`soma` CLI / daemon** is built: `run` / `ask` / `status` / `cancel` /
-`trace` / `stop` over a local Unix socket, Lisp on the wire, with `bin/soma`
+`trace` / `tool register` / `tool list` / `tool remove` / `stop` over a local
+Unix socket, Lisp on the wire, with `bin/soma`
 distinct from the `bin/somad` node-control script. The **tool layer** now has
 a model-facing catalog (manifest `description`/`params` +
 `soma_tool_registry:catalog/0`) and **config-registered cli tools**: drop a
@@ -98,7 +99,8 @@ exhaustion as task data.
 The local daemon and packaged CLI sit at the edge. `soma_cli_server` exposes the
 actor/runtime path over a local Unix socket with Lisp on the wire, while
 `bin/soma` is the user-facing task command (`run`, `ask`, `status`, `trace`,
-`cancel`, `stop`, `daemon`). The release node-control script is `bin/somad`.
+`cancel`, `tool register`, `tool list`, `tool remove`, `stop`, `daemon`). The
+release node-control script is `bin/somad`.
 
 ![soma_actor message-driven workflow: messages enter the actor, LLM calls produce proposals, policy gates execution, approved work starts runs or actor messages, and the event stream ties the whole result trail together.](docs/diagrams/soma-actor-flow.svg)
 

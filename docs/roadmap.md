@@ -322,10 +322,11 @@ with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
   collision. `soma daemon` blocks until `soma stop`. Verified by an end-to-end
   release smoke test.
 - `CLI.7` — auto-start [done]: a client verb (`run` / `ask` / `status` / `cancel`
-  / `trace`) probes the socket with `soma_cli:ping/1` and, finding no daemon,
-  launches `soma daemon` detached and waits for it before running — so there is no
-  separate `soma daemon` ritual. A lost auto-start race is harmless: only one
-  daemon wins the kernel bind and `daemon_foreground/1` returns on the others.
+  / `trace` or `tool register` / `tool list` / `tool remove`) probes the socket
+  with `soma_cli:ping/1` and, finding no daemon, launches `soma daemon` detached
+  and waits for it before running — so there is no separate `soma daemon` ritual.
+  A lost auto-start race is harmless: only one daemon wins the kernel bind and
+  `daemon_foreground/1` returns on the others.
   The testable core went through relay — the probe and graceful lost-bind
   (`soma_cli:ping/1`, `daemon_foreground/1`), then the decide → launch → wait loop
   (`soma_cli:ensure_daemon/2`), wired into `soma_cli_main:main_argv/0`; the

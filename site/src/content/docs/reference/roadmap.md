@@ -40,8 +40,12 @@ Shipped tracks (parallel to v0.7+):
 node B  real LLM provider behind the perform_call seam   [done — provider + actor planning + CLI/config planning surface]
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
-tools   tool abstraction track                            [done — T.1 manifest v2 + catalog/0; T.2 config tools; catalog-fed planning prompt; T.4 ask_actor]
+tools   shipped tool slices                              [done — T.1 manifest v2 + catalog/0; T.2 config tools; catalog-fed planning prompt; T.4 ask_actor]
         live config-tool management                       [done — soma tool register + soma tool list + soma tool remove]
+
+Remaining tool slices:
+T.3     memory as tools                                   [deferred — not scheduled]
+T.5     MCP capability app                                [future — post-validation]
 ```
 
 ## v0.4 — soma_actor skeleton [done]
@@ -314,10 +318,11 @@ with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
   collision. `soma daemon` blocks until `soma stop`. Verified by an end-to-end
   release smoke test.
 - `CLI.7` — auto-start [done]: a client verb (`run` / `ask` / `status` / `cancel`
-  / `trace`) probes the socket with `soma_cli:ping/1` and, finding no daemon,
-  launches `soma daemon` detached and waits for it before running — so there is no
-  separate `soma daemon` ritual. A lost auto-start race is harmless: only one
-  daemon wins the kernel bind and `daemon_foreground/1` returns on the others.
+  / `trace` or `tool register` / `tool list` / `tool remove`) probes the socket
+  with `soma_cli:ping/1` and, finding no daemon, launches `soma daemon` detached
+  and waits for it before running — so there is no separate `soma daemon` ritual.
+  A lost auto-start race is harmless: only one daemon wins the kernel bind and
+  `daemon_foreground/1` returns on the others.
   **The CLI track is complete.**
 
 ## Lisp — s-expr actor/agent message language

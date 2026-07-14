@@ -28,6 +28,9 @@ From an installed release, put the release `bin/` directory on `PATH` and run
 | `soma status TASK_ID [--socket PATH]` | Read a task state. |
 | `soma cancel TASK_ID [--socket PATH]` | Cancel a live detached run by task id. |
 | `soma trace CORRELATION_ID [--socket PATH]` | Print the event trace for a correlation id. |
+| `soma tool register FILE [--socket PATH]` | Validate, persist, and register a config tool. |
+| `soma tool list [--socket PATH]` | List the live tool descriptors. |
+| `soma tool remove NAME [--socket PATH]` | Remove a live config tool and its owned manifest. |
 | `soma stop [--socket PATH]` | Stop the local daemon. |
 | `soma daemon [--socket PATH]` | Run the daemon in the foreground. Usually optional. |
 
@@ -37,6 +40,10 @@ uses `$XDG_RUNTIME_DIR/soma.sock`, or `/tmp/soma-$USER.sock` when
 
 `--detach` is for `soma run`: it returns a task handle immediately and leaves the
 run alive in the daemon.
+
+The three `soma tool` client commands use the same daemon auto-start path as
+`run`, `ask`, `status`, `cancel`, and `trace`; they are valid as the first
+command against a cold socket.
 
 ## Run A Task
 

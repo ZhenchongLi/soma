@@ -164,31 +164,34 @@ test_packaged_tool_verbs_autostart_daemon() ->
            {"SOMA_CONFIG", Config},
            {"ERL_CRASH_DUMP", filename:join(Base, "erl_crash.dump")}],
     try
-        {0, ListOutput} =
-            run_packaged_soma(Wrapper,
-                              ["tool", "list", "--socket", Socket], Env),
-        match = re:run(ListOutput, "\\(tool-list", [{capture, none}]),
-        ok = stop_packaged_daemon(Wrapper, Socket, Env),
+        ListPort = start_packaged_soma(
+                     Wrapper, ["tool", "list", "--socket", Socket], Env),
+        {ok, _ListOutput} =
+            collect_port_until(ListPort, <<"(tool-list">>, []),
+        ok = stop_daemon_over_socket(Socket),
+        {0, _} = collect_port(ListPort, []),
 
-        {0, RegisterOutput} =
-            run_packaged_soma(Wrapper,
-                              ["tool", "register", Manifest,
-                               "--socket", Socket], Env),
-        match = re:run(RegisterOutput, "\\(status registered\\)",
-                       [{capture, none}]),
+        RegisterPort = start_packaged_soma(
+                         Wrapper,
+                         ["tool", "register", Manifest,
+                          "--socket", Socket], Env),
+        {ok, _RegisterOutput} =
+            collect_port_until(RegisterPort, <<"(status registered)">>, []),
         true = filelib:is_regular(Persisted),
-        ok = stop_packaged_daemon(Wrapper, Socket, Env),
+        ok = stop_daemon_over_socket(Socket),
+        {0, _} = collect_port(RegisterPort, []),
 
-        {0, RemoveOutput} =
-            run_packaged_soma(Wrapper,
-                              ["tool", "remove", "cold_tool",
-                               "--socket", Socket], Env),
-        match = re:run(RemoveOutput, "\\(status removed\\)",
-                       [{capture, none}]),
+        RemovePort = start_packaged_soma(
+                       Wrapper,
+                       ["tool", "remove", "cold_tool",
+                        "--socket", Socket], Env),
+        {ok, _RemoveOutput} =
+            collect_port_until(RemovePort, <<"(status removed)">>, []),
         false = filelib:is_regular(Persisted),
-        ok = stop_packaged_daemon(Wrapper, Socket, Env)
+        ok = stop_daemon_over_socket(Socket),
+        {0, _} = collect_port(RemovePort, [])
     after
-        _ = maybe_stop_packaged_daemon(Wrapper, Socket, Env),
+        _ = maybe_stop_daemon_over_socket(Socket),
         _ = file:delete(LibLink),
         _ = file:del_dir_r(Base)
     end.
@@ -281,23 +284,29 @@ run_main_argv_subprocess(PlainArgv) ->
                       {args, erl_main_argv_args(PlainArgv)}]),
     collect_port(Port, []).
 
-run_packaged_soma(Wrapper, Argv, Env) ->
-    Port = open_port({spawn_executable, Wrapper},
-                     [binary, exit_status, stderr_to_stdout, use_stdio,
-                      {args, Argv}, {env, Env}]),
-    collect_port(Port, []).
+start_packaged_soma(Wrapper, Argv, Env) ->
+    open_port({spawn_executable, Wrapper},
+              [binary, exit_status, stderr_to_stdout, use_stdio,
+               {args, Argv}, {env, Env}]).
 
-stop_packaged_daemon(Wrapper, Socket, Env) ->
-    {0, _Output} = run_packaged_soma(
-                     Wrapper, ["stop", "--socket", Socket], Env),
+%% The detached daemon inherits the outer test port's output descriptor. Read
+%% the client reply first, stop through the real socket, and only then wait for
+%% the packaged client's exit status; stopping closes the inherited descriptor.
+stop_daemon_over_socket(Socket) ->
+    {ok, Sock} = gen_tcp:connect({local, Socket}, 0,
+                                 [binary, {packet, 4}, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"(stop)">>),
+    {ok, Reply} = gen_tcp:recv(Sock, 0, 10000),
+    ok = gen_tcp:close(Sock),
+    match = re:run(Reply, "\\(status stopped\\)", [{capture, none}]),
     wait_until_path_absent(Socket, 80).
 
-maybe_stop_packaged_daemon(Wrapper, Socket, Env) ->
+maybe_stop_daemon_over_socket(Socket) ->
     case file:read_file_info(Socket) of
         {ok, _} ->
-            _ = run_packaged_soma(
-                  Wrapper, ["stop", "--socket", Socket], Env),
-            wait_until_path_absent(Socket, 80);
+            try stop_daemon_over_socket(Socket)
+            catch _:_ -> ok
+            end;
         {error, enoent} ->
             ok;
         {error, _} ->
@@ -319,6 +328,22 @@ repo_root() ->
       filename:dirname(
         filename:dirname(
           filename:dirname(code:lib_dir(soma_actor))))).
+
+collect_port_until(Port, Needle, Acc) ->
+    receive
+        {Port, {data, Data}} ->
+            Acc1 = [Data | Acc],
+            Output = iolist_to_binary(lists:reverse(Acc1)),
+            case binary:match(Output, Needle) of
+                nomatch -> collect_port_until(Port, Needle, Acc1);
+                _ -> {ok, Output}
+            end;
+        {Port, {exit_status, Status}} ->
+            {error, {early_exit, Status,
+                     iolist_to_binary(lists:reverse(Acc))}}
+    after 30000 ->
+        erlang:error(cli_subprocess_reply_timeout)
+    end.
 
 erl_main_argv_args(PlainArgv) ->
     ["-noshell"] ++ code_path_args(code:get_path())

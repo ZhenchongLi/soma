@@ -190,15 +190,25 @@ socket(Opts) ->
 
 %% Before a client verb runs, make sure a daemon is up -- auto-start one if none
 %% is, best-effort (if it never comes up the command runs anyway and fails with
-%% its own clear connection error). Only the client verbs auto-start;
-%% `daemon' / `stop' / `__ping' and malformed argv do not.
+%% its own clear connection error). Only the client verbs auto-start, including
+%% the three `tool' management verbs; `daemon' / `stop' / `__ping' and malformed
+%% argv do not.
 ensure_daemon_for([Verb | Rest])
   when Verb =:= "run"; Verb =:= "ask"; Verb =:= "status";
        Verb =:= "cancel"; Verb =:= "trace" ->
-    Sock = socket(socket_opts(Rest)),
-    soma_cli:ensure_daemon(#{socket => Sock}, fun() -> launch_daemon(Sock) end);
+    ensure_daemon_for_client(Rest);
+ensure_daemon_for(["tool", "register", _File | Rest]) ->
+    ensure_daemon_for_client(Rest);
+ensure_daemon_for(["tool", "list" | Rest]) ->
+    ensure_daemon_for_client(Rest);
+ensure_daemon_for(["tool", "remove", _Name | Rest]) ->
+    ensure_daemon_for_client(Rest);
 ensure_daemon_for(_Argv) ->
     ok.
+
+ensure_daemon_for_client(Rest) ->
+    Sock = socket(socket_opts(Rest)),
+    soma_cli:ensure_daemon(#{socket => Sock}, fun() -> launch_daemon(Sock) end).
 
 %% Pull just the `--socket <path>' override out of a verb's trailing args so the
 %% auto-start resolves the exact socket the command will use; other tokens are
