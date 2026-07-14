@@ -8,6 +8,7 @@
          test_text_grep_input_validation_fails_named_session_alive/1,
          test_text_grep_default_and_explicit_match_caps/1,
          test_text_readers_enforce_shared_65536_byte_cap/1,
+         test_text_head_explicit_default_and_short_input/1,
          test_text_head_input_validation_fails_named_session_alive/1]).
 
 all() ->
@@ -16,6 +17,7 @@ all() ->
      test_text_grep_input_validation_fails_named_session_alive,
      test_text_grep_default_and_explicit_match_caps,
      test_text_readers_enforce_shared_65536_byte_cap,
+     test_text_head_explicit_default_and_short_input,
      test_text_head_input_validation_fails_named_session_alive].
 
 init_per_testcase(_Case, Config) ->
@@ -176,6 +178,33 @@ test_text_readers_enforce_shared_65536_byte_cap(_Config) ->
       truncated := true} = step_output(Events, head_byte_cap),
     65536 = byte_size(HeadOutput),
     HeadOutput = binary:copy(<<"h">>, 65536),
+    ok.
+
+test_text_head_explicit_default_and_short_input(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    ExplicitText = <<"one\ntwo\nthree\nfour">>,
+    DefaultPrefix = binary:copy(<<"default\n">>, 10),
+    DefaultText = <<DefaultPrefix/binary, "eleven">>,
+    ShortText = <<"short\nfinal">>,
+    Steps = [#{id => explicit_line_limit,
+               tool => text_head,
+               args => #{text => ExplicitText, lines => 2}},
+             #{id => default_line_limit,
+               tool => text_head,
+               args => #{text => DefaultText}},
+             #{id => shorter_than_limit,
+               tool => text_head,
+               args => #{text => ShortText, lines => 3}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    #{text := <<"one\ntwo\n">>,
+      truncated := true} = step_output(Events, explicit_line_limit),
+    #{text := DefaultPrefix,
+      truncated := true} = step_output(Events, default_line_limit),
+    #{text := ShortText,
+      truncated := false} = step_output(Events, shorter_than_limit),
     ok.
 
 test_text_head_input_validation_fails_named_session_alive(_Config) ->
