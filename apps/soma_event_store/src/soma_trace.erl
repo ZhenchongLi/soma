@@ -47,23 +47,33 @@ format_event(Event) ->
         StepId ->
             Base1 ++ " step_id=" ++ to_str(StepId)
     end,
-    %% Reason: check top-level key first, then fall back to payload map
-    Reason = case maps:get(reason, Event, undefined) of
+    %% Exploration events carry their round number; render it so a
+    %% correlation trace shows round order (top-level first, payload fallback).
+    Base3 = case event_field(round, Event) of
+        undefined ->
+            Base2;
+        Round ->
+            Base2 ++ " round=" ++ to_str(Round)
+    end,
+    case event_field(reason, Event) of
+        undefined ->
+            Base3;
+        Reason ->
+            Base3 ++ " reason=" ++ to_str(Reason)
+    end.
+
+%% Read a field from the event top level first, then from the payload map.
+event_field(Key, Event) ->
+    case maps:get(Key, Event, undefined) of
         undefined ->
             RawPayload = maps:get(payload, Event, #{}),
             Payload = case is_map(RawPayload) of
                 true  -> RawPayload;
                 false -> #{}
             end,
-            maps:get(reason, Payload, undefined);
-        R ->
-            R
-    end,
-    case Reason of
-        undefined ->
-            Base2;
-        _ ->
-            Base2 ++ " reason=" ++ to_str(Reason)
+            maps:get(Key, Payload, undefined);
+        Value ->
+            Value
     end.
 
 %% Convert atoms, binaries, lists, or any term to a flat string.
