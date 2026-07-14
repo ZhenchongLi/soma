@@ -153,9 +153,32 @@ test_landing_labels_run_model_free() {
   echo "PASS: test_landing_labels_run_model_free"
 }
 
+test_quick_start_uses_pipeline_lisp() {
+  local quick_start_text
+  local old_path="/tmp/soma-demo/pipeline.lfe"
+
+  quick_start_text="$(normalize_visible_text "${SITE_DIR}/dist/start/quick-start/index.html")"
+
+  if ! assert_fragments_in_order "${quick_start_text}" \
+    "cat > /tmp/soma-demo/pipeline.lisp" \
+    '$SOMA run /tmp/soma-demo/pipeline.lisp'; then
+    echo "FAIL: test_quick_start_uses_pipeline_lisp" >&2
+    return 1
+  fi
+
+  if [[ "${quick_start_text}" == *"${old_path}"* ]]; then
+    echo "FAIL: test_quick_start_uses_pipeline_lisp" >&2
+    printf 'Unexpected legacy path in normalized visible text:\n  %s\n' "${old_path}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_quick_start_uses_pipeline_lisp"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
 test_landing_marks_config_registered_cli_tools_shipped
 test_landing_quick_start_matches_readme_checkout_flow
 test_landing_labels_run_model_free
+test_quick_start_uses_pipeline_lisp
