@@ -4,11 +4,15 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_text_grep_compilable_pattern_and_zero_match/1,
-         test_text_grep_invalid_regex_fails_bounded_session_alive/1]).
+         test_text_grep_invalid_regex_fails_bounded_session_alive/1,
+         test_text_grep_input_validation_fails_named_session_alive/1,
+         test_text_head_input_validation_fails_named_session_alive/1]).
 
 all() ->
     [test_text_grep_compilable_pattern_and_zero_match,
-     test_text_grep_invalid_regex_fails_bounded_session_alive].
+     test_text_grep_invalid_regex_fails_bounded_session_alive,
+     test_text_grep_input_validation_fails_named_session_alive,
+     test_text_head_input_validation_fails_named_session_alive].
 
 init_per_testcase(_Case, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -72,6 +76,90 @@ test_text_grep_invalid_regex_fails_bounded_session_alive(_Config) ->
     ok = wait_for_event(StorePid, GoodRunId, <<"run.completed">>, 50),
     ok = wait_for_run_status(SessionPid, GoodRunId, completed, 50),
     true = is_process_alive(SessionPid),
+    ok.
+
+test_text_grep_input_validation_fails_named_session_alive(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    LargeNonBinary = lists:duplicate(4096, $x),
+    Cases =
+        [{grep_missing_text,
+          #{pattern => <<"alpha">>},
+          {missing_field, text}},
+         {grep_missing_pattern,
+          #{text => <<"alpha\n">>},
+          {missing_field, pattern}},
+         {grep_non_binary_text,
+          #{text => LargeNonBinary, pattern => <<"alpha">>},
+          {invalid_field_type, text, binary}},
+         {grep_non_binary_pattern,
+          #{text => <<"alpha\n">>, pattern => LargeNonBinary},
+          {invalid_field_type, pattern, binary}},
+         {grep_zero_max_matches,
+          #{text => <<"alpha\n">>, pattern => <<"alpha">>, max_matches => 0},
+          {invalid_limit, max_matches, positive_integer}},
+         {grep_negative_max_matches,
+          #{text => <<"alpha\n">>, pattern => <<"alpha">>, max_matches => -1},
+          {invalid_limit, max_matches, positive_integer}},
+         {grep_non_integer_max_matches,
+          #{text => <<"alpha\n">>,
+            pattern => <<"alpha">>,
+            max_matches => LargeNonBinary},
+          {invalid_limit, max_matches, positive_integer}}],
+    ok = assert_validation_failures(SessionPid, StorePid, text_grep, Cases),
+    ok = assert_session_completes_echo(SessionPid, StorePid,
+                                       echo_after_grep_validation),
+    ok.
+
+test_text_head_input_validation_fails_named_session_alive(_Config) ->
+    StorePid = event_store_pid(),
+    {ok, SessionPid} = soma_agent_session:start_link(#{}),
+    LargeNonBinary = lists:duplicate(4096, $x),
+    Cases =
+        [{head_missing_text,
+          #{lines => 1},
+          {missing_field, text}},
+         {head_non_binary_text,
+          #{text => LargeNonBinary, lines => 1},
+          {invalid_field_type, text, binary}},
+         {head_zero_lines,
+          #{text => <<"alpha\n">>, lines => 0},
+          {invalid_limit, lines, positive_integer}},
+         {head_negative_lines,
+          #{text => <<"alpha\n">>, lines => -1},
+          {invalid_limit, lines, positive_integer}},
+         {head_non_integer_lines,
+          #{text => <<"alpha\n">>, lines => LargeNonBinary},
+          {invalid_limit, lines, positive_integer}}],
+    ok = assert_validation_failures(SessionPid, StorePid, text_head, Cases),
+    ok = assert_session_completes_echo(SessionPid, StorePid,
+                                       echo_after_head_validation),
+    ok.
+
+assert_validation_failures(SessionPid, StorePid, Tool, Cases) ->
+    lists:foreach(
+      fun({StepId, Args, ExpectedReason}) ->
+              Steps = [#{id => StepId, tool => Tool, args => Args}],
+              {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+              ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
+              ExpectedReason = run_failure_reason(StorePid, RunId),
+              true = byte_size(term_to_binary(ExpectedReason)) =< 128,
+              ok = wait_for_run_status(SessionPid, RunId, failed, 50),
+              true = is_process_alive(SessionPid)
+      end,
+      Cases),
+    ok.
+
+assert_session_completes_echo(SessionPid, StorePid, StepId) ->
+    Steps = [#{id => StepId,
+               tool => echo,
+               args => #{value => <<"still alive">>}}],
+    {ok, RunId} = soma_agent_session:start_run(SessionPid, Steps),
+    ok = wait_for_run_completed(StorePid, RunId, 50),
+    ok = wait_for_run_status(SessionPid, RunId, completed, 50),
+    true = is_process_alive(SessionPid),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    #{value := <<"still alive">>} = step_output(Events, StepId),
     ok.
 
 step_output(Events, StepId) ->
