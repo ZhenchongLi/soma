@@ -21,3 +21,31 @@ text_reader_contract_names_all_proofs_test() ->
     Missing = [Proof || Proof <- Proofs,
                         binary:match(Doc, Proof) =:= nomatch],
     ?assertEqual([], Missing).
+
+live_builtin_docs_track_seven_tool_seed_test() ->
+    Expectations =
+        [{"README.md", [<<"`text_grep`">>, <<"`text_head`">>]},
+         {"docs/design.md", [<<"`text_grep`">>, <<"`text_head`">>]},
+         {"docs/tool-manifest.md",
+          [<<"seven built-in tools">>,
+           <<"| `text_grep` |">>,
+           <<"| `text_head` |">>]},
+         {"docs/usage.md",
+          [<<"| `text_grep` |">>,
+           <<"| `text_head` |">>,
+           <<"`file_write`, `text_grep`, `text_head`)">>]},
+         {"docs/roadmap.md", [<<"the seven built-ins declare descriptions">>]},
+         {"examples/cli-demo/README.md",
+          [<<"All seven built-in tools">>,
+           <<"`text_grep`">>,
+           <<"`text_head`">>]},
+         {"docs/contracts/tool-catalog-test-contract.md",
+          [<<"all seven built-ins">>,
+           <<"`seeded_catalog_lists_all_seven_builtins_test_`">>]}],
+    Missing =
+        [{Path, Needle}
+         || {Path, Needles} <- Expectations,
+            {ok, Doc} <- [file:read_file(Path)],
+            Needle <- Needles,
+            binary:match(Doc, Needle) =:= nomatch],
+    ?assertEqual([], Missing).
