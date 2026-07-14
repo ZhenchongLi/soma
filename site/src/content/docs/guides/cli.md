@@ -110,6 +110,10 @@ form is ready for boot reload.
 <p><code>soma tool list</code> prints each tool's name, effect, idempotent, and
 adapter, plus its optional description.</p>
 
+`soma tool remove <name>` removes the live config tool immediately. It deletes
+only its owned `<name>.lisp` file under `~/.soma/tools/`, so the name remains
+absent after restart.
+
 ## `soma run` — deterministic supervised execution (client)
 
 ```
