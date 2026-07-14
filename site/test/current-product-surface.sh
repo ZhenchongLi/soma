@@ -382,6 +382,21 @@ test_roadmap_marks_cli_config_planning_shipped() {
   echo "PASS: test_roadmap_marks_cli_config_planning_shipped"
 }
 
+test_roadmap_marks_tool_track_shipped() {
+  local roadmap_text
+  local expected="tools tool abstraction track [done — T.1 manifest v2 + catalog/0; T.2 config tools; catalog-fed planning prompt; T.4 ask_actor]"
+
+  roadmap_text="$(normalize_visible_text "${SITE_DIR}/dist/reference/roadmap/index.html")"
+
+  if [[ "${roadmap_text}" != *"${expected}"* ]]; then
+    echo "FAIL: test_roadmap_marks_tool_track_shipped" >&2
+    printf 'Expected normalized visible text fragment:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_roadmap_marks_tool_track_shipped"
+}
+
 test_landing_names_packaged_bin_soma_entry_point
 test_landing_presents_lisp_task_files_as_run_input
 test_landing_marks_boot_auto_resume_shipped
@@ -402,3 +417,4 @@ test_decision_layer_documents_configured_planning_path
 test_decision_layer_documents_fixed_response_gate
 test_decision_layer_places_api_key_in_daemon_environment
 test_roadmap_marks_cli_config_planning_shipped
+test_roadmap_marks_tool_track_shipped
