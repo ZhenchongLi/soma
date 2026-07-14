@@ -121,8 +121,15 @@ test_landing_marks_config_registered_cli_tools_shipped() {
 
 test_landing_quick_start_matches_readme_checkout_flow() {
   local landing_text
+  local printf_command="printf 'hi soma\\n' > /tmp/soma-demo/input.txt"
 
   landing_text="$(normalize_visible_text "${SITE_DIR}/dist/index.html")"
+
+  if [[ "${landing_text}" != *"${printf_command}"* ]]; then
+    echo "FAIL: test_landing_quick_start_matches_readme_checkout_flow" >&2
+    printf 'Expected complete one-line README command:\n  %s\n' "${printf_command}" >&2
+    return 1
+  fi
 
   if ! assert_fragments_in_order "${landing_text}" \
     "rebar3 release" \
@@ -329,6 +336,23 @@ test_cli_advertises_tool_management_commands() {
   echo "PASS: test_cli_advertises_tool_management_commands"
 }
 
+test_cli_names_exact_autostart_verbs() {
+  local cli_text
+  local expected="The run / ask / status / cancel / trace and tool register / tool list / tool remove client commands auto-start the daemon if none is up; stop and daemon do not."
+
+  cli_text="$(normalize_visible_text "${SITE_DIR}/dist/guides/cli/index.html")"
+
+  if [[ "${cli_text}" != *"${expected}"* ]] || \
+     [[ "${cli_text}" == *"Every client command"* ]] || \
+     [[ "${cli_text}" == *"every client verb"* ]]; then
+    echo "FAIL: test_cli_names_exact_autostart_verbs" >&2
+    printf 'Expected exact auto-start scope without blanket claims:\n  %s\n' "${expected}" >&2
+    return 1
+  fi
+
+  echo "PASS: test_cli_names_exact_autostart_verbs"
+}
+
 test_cli_documents_builtin_name_protection() {
   local cli_text
   local expected="Tool-management invariant: built-in names are protected. Config tools cannot replace or remove built-ins, or change their safety metadata."
@@ -522,6 +546,7 @@ test_cli_documents_live_register_persist_reload
 test_cli_documents_tool_list_fields
 test_cli_documents_live_remove_delete_restart
 test_cli_advertises_tool_management_commands
+test_cli_names_exact_autostart_verbs
 test_cli_documents_builtin_name_protection
 test_decision_layer_documents_configured_planning_path
 test_decision_layer_documents_fixed_response_gate
