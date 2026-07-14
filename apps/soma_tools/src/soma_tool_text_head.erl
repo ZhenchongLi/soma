@@ -18,7 +18,17 @@ describe() ->
 -spec manifest() -> map().
 manifest() ->
     (describe())#{adapter => erlang_module,
-                  module => ?MODULE}.
+                  module => ?MODULE,
+                  description => <<"Returns the leading lines of text.">>,
+                  params => [#{name => <<"text">>,
+                               type => string,
+                               required => true,
+                               doc => <<"Text to read.">>},
+                             #{name => <<"lines">>,
+                               type => integer,
+                               required => false,
+                               doc => <<"Maximum leading lines to return; "
+                                        "defaults to 10.">>}]}.
 
 -spec invoke(soma_tool:input(), soma_tool:ctx()) ->
     {ok, soma_tool:output()} | {error, soma_tool:error()}.
