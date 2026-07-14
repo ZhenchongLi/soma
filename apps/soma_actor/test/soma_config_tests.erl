@@ -2,6 +2,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-export([log/2]).
+
 %% Criterion 1: load/1 reads a minimal TOML file with an [llm] table and returns
 %% #{provider => openai_compat, base_url => <<_>>, model => <<_>>}, mapping the
 %% provider value to the atom openai_compat and base_url/model to binaries.
@@ -123,6 +125,52 @@ test_load_carries_explore_true() ->
 
 load_carries_explore_true_test() ->
     test_load_carries_explore_true().
+
+%% Criterion 3 (#232): each rejected explore setting emits one bounded warning
+%% that identifies the fixed config key and its expected value shape. One
+%% unparseable token also proves parsing reaches validation instead of raising.
+test_invalid_explore_settings_emit_keyed_diagnostics() ->
+    Toml =
+        "[llm]\n"
+        "provider = \"openai_compat\"\n"
+        "base_url = \"api.example/v1\"\n"
+        "model = \"deepseek-v4\"\n"
+        "explore = maybe\n"
+        "max_explore_rounds = true\n"
+        "max_observation_bytes = 0\n",
+    Path = write_temp_config(Toml),
+    Prev = os:getenv("SOMA_LLM_API_KEY"),
+    os:putenv("SOMA_LLM_API_KEY", "sk-test-sentinel-137"),
+    ok = logger:add_handler(soma_config_tests_capture, ?MODULE,
+                            #{config => #{pid => self()}}),
+    try
+        Outcome =
+            try soma_config:load(#{config_path => Path}) of
+                Config -> {ok, Config}
+            catch
+                Class:Reason -> {error, {Class, Reason}}
+            end,
+        Expected =
+            [{invalid_llm_setting, explore, boolean},
+             {invalid_llm_setting, max_explore_rounds, positive_integer},
+             {invalid_llm_setting, max_observation_bytes, positive_integer}],
+        ?assertEqual(lists:sort(Expected),
+                     lists:sort(receive_config_diagnostics([]))),
+        {ok, Loaded} = Outcome,
+        ?assertEqual([], [Key || Key <- [explore, max_explore_rounds,
+                                         max_observation_bytes],
+                                maps:is_key(Key, Loaded)])
+    after
+        _ = logger:remove_handler(soma_config_tests_capture),
+        case Prev of
+            false -> os:unsetenv("SOMA_LLM_API_KEY");
+            _ -> os:putenv("SOMA_LLM_API_KEY", Prev)
+        end,
+        file:delete(Path)
+    end.
+
+invalid_explore_settings_emit_keyed_diagnostics_test() ->
+    test_invalid_explore_settings_emit_keyed_diagnostics().
 
 %% Criterion 3: load/1 reads SOMA_LLM_API_KEY and puts its value into the built
 %% map as api_key => <<value>>.
@@ -305,3 +353,20 @@ write_temp_config(Contents) ->
     Path = filename:join(Dir, Name),
     ok = file:write_file(Path, Contents),
     Path.
+
+receive_config_diagnostics(Acc) ->
+    receive
+        {config_diagnostic, Diagnostic} ->
+            receive_config_diagnostics([Diagnostic | Acc])
+    after 0 ->
+        Acc
+    end.
+
+log(#{level := warning,
+      msg := {_Format,
+              [{invalid_llm_setting, _Key, _Expected} = Diagnostic]}},
+    #{config := #{pid := Pid}}) ->
+    Pid ! {config_diagnostic, Diagnostic},
+    ok;
+log(_LogEvent, _HandlerConfig) ->
+    ok.
