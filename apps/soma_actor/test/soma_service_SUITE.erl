@@ -8,16 +8,19 @@
 -export([test_supervised_service_restarts_and_serves_again/1]).
 -export([test_single_tool_invocation_runs_without_llm_worker/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
+-export([test_flat_plan_preserves_order_and_from_step_output/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
      test_single_tool_invocation_runs_without_llm_worker,
-     test_oversized_result_fails_with_max_output_reason].
+     test_oversized_result_fails_with_max_output_reason,
+     test_flat_plan_preserves_order_and_from_step_output].
 
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
-       TestCase =:= test_oversized_result_fails_with_max_output_reason ->
+       TestCase =:= test_oversized_result_fails_with_max_output_reason;
+       TestCase =:= test_flat_plan_preserves_order_and_from_step_output ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -28,7 +31,8 @@ init_per_testcase(TestCase, Config)
 end_per_testcase(TestCase, _Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
-       TestCase =:= test_oversized_result_fails_with_max_output_reason ->
+       TestCase =:= test_oversized_result_fails_with_max_output_reason;
+       TestCase =:= test_flat_plan_preserves_order_and_from_step_output ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
@@ -114,6 +118,42 @@ test_oversized_result_fails_with_max_output_reason(_Config) ->
     ?assertEqual(failed, maps:get(status, Terminal)),
     ?assertEqual(max_output_bytes_exceeded, maps:get(reason, Terminal)),
     ?assertNot(maps:is_key(result, Terminal)).
+
+test_flat_plan_preserves_order_and_from_step_output(_Config) ->
+    FirstStepId = service_flat_plan_first,
+    SecondStepId = service_flat_plan_second,
+    FirstOutput = #{value => <<"source step output">>},
+    Steps =
+        [#{id => FirstStepId,
+           tool => echo,
+           args => FirstOutput},
+         #{id => SecondStepId,
+           tool => echo,
+           args => #{from_step => FirstStepId}}],
+    Envelope =
+        #{kind => invoke,
+          api_version => <<"1">>,
+          request_id => <<"service-flat-plan">>,
+          operation => #{kind => steps, steps => Steps}},
+
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(Envelope),
+    {ok, Terminal} = wait_for_status(TaskId, succeeded, 100),
+    Outputs = maps:get(result, Terminal),
+    ?assertEqual(FirstOutput, maps:get(FirstStepId, Outputs)),
+    ?assertEqual(FirstOutput, maps:get(SecondStepId, Outputs)),
+
+    StorePid = runtime_event_store(),
+    [RunStarted] =
+        [Event || Event <- soma_event_store:all(StorePid),
+                  maps:get(event_type, Event) =:= <<"run.started">>,
+                  maps:get(steps, maps:get(payload, Event)) =:= Steps],
+    RunId = maps:get(run_id, RunStarted),
+    StartedStepIds =
+        [maps:get(step_id, Event)
+         || Event <- soma_event_store:by_run(StorePid, RunId),
+            maps:get(event_type, Event) =:= <<"step.started">>],
+    ?assertEqual([SecondStepId, FirstStepId], StartedStepIds).
 
 ensure_loaded(App) ->
     case application:load(App) of
