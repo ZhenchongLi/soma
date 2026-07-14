@@ -402,7 +402,8 @@ test_cli_documents_default_reply_and_opt_in_planning() {
 
   if ! assert_fragments_in_order "${cli_text}" \
     "By default, the real provider returns reply proposals, so soma ask answers in text without executing tools." \
-    "With [llm] plan = true in ~/.soma/config, structured planning is opt-in:" \
+    "With [llm] plan = true in ~/.soma/config" \
+    "structured planning is opt-in:" \
     "provider content compiles as (run-steps ...)" \
     "proposal normalization, policy, and budget gates" \
     "starts a supervised run."; then

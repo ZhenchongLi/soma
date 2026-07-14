@@ -226,13 +226,12 @@ provider live at the daemon) and it is what makes the test gate hermetic:
   pass a key). Swapping the config swaps the brain; the request form and the
   `(result …)` reply are identical either way.
 
-**Near-term scope:** the real provider initially returns only `reply` proposals
-(a text answer), so `soma ask` answers in text and does **not** yet execute
-tools. The policy gate, `(allow …)`, and `(budget-steps …)` are wired through to
-the actor but inert for a `reply` — the one budget effect a reply can show is the
-`(budget-llm 0)` up-front refusal. They become load-bearing once structured
-(`run_steps`) proposals land (the real planner); until then they are accepted but
-inert for a `reply`.
+By default, the real provider returns `reply` proposals, so `soma ask` answers in
+text without executing tools. With `[llm] plan = true` in `~/.soma/config`,
+structured planning is opt-in: provider content compiles as `(run-steps ...)`,
+passes the normal proposal normalization, policy, and budget gates, and only then
+starts a supervised run. `(allow ...)` and `(budget-steps ...)` are inert for a
+default reply but load-bearing in planning mode.
 
 ## `soma status` / `soma cancel` / `soma trace` — task commands over the Lisp wire
 
