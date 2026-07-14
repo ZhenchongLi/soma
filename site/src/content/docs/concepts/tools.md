@@ -46,6 +46,9 @@ form to a manifest, and sends it through
 `soma_tool_manifest:normalize/1` before the normalized descriptor enters the
 live registry.
 
+When a config tool omits safety metadata, Soma defaults effect to state,
+idempotent to false, and timeout_ms to 30000 ms.
+
 ## Two adapters
 
 - **`erlang_module`** — the in-BEAM built-ins. The worker runs
