@@ -24,6 +24,8 @@
 -export([cancel_during_llm_round_kills_worker_and_cancels_task/1]).
 -export([cancel_during_explore_run_kills_tool_worker_and_cancels_task/1]).
 -export([actor_reusable_after_round_exhaustion/1]).
+-export([actor_reusable_after_in_loop_llm_failure/1]).
+-export([actor_reusable_after_exploration_cancel/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
@@ -42,7 +44,9 @@ all() ->
      in_loop_llm_timeout_is_terminal_timeout,
      cancel_during_llm_round_kills_worker_and_cancels_task,
      cancel_during_explore_run_kills_tool_worker_and_cancels_task,
-     actor_reusable_after_round_exhaustion].
+     actor_reusable_after_round_exhaustion,
+     actor_reusable_after_in_loop_llm_failure,
+     actor_reusable_after_exploration_cancel].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -589,24 +593,74 @@ actor_reusable_after_round_exhaustion(_Config) ->
     ok = assert_equal(failed, maps:get(status, Status)),
     ok = assert_equal({budget_exceeded, max_explore_rounds},
                       maps:get(reason, Status, undefined)),
+    assert_later_direct_task_completes(ActorPid, <<"round-exhaustion">>).
 
-    LaterTaskId = <<"task-after-round-exhaustion">>,
+actor_reusable_after_in_loop_llm_failure(_Config) ->
+    TestPid = self(),
+    CrashResponder =
+        fun(CallOpts) ->
+                TestPid ! {provider_worker_request, 2, self(), CallOpts},
+                exit(reuse_in_loop_llm_crashed)
+        end,
+    {_Store, ActorPid, TaskId, _CorrelationId, _ExploreSource,
+     WorkerPid, _SecondCallOpts} =
+        in_loop_llm_terminal_task(<<"reusable-after-failure">>,
+                                  CrashResponder),
+    Status = wait_for_terminal_task_status(ActorPid, TaskId, 100),
+    ok = assert_equal(failed, maps:get(status, Status)),
+    ok = wait_for_process_dead(WorkerPid, 100),
+    assert_later_direct_task_completes(ActorPid, <<"llm-failure">>).
+
+actor_reusable_after_exploration_cancel(_Config) ->
+    Store = event_store_pid(),
+    Source =
+        <<"(explore (step (id wait) (tool sleep) "
+          "(args (ms 5000)) (timeout_ms 10000)))">>,
+    ModelConfig =
+        #{provider => openai_compat,
+          base_url => <<"api.example.test/v1">>,
+          model => <<"test-model">>,
+          explore => true,
+          response_sequence => [fixed_response(Source)]},
+    {ok, ActorPid} =
+        soma_actor_sup:start_actor(
+          #{actor_id => <<"actor-reusable-after-exploration-cancel">>,
+            model_config => ModelConfig,
+            tool_policy => #{allowed_tools => [sleep, echo]},
+            budget => #{max_explore_rounds => 3},
+            event_store => Store}),
+    TaskId = <<"task-reusable-after-exploration-cancel">>,
+    CorrelationId = <<"corr-reusable-after-exploration-cancel">>,
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{prompt => <<"cancel this exploration">>},
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          llm => #{}},
+
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    _Started = wait_for_event_map(Store, CorrelationId,
+                                  <<"tool.started">>, 100),
+    ok = soma_actor:cancel(ActorPid, TaskId),
+    ok = wait_for_task_status(ActorPid, TaskId, cancelled, 100),
+    assert_later_direct_task_completes(ActorPid,
+                                       <<"exploration-cancel">>).
+
+assert_later_direct_task_completes(ActorPid, Suffix) ->
+    LaterTaskId = <<"task-reuse-follow-up-", Suffix/binary>>,
     LaterEnvelope =
         #{type => <<"chat">>,
-          payload => #{prompt => <<"run after exhaustion">>},
+          payload => #{prompt => <<"run after exploration terminal state">>},
           task_id => LaterTaskId,
-          correlation_id => <<"corr-after-round-exhaustion">>,
+          correlation_id => <<"corr-reuse-follow-up-", Suffix/binary>>,
           steps => [#{id => follow_up,
                       tool => echo,
                       args => #{value => <<"still reusable">>}}]},
     {ok, LaterTaskId} = soma_actor:send(ActorPid, LaterEnvelope),
     ok = wait_for_task_status(ActorPid, LaterTaskId, completed, 100),
-    %% Deliberately wrong (staged red): the completed follow-up already has its
-    %% echo result, so expecting `not_ready' proves this new path reaches the
-    %% final behavior assertion before the staged correction.
-    ok = assert_equal(not_ready,
-                      soma_actor:get_task_result(ActorPid, LaterTaskId)),
-    ok.
+    ok = assert_equal(true, is_process_alive(ActorPid)),
+    assert_equal({ok, #{follow_up => #{value => <<"still reusable">>}}},
+                 soma_actor:get_task_result(ActorPid, LaterTaskId)).
 
 in_loop_llm_terminal_task(Suffix, SecondResponder) ->
     Store = event_store_pid(),
