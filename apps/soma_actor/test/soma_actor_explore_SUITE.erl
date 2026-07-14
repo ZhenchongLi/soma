@@ -30,6 +30,7 @@
 -export([terminal_reply_completes_without_run/1]).
 -export([terminal_policy_rejection_starts_no_run/1]).
 -export([terminal_max_steps_failure_starts_no_run/1]).
+-export([round_events_use_bounded_schema_and_order/1]).
 
 all() ->
     [explore_mode_provider_text_is_parsed_as_round_reply,
@@ -54,7 +55,8 @@ all() ->
      terminal_run_steps_reuses_proposal_execution_suffix,
      terminal_reply_completes_without_run,
      terminal_policy_rejection_starts_no_run,
-     terminal_max_steps_failure_starts_no_run].
+     terminal_max_steps_failure_starts_no_run,
+     round_events_use_bounded_schema_and_order].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_runtime),
@@ -720,6 +722,60 @@ terminal_max_steps_failure_starts_no_run(_Config) ->
     ok = assert_equal(0, event_count(Store, CorrelationId,
                                      <<"run.started">>)),
     ok.
+
+round_events_use_bounded_schema_and_order(_Config) ->
+    ExploreSource =
+        <<"(explore (step (id inspect) (tool text_head) "
+          "(args (text \"observed\") (lines 1))))">>,
+    {Store, ActorPid, TaskId, CorrelationId, _Prompt,
+     _FirstCallOpts, _SecondCallOpts} =
+        two_round_explore(<<"round-events">>, [text_head],
+                          #{max_explore_rounds => 2}, ExploreSource),
+
+    ok = wait_for_task_status(ActorPid, TaskId, completed, 100),
+    Events = soma_event_store:by_correlation(Store, CorrelationId),
+    RoundEvents =
+        [Event || #{event_type := Type} = Event <- Events,
+                  Type =:= <<"explore.round.started">>
+                      orelse Type =:= <<"explore.round.completed">>],
+    [Round1Started, Round1Completed,
+     Round2Started, Round2Completed] = RoundEvents,
+
+    ok = assert_round_event_keys(started, Round1Started),
+    ok = assert_round_event_keys(completed, Round1Completed),
+    ok = assert_round_event_keys(started, Round2Started),
+    ok = assert_round_event_keys(completed, Round2Completed),
+    ok = assert_equal(
+           [{<<"explore.round.started">>, 1, 2},
+            {<<"explore.round.completed">>, 1, 2},
+            {<<"explore.round.started">>, 2, 1},
+            {<<"explore.round.completed">>, 2, 1}],
+           [{maps:get(event_type, Event), maps:get(round, Event),
+             maps:get(remaining_rounds, Event)} || Event <- RoundEvents]),
+    ok = assert_equal(explore, maps:get(action, Round1Completed)),
+    ok = assert_equal(completed, maps:get(status, Round1Completed)),
+    ObservationBytes = maps:get(observation_bytes, Round1Completed),
+    true = is_integer(ObservationBytes) andalso ObservationBytes > 0,
+    ok = assert_equal(false, maps:get(truncated, Round1Completed)),
+    ok = assert_equal(proposal, maps:get(action, Round2Completed)),
+    ok = assert_equal(completed, maps:get(status, Round2Completed)),
+    ok = assert_equal(0, maps:get(observation_bytes, Round2Completed)),
+    ok = assert_equal(false, maps:get(truncated, Round2Completed)),
+    ok.
+
+assert_round_event_keys(Kind, Event) ->
+    Mandatory =
+        [event_id, timestamp, session_id, run_id, step_id, tool_call_id,
+         event_type, payload],
+    Identity =
+        [actor_id, task_id, correlation_id, round, remaining_rounds],
+    Outcome =
+        case Kind of
+            started -> [];
+            completed -> [action, status, observation_bytes, truncated]
+        end,
+    assert_equal(lists:sort(Mandatory ++ Identity ++ Outcome),
+                 lists:sort(maps:keys(Event))).
 
 terminal_explore_task(Suffix, Source, AllowedTools, Budget) ->
     Store = event_store_pid(),
