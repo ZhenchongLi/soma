@@ -131,6 +131,10 @@ start_coordinator(CoordinatorOpts,
                 requests := maps:put(RequestId, TaskId, Requests),
                 tasks := maps:put(TaskId, Route, Tasks),
                 monitors := maps:put(MRef, TaskId, Monitors)},
+            ok = soma_delegate_event:append(
+                   <<"delegate.task.accepted">>, TaskId,
+                   maps:get(correlation_id, Handle), 0,
+                   #{status => accepted}),
             CoordinatorPid ! {delegate_begin, TaskId},
             {reply, {ok, Handle}, AdmittedState};
         {error, _Reason} ->
@@ -147,6 +151,10 @@ remove_active_coordinator(MRef, CoordinatorPid,
                 case maps:get(coordinator_pid, Route, undefined) of
                     CoordinatorPid ->
                         Projection = coordinator_crashed_projection(),
+                        ok = soma_delegate_event:append(
+                               <<"delegate.task.terminal">>, TaskId,
+                               route_correlation_id(Route), 0,
+                               Projection),
                         reply_cancel_waiters(Route,
                                              public_projection(
                                                Route, Projection)),
@@ -172,6 +180,7 @@ store_terminal_projection(
             PublicProjection = public_projection(Route, Projection),
             reply_cancel_waiters(Route, PublicProjection),
             TerminalRoute = terminal_route(Route, Projection),
+            CoordinatorPid ! {delegate_terminal_stored, TaskId},
             State#{tasks := maps:put(TaskId, TerminalRoute, Tasks),
                    monitors := maps:remove(MRef, Monitors)};
         _StaleOrMismatchedCoordinator ->
@@ -193,6 +202,10 @@ terminal_route(Route, Projection) ->
       task_id => maps:get(task_id, Route),
       accepted_handle => maps:get(accepted_handle, Route),
       terminal_projection => Projection}.
+
+route_correlation_id(Route) ->
+    maps:get(
+      correlation_id, maps:get(accepted_handle, Route)).
 
 request_id(#{request_id := RequestId}) ->
     validate_id(RequestId, invalid_request_id);
