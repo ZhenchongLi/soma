@@ -8,7 +8,8 @@
          test_socket_duplicate_invoke_reuses_task_once/1,
          test_socket_watch_reconnect_resumes_after_cursor/1,
          test_socket_cancel_is_repeatable_after_cli_process_exit/1,
-         test_socket_version_and_operation_errors_are_typed/1]).
+         test_socket_version_and_operation_errors_are_typed/1,
+         test_socket_rejects_bad_and_oversized_frames_then_serves/1]).
 
 all() ->
     [test_socket_invoke_status_and_result_end_to_end,
@@ -16,7 +17,8 @@ all() ->
      test_socket_duplicate_invoke_reuses_task_once,
      test_socket_watch_reconnect_resumes_after_cursor,
      test_socket_cancel_is_repeatable_after_cli_process_exit,
-     test_socket_version_and_operation_errors_are_typed].
+     test_socket_version_and_operation_errors_are_typed,
+     test_socket_rejects_bad_and_oversized_frames_then_serves].
 
 init_per_testcase(
   TestCase, Config)
@@ -360,6 +362,50 @@ test_socket_version_and_operation_errors_are_typed(_Config) ->
         stop_listener(Listener, Path)
     end.
 
+%% RS.1d criterion 7: malformed Lisp and an oversized declared frame are
+%% connection-local failures. Each receives its fixed bounded typed error,
+%% while the same listener remains alive and serves a valid request on a fresh
+%% connection.
+test_socket_rejects_bad_and_oversized_frames_then_serves(_Config) ->
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        Rows =
+            [{malformed_lisp,
+              fun() -> frame(<<"(">>) end,
+              malformed_request},
+             {oversized_frame,
+              fun() ->
+                      Length = soma_socket_frame:max_bytes() + 1,
+                      <<Length:32/unsigned-big-integer>>
+              end,
+              frame_too_large}],
+        lists:foreach(
+          fun({Name, WireFrame, ExpectedCode}) ->
+                  ErrorPayload =
+                      socket_wire_response_payload(Path, WireFrame()),
+                  ?assertEqual(
+                     {service_error, ExpectedCode},
+                     decode_service_response(ErrorPayload)),
+                  ?assert(
+                     byte_size(ErrorPayload) =<
+                         soma_socket_frame:max_bytes()),
+                  ?assert(is_process_alive(Listener)),
+                  MissingTaskId =
+                      iolist_to_binary(
+                        ["missing-after-", atom_to_list(Name)]),
+                  ?assertEqual(
+                     {service_error, not_found},
+                     socket_response(
+                       Path, lifecycle_source(status, MissingTaskId))),
+                  ?assert(is_process_alive(Listener))
+          end,
+          Rows)
+    after
+        stop_listener(Listener, Path)
+    end.
+
 socket_request(Path, Source, Operation) ->
     {service_reply, Operation, Value} = socket_response(Path, Source),
     Value.
@@ -368,12 +414,15 @@ socket_response(Path, Source) ->
     decode_service_response(socket_response_payload(Path, Source)).
 
 socket_response_payload(Path, Source) ->
+    socket_wire_response_payload(Path, frame(Source)).
+
+socket_wire_response_payload(Path, WireFrame) ->
     {ok, Socket} =
         gen_tcp:connect(
           {local, Path}, 0,
           [binary, {packet, raw}, {active, false}], 5000),
     try
-        ok = gen_tcp:send(Socket, frame(Source)),
+        ok = gen_tcp:send(Socket, WireFrame),
         recv_frame(Socket)
     after
         gen_tcp:close(Socket)
@@ -413,6 +462,9 @@ decode_service_response(Payload) ->
 
 decode_error_code('unsupported-api-version') -> unsupported_api_version;
 decode_error_code('invalid-operation') -> invalid_operation;
+decode_error_code('malformed-request') -> malformed_request;
+decode_error_code('frame-too-large') -> frame_too_large;
+decode_error_code('not-found') -> not_found;
 decode_error_code('internal-error') -> internal_error;
 decode_error_code(Code) -> Code.
 
