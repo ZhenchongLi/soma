@@ -433,8 +433,49 @@ active_tool_worker(EventStore, RunId) ->
             undefined
     end.
 
+public_task(#{status := accepted} = Task) ->
+    lifecycle_task(Task);
+public_task(#{status := running} = Task) ->
+    lifecycle_task(Task);
 public_task(Task) ->
-    maps:with([task_id, request_id, status, result, reason], Task).
+    Lifecycle = lifecycle_task(Task),
+    Summary = bounded_terminal_summary(terminal_summary(Task)),
+    Lifecycle#{summary => Summary}.
+
+lifecycle_task(Task) ->
+    maps:with([task_id, request_id, status], Task).
+
+terminal_summary(#{status := succeeded, result := Result}) ->
+    #{result_bytes =>
+          byte_size(term_to_binary(Result, [deterministic]))};
+terminal_summary(#{status := cancelled}) ->
+    #{reason_class => cancelled};
+terminal_summary(#{reason := Reason}) ->
+    #{reason_class => reason_class(Reason)};
+terminal_summary(_Task) ->
+    #{reason_class => failed}.
+
+bounded_terminal_summary(Summary) ->
+    case byte_size(term_to_binary(Summary, [deterministic])) =< 512 of
+        true -> Summary;
+        false -> #{reason_class => failed}
+    end.
+
+reason_class(run_failed) -> run_failed;
+reason_class(timeout) -> timeout;
+reason_class(run_start_failed) -> run_start_failed;
+reason_class(deadline_exceeded) -> deadline_exceeded;
+reason_class(max_output_bytes_exceeded) -> max_output_bytes_exceeded;
+reason_class(run_crashed) -> run_crashed;
+reason_class(service_result_reconstruction_failed) ->
+    service_result_reconstruction_failed;
+reason_class(service_interrupted_before_start) ->
+    service_interrupted_before_start;
+reason_class(service_recovery_failed) -> service_recovery_failed;
+reason_class(resume_start_failed) -> resume_start_failed;
+reason_class({policy_rejected, _Reason}) -> policy_rejected;
+reason_class({resume_unsafe, _StepId}) -> resume_unsafe;
+reason_class(_Unknown) -> failed.
 
 %% Rebuild the request-id index from the bounded service lifecycle trail. The
 %% event store is the source of truth; task and request maps are only the live

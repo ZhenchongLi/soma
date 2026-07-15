@@ -205,6 +205,7 @@ init_per_testcase(TestCase, Config)
 end_per_testcase(TestCase, Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
+       TestCase =:= test_terminal_status_has_bounded_summary_only;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
@@ -272,7 +273,11 @@ test_supervised_service_restarts_and_serves_again(_Config) ->
     {ok, Terminal} = wait_for_status(EchoTaskId, succeeded, 100),
     ?assertEqual(
        #{<<"service-restart-echo">> => #{value => <<"served again">>}},
-       maps:get(result, Terminal)),
+       task_outputs(runtime_event_store(), EchoTaskId)),
+    ?assertEqual(
+       success_summary(
+         #{<<"service-restart-echo">> => #{value => <<"served again">>}}),
+       maps:get(summary, Terminal)),
     ?assertEqual(ReplacementPid, whereis(soma_service)).
 
 test_single_tool_invocation_runs_without_llm_worker(_Config) ->
@@ -290,7 +295,9 @@ test_single_tool_invocation_runs_without_llm_worker(_Config) ->
         {ok, #{task_id := TaskId, status := accepted}} =
             soma_service:invoke(NormalizedEnvelope),
         {ok, Terminal} = wait_for_status(TaskId, succeeded, 100),
-        ?assertEqual(#{RequestId => Args}, maps:get(result, Terminal)),
+        ?assertEqual(
+           success_summary(#{RequestId => Args}),
+           maps:get(summary, Terminal)),
 
         StorePid = runtime_event_store(),
         Events = soma_event_store:all(StorePid),
@@ -300,6 +307,7 @@ test_single_tool_invocation_runs_without_llm_worker(_Config) ->
                       maps:get(steps, maps:get(payload, Event)) =:= [Step]],
         RunId = maps:get(run_id, RunStarted),
         RunEvents = soma_event_store:by_run(StorePid, RunId),
+        ?assertEqual(#{RequestId => Args}, run_outputs(StorePid, RunId)),
         ?assert(lists:any(
                   fun(Event) ->
                           maps:get(event_type, Event) =:= <<"tool.started">>
@@ -357,7 +365,7 @@ test_oversized_result_fails_with_max_output_reason(_Config) ->
         soma_service:invoke(Envelope),
     {ok, Terminal} = wait_for_terminal(TaskId, 100),
     ?assertEqual(failed, maps:get(status, Terminal)),
-    ?assertEqual(max_output_bytes_exceeded, maps:get(reason, Terminal)),
+    ?assertEqual(max_output_bytes_exceeded, terminal_reason_class(Terminal)),
     ?assertNot(maps:is_key(result, Terminal)).
 
 test_flat_plan_preserves_order_and_from_step_output(_Config) ->
@@ -380,9 +388,6 @@ test_flat_plan_preserves_order_and_from_step_output(_Config) ->
     {ok, #{task_id := TaskId, status := accepted}} =
         soma_service:invoke(Envelope),
     {ok, Terminal} = wait_for_status(TaskId, succeeded, 100),
-    Outputs = maps:get(result, Terminal),
-    ?assertEqual(FirstOutput, maps:get(FirstStepId, Outputs)),
-    ?assertEqual(FirstOutput, maps:get(SecondStepId, Outputs)),
 
     StorePid = runtime_event_store(),
     [RunStarted] =
@@ -390,6 +395,10 @@ test_flat_plan_preserves_order_and_from_step_output(_Config) ->
                   maps:get(event_type, Event) =:= <<"run.started">>,
                   maps:get(steps, maps:get(payload, Event)) =:= Steps],
     RunId = maps:get(run_id, RunStarted),
+    Outputs = run_outputs(StorePid, RunId),
+    ?assertEqual(FirstOutput, maps:get(FirstStepId, Outputs)),
+    ?assertEqual(FirstOutput, maps:get(SecondStepId, Outputs)),
+    ?assertEqual(success_summary(Outputs), maps:get(summary, Terminal)),
     StartedStepIds =
         [maps:get(step_id, Event)
          || Event <- soma_event_store:by_run(StorePid, RunId),
@@ -544,11 +553,11 @@ test_fresh_vms_keep_durable_task_and_run_ids_distinct(Config) ->
     ?assertNotEqual(maps:get(task_id, First), maps:get(task_id, Second)),
     ?assertNotEqual(maps:get(run_id, First), maps:get(run_id, Second)),
     ?assertEqual(
-       #{FirstRequest => #{value => FirstValue}},
-       maps:get(result, maps:get(terminal, First))),
+       success_summary(#{FirstRequest => #{value => FirstValue}}),
+       maps:get(summary, maps:get(terminal, First))),
     ?assertEqual(
-       #{SecondRequest => #{value => SecondValue}},
-       maps:get(result, maps:get(terminal, Second))),
+       success_summary(#{SecondRequest => #{value => SecondValue}}),
+       maps:get(summary, maps:get(terminal, Second))),
     ?assertEqual(
        maps:get(terminal, First),
        maps:get(duplicate, Second)).
@@ -573,7 +582,7 @@ test_restarted_service_rearms_absolute_deadline(_Config) ->
     ReplacementPid = wait_for_replacement(ServicePid, 100),
     {ok, Terminal} = wait_for_status(TaskId, failed, 150),
 
-    ?assertEqual(deadline_exceeded, maps:get(reason, Terminal)),
+    ?assertEqual(deadline_exceeded, terminal_reason_class(Terminal)),
     ?assertEqual(ReplacementPid, whereis(soma_service)),
     RunEventTypes =
         [maps:get(event_type, Event)
@@ -630,7 +639,7 @@ test_poison_deadline_metadata_recovers_bounded_terminal(_Config) ->
     {ok, Terminal} = soma_service:status(maps:get(task_id, Fixture)),
 
     ?assertEqual(failed, maps:get(status, Terminal)),
-    ?assertEqual(service_recovery_failed, maps:get(reason, Terminal)),
+    ?assertEqual(service_recovery_failed, terminal_reason_class(Terminal)),
     ?assert(erlang:external_size(Terminal) =< 512),
     ?assert(is_process_alive(whereis(soma_service))),
     ok = wait_for_process_dead(RunPid, 100),
@@ -672,12 +681,14 @@ test_recovery_enforces_deadline_before_terminal_or_resume(_Config) ->
     {ok, ExpiredTerminal} = soma_service:status(maps:get(task_id, Expired)),
 
     ?assertEqual(
-       #{status => failed, reason => deadline_exceeded},
-       maps:with([status, reason], LateTerminal)),
+       #{status => failed,
+         summary => #{reason_class => deadline_exceeded}},
+       maps:with([status, summary], LateTerminal)),
     ?assertNot(maps:is_key(result, LateTerminal)),
     ?assertEqual(
-       #{status => failed, reason => deadline_exceeded},
-       maps:with([status, reason], ExpiredTerminal)),
+       #{status => failed,
+         summary => #{reason_class => deadline_exceeded}},
+       maps:with([status, summary], ExpiredTerminal)),
     ?assertNot(lists:any(
                  fun(#{event_type := <<"run.resumed">>}) -> true;
                     (_Event) -> false
@@ -733,26 +744,28 @@ test_recovery_lands_every_unowned_trail_terminal(_Config) ->
     ?assertEqual(failed, maps:get(status, AcceptedOnlyTerminal)),
     ?assertEqual(
        service_interrupted_before_start,
-       maps:get(reason, AcceptedOnlyTerminal)),
+       terminal_reason_class(AcceptedOnlyTerminal)),
 
     {ok, AllCommittedTerminal} =
         soma_service:status(maps:get(task_id, AllCommitted)),
     ?assertEqual(succeeded, maps:get(status, AllCommittedTerminal)),
     ?assertEqual(
-       #{maps:get(id, AllCommittedStep) => AllCommittedOutput},
-       maps:get(result, AllCommittedTerminal)),
+       success_summary(
+         #{maps:get(id, AllCommittedStep) => AllCommittedOutput}),
+       maps:get(summary, AllCommittedTerminal)),
 
     {ok, DeadlineTerminal} =
         soma_service:status(maps:get(task_id, DeadlineCancelled)),
     ?assertEqual(failed, maps:get(status, DeadlineTerminal)),
-    ?assertEqual(deadline_exceeded, maps:get(reason, DeadlineTerminal)),
+    ?assertEqual(
+       deadline_exceeded, terminal_reason_class(DeadlineTerminal)),
 
     {ok, UnrecoverableTerminal} =
         soma_service:status(maps:get(task_id, Unrecoverable)),
     ?assertEqual(failed, maps:get(status, UnrecoverableTerminal)),
     ?assertEqual(
        service_recovery_failed,
-       maps:get(reason, UnrecoverableTerminal)),
+       terminal_reason_class(UnrecoverableTerminal)),
 
     lists:foreach(
       fun(Fixture) ->
@@ -811,9 +824,12 @@ test_recovery_preserves_owner_decisions_across_restarts(_Config) ->
     Second = recovery_outcomes(Deadline, Committed),
 
     Expected =
-        [#{status => failed, reason => deadline_exceeded},
+        [#{status => failed,
+           summary => #{reason_class => deadline_exceeded}},
          #{status => succeeded,
-           result => #{maps:get(id, CommittedStep) => CommittedOutput}}],
+           summary =>
+               success_summary(
+                 #{maps:get(id, CommittedStep) => CommittedOutput})}],
     ?assertEqual({Expected, Expected}, {First, Second}).
 
 recovery_outcomes(Deadline, Committed) ->
@@ -821,7 +837,7 @@ recovery_outcomes(Deadline, Committed) ->
         soma_service:status(maps:get(task_id, Deadline)),
     {ok, CommittedTask} =
         soma_service:status(maps:get(task_id, Committed)),
-    [maps:with([status, result, reason], Task)
+    [maps:with([status, summary], Task)
      || Task <- [DeadlineTask, CommittedTask]].
 
 test_start_failures_land_terminal_task_data(_Config) ->
@@ -854,9 +870,11 @@ test_start_failures_land_terminal_task_data(_Config) ->
 
         ?assertEqual(failed, maps:get(status, RecoveredTerminal)),
         ?assertEqual(
-           resume_start_failed, maps:get(reason, RecoveredTerminal)),
+           resume_start_failed,
+           terminal_reason_class(RecoveredTerminal)),
         ?assertMatch(
-           {ok, #{status := failed, reason := run_start_failed}},
+           {ok, #{status := failed,
+                  summary := #{reason_class := run_start_failed}}},
            NormalStartReply),
         {ok, NormalTerminal} =
             soma_service:status(
@@ -895,10 +913,8 @@ test_out_of_scope_invocation_rejected_through_policy(_Config) ->
         {ok, #{task_id := TaskId,
                request_id := RequestId,
                status := rejected,
-               reason := Rejection} = Terminal} = Reply,
-        ?assertEqual(
-           {policy_rejected, {tools_not_allowed, [echo]}},
-           Rejection),
+               summary := #{reason_class := policy_rejected}} = Terminal} =
+            Reply,
         ?assertEqual({ok, Terminal}, soma_service:status(TaskId)),
 
         [TerminalEvent] =
@@ -906,6 +922,10 @@ test_out_of_scope_invocation_rejected_through_policy(_Config) ->
                       maps:get(event_type, Event) =:=
                           <<"service.task.terminal">>,
                       maps:get(task_id, Event) =:= TaskId],
+        Rejection = maps:get(reason, maps:get(payload, TerminalEvent)),
+        ?assertEqual(
+           {policy_rejected, {tools_not_allowed, [echo]}},
+           Rejection),
         ?assertEqual(
            #{status => rejected, reason => Rejection},
            maps:get(payload, TerminalEvent)),
@@ -958,8 +978,7 @@ test_unknown_scope_entry_does_not_create_atom(_Config) ->
     AtomCountBefore = erlang:system_info(atom_count),
 
     {ok, #{status := rejected,
-           reason := {policy_rejected,
-                      {tools_not_allowed, [echo]}}}} =
+           summary := #{reason_class := policy_rejected}}} =
         soma_service:invoke(Envelope),
 
     ?assertEqual(
@@ -1001,7 +1020,8 @@ test_deadline_exceeded_cleans_run_worker_and_cli_process(Config) ->
         ?assert(os_process_alive(OsPid)),
 
         {ok, Terminal} = wait_for_status(TaskId, failed, 300),
-        ?assertEqual(deadline_exceeded, maps:get(reason, Terminal)),
+        ?assertEqual(
+           deadline_exceeded, terminal_reason_class(Terminal)),
         ?assertEqual(ServicePid, whereis(soma_service)),
         ?assert(is_process_alive(ServicePid)),
         ok = wait_for_process_dead(RunPid, 100),
@@ -1078,8 +1098,13 @@ test_tool_crash_is_bounded_and_service_runs_again(_Config) ->
 
     ?assertEqual(ServicePid, whereis(soma_service)),
     ?assert(is_process_alive(ServicePid)),
-    ?assertEqual(#{EchoRequestId => EchoArgs}, maps:get(result, Succeeded)),
-    ?assertEqual(run_failed, maps:get(reason, Failed)),
+    ?assertEqual(
+       #{EchoRequestId => EchoArgs},
+       task_outputs(runtime_event_store(), EchoTaskId)),
+    ?assertEqual(
+       success_summary(#{EchoRequestId => EchoArgs}),
+       maps:get(summary, Succeeded)),
+    ?assertEqual(run_failed, terminal_reason_class(Failed)),
     EncodedFailed = term_to_binary(Failed, [deterministic]),
     ?assert(byte_size(EncodedFailed) =< 512),
     ?assertEqual(nomatch, binary:match(EncodedFailed, <<"soma_tool_fail">>)).
@@ -1138,7 +1163,7 @@ test_unsafe_interrupted_state_invocation_recovers_in_doubt(Config) ->
     ReplayedStorePid = runtime_event_store(),
     {ok, Recovered} = soma_service:status(TaskId),
     ?assertEqual(in_doubt, maps:get(status, Recovered)),
-    ?assertEqual({resume_unsafe, StepId}, maps:get(reason, Recovered)),
+    ?assertEqual(resume_unsafe, terminal_reason_class(Recovered)),
     ?assertEqual(
        [],
        [Pid || {_Id, Pid, worker, [soma_run]} <-
@@ -1194,7 +1219,12 @@ test_interrupted_reader_invocation_resumes_after_restart(Config) ->
 
     ReplayedStorePid = runtime_event_store(),
     {ok, Recovered} = wait_for_status(TaskId, succeeded, 200),
-    ?assertEqual(#{StepId => #{ms => 500}}, maps:get(result, Recovered)),
+    ?assertEqual(
+       #{StepId => #{ms => 500}},
+       run_outputs(ReplayedStorePid, RunId)),
+    ?assertEqual(
+       success_summary(#{StepId => #{ms => 500}}),
+       maps:get(summary, Recovered)),
 
     RunEvents = soma_event_store:by_run(ReplayedStorePid, RunId),
     RunEventTypes = [maps:get(event_type, Event) || Event <- RunEvents],
@@ -1299,15 +1329,16 @@ test_rejection_reason_stays_bounded_for_large_plans(_Config) ->
                  operation => #{kind => steps, steps => Steps}},
     {ok, Public} = soma_service:invoke(Envelope),
     ?assertEqual(rejected, maps:get(status, Public)),
-    {policy_rejected, {tools_not_allowed, Disallowed}} =
-        maps:get(reason, Public),
-    ?assertEqual([file_write], Disallowed),
+    ?assertEqual(policy_rejected, terminal_reason_class(Public)),
     ?assert(byte_size(term_to_binary(Public)) < 1024),
     Events = soma_event_store:all(StorePid),
     [TerminalEvent | _] =
         [Event || #{event_type := <<"service.task.terminal">>,
                     request_id := EventRequestId} = Event <- Events,
                   EventRequestId =:= <<"svc-bounded-rejection">>],
+    {policy_rejected, {tools_not_allowed, Disallowed}} =
+        maps:get(reason, maps:get(payload, TerminalEvent)),
+    ?assertEqual([file_write], Disallowed),
     ?assert(byte_size(term_to_binary(TerminalEvent)) < 1024),
     ok.
 
@@ -1542,6 +1573,29 @@ restart_actor_with_service_policy(PolicySetting) ->
     end,
     {ok, _Started} = application:ensure_all_started(soma_actor),
     ok.
+
+success_summary(Output) ->
+    #{result_bytes =>
+          byte_size(term_to_binary(Output, [deterministic]))}.
+
+terminal_reason_class(
+  #{summary := #{reason_class := ReasonClass}}) ->
+    ReasonClass.
+
+task_outputs(StorePid, TaskId) ->
+    [RunId] =
+        [maps:get(run_id, Event)
+         || Event <- soma_event_store:all(StorePid),
+            maps:get(event_type, Event) =:= <<"service.task.accepted">>,
+            maps:get(task_id, Event) =:= TaskId],
+    run_outputs(StorePid, RunId).
+
+run_outputs(StorePid, RunId) ->
+    maps:from_list(
+      [{maps:get(step_id, Event),
+        maps:get(output, maps:get(payload, Event))}
+       || Event <- soma_event_store:by_run(StorePid, RunId),
+          maps:get(event_type, Event) =:= <<"step.succeeded">>]).
 
 tool_envelope(RequestId, Tool, Args) ->
     #{kind => invoke,
