@@ -18,7 +18,8 @@
          test_socket_unknown_symbols_do_not_grow_atom_table/1,
          test_daemon_service_listener_is_config_opt_in_with_sibling_default/1,
          test_cli_socket_rejects_service_only_forms_and_survives/1,
-         test_service_socket_stale_takeover_and_lost_bind_preserve_winner/1]).
+         test_service_socket_stale_takeover_and_lost_bind_preserve_winner/1,
+         test_socket_fresh_symbols_are_deterministic_and_total/1]).
 
 all() ->
     [test_socket_invoke_status_and_result_end_to_end,
@@ -35,8 +36,16 @@ all() ->
      test_socket_unknown_symbols_do_not_grow_atom_table,
      test_daemon_service_listener_is_config_opt_in_with_sibling_default,
      test_cli_socket_rejects_service_only_forms_and_survives,
-     test_service_socket_stale_takeover_and_lost_bind_preserve_winner].
+     test_service_socket_stale_takeover_and_lost_bind_preserve_winner,
+     test_socket_fresh_symbols_are_deterministic_and_total].
 
+init_per_testcase(
+  test_socket_fresh_symbols_are_deterministic_and_total, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy, #{allowed_tools => [echo]}),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started} | Config];
 init_per_testcase(
   TestCase, Config)
   when TestCase =:= test_socket_watch_reconnect_resumes_after_cursor;
@@ -985,6 +994,115 @@ assert_service_config_rejected(ToolsDir, Source, ExpectedReason) ->
         ?assertMatch({error, _}, connect_socket(ServicePath))
     after
         _ = file:del_dir_r(RowDir)
+    end.
+
+%% Review findings (#246): fresh symbols in every accepted invoke position
+%% must be total (no reader/parser crash) and deterministic (the same source
+%% accepts or rejects identically on a fresh or warm VM — valid v1 semantics
+%% never depend on atom-table warm-up). Caller-defined identifiers arrive as
+%% binaries; only registered vocabularies (tool names, declared params)
+%% resolve against existing atoms.
+test_socket_fresh_symbols_are_deterministic_and_total(_Config) ->
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        Seed = integer_to_binary(
+                 erlang:unique_integer([positive, monotonic])),
+        %% Warm the shared infrastructure once so the atom-count pin below
+        %% measures only the fresh-symbol handling.
+        ?assertEqual(
+           {service_error, not_found},
+           socket_response(
+             Path, lifecycle_source(status, <<"fresh-symbol-warmup">>))),
+        AtomCountBefore = erlang:system_info(atom_count),
+
+        %% 1) A fresh symbol in a nested arg-value position must not crash
+        %% the handler; it arrives at the tool as a binary.
+        FreshValue = <<"socket_fresh_value_", Seed/binary>>,
+        ValueRequestId = <<"fresh-value-", Seed/binary>>,
+        ValueInvoke =
+            <<"(invoke (api-version \"1\") "
+              "(request-id \"", ValueRequestId/binary, "\") "
+              "(tool (name echo) (args (value ",
+              FreshValue/binary, "))))">>,
+        #{task_id := ValueTaskId, status := accepted} =
+            socket_request(Path, ValueInvoke, invoke),
+        #{status := succeeded} =
+            wait_for_socket_status(Path, ValueTaskId, succeeded, 100),
+        ?assertEqual(
+           #{ValueRequestId => #{value => FreshValue}},
+           socket_request(
+             Path, lifecycle_source(result, ValueTaskId), result)),
+
+        %% 2) Fresh step ids and a fresh whole-args from_step reference in a
+        %% steps operation are caller correlation data: accepted, executed,
+        %% and keyed as binaries in the result.
+        StepA = <<"socket_fresh_step_a_", Seed/binary>>,
+        StepB = <<"socket_fresh_step_b_", Seed/binary>>,
+        StepsRequestId = <<"fresh-steps-", Seed/binary>>,
+        StepsInvoke =
+            <<"(invoke (api-version \"1\") "
+              "(request-id \"", StepsRequestId/binary, "\") "
+              "(steps "
+              "(step (id ", StepA/binary,
+              ") (tool echo) (args (value \"seed\"))) "
+              "(step (id ", StepB/binary,
+              ") (tool echo) (args (from_step ", StepA/binary, ")))))">>,
+        #{task_id := StepsTaskId, status := accepted} =
+            socket_request(Path, StepsInvoke, invoke),
+        #{status := succeeded} =
+            wait_for_socket_status(Path, StepsTaskId, succeeded, 100),
+        StepsResult =
+            socket_request(
+              Path, lifecycle_source(result, StepsTaskId), result),
+        ?assertEqual(
+           #{value => <<"seed">>}, maps:get(StepA, StepsResult)),
+        ?assertEqual(
+           #{value => <<"seed">>}, maps:get(StepB, StepsResult)),
+
+        %% 3) The string spelling is the documented equivalent of the same
+        %% identifiers: same source shape, same semantics.
+        QuotedRequestId = <<"fresh-quoted-", Seed/binary>>,
+        QuotedInvoke =
+            <<"(invoke (api-version \"1\") "
+              "(request-id \"", QuotedRequestId/binary, "\") "
+              "(steps "
+              "(step (id \"", StepA/binary,
+              "\") (tool echo) (args (value \"seed\"))) "
+              "(step (id \"", StepB/binary,
+              "\") (tool echo) (args (from_step \"", StepA/binary,
+              "\")))))">>,
+        #{task_id := QuotedTaskId, status := accepted} =
+            socket_request(Path, QuotedInvoke, invoke),
+        #{status := succeeded} =
+            wait_for_socket_status(Path, QuotedTaskId, succeeded, 100),
+        ?assertEqual(
+           StepsResult,
+           socket_request(
+             Path, lifecycle_source(result, QuotedTaskId), result)),
+
+        %% 4) A fresh, undeclared arg key is a bounded typed rejection —
+        %% echo declares its params, so an unknown name cannot reach it.
+        FreshKey = <<"socket_fresh_key_", Seed/binary>>,
+        KeyInvoke =
+            <<"(invoke (api-version \"1\") "
+              "(request-id \"fresh-key-", Seed/binary, "\") "
+              "(tool (name echo) (args (", FreshKey/binary,
+              " \"v\"))))">>,
+        KeyResponse = socket_response(Path, KeyInvoke),
+        ?assertMatch({service_error, _}, KeyResponse),
+
+        %% 5) None of the above interned a single new atom, and the
+        %% listener still serves.
+        ?assert(is_process_alive(Listener)),
+        ?assertEqual(
+           {service_error, not_found},
+           socket_response(
+             Path, lifecycle_source(status, <<"fresh-symbol-after">>))),
+        ?assertEqual(AtomCountBefore, erlang:system_info(atom_count))
+    after
+        stop_listener(Listener, Path)
     end.
 
 socket_request(Path, Source, Operation) ->
