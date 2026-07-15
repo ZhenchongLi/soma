@@ -179,13 +179,20 @@ start_allowed_invocation(Envelope, Steps, Task, Handle,
 reject_invocation(Reason, Task,
                   State = #state{event_store = EventStore,
                                  tasks = Tasks}) ->
-    Rejection = {policy_rejected, Reason},
+    Rejection = {policy_rejected, bounded_policy_reason(Reason)},
     Terminal = Task#{status => rejected, reason => Rejection},
     ok = emit_service_task(EventStore, <<"service.task.terminal">>,
                            Terminal, terminal_event_payload(Terminal)),
     TaskId = maps:get(task_id, Task),
     NewState = State#state{tasks = maps:put(TaskId, Terminal, Tasks)},
     {reply, {ok, public_task(Terminal)}, NewState}.
+
+%% Rejection detail must not grow with the plan: a policy reason carries one
+%% list entry per rejected step, so a large all-disallowed plan would inflate
+%% the public task and the durable terminal event. Collapse to the distinct
+%% disallowed tools, capped at a fixed count.
+bounded_policy_reason({tools_not_allowed, Tools}) ->
+    {tools_not_allowed, lists:sublist(lists:usort(Tools), 8)}.
 
 duplicate_reply(#{task_id := TaskId,
                   accepted_handle := Handle}, Tasks) ->
@@ -690,8 +697,6 @@ recover_nonterminal_run(Task, Request, Trail,
             fail_recovery(
               Task, Request, service_interrupted_before_start, State);
         {error, _Reason} ->
-            fail_recovery(Task, Request, service_recovery_failed, State);
-        _OtherVerdict ->
             fail_recovery(Task, Request, service_recovery_failed, State)
     end.
 
