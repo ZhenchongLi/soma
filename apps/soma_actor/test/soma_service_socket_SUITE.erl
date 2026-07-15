@@ -4,11 +4,13 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_socket_invoke_status_and_result_end_to_end/1,
-         test_socket_disconnect_does_not_cancel_accepted_invocation/1]).
+         test_socket_disconnect_does_not_cancel_accepted_invocation/1,
+         test_socket_duplicate_invoke_reuses_task_once/1]).
 
 all() ->
     [test_socket_invoke_status_and_result_end_to_end,
-     test_socket_disconnect_does_not_cancel_accepted_invocation].
+     test_socket_disconnect_does_not_cancel_accepted_invocation,
+     test_socket_duplicate_invoke_reuses_task_once].
 
 init_per_testcase(_TestCase, Config) ->
     ok = ensure_loaded(soma_actor),
@@ -104,6 +106,43 @@ test_socket_disconnect_does_not_cancel_accepted_invocation(_Config) ->
         EventTypes = [maps:get(event_type, Event) || Event <- Events],
         ?assert(lists:member(<<"run.completed">>, EventTypes)),
         ?assertNot(lists:member(<<"run.cancelled">>, EventTypes))
+    after
+        stop_listener(Listener, Path)
+    end.
+
+%% RS.1d criterion 3: request-id deduplication remains owned by soma_service
+%% across independent socket handlers. A byte-identical invoke on a new
+%% connection must resolve to the original task without starting a second run.
+test_socket_duplicate_invoke_reuses_task_once(_Config) ->
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        RequestId = <<"socket-service-duplicate">>,
+        Invoke =
+            <<"(invoke "
+              "(api-version \"1\") "
+              "(request-id \"socket-service-duplicate\") "
+              "(tool (name sleep) (args (ms 300))) "
+              "(scope \"sleep\"))">>,
+
+        First = socket_request(Path, Invoke, invoke),
+        #{task_id := TaskId,
+          request_id := RequestId} = First,
+
+        Duplicate = socket_request(Path, Invoke, invoke),
+        #{task_id := DuplicateTaskId,
+          request_id := RequestId} = Duplicate,
+        ?assertEqual(TaskId, DuplicateTaskId),
+
+        _Terminal = wait_for_socket_status(Path, TaskId, succeeded, 100),
+        RunStarts =
+            [Event
+             || Event <-
+                    soma_event_store:by_correlation(
+                      runtime_event_store(), TaskId),
+                maps:get(event_type, Event) =:= <<"run.started">>],
+        ?assertEqual(2, length(RunStarts))
     after
         stop_listener(Listener, Path)
     end.
