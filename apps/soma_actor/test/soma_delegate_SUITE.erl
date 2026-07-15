@@ -14,6 +14,7 @@
 -export([test_round_snapshot_is_bounded_task_only_and_handle_scoped/1]).
 -export([test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages/1]).
 -export([test_pre_stateful_worker_crash_and_timeout_are_bounded/1]).
+-export([test_lost_state_result_is_in_doubt_without_replacement/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -25,7 +26,8 @@ all() ->
      test_sequential_rounds_commit_before_distinct_next_worker,
      test_round_snapshot_is_bounded_task_only_and_handle_scoped,
      test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages,
-     test_pre_stateful_worker_crash_and_timeout_are_bounded].
+     test_pre_stateful_worker_crash_and_timeout_are_bounded,
+     test_lost_state_result_is_in_doubt_without_replacement].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -740,6 +742,74 @@ test_pre_stateful_worker_crash_and_timeout_are_bounded(_Config) ->
       end,
       Rows).
 
+test_lost_state_result_is_in_doubt_without_replacement(_Config) ->
+    ToolName = service_hanging_state,
+    StepId = <<"delegate-lost-state-result">>,
+    CorrelationId = <<"delegate-correlation-lost-state-result">>,
+    Steps = [#{id => StepId, tool => ToolName, args => #{}}],
+    ok = soma_tool_registry:register_tool(
+           soma_service_hanging_state_tool:manifest()),
+    try
+        TaskSpec =
+            #{request_id => <<"delegate-request-lost-state-result">>,
+              correlation_id => CorrelationId,
+              objective => <<"never replay a state action with a lost result">>,
+              round_sequence =>
+                  [#{llm =>
+                         #{directive => success,
+                           output => <<"dispatch-one-state-action">>},
+                     action_steps => Steps,
+                     decision => continue},
+                   #{llm => #{directive => hang},
+                     decision => terminal}]},
+
+        {ok, #{task_id := TaskId}} =
+            submit_through_production_ingress(TaskSpec),
+        CoordinatorPid = coordinator_for_task(TaskId),
+        {_CoordinatorData,
+         #{worker_pid := RoundWorkerPid}} =
+            wait_for_active_round(CoordinatorPid, 1, 100),
+        StorePid = event_store_pid(),
+        [ToolStarted] =
+            wait_for_correlated_events(
+              StorePid, CorrelationId, <<"tool.started">>, 100),
+        RunId = maps:get(run_id, ToolStarted),
+        ToolCallPid = maps:get(tool_call_pid, ToolStarted),
+        ?assertEqual(StepId, maps:get(step_id, ToolStarted)),
+        ?assertEqual(true, is_process_alive(ToolCallPid)),
+
+        exit(RoundWorkerPid, kill),
+        wait_for_process_dead(RoundWorkerPid, 100),
+        wait_for_process_dead(ToolCallPid, 100),
+
+        StatusReply = wait_for_task_status(TaskId, in_doubt, 100),
+        ?assertMatch({ok, #{status := in_doubt}}, StatusReply),
+        CorrelatedEvents =
+            soma_event_store:by_correlation(StorePid, CorrelationId),
+        RunStarted =
+            [Event || Event <- CorrelatedEvents,
+                      maps:get(event_type, Event) =:= <<"run.started">>],
+        StateInvocations =
+            [Event || Event <- CorrelatedEvents,
+                      maps:get(event_type, Event) =:= <<"tool.started">>,
+                      maps:get(step_id, Event) =:= StepId],
+        ?assertEqual(
+           [Steps],
+           [maps:get(steps, maps:get(payload, Event))
+            || Event <- RunStarted]),
+        ?assertEqual([RunId],
+                     [maps:get(run_id, Event)
+                      || Event <- StateInvocations]),
+        ?assertEqual([], live_round_workers())
+    after
+        case whereis(soma_tool_registry) of
+            undefined ->
+                ok;
+            _RegistryPid ->
+                ok = soma_tool_registry:unregister_tool(ToolName)
+        end
+    end.
+
 crash_fixture(Suffix) ->
     #{request_id => <<"delegate-request-", Suffix/binary>>,
       objective => <<"hold a disposable round open">>,
@@ -763,6 +833,12 @@ event_store_pid() ->
 live_coordinators() ->
     [Pid || {_Id, Pid, worker, _Modules} <-
                 supervisor:which_children(soma_delegate_coordinator_sup),
+            is_pid(Pid),
+            is_process_alive(Pid)].
+
+live_round_workers() ->
+    [Pid || {_Id, Pid, worker, _Modules} <-
+                supervisor:which_children(soma_delegate_round_sup),
             is_pid(Pid),
             is_process_alive(Pid)].
 
@@ -905,6 +981,37 @@ wait_for_terminal_projection(TaskId, Attempts) ->
             wait_for_terminal_projection(TaskId, Attempts - 1);
         Projection ->
             Projection
+    end.
+
+wait_for_task_status(TaskId, _ExpectedStatus, 0) ->
+    soma_delegate:status(TaskId);
+wait_for_task_status(TaskId, ExpectedStatus, Attempts) ->
+    case soma_delegate:status(TaskId) of
+        {ok, #{status := ExpectedStatus}} = Reply ->
+            Reply;
+        _OtherReply ->
+            timer:sleep(10),
+            wait_for_task_status(
+              TaskId, ExpectedStatus, Attempts - 1)
+    end.
+
+wait_for_correlated_events(
+  _StorePid, _CorrelationId, EventType, 0) ->
+    ct:fail({correlated_event_not_recorded, EventType});
+wait_for_correlated_events(
+  StorePid, CorrelationId, EventType, Attempts) ->
+    Events =
+        [Event || Event <-
+                      soma_event_store:by_correlation(
+                        StorePid, CorrelationId),
+                  maps:get(event_type, Event) =:= EventType],
+    case Events of
+        [] ->
+            timer:sleep(10),
+            wait_for_correlated_events(
+              StorePid, CorrelationId, EventType, Attempts - 1);
+        [_First | _Remaining] ->
+            Events
     end.
 
 wait_for_process_dead(Pid, 0) ->
