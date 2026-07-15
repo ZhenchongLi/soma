@@ -1,7 +1,7 @@
 %% @doc Pure validation boundary for runtime service invocation envelopes.
 -module(soma_service_envelope).
 
--export([normalize/1, timer_safe_ms/1]).
+-export([normalize/1, timer_safe_ms/1, supported_api_versions/0]).
 
 -type envelope() :: map().
 -type diagnostic() :: map().
@@ -14,6 +14,10 @@
 %% accept larger values, but this bound is safe across supported runtimes and
 %% prevents an otherwise valid envelope from crashing erlang:start_timer/3.
 -define(MAX_TIMER_MS, 16#ffffffff).
+
+-spec supported_api_versions() -> [binary()].
+supported_api_versions() ->
+    [<<"1">>].
 
 -spec normalize(term()) -> {ok, envelope()} | {error, [diagnostic()]}.
 normalize(#{kind := invoke} = Candidate) ->
@@ -28,13 +32,16 @@ normalize_api_version(Candidate) ->
                 missing_api_version,
                 <<"invoke api version is required">>
             );
-        {ok, <<"1">>} ->
-            normalize_request_id(Candidate);
-        {ok, _Unsupported} ->
-            fixed_error(
-                unsupported_api_version,
-                <<"invoke api version is unsupported">>
-            )
+        {ok, ApiVersion} ->
+            case lists:member(ApiVersion, supported_api_versions()) of
+                true ->
+                    normalize_request_id(Candidate);
+                false ->
+                    fixed_error(
+                        unsupported_api_version,
+                        <<"invoke api version is unsupported">>
+                    )
+            end
     end.
 
 normalize_request_id(Candidate) ->

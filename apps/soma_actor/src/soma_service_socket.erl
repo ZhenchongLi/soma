@@ -71,8 +71,8 @@ handle_request(Source) ->
         case soma_lfe:compile(Source, #{}) of
             {ok, Request} ->
                 dispatch(Request);
-            {error, _Diagnostics} ->
-                service_error(internal_error)
+            {error, Diagnostics} ->
+                service_diagnostic_error(Diagnostics)
         end,
     soma_lisp:render(Response).
 
@@ -95,9 +95,26 @@ service_reply(Operation, {ok, Value}) ->
       api_version => ?API_VERSION,
       operation => Operation,
       value => Value};
+service_reply(_Operation, {error, Diagnostics}) when is_list(Diagnostics) ->
+    service_diagnostic_error(Diagnostics);
 service_reply(_Operation, {error, _Reason}) ->
     service_error(internal_error).
 
+service_diagnostic_error([#{code := Code} | _]) ->
+    service_error(public_diagnostic_code(Code));
+service_diagnostic_error(_Diagnostics) ->
+    service_error(internal_error).
+
+public_diagnostic_code(unsupported_api_version) -> unsupported_api_version;
+public_diagnostic_code(invalid_operation) -> invalid_operation;
+public_diagnostic_code(_Unknown) -> internal_error.
+
+service_error(unsupported_api_version) ->
+    #{kind => service_error,
+      api_version => ?API_VERSION,
+      code => unsupported_api_version,
+      supported_api_versions =>
+          soma_service_envelope:supported_api_versions()};
 service_error(Code) ->
     #{kind => service_error,
       api_version => ?API_VERSION,
