@@ -13,6 +13,8 @@ max_bytes() ->
     {ok, binary()} | {error, term()}.
 recv(Socket, Timeout) ->
     case gen_tcp:recv(Socket, 4, Timeout) of
+        {ok, <<0:32/unsigned-big-integer>>} ->
+            {ok, <<>>};
         {ok, <<Length:32/unsigned-big-integer>>}
           when Length =< ?MAX_BYTES ->
             gen_tcp:recv(Socket, Length, Timeout);

@@ -65,7 +65,7 @@ render(Map) when is_map(Map) ->
 render(Atom) when is_atom(Atom) ->
     render_symbol(Atom);
 render(Bin) when is_binary(Bin) ->
-    render_string(Bin);
+    render_binary(Bin);
 render(Int) when is_integer(Int) ->
     integer_to_list(Int);
 render(Float) when is_float(Float) ->
@@ -83,7 +83,7 @@ render_pair(Key, Value) ->
 render_map_key(Key) when is_atom(Key) ->
     render_symbol(Key);
 render_map_key(Key) when is_binary(Key) ->
-    render_string(Key).
+    render_binary(Key).
 
 %% Render a value in pair-value position. A single-key map whose value is a
 %% leaf collapses to its bare `(k v)' pair, so `#{value => <<"hi">>}' reads
@@ -232,6 +232,18 @@ render_symbol(Atom) when is_atom(Atom) ->
 
 render_string(Bin) when is_binary(Bin) ->
     ["\"", escape(Bin), "\""].
+
+%% Erlang binaries carry bytes, not an intrinsic text encoding. Preserve the
+%% established string form when those bytes are valid UTF-8; otherwise emit a
+%% typed, ASCII-only form that a Lisp reader can parse and a client can decode
+%% without loss. binary:encode_hex/1 is deterministic uppercase hexadecimal.
+render_binary(Bin) when is_binary(Bin) ->
+    case unicode:characters_to_binary(Bin) of
+        Utf8 when is_binary(Utf8) ->
+            render_string(Utf8);
+        _InvalidUtf8 ->
+            ["(bytes (hex \"", binary:encode_hex(Bin), "\"))"]
+    end.
 
 escape(Bin) ->
     escape(Bin, []).

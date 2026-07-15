@@ -19,6 +19,7 @@ Soma Lisp renders atom underscores as hyphens, so that code appears as
 | Response forms | Success is `(reply (api-version "1") (operation <operation>) (value <public-service-term>))`; the fields stay ordered as `api-version`, `operation`, then `value`. Failure is `(error (api-version "1") (code <typed-code>))`. Only `unsupported_api_version` adds `(supported-api-versions ("1"))`. The value is the exact public service term, including an inline result or artifact descriptor. |
 | Request fields | Request envelopes are closed under v1. An unknown request field returns `unknown_field`; a v1 server must not silently discard a new budget, scope, authority, or other request field. Repeated fields are also rejected by the fixed envelope-validation boundary. |
 | Response fields | Response fields are additive. A client must ignore unknown response fields while continuing to require and interpret the v1 fields it understands. |
+| Binary values | A binary that is valid UTF-8 uses the Lisp string form. Any other binary uses the lossless `(bytes (hex "<uppercase hexadecimal>"))` form; clients decode its even-length uppercase hexadecimal payload to recover the exact bytes. This applies to both inline results and an artifact descriptor's `truncated_inline` value. |
 | Typed statuses | `accepted` and `running` are nonterminal. The terminal set is `succeeded`, `failed`, `rejected`, `cancelled`, and `in_doubt`. An unknown future status is never success for an older client. |
 | Typed errors | The fixed transport and service codes are `malformed_request`, `frame_too_large`, `response_too_large`, `unsupported_api_version`, `invalid_operation`, `request_id_conflict`, `not_found`, `not_ready`, `result_unavailable`, `invalid_cursor`, `invalid_watch`, `not_running`, `artifact_publish_failed`, and `internal_error`. Reader failures collapse to `malformed_request`; unrecognized internal failures collapse to `internal_error`. Invoke validation also uses the [RS.1a fixed envelope-validation codes](contracts/RS.1a-test-contract.md). |
 | Envelope validation errors | The RS.1a fixed set is `missing_api_version`, `unsupported_api_version`, `missing_request_id`, `invalid_request_id`, `duplicate_field`, `unknown_field`, `invalid_operation`, `invalid_budget`, `scope_entry_too_large`, `invalid_artifacts`, and `invalid_correlation_id`. These diagnostics are bounded and never echo rejected source. |
@@ -42,9 +43,11 @@ reply does not undo the cancellation.
 ## Framing failures
 
 The receiver checks the declared frame length before reading or parsing the
-payload. A declared length over the hard cap returns `frame_too_large`; an
-in-cap payload that is not a valid request returns `malformed_request`. The
-listener remains available for a fresh connection after either failure.
+payload. A declared length over the hard cap returns `frame_too_large`. A
+zero-length frame is a complete empty payload and returns `malformed_request`
+without waiting for another byte; any other in-cap payload that is not a valid
+request returns the same error. The listener remains available for a fresh
+connection after each failure.
 
 The same cap applies when sending. If rendering a normal reply would exceed
 it, the adapter sends the bounded `response_too_large` error instead. Clients
