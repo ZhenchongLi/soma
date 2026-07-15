@@ -50,15 +50,13 @@ in_flight(StorePid, RunId, StepId) ->
                       false
               end, Events).
 
-%% A tool is safe to re-run if it is a reader/identity effect or idempotent.
-%% An unresolvable tool cannot be proven safe, so it is treated as unsafe. A
-%% resolved descriptor always carries effect + idempotent (the registry
-%% normalizes every manifest), so the only non-`{ok, #{effect, idempotent}}'
-%% case is `{error, _}'.
+%% Descriptor resolution stays in the plan; the pure repeat-safety rule is
+%% shared through `soma_run_resume_safety'. An unresolvable tool cannot be
+%% proven safe, so it is treated as unsafe.
 safe_tool(Tool) ->
     case soma_tool_registry:resolve_descriptor(Tool) of
-        {ok, #{effect := Effect, idempotent := Idempotent}} ->
-            Effect =:= reader orelse Effect =:= identity orelse Idempotent =:= true;
+        {ok, Descriptor} ->
+            soma_run_resume_safety:descriptor_safe(Descriptor);
         {error, _} ->
             false
     end.
