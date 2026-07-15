@@ -14,7 +14,8 @@
                 tasks = #{},
                 requests = #{},
                 runs = #{},
-                monitors = #{}}).
+                monitors = #{},
+                cleanup_monitors = #{}}).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -69,18 +70,8 @@ handle_info({run_cancelled, RunId}, State) ->
     {noreply, finish_run(RunId, #{status => cancelled}, State)};
 handle_info({timeout, TRef, {task_deadline, TaskId, RunId}}, State) ->
     {noreply, expire_deadline(TRef, TaskId, RunId, State)};
-handle_info({'DOWN', MRef, process, RunPid, Reason},
-            State = #state{monitors = Monitors}) ->
-    case maps:get(MRef, Monitors, undefined) of
-        #{run_id := RunId, run_pid := RunPid} ->
-            {noreply,
-             finish_run(RunId,
-                        #{status => failed,
-                          reason => {run_crashed, Reason}},
-                        State)};
-        _ ->
-            {noreply, State}
-    end;
+handle_info({'DOWN', MRef, process, Pid, _Reason}, State) ->
+    {noreply, handle_process_down(MRef, Pid, State)};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -260,6 +251,8 @@ finish_run(RunId, Terminal,
 
 terminal_for_task(_Terminal, #{deadline_expired := true}) ->
     #{status => failed, reason => deadline_exceeded};
+terminal_for_task(_Terminal, #{cancel_requested := true}) ->
+    #{status => cancelled};
 terminal_for_task({completed, Outputs}, Task) ->
     case maps:find(max_output_bytes, Task) of
         {ok, MaxOutputBytes} ->
@@ -357,6 +350,82 @@ terminate_run_child(RunPid) ->
     _ = supervisor:terminate_child(soma_run_sup, RunPid),
     ok.
 
+handle_process_down(MRef, Pid,
+                    State = #state{cleanup_monitors = CleanupMonitors,
+                                   monitors = Monitors}) ->
+    case maps:take(MRef, CleanupMonitors) of
+        {#{run_id := RunId,
+           worker_pid := Pid,
+           terminal := Terminal}, NewCleanupMonitors} ->
+            finish_run(
+              RunId, Terminal,
+              State#state{cleanup_monitors = NewCleanupMonitors});
+        error ->
+            case maps:get(MRef, Monitors, undefined) of
+                #{run_id := RunId, run_pid := Pid} ->
+                    await_invocation_cleanup(
+                      RunId, MRef,
+                      #{status => failed, reason => run_crashed}, State);
+                _StaleMonitor ->
+                    State
+            end
+    end.
+
+%% A run can be killed before its normal cancel path executes. Its linked tool
+%% worker is already exiting, but a CLI worker first tears down its port child.
+%% Keep the public task running until that worker confirms its own death, so a
+%% terminal service task never exposes live invocation resources.
+await_invocation_cleanup(
+  RunId, RunMRef, Terminal,
+  State = #state{event_store = EventStore,
+                 tasks = Tasks,
+                 runs = Runs,
+                 monitors = Monitors,
+                 cleanup_monitors = CleanupMonitors}) ->
+    case active_tool_worker(EventStore, RunId) of
+        WorkerPid when is_pid(WorkerPid) ->
+            CleanupMRef = erlang:monitor(process, WorkerPid),
+            TaskId = maps:get(RunId, Runs),
+            Task = maps:get(TaskId, Tasks),
+            cancel_deadline(Task),
+            WaitingTask = maps:remove(deadline_tref, Task),
+            State#state{
+              tasks = maps:put(TaskId, WaitingTask, Tasks),
+              monitors = maps:remove(RunMRef, Monitors),
+              cleanup_monitors = maps:put(
+                                   CleanupMRef,
+                                   #{run_id => RunId,
+                                     worker_pid => WorkerPid,
+                                     terminal => Terminal},
+                                   CleanupMonitors)};
+        undefined ->
+            finish_run(RunId, Terminal, State)
+    end.
+
+active_tool_worker(undefined, _RunId) ->
+    undefined;
+active_tool_worker(EventStore, RunId) ->
+    Candidate =
+        lists:foldl(
+          fun(#{event_type := <<"tool.started">>,
+                tool_call_pid := WorkerPid}, _Acc)
+                when is_pid(WorkerPid) ->
+                  WorkerPid;
+             (_Event, Acc) ->
+                  Acc
+          end,
+          undefined,
+          soma_event_store:by_run(EventStore, RunId)),
+    case Candidate of
+        WorkerPid when is_pid(WorkerPid) ->
+            case is_process_alive(WorkerPid) of
+                true -> WorkerPid;
+                false -> undefined
+            end;
+        undefined ->
+            undefined
+    end.
+
 public_task(Task) ->
     maps:with([task_id, request_id, status, result, reason], Task).
 
@@ -367,29 +436,96 @@ rebuild_dedupe_index(State = #state{event_store = undefined}) ->
     State;
 rebuild_dedupe_index(State = #state{event_store = EventStore}) ->
     Events = soma_event_store:all(EventStore),
-    Accepted =
-        [Event || Event <- Events,
-                  maps:get(event_type, Event, undefined) =:=
-                      <<"service.task.accepted">>],
+    Replay = finalize_replay_index(
+               lists:foldl(
+                 fun index_replay_event/2, empty_replay_index(), Events)),
     lists:foldl(
-      fun(Event, Acc) -> recover_accepted_task(Event, Events, Acc) end,
+      fun(Event, Acc) -> recover_accepted_task(Event, Replay, Acc) end,
       State,
-      Accepted).
+      maps:get(accepted, Replay)).
 
-recover_accepted_task(Event, Events, State) ->
+empty_replay_index() ->
+    #{accepted_rev => [],
+      terminals => #{},
+      owner_decisions => #{},
+      run_trails_rev => #{}}.
+
+index_replay_event(Event, Replay0) ->
+    Replay1 = index_service_event(Event, Replay0),
+    case maps:get(run_id, Event, undefined) of
+        undefined ->
+            Replay1;
+        RunId ->
+            Trails = maps:get(run_trails_rev, Replay1),
+            Trail = maps:get(RunId, Trails, []),
+            Replay1#{run_trails_rev := maps:put(
+                                           RunId, [Event | Trail], Trails)}
+    end.
+
+index_service_event(
+  #{event_type := <<"service.task.accepted">>} = Event,
+  Replay = #{accepted_rev := Accepted}) ->
+    Replay#{accepted_rev := [Event | Accepted]};
+index_service_event(
+  #{event_type := <<"service.task.terminal">>, task_id := TaskId} = Event,
+  Replay = #{terminals := Terminals})
+  when TaskId =/= undefined ->
+    Replay#{terminals := maps:put(TaskId, Event, Terminals)};
+index_service_event(
+  #{event_type := <<"service.task.deadline_expired">>, task_id := TaskId},
+  Replay)
+  when TaskId =/= undefined ->
+    index_owner_decision(TaskId, deadline_expired, Replay);
+index_service_event(
+  #{event_type := <<"service.task.cancel_requested">>, task_id := TaskId},
+  Replay)
+  when TaskId =/= undefined ->
+    index_owner_decision(TaskId, cancel_requested, Replay);
+index_service_event(_Event, Replay) ->
+    Replay.
+
+index_owner_decision(
+  TaskId, Decision,
+  Replay = #{owner_decisions := OwnerDecisions}) ->
+    Decisions = maps:get(TaskId, OwnerDecisions, #{}),
+    Replay#{owner_decisions := maps:put(
+                                  TaskId, Decisions#{Decision => true},
+                                  OwnerDecisions)}.
+
+finalize_replay_index(
+  Replay = #{accepted_rev := AcceptedRev,
+             run_trails_rev := RunTrailsRev}) ->
+    RunTrails = maps:map(
+                  fun(_RunId, TrailRev) -> lists:reverse(TrailRev) end,
+                  RunTrailsRev),
+    maps:without(
+      [accepted_rev, run_trails_rev],
+      Replay#{accepted => lists:reverse(AcceptedRev),
+              run_trails => RunTrails}).
+
+recover_accepted_task(Event, Replay, State) ->
     case accepted_task(Event) of
-        {ok, Task, Request} ->
+        {ok, Task0, Request} ->
+            Task = restore_owner_decisions(Task0, Replay),
             TaskId = maps:get(task_id, Task),
-            case last_terminal_event(TaskId, Events) of
+            RunId = maps:get(run_id, Task),
+            Trail = maps:get(
+                      RunId, maps:get(run_trails, Replay), []),
+            case maps:find(TaskId, maps:get(terminals, Replay)) of
                 {ok, TerminalEvent} ->
                     recover_recorded_terminal(
-                      Task, Request, TerminalEvent, State);
+                      Task, Request, TerminalEvent, Trail, State);
                 error ->
-                    recover_unfinished_task(Task, Request, State)
+                    recover_unfinished_task(Task, Request, Trail, State)
             end;
         error ->
             State
     end.
+
+restore_owner_decisions(
+  Task, #{owner_decisions := OwnerDecisions}) ->
+    maps:merge(
+      Task, maps:get(maps:get(task_id, Task), OwnerDecisions, #{})).
 
 accepted_task(#{task_id := TaskId,
                 request_id := RequestId,
@@ -411,29 +547,37 @@ accepted_task(#{task_id := TaskId,
 accepted_task(_Event) ->
     error.
 
-last_terminal_event(TaskId, Events) ->
-    lists:foldl(
-      fun(#{event_type := <<"service.task.terminal">>,
-            task_id := EventTaskId} = Event, _Acc)
-            when EventTaskId =:= TaskId ->
-              {ok, Event};
-         (_Event, Acc) ->
-              Acc
-      end,
-      error,
-      Events).
+recover_recorded_terminal(Task, Request, TerminalEvent, Trail, State) ->
+    case owner_decision_terminal(Task) of
+        {ok, OwnerTerminal} ->
+            recover_recorded_owner_terminal(
+              OwnerTerminal, Request, TerminalEvent, State);
+        none ->
+            recover_recorded_run_terminal(
+              Task, Request, TerminalEvent, Trail, State)
+    end.
 
-recover_recorded_terminal(Task, Request,
-                          #{payload := #{status := succeeded}}, State) ->
-    case reconstructed_terminal(Task, State) of
+recover_recorded_owner_terminal(
+  OwnerTerminal, Request, #{payload := Payload}, State) ->
+    case maps:with([status, reason], Payload) =:=
+         terminal_event_payload(OwnerTerminal) of
+        true ->
+            put_terminal_task(OwnerTerminal, Request, State);
+        false ->
+            record_recovered_terminal(OwnerTerminal, Request, State)
+    end.
+
+recover_recorded_run_terminal(
+  Task, Request, #{payload := #{status := succeeded}}, Trail, State) ->
+    case reconstructed_success(Task, Trail) of
         {ok, Recovered} -> put_terminal_task(Recovered, Request, State);
         error -> put_terminal_task(
                    Task#{status => failed,
                          reason => service_result_reconstruction_failed},
                    Request, State)
     end;
-recover_recorded_terminal(Task, Request,
-                          #{payload := Payload}, State) ->
+recover_recorded_run_terminal(
+  Task, Request, #{payload := Payload}, _Trail, State) ->
     Status = maps:get(status, Payload, failed),
     Terminal0 = Task#{status => Status},
     Terminal = case maps:find(reason, Payload) of
@@ -442,7 +586,7 @@ recover_recorded_terminal(Task, Request,
                end,
     put_terminal_task(Terminal, Request, State).
 
-recover_unfinished_task(Task, Request, State) ->
+recover_unfinished_task(Task, Request, Trail, State) ->
     RunId = maps:get(run_id, Task),
     case soma_run_sup:find_run(RunId) of
         {ok, RunPid} ->
@@ -451,10 +595,11 @@ recover_unfinished_task(Task, Request, State) ->
                     monitor_recovered_run(Task, Request, RunPid, State);
                 {error, {terminal, _Status}} ->
                     terminate_run_child(RunPid),
-                    recover_from_run_trail(Task, Request, State)
+                    recover_from_run_trail(
+                      Task, Request, current_run_trail(Task, State), State)
             end;
         {error, not_found} ->
-            recover_from_run_trail(Task, Request, State)
+            recover_from_run_trail(Task, Request, Trail, State)
     end.
 
 monitor_recovered_run(Task, Request, RunPid,
@@ -465,30 +610,51 @@ monitor_recovered_run(Task, Request, RunPid,
     MRef = erlang:monitor(process, RunPid),
     RunId = maps:get(run_id, Task),
     TaskId = maps:get(task_id, Task),
-    Running = arm_deadline(
-                Task#{status => running,
-                      run_pid => RunPid,
-                      run_mref => MRef}),
-    State#state{
-      tasks = maps:put(TaskId, Running, Tasks),
-      requests = maps:put(maps:get(request_id, Task), Request, Requests),
-      runs = maps:put(RunId, TaskId, Runs),
-      monitors = maps:put(MRef,
-                          #{run_id => RunId, run_pid => RunPid},
-                          Monitors)}.
+    Running0 = Task#{status => running,
+                     run_pid => RunPid,
+                     run_mref => MRef},
+    Running = arm_recovered_deadline(Running0),
+    NewState = State#state{
+                 tasks = maps:put(TaskId, Running, Tasks),
+                 requests = maps:put(
+                              maps:get(request_id, Task), Request, Requests),
+                 runs = maps:put(RunId, TaskId, Runs),
+                 monitors = maps:put(MRef,
+                                     #{run_id => RunId, run_pid => RunPid},
+                                     Monitors)},
+    enforce_recovered_owner_decision(Running),
+    NewState.
 
-recover_from_run_trail(Task, Request, State) ->
-    case reconstructed_terminal(Task, State) of
+arm_recovered_deadline(#{deadline_expired := true} = Task) ->
+    maps:remove(deadline_tref, Task);
+arm_recovered_deadline(#{cancel_requested := true} = Task) ->
+    maps:remove(deadline_tref, Task);
+arm_recovered_deadline(Task) ->
+    arm_deadline(Task).
+
+enforce_recovered_owner_decision(
+  #{deadline_expired := true, run_pid := RunPid}) ->
+    RunPid ! cancel,
+    ok;
+enforce_recovered_owner_decision(
+  #{cancel_requested := true, run_pid := RunPid}) ->
+    RunPid ! cancel,
+    ok;
+enforce_recovered_owner_decision(_Task) ->
+    ok.
+
+recover_from_run_trail(Task, Request, Trail, State) ->
+    case reconstructed_terminal(Task, Trail) of
         {ok, Terminal} ->
             record_recovered_terminal(Terminal, Request, State);
         error ->
-            recover_nonterminal_run(Task, Request, State)
+            recover_nonterminal_run(Task, Request, Trail, State)
     end.
 
-recover_nonterminal_run(Task, Request,
+recover_nonterminal_run(Task, Request, Trail,
                         State = #state{event_store = EventStore}) ->
     RunId = maps:get(run_id, Task),
-    case soma_run_resume_plan:plan(EventStore, RunId) of
+    case soma_run_resume_plan:plan(Trail, RunId) of
         {unsafe, StepId} ->
             InDoubt = Task#{status => in_doubt,
                             reason => {resume_unsafe, StepId}},
@@ -497,11 +663,11 @@ recover_nonterminal_run(Task, Request,
             recover_resume_result(
               soma_run_resume_executor:resume(
                 RunId, self(), EventStore),
-              Task, Request, State);
+              Task, Request, Trail, State);
         nothing_to_do ->
-            recover_committed_outputs(Task, Request, State);
+            recover_committed_outputs(Task, Request, Trail, State);
         {terminal, _Status} ->
-            recover_current_terminal(Task, Request, State);
+            recover_current_terminal(Task, Request, Trail, State);
         {error, no_run_started_journal} ->
             fail_recovery(
               Task, Request, service_interrupted_before_start, State);
@@ -511,27 +677,26 @@ recover_nonterminal_run(Task, Request,
             fail_recovery(Task, Request, service_recovery_failed, State)
     end.
 
-recover_resume_result({ok, RunPid}, Task, Request, State) ->
+recover_resume_result({ok, RunPid}, Task, Request, _Trail, State) ->
     monitor_recovered_run(Task, Request, RunPid, State);
-recover_resume_result(nothing_to_do, Task, Request, State) ->
-    recover_committed_outputs(Task, Request, State);
-recover_resume_result({terminal, _Status}, Task, Request, State) ->
-    recover_current_terminal(Task, Request, State);
-recover_resume_result(_Unrecoverable, Task, Request, State) ->
+recover_resume_result(nothing_to_do, Task, Request, Trail, State) ->
+    recover_committed_outputs(Task, Request, Trail, State);
+recover_resume_result({terminal, _Status}, Task, Request, _Trail, State) ->
+    recover_current_terminal(
+      Task, Request, current_run_trail(Task, State), State);
+recover_resume_result(_Unrecoverable, Task, Request, _Trail, State) ->
     fail_recovery(Task, Request, resume_start_failed, State).
 
-recover_current_terminal(Task, Request, State) ->
-    case reconstructed_terminal(Task, State) of
+recover_current_terminal(Task, Request, Trail, State) ->
+    case reconstructed_terminal(Task, Trail) of
         {ok, Terminal} ->
             record_recovered_terminal(Terminal, Request, State);
         error ->
             fail_recovery(Task, Request, service_recovery_failed, State)
     end.
 
-recover_committed_outputs(Task, Request,
-                          State = #state{event_store = EventStore}) ->
-    RunId = maps:get(run_id, Task),
-    case soma_run_resume:reconstruct(EventStore, RunId) of
+recover_committed_outputs(Task, Request, Trail, State) ->
+    case soma_run_resume:reconstruct_events(Trail) of
         {ok, #{next_step := undefined, outputs := Outputs}} ->
             Terminal = maps:merge(
                          Task,
@@ -551,9 +716,16 @@ record_recovered_terminal(
                            Terminal, terminal_event_payload(Terminal)),
     put_terminal_task(Terminal, Request, State).
 
-reconstructed_terminal(Task, #state{event_store = EventStore}) ->
-    RunId = maps:get(run_id, Task),
-    case soma_run_resume:reconstruct(EventStore, RunId) of
+reconstructed_terminal(Task, Trail) ->
+    case owner_decision_terminal(Task) of
+        {ok, Terminal} ->
+            {ok, Terminal};
+        none ->
+            reconstructed_run_terminal(Task, Trail)
+    end.
+
+reconstructed_run_terminal(Task, Trail) ->
+    case soma_run_resume:reconstruct_events(Trail) of
         {ok, #{terminal_status := completed, outputs := Outputs}} ->
             {ok, maps:merge(Task, terminal_for_task(
                                     {completed, Outputs}, Task))};
@@ -562,28 +734,35 @@ reconstructed_terminal(Task, #state{event_store = EventStore}) ->
         {ok, #{terminal_status := timeout}} ->
             {ok, Task#{status => failed, reason => timeout}};
         {ok, #{terminal_status := cancelled}} ->
-            case deadline_expired_recorded(Task, EventStore) of
-                true ->
-                    {ok, Task#{status => failed,
-                               reason => deadline_exceeded}};
-                false ->
-                    {ok, Task#{status => cancelled}}
-            end;
+            {ok, Task#{status => cancelled}};
         _ ->
             error
     end.
 
-deadline_expired_recorded(Task, EventStore) ->
-    TaskId = maps:get(task_id, Task),
-    RunId = maps:get(run_id, Task),
-    lists:any(
-      fun(#{event_type := <<"service.task.deadline_expired">>,
-            task_id := EventTaskId}) ->
-              EventTaskId =:= TaskId;
-         (_Event) ->
-              false
-      end,
-      soma_event_store:by_run(EventStore, RunId)).
+reconstructed_success(Task, Trail) ->
+    case soma_run_resume:reconstruct_events(Trail) of
+        {ok, #{terminal_status := completed, outputs := Outputs}} ->
+            {ok, maps:merge(
+                   Task, terminal_for_task({completed, Outputs}, Task))};
+        {ok, #{terminal_status := undefined,
+               next_step := undefined,
+               outputs := Outputs}} ->
+            {ok, maps:merge(
+                   Task, terminal_for_task({completed, Outputs}, Task))};
+        _ ->
+            error
+    end.
+
+owner_decision_terminal(#{deadline_expired := true} = Task) ->
+    {ok, Task#{status => failed, reason => deadline_exceeded}};
+owner_decision_terminal(#{cancel_requested := true} = Task) ->
+    {ok, maps:remove(reason, Task#{status => cancelled})};
+owner_decision_terminal(_Task) ->
+    none.
+
+current_run_trail(#{run_id := RunId},
+                  #state{event_store = EventStore}) ->
+    soma_event_store:by_run(EventStore, RunId).
 
 put_terminal_task(Task, Request,
                   State = #state{tasks = Tasks, requests = Requests}) ->
