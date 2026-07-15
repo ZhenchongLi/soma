@@ -229,11 +229,31 @@ commit_round_deltas(Result, Data) ->
             _MissingOrInvalidUsage ->
                 CheckpointData
         end,
+    MutationData =
+        case maps:find(mutation, Result) of
+            {ok, Mutation} ->
+                MutationLedger = maps:get(mutation_ledger, UsageData),
+                UsageData#{mutation_ledger :=
+                               MutationLedger ++ [Mutation]};
+            error ->
+                UsageData
+        end,
+    UnknownOutcomeData =
+        case maps:find(unknown_outcome, Result) of
+            {ok, UnknownOutcome} ->
+                UnknownOutcomeLedger =
+                    maps:get(unknown_outcome_ledger, MutationData),
+                MutationData#{unknown_outcome_ledger :=
+                                  UnknownOutcomeLedger ++
+                                      [UnknownOutcome]};
+            error ->
+                MutationData
+        end,
     case maps:find(terminal_result, Result) of
         {ok, TerminalResult} ->
-            UsageData#{terminal_result := TerminalResult};
+            UnknownOutcomeData#{terminal_result := TerminalResult};
         error ->
-            UsageData
+            UnknownOutcomeData
     end.
 
 advance_after_round(
