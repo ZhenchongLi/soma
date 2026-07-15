@@ -5,6 +5,7 @@
     {mod, {soma_actor_app, []}},
     {applications, [kernel, stdlib, crypto, soma_runtime, soma_lfe]},
     {env, [{service_policy, #{allowed_tools => []}},
-           {service_result_inline_bytes, 16384}]},
+           {service_result_inline_bytes, 16384},
+           {service_watch_page_events, 100}]},
     {modules, []}
 ]}.
