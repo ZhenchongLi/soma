@@ -61,6 +61,9 @@ handle(Socket) ->
         {ok, Source} ->
             Reply = handle_request(Source),
             _ = soma_socket_frame:send(Socket, Reply);
+        {error, frame_too_large} ->
+            Reply = soma_lisp:render(service_error(frame_too_large)),
+            _ = soma_socket_frame:send(Socket, Reply);
         {error, _Reason} ->
             ok
     end,
@@ -97,17 +100,22 @@ service_reply(Operation, {ok, Value}) ->
       value => Value};
 service_reply(_Operation, {error, Diagnostics}) when is_list(Diagnostics) ->
     service_diagnostic_error(Diagnostics);
-service_reply(_Operation, {error, _Reason}) ->
-    service_error(internal_error).
+service_reply(_Operation, {error, Reason}) ->
+    service_error(public_service_error_code(Reason)).
 
 service_diagnostic_error([#{code := Code} | _]) ->
     service_error(public_diagnostic_code(Code));
+service_diagnostic_error([_ReaderDiagnostic | _]) ->
+    service_error(malformed_request);
 service_diagnostic_error(_Diagnostics) ->
     service_error(internal_error).
 
 public_diagnostic_code(unsupported_api_version) -> unsupported_api_version;
 public_diagnostic_code(invalid_operation) -> invalid_operation;
 public_diagnostic_code(_Unknown) -> internal_error.
+
+public_service_error_code(not_found) -> not_found;
+public_service_error_code(_Unknown) -> internal_error.
 
 service_error(unsupported_api_version) ->
     #{kind => service_error,
