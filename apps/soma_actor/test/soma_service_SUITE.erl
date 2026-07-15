@@ -715,6 +715,9 @@ test_oversized_result_fails_with_max_output_reason(_Config) ->
 test_flat_plan_preserves_order_and_from_step_output(_Config) ->
     FirstStepId = service_flat_plan_first,
     SecondStepId = service_flat_plan_second,
+    %% Wire canonicalization makes caller step ids binaries end to end.
+    FirstCanonicalId = atom_to_binary(FirstStepId, utf8),
+    SecondCanonicalId = atom_to_binary(SecondStepId, utf8),
     FirstOutput = #{value => <<"source step output">>},
     Steps =
         [#{id => FirstStepId,
@@ -734,20 +737,16 @@ test_flat_plan_preserves_order_and_from_step_output(_Config) ->
     {ok, Terminal} = wait_for_status(TaskId, succeeded, 100),
 
     StorePid = runtime_event_store(),
-    [RunStarted] =
-        [Event || Event <- soma_event_store:all(StorePid),
-                  maps:get(event_type, Event) =:= <<"run.started">>,
-                  maps:get(steps, maps:get(payload, Event)) =:= Steps],
-    RunId = maps:get(run_id, RunStarted),
+    RunId = wait_for_run_started(StorePid, Steps, 100),
     Outputs = run_outputs(StorePid, RunId),
-    ?assertEqual(FirstOutput, maps:get(FirstStepId, Outputs)),
-    ?assertEqual(FirstOutput, maps:get(SecondStepId, Outputs)),
+    ?assertEqual(FirstOutput, maps:get(FirstCanonicalId, Outputs)),
+    ?assertEqual(FirstOutput, maps:get(SecondCanonicalId, Outputs)),
     ?assertEqual(success_summary(Outputs), maps:get(summary, Terminal)),
     StartedStepIds =
         [maps:get(step_id, Event)
          || Event <- soma_event_store:by_run(StorePid, RunId),
             maps:get(event_type, Event) =:= <<"step.started">>],
-    ?assertEqual([FirstStepId, SecondStepId], StartedStepIds).
+    ?assertEqual([FirstCanonicalId, SecondCanonicalId], StartedStepIds).
 
 test_identical_duplicate_reuses_running_handle_and_terminal_result(_Config) ->
     RequestId = <<"service-identical-duplicate">>,
@@ -1593,7 +1592,8 @@ test_unsafe_interrupted_state_invocation_recovers_in_doubt(Config) ->
                       <<"service.task.terminal">>,
                   maps:get(task_id, Event) =:= TaskId],
     ?assertEqual(
-       #{status => in_doubt, reason => {resume_unsafe, StepId}},
+       #{status => in_doubt,
+         reason => {resume_unsafe, atom_to_binary(StepId, utf8)}},
        maps:get(payload, TerminalEvent)).
 
 test_interrupted_reader_invocation_resumes_after_restart(Config) ->
@@ -1631,11 +1631,12 @@ test_interrupted_reader_invocation_resumes_after_restart(Config) ->
 
     ReplayedStorePid = runtime_event_store(),
     {ok, Recovered} = wait_for_status(TaskId, succeeded, 200),
+    CanonicalStepId = atom_to_binary(StepId, utf8),
     ?assertEqual(
-       #{StepId => #{ms => 500}},
+       #{CanonicalStepId => #{ms => 500}},
        run_outputs(ReplayedStorePid, RunId)),
     ?assertEqual(
-       success_summary(#{StepId => #{ms => 500}}),
+       success_summary(#{CanonicalStepId => #{ms => 500}}),
        maps:get(summary, Recovered)),
 
     RunEvents = soma_event_store:by_run(ReplayedStorePid, RunId),
@@ -2144,16 +2145,38 @@ maybe_cancel_run(RunPid) ->
 wait_for_run_started(_StorePid, _Steps, 0) ->
     error(service_run_did_not_start);
 wait_for_run_started(StorePid, Steps, Attempts) ->
+    %% The service canonicalizes wire identifiers before journaling: step
+    %% ids and from_step references become binaries. Match the journal
+    %% against the canonical form of the submitted steps.
+    Canonical = [canonical_test_step(Step) || Step <- Steps],
     case [maps:get(run_id, Event)
           || Event <- soma_event_store:all(StorePid),
              maps:get(event_type, Event) =:= <<"run.started">>,
-             maps:get(steps, maps:get(payload, Event)) =:= Steps] of
+             maps:get(steps, maps:get(payload, Event)) =:= Canonical] of
         [RunId] ->
             RunId;
         [] ->
             timer:sleep(10),
             wait_for_run_started(StorePid, Steps, Attempts - 1)
     end.
+
+canonical_test_step(#{id := Id, args := Args} = Step) ->
+    Step#{id := canonical_test_id(Id),
+          args := canonical_test_args(Args)}.
+
+canonical_test_id(Id) when is_atom(Id) -> atom_to_binary(Id, utf8);
+canonical_test_id(Id) when is_binary(Id) -> Id.
+
+canonical_test_args(#{from_step := Reference} = Args)
+  when map_size(Args) =:= 1 ->
+    #{from_step => canonical_test_id(Reference)};
+canonical_test_args(Args) when is_map(Args) ->
+    maps:map(
+      fun(_Key, {from_step, Reference}) ->
+              {from_step, canonical_test_id(Reference)};
+         (_Key, Value) ->
+              Value
+      end, Args).
 
 wait_for_run_event(_StorePid, _RunId, _Type, 0) ->
     {error, timeout};

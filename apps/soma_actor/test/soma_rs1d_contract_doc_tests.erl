@@ -33,6 +33,8 @@ test_rs1d_contract_maps_every_criterion_to_proving_case() ->
           <<"soma_service_socket_boundary_tests:test_socket_adapters_share_transport_and_service_keeps_runtime_boundary">>},
          {<<"## Criterion 11 ">>,
           <<"soma_service_contract_doc_tests:test_service_contract_defines_compatibility_matrix">>},
+         {<<"## Review hardening ">>,
+          <<"soma_service_socket_SUITE:test_socket_fresh_symbols_are_deterministic_and_total">>},
          {<<"## Criterion 12 ">>,
           <<"soma_rs1d_contract_doc_tests:test_rs1d_contract_maps_every_criterion_to_proving_case">>}],
     lists:foreach(

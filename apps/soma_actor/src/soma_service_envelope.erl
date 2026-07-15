@@ -92,7 +92,7 @@ normalize_operation_value(
     case Step of
         #{id := RequestId, tool := Tool, args := Args}
                 when map_size(Step) =:= 3,
-                     is_atom(Tool) ->
+                     (is_atom(Tool) orelse is_binary(Tool)) ->
             case valid_canonical_args(Args) of
                 true ->
                     {ok,
@@ -228,31 +228,34 @@ valid_correlation_id(Candidate) ->
 valid_steps(Steps) ->
     lists:all(fun valid_step/1, Steps).
 
+%% Step ids and tool names are identifiers: symbol (atom) and string/fresh
+%% (binary) spellings are both canonical, so wire acceptance never depends
+%% on atom-table warm-up. The service canonicalizes them before execution.
 valid_step(
     #{id := Id,
       tool := Tool,
       args := Args,
       timeout_ms := TimeoutMs} = Step
 ) when map_size(Step) =:= 4,
-       is_atom(Id),
-       is_atom(Tool),
+       (is_atom(Id) orelse is_binary(Id)),
+       (is_atom(Tool) orelse is_binary(Tool)),
        is_integer(TimeoutMs),
        TimeoutMs > 0 ->
     valid_canonical_args(Args);
 valid_step(#{id := Id, tool := Tool, args := Args} = Step)
         when map_size(Step) =:= 3,
-             is_atom(Id),
-             is_atom(Tool) ->
+             (is_atom(Id) orelse is_binary(Id)),
+             (is_atom(Tool) orelse is_binary(Tool)) ->
     valid_canonical_args(Args);
 valid_step(_Step) ->
     false.
 
-%% Canonical args must stay inside the reader-representable set: atom keys,
-%% and values the Lisp grammar can render AND recompile (atoms, binaries,
-%% integers, lists thereof, and the two from_step forms — whose reference the
-%% grammar produces as an atom symbol or a string binary). A binary key
-%% crashes the canonical renderer; a float renders but can never recompile —
-%% neither may normalize into a canonical envelope.
+%% Canonical args must stay inside the reader-representable set: atom or
+%% binary keys (symbol / string / fresh-symbol spellings), and values the
+%% Lisp grammar can render AND recompile (atoms, binaries, integers, lists
+%% thereof, and the two from_step forms — whose reference is an atom symbol
+%% or a string binary). A float renders but can never recompile, so it may
+%% not normalize into a canonical envelope.
 valid_canonical_args(#{from_step := Reference} = Args) ->
     map_size(Args) =:= 1 andalso valid_from_step_reference(Reference);
 valid_canonical_args(Args) when is_map(Args) ->
@@ -263,9 +266,10 @@ valid_canonical_args(_Args) ->
 valid_from_step_reference(Reference) ->
     is_atom(Reference) orelse is_binary(Reference).
 
-valid_canonical_arg_entry({Key, {from_step, Reference}}) when is_atom(Key) ->
+valid_canonical_arg_entry({Key, {from_step, Reference}})
+  when is_atom(Key); is_binary(Key) ->
     valid_from_step_reference(Reference);
-valid_canonical_arg_entry({Key, Value}) when is_atom(Key) ->
+valid_canonical_arg_entry({Key, Value}) when is_atom(Key); is_binary(Key) ->
     valid_canonical_value(Value);
 valid_canonical_arg_entry(_Entry) ->
     false.
