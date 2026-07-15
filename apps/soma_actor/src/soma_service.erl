@@ -491,6 +491,16 @@ recover_nonterminal_run(Task, Request,
                                    InDoubt,
                                    terminal_event_payload(InDoubt)),
             put_terminal_task(InDoubt, Request, State);
+        {resume, _Plan} ->
+            case soma_run_resume_executor:resume(
+                   RunId, self(), EventStore) of
+                {ok, RunPid} ->
+                    monitor_recovered_run(
+                      Task, Request, RunPid, State);
+                _OtherResumeResult ->
+                    put_terminal_task(
+                      Task#{status => running}, Request, State)
+            end;
         _OtherVerdict ->
             %% Keep the immutable dedupe identity for nonterminal work that is
             %% not unsafe. A later recovery decision may resume it, but an
