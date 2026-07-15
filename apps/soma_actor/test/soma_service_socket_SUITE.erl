@@ -102,7 +102,8 @@ test_socket_disconnect_does_not_cancel_accepted_invocation(_Config) ->
             soma_event_store:by_correlation(
               runtime_event_store(), TaskId),
         EventTypes = [maps:get(event_type, Event) || Event <- Events],
-        ?assert(lists:member(<<"run.cancelled">>, EventTypes))
+        ?assert(lists:member(<<"run.completed">>, EventTypes)),
+        ?assertNot(lists:member(<<"run.cancelled">>, EventTypes))
     after
         stop_listener(Listener, Path)
     end.
