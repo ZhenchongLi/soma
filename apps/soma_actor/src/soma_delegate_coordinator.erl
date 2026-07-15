@@ -5,6 +5,7 @@
 -behaviour(gen_statem).
 
 -define(DEFAULT_ROUND_TIMEOUT_MS, 120000).
+-define(MAX_ROUND_SNAPSHOT_BYTES, 65536).
 
 -export([start_link/1, status/1, cancel/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
@@ -71,6 +72,7 @@ handle_event(internal, finish_cleanup, cleaning,
              Data = #{ingress_pid := IngressPid,
                       task_id := TaskId,
                       terminal_result := Projection}) ->
+    ok = release_scoped_leases(Data),
     IngressPid ! {delegate_terminal, TaskId, self(), Projection},
     {stop, normal, Data};
 handle_event(info,
@@ -118,12 +120,43 @@ handle_event(_EventType, _Event, _StateName, Data) ->
 
 begin_task(Data = #{round_sequence := []}) ->
     {next_state, running, Data};
-begin_task(Data = #{round_sequence := [Work | Remaining],
+begin_task(Data = #{round_sequence := [_Round | _Remaining]}) ->
+    case acquire_scoped_leases(Data) of
+        {ok, LeaseData} ->
+            start_round(LeaseData);
+        {error, Reason, LeaseData} ->
+            fail_before_round(LeaseData, Reason)
+    end;
+begin_task(Data) ->
+    fail_before_round(Data, invalid_round_sequence).
+
+start_round(Data = #{round_sequence := [RoundEntry | Remaining],
                     task_id := TaskId,
                     correlation_id := CorrelationId,
                     next_round_id := RoundId})
-  when is_map(Work) ->
-    Snapshot = round_snapshot(Data),
+  ->
+    case round_snapshot(Data) of
+        {ok, Snapshot} ->
+            prepare_and_start_round(
+              RoundEntry, Remaining, Snapshot, TaskId,
+              CorrelationId, RoundId, Data);
+        {error, snapshot_too_large} ->
+            fail_before_round(Data, snapshot_too_large)
+    end.
+
+prepare_and_start_round(
+  RoundEntry, Remaining, Snapshot, TaskId, CorrelationId, RoundId, Data) ->
+    case prepare_round_work(RoundEntry, Snapshot) of
+        {ok, Work} ->
+            start_round_worker(
+              Work, Remaining, Snapshot, TaskId,
+              CorrelationId, RoundId, Data);
+        {error, invalid_round_sequence} ->
+            fail_before_round(Data, invalid_round_sequence)
+    end.
+
+start_round_worker(
+  Work, Remaining, Snapshot, TaskId, CorrelationId, RoundId, Data) ->
     WorkerIdentity = mint_worker_identity(RoundId),
     ResultCapability = make_ref(),
     WorkerOpts = #{coordinator_pid => self(),
@@ -157,9 +190,7 @@ begin_task(Data = #{round_sequence := [Work | Remaining],
             {next_state, running, StartedData};
         {error, _Reason} ->
             fail_before_round(Data, round_worker_start_failed)
-    end;
-begin_task(Data) ->
-    fail_before_round(Data, invalid_round_sequence).
+    end.
 
 fail_before_round(Data, Reason) ->
     Projection = #{status => failed, reason => Reason},
@@ -289,12 +320,63 @@ mint_worker_identity(RoundId) ->
                erlang:unique_integer([positive, monotonic])),
     <<"delegate-round-", Round/binary, "-", Suffix/binary>>.
 
-round_snapshot(Data) ->
-    maps:with(
-      [task_id, correlation_id, objective, output_contract,
-       context_checkpoint, budgets, usage, mutation_ledger,
-       unknown_outcome_ledger],
-      Data).
+round_snapshot(Data = #{scoped_leases := #{handles := Handles}}) ->
+    Snapshot =
+        (maps:with(
+           [task_id, correlation_id, objective, output_contract,
+            context_checkpoint, budgets, usage, mutation_ledger,
+            unknown_outcome_ledger],
+           Data))#{resource_handles => Handles},
+    case byte_size(term_to_binary(Snapshot, [deterministic])) =<
+             ?MAX_ROUND_SNAPSHOT_BYTES of
+        true -> {ok, Snapshot};
+        false -> {error, snapshot_too_large}
+    end.
+
+prepare_round_work(Work, _Snapshot) when is_map(Work) ->
+    {ok, Work};
+prepare_round_work(Prepare, Snapshot) when is_function(Prepare, 1) ->
+    case Prepare(Snapshot) of
+        Work when is_map(Work) ->
+            {ok, Work};
+        _InvalidWork ->
+            {error, invalid_round_sequence}
+    end;
+prepare_round_work(_InvalidEntry, _Snapshot) ->
+    {error, invalid_round_sequence}.
+
+acquire_scoped_leases(
+  Data = #{scoped_leases := #{guard := GuardPid}})
+  when is_pid(GuardPid) ->
+    {ok, Data};
+acquire_scoped_leases(
+  Data = #{scoped_leases := #{requests := []}}) ->
+    {ok, Data};
+acquire_scoped_leases(
+  Data = #{task_id := TaskId,
+           scoped_leases := ScopedLeases = #{requests := Requests}}) ->
+    GuardOpts = #{coordinator_pid => self(),
+                  task_id => TaskId,
+                  lease_requests => Requests},
+    case soma_delegate_lease_sup:start_guard(GuardOpts) of
+        {ok, GuardPid} ->
+            Handles = soma_delegate_lease_guard:handles(GuardPid),
+            UpdatedLeases = ScopedLeases#{requests := [],
+                                          handles := Handles,
+                                          guard := GuardPid},
+            {ok, Data#{scoped_leases := UpdatedLeases}};
+        {error, _Reason} ->
+            {error, lease_acquisition_failed, Data}
+    end.
+
+release_scoped_leases(
+  #{scoped_leases := #{guard := GuardPid}})
+  when is_pid(GuardPid) ->
+    ok = soma_delegate_lease_guard:release_all(GuardPid),
+    _ = supervisor:terminate_child(soma_delegate_lease_sup, GuardPid),
+    ok;
+release_scoped_leases(_Data) ->
+    ok.
 
 initial_checkpoint(Opts) ->
     maps:get(context_checkpoint, Opts, maps:get(checkpoint, Opts, #{})).
