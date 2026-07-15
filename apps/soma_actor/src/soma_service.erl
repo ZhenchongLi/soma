@@ -59,9 +59,9 @@ handle_cast(_Request, State) ->
 handle_info({run_completed, RunId, Outputs}, State) ->
     {noreply,
      finish_run(RunId, {completed, Outputs}, State)};
-handle_info({run_failed, RunId, Reason}, State) ->
+handle_info({run_failed, RunId, _Reason}, State) ->
     {noreply,
-     finish_run(RunId, #{status => failed, reason => Reason}, State)};
+     finish_run(RunId, #{status => failed, reason => run_failed}, State)};
 handle_info({run_timeout, RunId}, State) ->
     {noreply,
      finish_run(RunId, #{status => failed, reason => timeout}, State)};
