@@ -67,6 +67,18 @@ handle_event(internal, finish_cleanup, cleaning,
     IngressPid ! {delegate_terminal, TaskId, self(), Projection},
     {stop, normal, Data};
 handle_event(info,
+             {delegate_round_result, TaskId, RoundId, WorkerPid,
+              WorkerIdentity, ResultCapability, Result},
+             running,
+             Data = #{task_id := TaskId,
+                      active_round :=
+                          #{round_id := RoundId,
+                            worker_pid := WorkerPid,
+                            worker_mref := WorkerMRef,
+                            worker_identity := WorkerIdentity,
+                            result_capability := ResultCapability}}) ->
+    commit_round_result(Result, RoundId, WorkerPid, WorkerMRef, Data);
+handle_event(info,
              {'DOWN', WorkerMRef, process, WorkerPid, _Reason},
              running,
              Data = #{active_round :=
@@ -128,6 +140,39 @@ fail_before_round(Data, Reason) ->
     {next_state, cleaning,
      Data#{status := failed, terminal_result := Projection},
      [{next_event, internal, finish_cleanup}]}.
+
+commit_round_result(Result, RoundId, WorkerPid, WorkerMRef, Data) ->
+    case valid_round_result(Result) of
+        true ->
+            _ = erlang:demonitor(WorkerMRef, [flush]),
+            _ = supervisor:terminate_child(
+                  soma_delegate_round_sup, WorkerPid),
+            Projection = round_projection(Result, RoundId),
+            Status = maps:get(status, Projection),
+            {next_state, cleaning,
+             Data#{status := Status,
+                   active_round := undefined,
+                   terminal_result := Projection},
+             [{next_event, internal, finish_cleanup}]};
+        false ->
+            {keep_state, Data}
+    end.
+
+valid_round_result(Result) when is_map(Result) ->
+    byte_size(term_to_binary(Result, [deterministic])) =< 16384 andalso
+        lists:member(maps:get(status, Result, invalid),
+                     [succeeded, failed, timeout, cancelled]);
+valid_round_result(_Result) ->
+    false.
+
+round_projection(#{status := succeeded}, RoundId) ->
+    #{status => succeeded, round => RoundId};
+round_projection(#{status := Status} = Result, RoundId) ->
+    Base = #{status => Status, round => RoundId},
+    case maps:get(reason, Result, undefined) of
+        undefined -> Base;
+        Reason -> Base#{reason => Reason}
+    end.
 
 mint_worker_identity(RoundId) ->
     Round = integer_to_binary(RoundId),

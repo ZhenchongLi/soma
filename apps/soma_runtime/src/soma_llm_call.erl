@@ -9,7 +9,7 @@
 %% actor-facing start/reply mechanics are later cycles.
 -module(soma_llm_call).
 
--export([start/1]).
+-export([start/1, start_owned/1]).
 -export([perform_call/1]).
 
 %% Start a disposable worker process that runs one mock call and reports its
@@ -21,10 +21,34 @@
 %% from the owner because the call crosses a process boundary.
 start(#{owner := Owner, llm_call_id := LlmCallId, llm := Llm}) ->
     WorkerPid = spawn(fun() ->
-                              Result = perform_call(Llm),
-                              Owner ! {llm_result, LlmCallId, self(), Result}
+                              run_call(Owner, LlmCallId, Llm)
                       end),
     {ok, WorkerPid}.
+
+%% Start a linked and monitored LLM worker owned by the calling process. The
+%% handshake makes the ownership boundary atomic: the function returns only
+%% after the child has linked to the round worker that will enforce its
+%% lifetime. The historical start/1 API remains unchanged for existing owners.
+start_owned(#{owner := Owner,
+              llm_call_id := LlmCallId,
+              llm := Llm})
+  when Owner =:= self() ->
+    ReadyRef = make_ref(),
+    {WorkerPid, MRef} =
+        spawn_monitor(
+          fun() ->
+                  link(Owner),
+                  Owner ! {llm_call_linked, ReadyRef, self()},
+                  run_call(Owner, LlmCallId, Llm)
+          end),
+    receive
+        {llm_call_linked, ReadyRef, WorkerPid} ->
+            {ok, WorkerPid, MRef}
+    end.
+
+run_call(Owner, LlmCallId, Llm) ->
+    Result = perform_call(Llm),
+    Owner ! {llm_result, LlmCallId, self(), Result}.
 
 %% The `openai_compat' provider routes to the real OpenAI-compatible provider
 %% module: `perform_call/1' hands the opts map to `soma_llm_openai:chat/1', which
