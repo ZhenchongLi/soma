@@ -79,6 +79,24 @@ handle_event(internal, finish_cleanup, cleaning,
     IngressPid ! {delegate_terminal, TaskId, self(), Projection},
     {stop, normal, Data};
 handle_event(info,
+             {delegate_unsafe_action_dispatched,
+              TaskId, RoundId, WorkerPid, WorkerIdentity,
+              ResultCapability, InvocationIdentity},
+             running,
+             Data = #{task_id := TaskId,
+                      active_round :=
+                          ActiveRound =
+                              #{round_id := RoundId,
+                                worker_pid := WorkerPid,
+                                worker_identity := WorkerIdentity,
+                                result_capability := ResultCapability,
+                                unsafe_action_dispatched := false}})
+  when is_map(InvocationIdentity) ->
+    MarkedRound =
+        ActiveRound#{unsafe_action_dispatched := true,
+                     unsafe_invocation := InvocationIdentity},
+    {keep_state, Data#{active_round := MarkedRound}};
+handle_event(info,
              {delegate_round_result, TaskId, RoundId, WorkerPid,
               WorkerIdentity, ResultCapability, Result},
              running,
@@ -196,7 +214,8 @@ start_round_worker(
                             round_timer => RoundTimer,
                             forced_stop_timer => undefined,
                             cancel_status => undefined,
-                            unsafe_action_dispatched => false},
+                            unsafe_action_dispatched => false,
+                            unsafe_invocation => undefined},
             StartedData = Data#{round_sequence := Remaining,
                                 next_round_id := RoundId + 1,
                                 active_round := ActiveRound},
@@ -318,6 +337,11 @@ cancel_active_round(
 handle_round_worker_down(ActiveRound, RoundId, Data) ->
     case {maps:get(cancel_status, ActiveRound, undefined),
           maps:get(unsafe_action_dispatched, ActiveRound, false)} of
+        {cancelled, _UnsafeDispatchState} ->
+            finish_worker_down(
+              worker_down_projection(ActiveRound, RoundId), Data);
+        {_NotCancelled, true} ->
+            finish_lost_unsafe_result(ActiveRound, RoundId, Data);
         {undefined, false} ->
             continue_after_pre_stateful_failure(
               round_worker_crash_failure(RoundId),
@@ -326,15 +350,37 @@ handle_round_worker_down(ActiveRound, RoundId, Data) ->
             continue_after_pre_stateful_failure(
               round_timeout_failure(RoundId),
               Data#{active_round := undefined});
-        _CancelledOrUnsafe ->
-            Projection = worker_down_projection(ActiveRound, RoundId),
-            Status = maps:get(status, Projection),
-            {next_state, cleaning,
-             Data#{status := Status,
-                   active_round := undefined,
-                   terminal_result := Projection},
-             [{next_event, internal, finish_cleanup}]}
+        _OtherWorkerLoss ->
+            finish_worker_down(
+              worker_down_projection(ActiveRound, RoundId), Data)
     end.
+
+finish_lost_unsafe_result(ActiveRound, RoundId, Data) ->
+    InvocationIdentity = maps:get(unsafe_invocation, ActiveRound),
+    Mutation = InvocationIdentity#{round => RoundId},
+    UnknownOutcome =
+        #{round => RoundId,
+          invocation => InvocationIdentity,
+          outcome => unknown},
+    MutationLedger = maps:get(mutation_ledger, Data),
+    UnknownOutcomeLedger = maps:get(unknown_outcome_ledger, Data),
+    Projection = #{status => in_doubt,
+                   reason => unsafe_result_lost,
+                   round => RoundId},
+    finish_worker_down(
+      Projection,
+      Data#{mutation_ledger := MutationLedger ++ [Mutation],
+            unknown_outcome_ledger :=
+                UnknownOutcomeLedger ++ [UnknownOutcome],
+            recent_round_data := Projection}).
+
+finish_worker_down(Projection, Data) ->
+    Status = maps:get(status, Projection),
+    {next_state, cleaning,
+     Data#{status := Status,
+           active_round := undefined,
+           terminal_result := Projection},
+     [{next_event, internal, finish_cleanup}]}.
 
 continue_after_pre_stateful_failure(
   Failure, Data = #{round_sequence := [_NextRound | _Remaining]}) ->

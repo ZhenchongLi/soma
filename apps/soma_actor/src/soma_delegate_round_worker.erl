@@ -270,6 +270,7 @@ start_run(Steps,
                    correlation_id := CorrelationId,
                    work := Work}) ->
     RunId = mint_run_id(),
+    report_unsafe_dispatch(Steps, RunId, Data),
     RunOpts = #{run_id => RunId,
                 task_id => TaskId,
                 session_id => TaskId,
@@ -326,6 +327,42 @@ valid_timeout(undefined) ->
     true;
 valid_timeout(TimeoutMs) ->
     is_integer(TimeoutMs) andalso TimeoutMs > 0.
+
+report_unsafe_dispatch(Steps, RunId,
+                       #{coordinator_pid := CoordinatorPid,
+                         task_id := TaskId,
+                         round_id := RoundId,
+                         worker_identity := WorkerIdentity,
+                         result_capability := ResultCapability}) ->
+    case first_unsafe_invocation(Steps, RunId) of
+        none ->
+            ok;
+        InvocationIdentity ->
+            CoordinatorPid !
+                {delegate_unsafe_action_dispatched,
+                 TaskId, RoundId, self(), WorkerIdentity,
+                 ResultCapability, InvocationIdentity},
+            ok
+    end.
+
+first_unsafe_invocation([], _RunId) ->
+    none;
+first_unsafe_invocation(
+  [#{id := StepId, tool := ToolName} = Step | Remaining], RunId) ->
+    case step_repeat_safe(Step) of
+        true ->
+            first_unsafe_invocation(Remaining, RunId);
+        false ->
+            #{run_id => RunId, step_id => StepId, tool => ToolName}
+    end.
+
+step_repeat_safe(#{tool := ToolName}) ->
+    case soma_tool_registry:resolve_descriptor(ToolName) of
+        {ok, Descriptor} ->
+            soma_run_resume_safety:descriptor_safe(Descriptor);
+        {error, not_found} ->
+            false
+    end.
 
 release_child_monitor(Pid, MRef) ->
     _ = erlang:demonitor(MRef, [flush]),
