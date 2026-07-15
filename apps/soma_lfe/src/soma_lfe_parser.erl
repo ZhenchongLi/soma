@@ -4,7 +4,7 @@
 
 -export([parse_run/1, parse_task/1, parse_msg/1, parse_explore/1,
          parse_invoke/1, parse_proposal/1, parse_ask/1, parse_trace/1,
-         parse_status/1, parse_cancel/1, parse_stop/1]).
+         parse_status/1, parse_result/1, parse_cancel/1, parse_stop/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -669,6 +669,14 @@ parse_status([status, TaskId]) when is_binary(TaskId) ->
 parse_status(_Other) ->
     {error, [#{code => malformed_form,
                message => <<"status requires a single string argument: (status \"<task-id>\")">>,
+               line => 0}]}.
+
+-spec parse_result([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_result([result, TaskId]) when is_binary(TaskId) ->
+    {ok, #{result => #{task_id => TaskId}}};
+parse_result(_Other) ->
+    {error, [#{code => malformed_form,
+               message => <<"result requires a single string argument: (result \"<task-id>\")">>,
                line => 0}]}.
 
 -spec parse_cancel([term()]) -> {ok, map()} | {error, [diagnostic()]}.
