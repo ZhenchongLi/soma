@@ -8,7 +8,7 @@
 %% The runtime never imports this module; the one-way dependency holds.
 -module(soma_config).
 
--export([load/1]).
+-export([load/1, load_service/1]).
 
 %% @doc Load the model config from the resolved path.
 -spec load(map()) -> map() | undefined.
@@ -16,6 +16,14 @@ load(Opts) ->
     Path = resolve_path(Opts),
     Llm = read_llm_table(Path),
     build_model_config(Llm).
+
+%% @doc Read the optional external service-listener table without changing the
+%% existing model-config return shape of load/1. Table presence is the enable
+%% switch: an empty [service] table returns an enabled empty map, while an
+%% absent table (or config file) is disabled.
+-spec load_service(map()) -> disabled | {enabled, map()}.
+load_service(Opts) ->
+    read_service_table(resolve_path(Opts)).
 
 %% The path resolves from the `config_path' option when supplied (the
 %% hermetic-test seam), else the `SOMA_CONFIG' env var, else the `$HOME'-expanded
@@ -44,6 +52,41 @@ read_llm_table(Path) ->
             collect_llm(Lines, outside, #{});
         {error, _} ->
             #{}
+    end.
+
+read_service_table(Path) ->
+    case file:read_file(Path) of
+        {ok, Bin} ->
+            Lines = string:split(unicode:characters_to_list(Bin), "\n", all),
+            collect_service(Lines, outside, disabled);
+        {error, _} ->
+            disabled
+    end.
+
+collect_service([], _Table, Service) ->
+    Service;
+collect_service([Line | Rest], Table, Service) ->
+    case classify(string:trim(Line)) of
+        blank ->
+            collect_service(Rest, Table, Service);
+        comment ->
+            collect_service(Rest, Table, Service);
+        {table, "service"} ->
+            Enabled =
+                case Service of
+                    disabled -> {enabled, #{}};
+                    {enabled, _Config} -> Service
+                end,
+            collect_service(Rest, "service", Enabled);
+        {table, Name} ->
+            collect_service(Rest, Name, Service);
+        {kv, "socket", Socket}
+          when Table =:= "service", is_binary(Socket) ->
+            {enabled, Config} = Service,
+            collect_service(
+              Rest, Table, {enabled, Config#{socket => Socket}});
+        {kv, _Key, _Value} ->
+            collect_service(Rest, Table, Service)
     end.
 
 collect_llm([], _Table, Acc) ->

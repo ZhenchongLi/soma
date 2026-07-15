@@ -237,30 +237,45 @@ poll_until_listening(Args, N) ->
             poll_until_listening(Args, N - 1)
     end.
 
-%% Boot the daemon: start the runtime, then a `soma_cli_server' listener on a
-%% resolved socket path. A test-supplied `socket' override points both ends at a
-%% temp path; absent it, resolve `$XDG_RUNTIME_DIR/soma.sock', else
-%% `/tmp/soma-$UID.sock'. Returns `{ok, Path}' -- the listener runs in its own
-%% linked process, so the daemon stays up without blocking the caller.
+%% Boot the daemon: start the runtime and actor service, then the CLI listener.
+%% A present [service] config table also starts the external service listener;
+%% without that table the in-BEAM service remains supervised but has no ingress.
 -spec daemon(map()) -> {ok, file:filename_all()} | {error, term()}.
 daemon(Args) ->
     case load_model_config(Args) of
-        {ok, ModelConfig} -> daemon_with_model_config(Args, ModelConfig);
+        {ok, ModelConfig} ->
+            case load_service_config(Args) of
+                {ok, ServiceConfig} ->
+                    daemon_with_config(Args, ModelConfig, ServiceConfig);
+                {error, Reason} ->
+                    {error, Reason}
+            end;
         {error, Reason} -> {error, Reason}
     end.
 
-daemon_with_model_config(Args, ModelConfig) ->
-    {ok, _Started} = application:ensure_all_started(soma_runtime),
+daemon_with_config(Args, ModelConfig, ServiceConfig) ->
+    ok = ensure_actor_service(),
     %% Config-registered cli tools load after the runtime (the registry must
     %% be up) and before the listener starts. The result is log lines + data;
     %% a broken tool file never stops boot.
     ToolsDir = resolve_tools_dir(Args),
     _ = soma_tool_config:load_dir(ToolsDir),
     Path = resolve_socket(Args),
-    {ok, _Server} = soma_cli_server:start_link(#{socket => Path,
-                                                 model_config => ModelConfig,
-                                                 tools_dir => ToolsDir}),
-    {ok, Path}.
+    case start_service_listener(ServiceConfig, Path) of
+        {ok, ServiceListener} ->
+            case soma_cli_server:start_link(#{socket => Path,
+                                              model_config => ModelConfig,
+                                              tools_dir => ToolsDir}) of
+                {ok, Server} ->
+                    ok = track_service_listener(Server, ServiceListener),
+                    {ok, Path};
+                {error, Reason} ->
+                    stop_service_listener(ServiceListener),
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 %% Boot the daemon and block until the listener exits -- the blocking sibling of
 %% `daemon/1' for a standalone daemon BEAM. It does what `daemon/1' does (start
@@ -283,37 +298,85 @@ daemon_with_model_config(Args, ModelConfig) ->
 -spec daemon_foreground(map()) -> ok | {error, term()}.
 daemon_foreground(Args) ->
     case load_model_config(Args) of
-        {ok, ModelConfig} -> daemon_foreground_with_model_config(Args, ModelConfig);
+        {ok, ModelConfig} ->
+            case load_service_config(Args) of
+                {ok, ServiceConfig} ->
+                    daemon_foreground_with_config(
+                      Args, ModelConfig, ServiceConfig);
+                {error, Reason} ->
+                    {error, Reason}
+            end;
         {error, Reason} -> {error, Reason}
     end.
 
-daemon_foreground_with_model_config(Args, ModelConfig) ->
-    {ok, _Started} = application:ensure_all_started(soma_runtime),
+daemon_foreground_with_config(Args, ModelConfig, ServiceConfig) ->
+    ok = ensure_actor_service(),
     %% Same boot step as `daemon/1': config tools load after the runtime and
     %% before the listener starts.
     ToolsDir = resolve_tools_dir(Args),
     _ = soma_tool_config:load_dir(ToolsDir),
+    Path = resolve_socket(Args),
+    case start_service_listener(ServiceConfig, Path) of
+        {ok, ServiceListener} ->
+            case soma_cli_server:start_link(#{socket => Path,
+                                              model_config => ModelConfig,
+                                              tools_dir => ToolsDir}) of
+                {ok, Server} ->
+                    ok = track_service_listener(Server, ServiceListener),
+                    Ref = monitor(process, Server),
+                    receive
+                        {'DOWN', Ref, process, Server, _Reason} ->
+                            ok
+                    end;
+                {error, _Reason} ->
+                    stop_service_listener(ServiceListener),
+                    %% Lost the bind: the path is already served by a live
+                    %% listener, so this redundant daemon exits cleanly.
+                    ok
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+ensure_actor_service() ->
+    {ok, _Started} = application:ensure_all_started(soma_runtime),
     case soma_actor_sup:start_link() of
         {ok, _Sup} -> ok;
         {error, {already_started, _Sup}} -> ok
-    end,
-    Path = resolve_socket(Args),
-    case soma_cli_server:start_link(#{socket => Path,
-                                      model_config => ModelConfig,
-                                      tools_dir => ToolsDir}) of
-        {ok, Server} ->
-            Ref = monitor(process, Server),
-            receive
-                {'DOWN', Ref, process, Server, _Reason} ->
-                    ok
-            end;
-        {error, _Reason} ->
-            %% Lost the bind: the path is already served by a live listener
-            %% (the winner of an auto-start race), so this redundant daemon has
-            %% nothing to do -- return cleanly and let the process exit instead
-            %% of crashing on the failed bind.
-            ok
     end.
+
+start_service_listener(disabled, _CliPath) ->
+    {ok, disabled};
+start_service_listener({enabled, ServiceConfig}, CliPath) ->
+    ServicePath = soma_socket_path:resolve_service(CliPath, ServiceConfig),
+    case soma_service_socket:start_link(#{socket => ServicePath}) of
+        {ok, Listener} ->
+            %% The CLI listener is the daemon-lifetime owner. Avoid propagating
+            %% its later normal shutdown back through this start_link caller.
+            unlink(Listener),
+            {ok, {enabled, Listener}};
+        {error, Reason} ->
+            {error, {service_listener, Reason}}
+    end.
+
+track_service_listener(_CliListener, disabled) ->
+    ok;
+track_service_listener(CliListener, {enabled, ServiceListener}) ->
+    _ = spawn(
+          fun() ->
+                  Ref = monitor(process, CliListener),
+                  receive
+                      {'DOWN', Ref, process, CliListener, _Reason} ->
+                          exit(ServiceListener, shutdown)
+                  end
+          end),
+    ok.
+
+stop_service_listener(disabled) ->
+    ok;
+stop_service_listener({enabled, ServiceListener}) ->
+    exit(ServiceListener, shutdown),
+    ok.
 
 %% The tools-dir resolver, mirroring `soma_config''s path seam: a `tools_dir'
 %% key in `Args' wins (the hermetic-test seam), else `$HOME/.soma/tools'.
@@ -328,6 +391,13 @@ resolve_tools_dir(_Args) ->
 load_model_config(Args) ->
     try soma_config:load(Args) of
         ModelConfig -> {ok, ModelConfig}
+    catch
+        error:Reason -> {error, Reason}
+    end.
+
+load_service_config(Args) ->
+    try soma_config:load_service(Args) of
+        ServiceConfig -> {ok, ServiceConfig}
     catch
         error:Reason -> {error, Reason}
     end.
