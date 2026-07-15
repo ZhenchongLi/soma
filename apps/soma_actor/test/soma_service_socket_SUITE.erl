@@ -14,6 +14,8 @@
          test_socket_preserves_published_v1_errors/1,
          test_socket_oversized_response_returns_typed_error/1,
          test_socket_rejects_bad_and_oversized_frames_then_serves/1,
+         test_socket_malformed_lifecycle_forms_are_request_errors/1,
+         test_socket_unknown_symbols_do_not_grow_atom_table/1,
          test_daemon_service_listener_is_config_opt_in_with_sibling_default/1,
          test_cli_socket_rejects_service_only_forms_and_survives/1,
          test_service_socket_stale_takeover_and_lost_bind_preserve_winner/1]).
@@ -29,6 +31,8 @@ all() ->
      test_socket_preserves_published_v1_errors,
      test_socket_oversized_response_returns_typed_error,
      test_socket_rejects_bad_and_oversized_frames_then_serves,
+     test_socket_malformed_lifecycle_forms_are_request_errors,
+     test_socket_unknown_symbols_do_not_grow_atom_table,
      test_daemon_service_listener_is_config_opt_in_with_sibling_default,
      test_cli_socket_rejects_service_only_forms_and_survives,
      test_service_socket_stale_takeover_and_lost_bind_preserve_winner].
@@ -314,6 +318,14 @@ test_socket_watch_reconnect_resumes_after_cursor(Config) ->
            {ok, LogPath},
            application:get_env(soma_runtime, event_store_log)),
         ?assert(filelib:is_regular(LogPath)),
+        InvalidBytesEventId = <<"socket-watch-invalid-bytes">>,
+        ok = soma_event_store:append(
+               runtime_event_store(),
+               #{event_id => InvalidBytesEventId,
+                 correlation_id => TaskId,
+                 event_type => <<"socket.watch.invalid-bytes">>,
+                 payload => #{output => <<16#ff>>,
+                              text => <<"base64:/w==">>}}),
         DurableEvents =
             soma_event_store:by_correlation(
               runtime_event_store(), TaskId),
@@ -351,13 +363,24 @@ test_socket_watch_reconnect_resumes_after_cursor(Config) ->
               when is_binary(SecondCursor),
            SecondResponse),
         {service_reply, watch,
-         #{events := SecondEvents}} = SecondResponse,
+         #{events := SecondEvents, cursor := SecondCursor}} = SecondResponse,
         SecondIds = [maps:get(event_id, Event)
                      || Event <- SecondEvents],
         ?assertEqual(ExpectedSecondIds, SecondIds),
         ?assertEqual(
            lists:nth(PageLimit + 1, DurableIds), hd(SecondIds)),
-        ?assertNotEqual(lists:last(FirstIds), hd(SecondIds))
+        ?assertNotEqual(lists:last(FirstIds), hd(SecondIds)),
+
+        {service_reply, watch, #{events := RemainingEvents}} =
+            socket_response(
+              Path, watch_source(TaskId, SecondCursor, 100)),
+        [InvalidBytesEvent] =
+            [Event
+             || #{event_id := EventId} = Event <- RemainingEvents,
+                EventId =:= InvalidBytesEventId],
+        ?assertEqual(
+           #{output => <<16#ff>>, text => <<"base64:/w==">>},
+           maps:get(payload, InvalidBytesEvent))
     after
         stop_listener(Listener, Path)
     end.
@@ -644,6 +667,77 @@ test_socket_rejects_bad_and_oversized_frames_then_serves(_Config) ->
                   ?assert(is_process_alive(Listener))
           end,
           Rows)
+    after
+        stop_listener(Listener, Path)
+    end.
+
+%% RS.1d criterion 7: a syntactically complete lifecycle head with a missing
+%% task id is still a malformed client request. It must not be projected as an
+%% internal service failure, and each bad connection must leave the listener
+%% available for the next request.
+test_socket_malformed_lifecycle_forms_are_request_errors(_Config) ->
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        lists:foreach(
+          fun(Source) ->
+                  ?assertEqual(
+                     {service_error, malformed_request},
+                     socket_response(Path, Source)),
+                  ?assert(is_process_alive(Listener))
+          end,
+          [<<"(status)">>, <<"(result)">>, <<"(cancel)">>]),
+        ?assertEqual(
+           {service_error, not_found},
+           socket_response(
+             Path,
+             lifecycle_source(
+               status, <<"missing-after-malformed-lifecycle">>)))
+    after
+        stop_listener(Listener, Path)
+    end.
+
+%% RS.1d criterion 7: the frame cap bounds one request, but only a socket-level
+%% atom-count proof catches cumulative interning across many in-cap frames.
+%% Warm every exercised path before sampling, then send names that are unique
+%% to this test run and prove the listener remains useful without growing the
+%% VM atom table.
+test_socket_unknown_symbols_do_not_grow_atom_table(_Config) ->
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        Seed = integer_to_binary(
+                 erlang:unique_integer([positive, monotonic])),
+        _WarmUnknown =
+            socket_response_payload(
+              Path, unknown_operation_source(Seed, 0)),
+        ?assertEqual(
+           {service_error, not_found},
+           socket_response(
+             Path, lifecycle_source(status, <<"atom-count-warmup">>))),
+        AtomCountBefore = erlang:system_info(atom_count),
+
+        lists:foreach(
+          fun(N) ->
+                  Payload =
+                      socket_response_payload(
+                        Path, unknown_operation_source(Seed, N)),
+                  ?assert(
+                     byte_size(Payload) =<
+                         soma_socket_frame:max_bytes())
+          end,
+          lists:seq(1, 500)),
+
+        ?assert(is_process_alive(Listener)),
+        ?assertEqual(
+           {service_error, not_found},
+           socket_response(
+             Path, lifecycle_source(status, <<"atom-count-after">>))),
+        ?assertEqual(
+           AtomCountBefore,
+           erlang:system_info(atom_count))
     after
         stop_listener(Listener, Path)
     end.
@@ -1073,6 +1167,10 @@ wait_for_socket_status(Path, TaskId, Expected, Attempts) ->
 lifecycle_source(Operation, TaskId) ->
     iolist_to_binary(
       ["(", atom_to_list(Operation), " \"", TaskId, "\")"]).
+
+unknown_operation_source(Seed, N) ->
+    iolist_to_binary(
+      ["(socket-unknown-operation-", Seed, "-", integer_to_binary(N), ")"]).
 
 watch_source(TaskId, undefined, Limit) ->
     iolist_to_binary(
