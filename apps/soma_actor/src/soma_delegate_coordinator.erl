@@ -21,34 +21,38 @@ status(CoordinatorPid) when is_pid(CoordinatorPid) ->
 cancel(CoordinatorPid, TaskId) when is_pid(CoordinatorPid) ->
     gen_statem:cast(CoordinatorPid, {cancel, TaskId}).
 
-init(Opts = #{request_id := RequestId,
-              task_id := TaskId,
-              correlation_id := CorrelationId,
-              ingress_pid := IngressPid})
+init(#{request := Request = #{request_id := RequestId,
+                             correlation_id := CorrelationId},
+       task_id := TaskId,
+       ingress_pid := IngressPid,
+       runtime_options := RuntimeOptions})
   when is_binary(RequestId), is_binary(TaskId), is_binary(CorrelationId),
-       is_pid(IngressPid) ->
+       is_pid(IngressPid), is_map(RuntimeOptions) ->
     Data = #{request_id => RequestId,
              task_id => TaskId,
              correlation_id => CorrelationId,
              ingress_pid => IngressPid,
+             request => Request,
              status => accepted,
-             objective => maps:get(objective, Opts, undefined),
-             output_contract => maps:get(output_contract, Opts, undefined),
-             context_checkpoint => initial_checkpoint(Opts),
-             budgets => maps:get(budgets, Opts, #{}),
+             objective => maps:get(objective, Request, undefined),
+             output_contract => maps:get(output_contract, Request, undefined),
+             context_checkpoint => initial_checkpoint(RuntimeOptions),
+             budgets => maps:get(budgets, Request, #{}),
              usage => #{},
              mutation_ledger => [],
              unknown_outcome_ledger => [],
              recent_round_data => undefined,
              scoped_leases =>
-                 #{requests => maps:get(lease_requests, Opts, []),
+                 #{requests =>
+                       maps:get(lease_requests, RuntimeOptions, []),
                    handles => #{},
                    guard => undefined},
              next_round_id => 1,
              active_round => undefined,
              cleanup_started => false,
              terminal_result => undefined,
-             round_sequence => maps:get(round_sequence, Opts, [])},
+             round_sequence =>
+                 maps:get(round_sequence, RuntimeOptions, [])},
     {ok, awaiting_start, Data}.
 
 callback_mode() ->

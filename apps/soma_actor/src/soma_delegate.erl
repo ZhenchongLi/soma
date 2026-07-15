@@ -4,8 +4,6 @@
 
 -behaviour(gen_server).
 
--define(MAX_ID_BYTES, 256).
--define(MAX_TASK_SPEC_BYTES, 65536).
 -define(MAX_TERMINAL_PROJECTION_BYTES, 512).
 -define(FORWARDED_REQUEST_TIMEOUT_MS, 2500).
 
@@ -30,11 +28,11 @@ init([]) ->
            monitors => #{},
            status_requests => #{}}}.
 
-handle_call({submit, TaskSpec}, _From, State) ->
-    case request_id(TaskSpec) of
-        {ok, RequestId} ->
-            submit_request(RequestId, TaskSpec, State);
-        {error, _Reason} = Error ->
+handle_call({submit, Request0}, _From, State) ->
+    case soma_delegate_request:normalize(Request0) of
+        {ok, Request = #{request_id := RequestId}} ->
+            submit_request(RequestId, Request, State);
+        {error, invalid_delegate_request} = Error ->
             {reply, Error, State}
     end;
 handle_call({status, TaskId}, From, State) ->
@@ -156,33 +154,32 @@ cancel_task(TaskId, From, State = #{tasks := Tasks}) ->
              State#{tasks := maps:put(TaskId, UpdatedRoute, Tasks)}}
     end.
 
-submit_request(RequestId, TaskSpec,
+submit_request(RequestId, Request,
                State = #{requests := Requests, tasks := Tasks}) ->
     case maps:find(RequestId, Requests) of
         {ok, TaskId} ->
             Route = maps:get(TaskId, Tasks),
             {reply, {ok, maps:get(accepted_handle, Route)}, State};
         error ->
-            start_new_request(RequestId, TaskSpec, State)
+            start_new_request(RequestId, Request, State)
     end.
 
-start_new_request(RequestId, TaskSpec, State) ->
-    case validate_new_task(TaskSpec) of
-        {ok, CorrelationId0} ->
-            TaskId = mint_task_id(),
-            CorrelationId = resolve_correlation_id(CorrelationId0, TaskId),
-            Handle = #{status => accepted,
-                       request_id => RequestId,
-                       task_id => TaskId,
-                       correlation_id => CorrelationId},
-            CoordinatorOpts = TaskSpec#{request_id => RequestId,
-                                        task_id => TaskId,
-                                        correlation_id => CorrelationId,
-                                        ingress_pid => self()},
-            start_coordinator(CoordinatorOpts, Handle, State);
-        {error, _Reason} = Error ->
-            {reply, Error, State}
-    end.
+start_new_request(RequestId, Request, State) ->
+    TaskId = mint_task_id(),
+    CorrelationId =
+        resolve_correlation_id(
+          maps:get(correlation_id, Request, default), TaskId),
+    Handle = #{status => accepted,
+               request_id => RequestId,
+               task_id => TaskId,
+               correlation_id => CorrelationId},
+    CoordinatorRequest = Request#{correlation_id => CorrelationId},
+    CoordinatorOpts =
+        #{request => CoordinatorRequest,
+          task_id => TaskId,
+          ingress_pid => self(),
+          runtime_options => trusted_runtime_options()},
+    start_coordinator(CoordinatorOpts, Handle, State).
 
 start_coordinator(CoordinatorOpts,
                   Handle = #{request_id := RequestId, task_id := TaskId},
@@ -470,45 +467,16 @@ route_correlation_id(Route) ->
     maps:get(
       correlation_id, maps:get(accepted_handle, Route)).
 
-request_id(#{request_id := RequestId}) ->
-    validate_id(RequestId, invalid_request_id);
-request_id(_TaskSpec) ->
-    {error, invalid_request_id}.
-
-validate_new_task(TaskSpec) when is_map(TaskSpec) ->
-    case byte_size(term_to_binary(TaskSpec, [deterministic])) =<
-             ?MAX_TASK_SPEC_BYTES of
-        true ->
-            validate_new_task_state(TaskSpec);
-        false ->
-            {error, task_spec_too_large}
-    end.
-
-validate_new_task_state(TaskSpec) ->
-    case soma_delegate_task_data:valid_initial_task(TaskSpec) of
-        true ->
-            validate_optional_correlation_id(
-              maps:get(correlation_id, TaskSpec, default));
-        false ->
-            {error, invalid_task_state}
-    end.
-
-validate_optional_correlation_id(default) ->
-    {ok, default};
-validate_optional_correlation_id(CorrelationId) ->
-    validate_id(CorrelationId, invalid_correlation_id).
-
-validate_id(Id, _Error) when is_binary(Id),
-                             byte_size(Id) > 0,
-                             byte_size(Id) =< ?MAX_ID_BYTES ->
-    {ok, Id};
-validate_id(_Id, Error) ->
-    {error, Error}.
-
 resolve_correlation_id(default, TaskId) ->
     TaskId;
 resolve_correlation_id(CorrelationId, _TaskId) ->
     CorrelationId.
+
+trusted_runtime_options() ->
+    case application:get_env(soma_actor, delegate_runtime_options, #{}) of
+        RuntimeOptions when is_map(RuntimeOptions) -> RuntimeOptions;
+        _InvalidRuntimeOptions -> #{}
+    end.
 
 mint_task_id() ->
     Suffix = integer_to_binary(
