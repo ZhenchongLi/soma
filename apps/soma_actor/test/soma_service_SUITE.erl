@@ -8,6 +8,7 @@
 -export([test_supervised_service_restarts_and_serves_again/1]).
 -export([test_single_tool_invocation_runs_without_llm_worker/1]).
 -export([test_terminal_status_has_bounded_summary_only/1]).
+-export([test_result_inline_uses_default_and_configured_cap/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
@@ -38,6 +39,7 @@ all() ->
     [test_supervised_service_restarts_and_serves_again,
      test_single_tool_invocation_runs_without_llm_worker,
      test_terminal_status_has_bounded_summary_only,
+     test_result_inline_uses_default_and_configured_cap,
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
@@ -73,6 +75,19 @@ init_per_testcase(TestCase, Config)
            #{allowed_tools => [echo, fail]}),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started} | Config];
+init_per_testcase(
+  test_result_inline_uses_default_and_configured_cap, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo]}),
+    TmpDir = make_tmp_dir(),
+    DataDir = filename:join(TmpDir, "service-data"),
+    ok = application:set_env(soma_actor, service_data_dir, DataDir),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started},
+     {tmp_dir, TmpDir},
+     {service_data_dir, DataDir} | Config];
 init_per_testcase(
   test_service_cancel_cleans_tool_worker_and_cli_process, Config) ->
     ok = ensure_loaded(soma_actor),
@@ -206,6 +221,7 @@ end_per_testcase(TestCase, Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
        TestCase =:= test_terminal_status_has_bounded_summary_only;
+       TestCase =:= test_result_inline_uses_default_and_configured_cap;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
@@ -242,6 +258,8 @@ end_per_testcase(TestCase, Config)
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
+    application:unset_env(soma_actor, service_result_inline_bytes),
+    application:unset_env(soma_actor, service_data_dir),
     application:unset_env(soma_runtime, event_store_log),
     application:unload(soma_actor),
     maybe_del_tmp_dir(Config),
@@ -352,6 +370,47 @@ test_terminal_status_has_bounded_summary_only(_Config) ->
     FailedSummary = maps:get(summary, Failed),
     ?assertEqual([reason_class], maps:keys(FailedSummary)),
     ?assertEqual(run_failed, maps:get(reason_class, FailedSummary)).
+
+test_result_inline_uses_default_and_configured_cap(Config) ->
+    ?assert(erlang:function_exported(soma_service, result, 1)),
+    DataDir = ?config(service_data_dir, Config),
+    DefaultRequestId = <<"service-result-inline-default">>,
+    DefaultArgs = #{value => <<"default inline result">>},
+    DefaultOutput = #{DefaultRequestId => DefaultArgs},
+    ConfiguredRequestId = <<"service-result-inline-configured">>,
+    ConfiguredArgs = #{value => <<"configured inline result">>},
+    ConfiguredOutput = #{ConfiguredRequestId => ConfiguredArgs},
+    ConfiguredCap =
+        byte_size(term_to_binary(ConfiguredOutput, [deterministic])),
+    ?assert(ConfiguredCap > 0),
+    ?assert(ConfiguredCap < 16384),
+    Rows =
+        [{application_default, 16384,
+          DefaultRequestId, DefaultArgs, DefaultOutput},
+         {ConfiguredCap, ConfiguredCap,
+          ConfiguredRequestId, ConfiguredArgs, ConfiguredOutput}],
+
+    lists:foreach(
+      fun({CapSetting, ExpectedCap, RequestId, Args, ExpectedOutput}) ->
+              ok = maybe_restart_with_inline_cap(CapSetting, DataDir),
+              ?assertEqual(
+                 {ok, ExpectedCap},
+                 application:get_env(
+                   soma_actor, service_result_inline_bytes)),
+              ?assert(
+                 byte_size(
+                   term_to_binary(ExpectedOutput, [deterministic])) =<
+                 ExpectedCap),
+              {ok, #{task_id := TaskId, status := accepted}} =
+                  soma_service:invoke(
+                    tool_envelope(RequestId, echo, Args)),
+              {ok, _Terminal} =
+                  wait_for_status(TaskId, succeeded, 100),
+              ?assertEqual(
+                 {ok, ExpectedOutput}, soma_service:result(TaskId)),
+              ?assertEqual({error, enoent}, file:read_link_info(DataDir))
+      end,
+      Rows).
 
 test_oversized_result_fails_with_max_output_reason(_Config) ->
     RequestId = <<"service-oversized-result">>,
@@ -1571,6 +1630,21 @@ restart_actor_with_service_policy(PolicySetting) ->
         application_default -> ok;
         Policy -> application:set_env(soma_actor, service_policy, Policy)
     end,
+    {ok, _Started} = application:ensure_all_started(soma_actor),
+    ok.
+
+maybe_restart_with_inline_cap(application_default, _DataDir) ->
+    ok;
+maybe_restart_with_inline_cap(InlineCap, DataDir) ->
+    ok = application:stop(soma_actor),
+    ok = application:unload(soma_actor),
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo]}),
+    ok = application:set_env(soma_actor, service_data_dir, DataDir),
+    ok = application:set_env(
+           soma_actor, service_result_inline_bytes, InlineCap),
     {ok, _Started} = application:ensure_all_started(soma_actor),
     ok.
 
