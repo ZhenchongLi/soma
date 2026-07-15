@@ -123,6 +123,7 @@ begin_task(Data = #{round_sequence := [Work | Remaining],
                     correlation_id := CorrelationId,
                     next_round_id := RoundId})
   when is_map(Work) ->
+    Snapshot = round_snapshot(Data),
     WorkerIdentity = mint_worker_identity(RoundId),
     ResultCapability = make_ref(),
     WorkerOpts = #{coordinator_pid => self(),
@@ -131,6 +132,7 @@ begin_task(Data = #{round_sequence := [Work | Remaining],
                    round_id => RoundId,
                    worker_identity => WorkerIdentity,
                    result_capability => ResultCapability,
+                   snapshot => Snapshot,
                    work => Work},
     case soma_delegate_round_sup:start_round(WorkerOpts) of
         {ok, WorkerPid} ->
@@ -169,20 +171,50 @@ commit_round_result(Result, RoundId, WorkerPid, WorkerMRef, Data) ->
     case valid_round_result(Result) of
         true ->
             ActiveRound = maps:get(active_round, Data),
+            CommittedData = commit_round_deltas(Result, Data),
             cancel_timer(maps:get(round_timer, ActiveRound, undefined)),
             _ = erlang:demonitor(WorkerMRef, [flush]),
             _ = supervisor:terminate_child(
                   soma_delegate_round_sup, WorkerPid),
-            Projection = round_projection(Result, RoundId),
-            Status = maps:get(status, Projection),
-            {next_state, cleaning,
-             Data#{status := Status,
-                   active_round := undefined,
-                   terminal_result := Projection},
-             [{next_event, internal, finish_cleanup}]};
+            advance_after_round(
+              Result, RoundId,
+              CommittedData#{active_round := undefined});
         false ->
             {keep_state, Data}
     end.
+
+commit_round_deltas(Result, Data) ->
+    CheckpointData =
+        case maps:find(checkpoint, Result) of
+            {ok, Checkpoint} ->
+                Data#{context_checkpoint := Checkpoint};
+            error ->
+                Data
+        end,
+    UsageData =
+        case maps:find(usage, Result) of
+            {ok, Usage} when is_map(Usage) ->
+                CheckpointData#{usage := Usage};
+            _MissingOrInvalidUsage ->
+                CheckpointData
+        end,
+    case maps:find(terminal_result, Result) of
+        {ok, TerminalResult} ->
+            UsageData#{terminal_result := TerminalResult};
+        error ->
+            UsageData
+    end.
+
+advance_after_round(
+  #{status := succeeded, decision := continue}, _RoundId,
+  Data = #{round_sequence := [_NextWork | _Remaining]}) ->
+    begin_task(Data);
+advance_after_round(Result, RoundId, Data) ->
+    Projection = round_projection(Result, RoundId),
+    Status = maps:get(status, Projection),
+    {next_state, cleaning,
+     Data#{status := Status, terminal_result := Projection},
+     [{next_event, internal, finish_cleanup}]}.
 
 cancel_active_round(
   Status,
@@ -256,6 +288,13 @@ mint_worker_identity(RoundId) ->
     Suffix = integer_to_binary(
                erlang:unique_integer([positive, monotonic])),
     <<"delegate-round-", Round/binary, "-", Suffix/binary>>.
+
+round_snapshot(Data) ->
+    maps:with(
+      [task_id, correlation_id, objective, output_contract,
+       context_checkpoint, budgets, usage, mutation_ledger,
+       unknown_outcome_ledger],
+      Data).
 
 initial_checkpoint(Opts) ->
     maps:get(context_checkpoint, Opts, maps:get(checkpoint, Opts, #{})).
