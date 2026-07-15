@@ -13,6 +13,10 @@
 -export([test_conflicting_request_id_rejected_before_new_run/1]).
 -export([test_run_started_journals_request_id_and_envelope_hash/1]).
 -export([test_durable_restart_rebuilds_dedupe_without_new_run_started/1]).
+-export([test_fresh_vms_keep_durable_task_and_run_ids_distinct/1]).
+-export([test_restarted_service_rearms_absolute_deadline/1]).
+-export([test_recovery_lands_every_unowned_trail_terminal/1]).
+-export([test_start_failures_land_terminal_task_data/1]).
 -export([test_out_of_scope_invocation_rejected_through_policy/1]).
 -export([test_unscoped_invocation_uses_configured_or_empty_default_policy/1]).
 -export([test_unknown_scope_entry_does_not_create_atom/1]).
@@ -32,6 +36,10 @@ all() ->
      test_conflicting_request_id_rejected_before_new_run,
      test_run_started_journals_request_id_and_envelope_hash,
      test_durable_restart_rebuilds_dedupe_without_new_run_started,
+     test_fresh_vms_keep_durable_task_and_run_ids_distinct,
+     test_restarted_service_rearms_absolute_deadline,
+     test_recovery_lands_every_unowned_trail_terminal,
+     test_start_failures_land_terminal_task_data,
      test_out_of_scope_invocation_rejected_through_policy,
      test_unscoped_invocation_uses_configured_or_empty_default_policy,
      test_unknown_scope_entry_does_not_create_atom,
@@ -92,10 +100,32 @@ init_per_testcase(
     ok = application:set_env(soma_runtime, event_store_log, Path),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
+init_per_testcase(
+  test_fresh_vms_keep_durable_task_and_run_ids_distinct, Config) ->
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    [{tmp_dir, TmpDir}, {log_path, Path} | Config];
+init_per_testcase(test_start_failures_land_terminal_task_data, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo]}),
+    Config;
+init_per_testcase(test_recovery_lands_every_unowned_trail_terminal, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo]}),
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    ok = application:set_env(soma_runtime, event_store_log, Path),
+    {ok, Started} = application:ensure_all_started(soma_runtime),
+    [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
-           test_durable_restart_rebuilds_dedupe_without_new_run_started ->
+           test_durable_restart_rebuilds_dedupe_without_new_run_started;
+       TestCase =:= test_restarted_service_rearms_absolute_deadline ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -154,7 +184,11 @@ end_per_testcase(TestCase, Config)
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
-           test_durable_restart_rebuilds_dedupe_without_new_run_started ->
+           test_durable_restart_rebuilds_dedupe_without_new_run_started;
+       TestCase =:= test_fresh_vms_keep_durable_task_and_run_ids_distinct;
+       TestCase =:= test_start_failures_land_terminal_task_data;
+       TestCase =:= test_recovery_lands_every_unowned_trail_terminal;
+       TestCase =:= test_restarted_service_rearms_absolute_deadline ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
@@ -323,9 +357,13 @@ test_conflicting_request_id_rejected_before_new_run(_Config) ->
 
 test_run_started_journals_request_id_and_envelope_hash(Config) ->
     RequestId = <<"service-durable-request-identity">>,
-    Envelope = tool_envelope(
-                 RequestId, echo,
-                 #{value => <<"durable request metadata">>}),
+    MaxOutputBytes = 4096,
+    Envelope =
+        (tool_envelope(
+           RequestId, echo,
+           #{value => <<"durable request metadata">>}))#{
+          max_output_bytes => MaxOutputBytes,
+          deadline_ms => 5000},
     {ok, NormalizedEnvelope} =
         soma_service_envelope:normalize(Envelope),
     EnvelopeHash =
@@ -348,10 +386,25 @@ test_run_started_journals_request_id_and_envelope_hash(Config) ->
         [Event || Event <- soma_event_store:all(runtime_event_store()),
                   maps:get(event_type, Event) =:= <<"run.started">>,
                   maps:get(steps, maps:get(payload, Event)) =:= [Step]],
+    [Accepted] =
+        [Event || Event <- soma_event_store:all(runtime_event_store()),
+                  maps:get(event_type, Event) =:=
+                      <<"service.task.accepted">>,
+                  maps:get(task_id, Event) =:= TaskId],
+    DeadlineAtMs = maps:get(
+                     deadline_at_ms, maps:get(payload, Accepted)),
     RunOptions = maps:get(run_options, maps:get(payload, RunStarted)),
     ?assertEqual(
-       #{request_id => RequestId, envelope_hash => EnvelopeHash},
-       maps:with([request_id, envelope_hash], RunOptions)).
+       #{task_id => TaskId,
+         request_id => RequestId,
+         envelope_hash => EnvelopeHash,
+         max_output_bytes => MaxOutputBytes,
+         deadline_at_ms => DeadlineAtMs,
+         auto_resume => false},
+       maps:with(
+         [task_id, request_id, envelope_hash, max_output_bytes,
+          deadline_at_ms, auto_resume],
+         RunOptions)).
 
 test_durable_restart_rebuilds_dedupe_without_new_run_started(Config) ->
     RequestId = <<"service-durable-restart-dedupe">>,
@@ -385,6 +438,196 @@ test_durable_restart_rebuilds_dedupe_without_new_run_started(Config) ->
     ReplayedStorePid = runtime_event_store(),
     ?assertEqual({ok, Terminal}, soma_service:invoke(Envelope)),
     ?assertEqual(1, count_run_started(ReplayedStorePid)).
+
+test_fresh_vms_keep_durable_task_and_run_ids_distinct(Config) ->
+    LogPath = ?config(log_path, Config),
+    FirstRequest = <<"service-first-fresh-vm">>,
+    FirstValue = <<"first durable result">>,
+    First = run_fresh_service_vm(
+              #{log_path => LogPath,
+                request_id => FirstRequest,
+                value => FirstValue}),
+
+    SecondRequest = <<"service-second-fresh-vm">>,
+    SecondValue = <<"second durable result">>,
+    Second = run_fresh_service_vm(
+               #{log_path => LogPath,
+                 request_id => SecondRequest,
+                 value => SecondValue,
+                 duplicate =>
+                     #{request_id => FirstRequest,
+                       value => FirstValue}}),
+
+    ?assertNotEqual(maps:get(task_id, First), maps:get(task_id, Second)),
+    ?assertNotEqual(maps:get(run_id, First), maps:get(run_id, Second)),
+    ?assertEqual(
+       #{FirstRequest => #{value => FirstValue}},
+       maps:get(result, maps:get(terminal, First))),
+    ?assertEqual(
+       #{SecondRequest => #{value => SecondValue}},
+       maps:get(result, maps:get(terminal, Second))),
+    ?assertEqual(
+       maps:get(terminal, First),
+       maps:get(duplicate, Second)).
+
+test_restarted_service_rearms_absolute_deadline(_Config) ->
+    RequestId = <<"service-restarted-deadline">>,
+    Envelope =
+        (tool_envelope(RequestId, sleep, #{ms => 3000}))#{
+          deadline_ms => 500},
+    ServicePid = whereis(soma_service),
+
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(Envelope),
+    StorePid = runtime_event_store(),
+    {ok, Normalized} = soma_service_envelope:normalize(Envelope),
+    Step = maps:get(step, maps:get(operation, Normalized)),
+    RunId = wait_for_run_started(StorePid, [Step], 100),
+    ok = wait_for_run_event(StorePid, RunId, <<"tool.started">>, 100),
+    timer:sleep(100),
+
+    exit(ServicePid, kill),
+    ReplacementPid = wait_for_replacement(ServicePid, 100),
+    {ok, Terminal} = wait_for_status(TaskId, failed, 150),
+
+    ?assertEqual(deadline_exceeded, maps:get(reason, Terminal)),
+    ?assertEqual(ReplacementPid, whereis(soma_service)),
+    RunEventTypes =
+        [maps:get(event_type, Event)
+         || Event <- soma_event_store:by_run(StorePid, RunId)],
+    ?assert(lists:member(
+              <<"service.task.deadline_expired">>, RunEventTypes)),
+    ?assert(lists:member(<<"run.cancelled">>, RunEventTypes)).
+
+test_recovery_lands_every_unowned_trail_terminal(_Config) ->
+    StorePid = runtime_event_store(),
+
+    AcceptedOnly = service_recovery_fixture(<<"accepted-only">>),
+    append_service_accepted(StorePid, AcceptedOnly, #{}),
+
+    AllCommitted = service_recovery_fixture(<<"all-committed">>),
+    AllCommittedStep = maps:get(step, AllCommitted),
+    AllCommittedOutput = #{value => <<"committed output">>},
+    append_service_accepted(StorePid, AllCommitted, #{}),
+    append_run_started(StorePid, AllCommitted),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => maps:get(run_id, AllCommitted),
+             step_id => maps:get(id, AllCommittedStep),
+             event_type => <<"step.succeeded">>,
+             payload => #{output => AllCommittedOutput}}),
+
+    DeadlineCancelled = service_recovery_fixture(<<"deadline-cancelled">>),
+    append_service_accepted(
+      StorePid, DeadlineCancelled,
+      #{deadline_at_ms => erlang:system_time(millisecond) - 1}),
+    append_run_started(StorePid, DeadlineCancelled),
+    append_service_event(
+      StorePid, DeadlineCancelled,
+      <<"service.task.deadline_expired">>, #{}),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => maps:get(run_id, DeadlineCancelled),
+             event_type => <<"run.cancelled">>,
+             payload => #{}}),
+
+    Unrecoverable = service_recovery_fixture(<<"unrecoverable">>),
+    append_service_accepted(StorePid, Unrecoverable, #{}),
+    append_run_started(StorePid, Unrecoverable),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => maps:get(run_id, Unrecoverable),
+             step_id => unknown_committed_step,
+             event_type => <<"step.succeeded">>,
+             payload => #{output => <<"not in journal">>}}),
+
+    {ok, _Started} = application:ensure_all_started(soma_actor),
+
+    {ok, AcceptedOnlyTerminal} =
+        soma_service:status(maps:get(task_id, AcceptedOnly)),
+    ?assertEqual(failed, maps:get(status, AcceptedOnlyTerminal)),
+    ?assertEqual(
+       service_interrupted_before_start,
+       maps:get(reason, AcceptedOnlyTerminal)),
+
+    {ok, AllCommittedTerminal} =
+        soma_service:status(maps:get(task_id, AllCommitted)),
+    ?assertEqual(succeeded, maps:get(status, AllCommittedTerminal)),
+    ?assertEqual(
+       #{maps:get(id, AllCommittedStep) => AllCommittedOutput},
+       maps:get(result, AllCommittedTerminal)),
+
+    {ok, DeadlineTerminal} =
+        soma_service:status(maps:get(task_id, DeadlineCancelled)),
+    ?assertEqual(failed, maps:get(status, DeadlineTerminal)),
+    ?assertEqual(deadline_exceeded, maps:get(reason, DeadlineTerminal)),
+
+    {ok, UnrecoverableTerminal} =
+        soma_service:status(maps:get(task_id, Unrecoverable)),
+    ?assertEqual(failed, maps:get(status, UnrecoverableTerminal)),
+    ?assertEqual(
+       service_recovery_failed,
+       maps:get(reason, UnrecoverableTerminal)),
+
+    lists:foreach(
+      fun(Fixture) ->
+              TaskId = maps:get(task_id, Fixture),
+              [TerminalEvent] =
+                  [Event || Event <- soma_event_store:all(StorePid),
+                            maps:get(event_type, Event) =:=
+                                <<"service.task.terminal">>,
+                            maps:get(task_id, Event, undefined) =:= TaskId],
+              ?assertNotEqual(running,
+                              maps:get(status,
+                                       maps:get(payload, TerminalEvent)))
+      end,
+      [AcceptedOnly, AllCommitted, DeadlineCancelled, Unrecoverable]).
+
+test_start_failures_land_terminal_task_data(_Config) ->
+    {ok, StorePid} = soma_event_store:start_link(),
+    Recovery = service_recovery_fixture(<<"resume-start-failure">>),
+    append_service_accepted(StorePid, Recovery, #{}),
+    append_run_started(StorePid, Recovery),
+    SomaSup = start_fake_supervisor(
+                soma_sup,
+                fun(which_children) ->
+                        [{soma_event_store, StorePid,
+                          worker, [soma_event_store]}]
+                end),
+    RunSup = start_fake_supervisor(
+               soma_run_sup,
+               fun(which_children) ->
+                       [];
+                  ({start_child, _Args}) ->
+                       {error, forced_run_start_failure}
+               end),
+    try
+        {ok, ServicePid} = soma_service:start_link(),
+        {ok, RecoveredTerminal} =
+            soma_service:status(maps:get(task_id, Recovery)),
+        NormalStartReply =
+            soma_service:invoke(
+              tool_envelope(
+                <<"normal-start-failure">>, echo,
+                #{value => <<"must not remain admitted">>})),
+
+        ?assertEqual(failed, maps:get(status, RecoveredTerminal)),
+        ?assertEqual(
+           resume_start_failed, maps:get(reason, RecoveredTerminal)),
+        ?assertMatch(
+           {ok, #{status := failed, reason := run_start_failed}},
+           NormalStartReply),
+        {ok, NormalTerminal} =
+            soma_service:status(
+              maps:get(task_id, element(2, NormalStartReply))),
+        ?assertEqual(element(2, NormalStartReply), NormalTerminal),
+        gen_server:stop(ServicePid)
+    after
+        stop_registered_process(soma_service),
+        stop_fake_supervisor(RunSup),
+        stop_fake_supervisor(SomaSup),
+        gen_server:stop(StorePid)
+    end.
 
 test_out_of_scope_invocation_rejected_through_policy(_Config) ->
     RequestId = <<"service-out-of-scope">>,
@@ -717,6 +960,161 @@ test_interrupted_reader_invocation_resumes_after_restart(Config) ->
     ?assertEqual(1, length([started || <<"run.started">> <- RunEventTypes])),
     ?assertEqual(1, length([resumed || <<"run.resumed">> <- RunEventTypes])),
     ?assertNot(lists:member(<<"run.failed">>, RunEventTypes)).
+
+run_fresh_service_vm(Spec) ->
+    EncodedSpec = base64:encode(term_to_binary(Spec, [deterministic])),
+    Eval = lists:flatten(
+             io_lib:format(
+               "Spec = binary_to_term(base64:decode(~p), [safe]), "
+               "LogPath = maps:get(log_path, Spec), "
+               "ok = application:load(soma_actor), "
+               "ok = application:set_env(soma_runtime, event_store_log, LogPath), "
+               "ok = application:set_env(soma_actor, service_policy, "
+               "#{allowed_tools => [echo]}), "
+               "{ok, _} = application:ensure_all_started(soma_actor), "
+               "Envelope = fun(RequestId, Value) -> "
+               "#{kind => invoke, api_version => <<\"1\">>, "
+               "request_id => RequestId, operation => "
+               "#{kind => tool, step => "
+               "#{id => RequestId, tool => echo, "
+               "args => #{value => Value}}}} end, "
+               "RequestId = maps:get(request_id, Spec), "
+               "Value = maps:get(value, Spec), "
+               "{ok, #{task_id := TaskId}} = "
+               "soma_service:invoke(Envelope(RequestId, Value)), "
+               "Wait = fun F(0) -> erlang:error(service_task_timeout); "
+               "F(N) -> case soma_service:status(TaskId) of "
+               "{ok, #{status := succeeded} = Task} -> Task; "
+               "_ -> timer:sleep(10), F(N - 1) end end, "
+               "Terminal = Wait(200), "
+               "Duplicate = case maps:get(duplicate, Spec, undefined) of "
+               "undefined -> undefined; "
+               "#{request_id := DuplicateRequestId, value := DuplicateValue} -> "
+               "{ok, DuplicateTask} = soma_service:invoke("
+               "Envelope(DuplicateRequestId, DuplicateValue)), "
+               "DuplicateTask end, "
+               "Children = supervisor:which_children(soma_sup), "
+               "{soma_event_store, StorePid, _, _} = "
+               "lists:keyfind(soma_event_store, 1, Children), "
+               "[Accepted] = [Event || Event <- soma_event_store:all(StorePid), "
+               "maps:get(event_type, Event) =:= <<\"service.task.accepted\">>, "
+               "maps:get(request_id, Event, undefined) =:= RequestId], "
+               "Result = #{task_id => TaskId, "
+               "run_id => maps:get(run_id, Accepted), "
+               "terminal => Terminal, duplicate => Duplicate}, "
+               "_ = application:stop(soma_actor), "
+               "_ = application:stop(soma_runtime), "
+               "io:format(\"SOMA_TEST_RESULT:~~s~~n\", "
+               "[base64:encode(term_to_binary(Result, [deterministic]))]), "
+               "halt(0).",
+               [EncodedSpec])),
+    Erl = os:find_executable("erl"),
+    Paths = [filename:absname(Path) || Path <- code:get_path()],
+    PathArgs = lists:append([["-pa", Path] || Path <- Paths]),
+    Port = open_port(
+             {spawn_executable, Erl},
+             [binary, use_stdio, stderr_to_stdout, exit_status,
+              {args, ["+S", "2:2", "+A", "1", "-noshell"] ++
+                         PathArgs ++ ["-eval", Eval]}]),
+    {0, Output} = collect_port_output(Port, []),
+    case re:run(
+           Output,
+           <<"SOMA_TEST_RESULT:([^\\r\\n]+)">>,
+           [{capture, [1], binary}]) of
+        {match, [EncodedResult]} ->
+            binary_to_term(base64:decode(EncodedResult), [safe]);
+        nomatch ->
+            error({fresh_service_vm_missing_result, Output})
+    end.
+
+collect_port_output(Port, Acc) ->
+    receive
+        {Port, {data, Bytes}} ->
+            collect_port_output(Port, [Bytes | Acc]);
+        {Port, {exit_status, Status}} ->
+            {Status, iolist_to_binary(lists:reverse(Acc))}
+    after 15000 ->
+        erlang:port_close(Port),
+        error(fresh_service_vm_timeout)
+    end.
+
+service_recovery_fixture(Suffix) ->
+    TaskId = <<"service-recovery-task-", Suffix/binary>>,
+    RequestId = <<"service-recovery-request-", Suffix/binary>>,
+    RunId = <<"service-recovery-run-", Suffix/binary>>,
+    Step = #{id => Suffix,
+             tool => echo,
+             args => #{value => Suffix}},
+    #{task_id => TaskId,
+      request_id => RequestId,
+      run_id => RunId,
+      envelope_hash => crypto:hash(sha256, Suffix),
+      step => Step}.
+
+append_service_accepted(StorePid, Fixture, ExtraPayload) ->
+    append_service_event(
+      StorePid, Fixture, <<"service.task.accepted">>,
+      maps:merge(
+        #{envelope_hash => maps:get(envelope_hash, Fixture)},
+        ExtraPayload)).
+
+append_service_event(StorePid, Fixture, Type, Payload) ->
+    soma_event_store:append(
+      StorePid,
+      maps:merge(
+        maps:with([task_id, request_id, run_id], Fixture),
+        #{event_type => Type, payload => Payload})).
+
+append_run_started(StorePid, Fixture) ->
+    RunId = maps:get(run_id, Fixture),
+    RunOptions =
+        maps:merge(
+          maps:with(
+            [task_id, request_id, envelope_hash], Fixture),
+          #{run_id => RunId, auto_resume => false}),
+    soma_event_store:append(
+      StorePid,
+      #{run_id => RunId,
+        event_type => <<"run.started">>,
+        payload => #{steps => [maps:get(step, Fixture)],
+                     run_options => RunOptions}}).
+
+start_fake_supervisor(Name, Handler) ->
+    Parent = self(),
+    Pid = spawn_link(
+            fun() ->
+                    true = register(Name, self()),
+                    Parent ! {fake_supervisor_started, self()},
+                    fake_supervisor_loop(Handler)
+            end),
+    receive
+        {fake_supervisor_started, Pid} -> Pid
+    after 1000 ->
+        error({fake_supervisor_start_timeout, Name})
+    end.
+
+fake_supervisor_loop(Handler) ->
+    receive
+        {'$gen_call', From, Request} ->
+            gen:reply(From, Handler(Request)),
+            fake_supervisor_loop(Handler);
+        stop ->
+            ok
+    end.
+
+stop_fake_supervisor(Pid) ->
+    unlink(Pid),
+    Pid ! stop,
+    ok.
+
+stop_registered_process(Name) ->
+    case whereis(Name) of
+        undefined ->
+            ok;
+        Pid ->
+            unlink(Pid),
+            gen_server:stop(Pid)
+    end.
 
 ensure_loaded(App) ->
     case application:load(App) of
