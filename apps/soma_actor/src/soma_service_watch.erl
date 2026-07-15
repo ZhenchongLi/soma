@@ -81,6 +81,8 @@ scrub_term(secret_value) ->
     redacted;
 scrub_term(<<"secret_value">>) ->
     redacted;
+scrub_term(Term) when is_binary(Term) ->
+    wire_safe_binary(Term);
 scrub_term(Term) when is_map(Term) ->
     maps:fold(fun scrub_map_entry/3, #{}, Term);
 scrub_term([]) ->
@@ -91,6 +93,14 @@ scrub_term(Term) when is_tuple(Term) ->
     list_to_tuple([scrub_term(Element) || Element <- tuple_to_list(Term)]);
 scrub_term(Term) ->
     Term.
+
+wire_safe_binary(Binary) ->
+    case unicode:characters_to_binary(Binary, utf8, utf8) of
+        Binary ->
+            Binary;
+        {_ErrorOrIncomplete, _ValidPrefix, _InvalidTail} ->
+            <<"base64:", (base64:encode(Binary))/binary>>
+    end.
 
 scrub_map_entry(Key, _Value, Acc)
   when Key =:= secret_value; Key =:= <<"secret_value">> ->
