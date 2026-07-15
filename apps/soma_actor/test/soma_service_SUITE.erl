@@ -21,6 +21,7 @@
 -export([test_tool_crash_is_bounded_and_service_runs_again/1]).
 -export([test_lifecycle_reads_are_monotonic/1]).
 -export([test_unsafe_interrupted_state_invocation_recovers_in_doubt/1]).
+-export([test_interrupted_reader_invocation_resumes_after_restart/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -38,7 +39,8 @@ all() ->
      test_service_cancel_cleans_tool_worker_and_cli_process,
      test_tool_crash_is_bounded_and_service_runs_again,
      test_lifecycle_reads_are_monotonic,
-     test_unsafe_interrupted_state_invocation_recovers_in_doubt].
+     test_unsafe_interrupted_state_invocation_recovers_in_doubt,
+     test_interrupted_reader_invocation_resumes_after_restart].
 
 init_per_testcase(
   test_tool_crash_is_bounded_and_service_runs_again, Config) ->
@@ -78,6 +80,17 @@ init_per_testcase(
     {ok, Started} = application:ensure_all_started(soma_actor),
     ok = soma_tool_registry:register_tool(
            soma_service_hanging_state_tool:manifest()),
+    [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
+init_per_testcase(
+  test_interrupted_reader_invocation_resumes_after_restart, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [sleep]}),
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    ok = application:set_env(soma_runtime, event_store_log, Path),
+    {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_run_started_journals_request_id_and_envelope_hash;
@@ -136,6 +149,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= test_lifecycle_reads_are_monotonic;
        TestCase =:=
            test_unsafe_interrupted_state_invocation_recovers_in_doubt;
+       TestCase =:=
+           test_interrupted_reader_invocation_resumes_after_restart;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -659,6 +674,49 @@ test_unsafe_interrupted_state_invocation_recovers_in_doubt(Config) ->
     ?assertEqual(
        #{status => in_doubt, reason => {resume_unsafe, StepId}},
        maps:get(payload, TerminalEvent)).
+
+test_interrupted_reader_invocation_resumes_after_restart(Config) ->
+    StepId = interrupted_reader_step,
+    Step = #{id => StepId,
+             tool => sleep,
+             args => #{ms => 500},
+             timeout_ms => 5000},
+    Envelope = #{kind => invoke,
+                 api_version => <<"1">>,
+                 request_id => <<"service-reader-interruption">>,
+                 operation => #{kind => steps, steps => [Step]}},
+
+    ServicePid = whereis(soma_service),
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(Envelope),
+    StorePid = runtime_event_store(),
+    RunId = wait_for_run_started(StorePid, [Step], 100),
+    ok = wait_for_run_event(StorePid, RunId, <<"tool.started">>, 100),
+    RunPid = wait_for_monitored_run(ServicePid, 100),
+    WorkerPid = tool_call_pid_from(StorePid, RunId),
+    ?assert(is_process_alive(RunPid)),
+    ?assert(is_process_alive(WorkerPid)),
+
+    ok = application:stop(soma_actor),
+    ok = application:stop(soma_runtime),
+    ok = wait_for_process_dead(RunPid, 100),
+    exit(WorkerPid, kill),
+    ok = wait_for_process_dead(WorkerPid, 100),
+
+    ok = application:set_env(
+           soma_runtime, event_store_log, ?config(log_path, Config)),
+    {ok, _RuntimeStarted} = application:ensure_all_started(soma_runtime),
+    {ok, _ActorStarted} = application:ensure_all_started(soma_actor),
+
+    ReplayedStorePid = runtime_event_store(),
+    {ok, Recovered} = wait_for_status(TaskId, succeeded, 200),
+    ?assertEqual(#{StepId => #{ms => 500}}, maps:get(result, Recovered)),
+
+    RunEvents = soma_event_store:by_run(ReplayedStorePid, RunId),
+    RunEventTypes = [maps:get(event_type, Event) || Event <- RunEvents],
+    ?assertEqual(1, length([started || <<"run.started">> <- RunEventTypes])),
+    ?assertEqual(1, length([resumed || <<"run.resumed">> <- RunEventTypes])),
+    ?assertNot(lists:member(<<"run.failed">>, RunEventTypes)).
 
 ensure_loaded(App) ->
     case application:load(App) of
