@@ -8,6 +8,7 @@
 -define(ROUND_FORCED_STOP_MS, 1000).
 -define(MAX_ROUND_SNAPSHOT_BYTES, 65536).
 -define(MAX_ROUND_RESULT_BYTES, 16384).
+-define(MAX_ROUND_RESULT_DEPTH, 64).
 
 -export([start_link/1, status/1, cancel/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
@@ -164,7 +165,8 @@ handle_event(info,
                                 worker_identity := WorkerIdentity,
                                 result_capability := ResultCapability,
                                 forced_stop_timer := ForcedStopTimer,
-                                cancel_status := timeout}}) ->
+                                cancel_status := CancelStatus}})
+  when CancelStatus =:= timeout; CancelStatus =:= cancelled ->
     exit(WorkerPid, kill),
     {keep_state,
      Data#{active_round :=
@@ -483,16 +485,26 @@ arm_round_timer(Work, TaskId, RoundId, WorkerPid,
        WorkerIdentity, ResultCapability}).
 
 arm_forced_stop_timer(
-  timeout, TaskId, RoundId, WorkerPid,
+  Status, TaskId, RoundId, WorkerPid,
+  WorkerIdentity, ResultCapability) ->
+    case Status of
+        timeout ->
+            start_forced_stop_timer(
+              TaskId, RoundId, WorkerPid,
+              WorkerIdentity, ResultCapability);
+        cancelled ->
+            start_forced_stop_timer(
+              TaskId, RoundId, WorkerPid,
+              WorkerIdentity, ResultCapability)
+    end.
+
+start_forced_stop_timer(
+  TaskId, RoundId, WorkerPid,
   WorkerIdentity, ResultCapability) ->
     erlang:start_timer(
       ?ROUND_FORCED_STOP_MS, self(),
       {delegate_round_forced_stop, TaskId, RoundId, WorkerPid,
-       WorkerIdentity, ResultCapability});
-arm_forced_stop_timer(
-  _Status, _TaskId, _RoundId, _WorkerPid,
-  _WorkerIdentity, _ResultCapability) ->
-    undefined.
+       WorkerIdentity, ResultCapability}).
 
 timeout_ms(TimeoutMs, _Default)
   when is_integer(TimeoutMs), TimeoutMs > 0 ->
@@ -514,10 +526,137 @@ cancel_round_timers(ActiveRound) ->
 valid_round_result(Result) when is_map(Result) ->
     byte_size(term_to_binary(Result, [deterministic])) =<
         ?MAX_ROUND_RESULT_BYTES andalso
-        lists:member(maps:get(status, Result, invalid),
-                     [succeeded, failed, timeout, cancelled]);
+        valid_round_result_keys(Result) andalso
+        valid_result_status(Result) andalso
+        valid_optional_enum(
+          phase, Result, [decision, llm, action]) andalso
+        valid_optional_enum(
+          decision, Result, [continue, terminal]) andalso
+        valid_optional_result_term(checkpoint, Result) andalso
+        valid_optional_result_map(usage, Result) andalso
+        valid_optional_result_map(mutation, Result) andalso
+        valid_optional_result_map(unknown_outcome, Result) andalso
+        valid_optional_result_map(terminal_result, Result);
 valid_round_result(_Result) ->
     false.
+
+valid_round_result_keys(Result) ->
+    Allowed =
+        [status, phase, decision, reason, checkpoint, usage,
+         mutation, unknown_outcome, terminal_result],
+    lists:all(
+      fun(Key) -> lists:member(Key, Allowed) end,
+      maps:keys(Result)).
+
+valid_result_status(Result) ->
+    lists:member(
+      maps:get(status, Result, invalid),
+      [succeeded, failed, timeout, cancelled]).
+
+valid_optional_enum(Key, Result, Allowed) ->
+    case maps:find(Key, Result) of
+        {ok, Value} -> lists:member(Value, Allowed);
+        error -> true
+    end.
+
+valid_optional_result_map(Key, Result) ->
+    case maps:find(Key, Result) of
+        {ok, Value} when is_map(Value) ->
+            safe_round_result_term(Value, ?MAX_ROUND_RESULT_DEPTH);
+        {ok, _InvalidValue} ->
+            false;
+        error ->
+            true
+    end.
+
+valid_optional_result_term(Key, Result) ->
+    case maps:find(Key, Result) of
+        {ok, Value} ->
+            safe_round_result_term(Value, ?MAX_ROUND_RESULT_DEPTH);
+        error ->
+            true
+    end.
+
+safe_round_result_term(_Term, 0) ->
+    false;
+safe_round_result_term(Term, _Depth)
+  when is_binary(Term); is_integer(Term); is_float(Term); is_atom(Term) ->
+    true;
+safe_round_result_term([], _Depth) ->
+    true;
+safe_round_result_term([_Value | _Remaining] = List, Depth) ->
+    safe_round_result_list(List, Depth - 1);
+safe_round_result_term(Map, Depth) when is_map(Map) ->
+    maps:fold(
+      fun(Key, Value, Safe) ->
+              Safe andalso
+                  safe_round_result_key(Key, Depth - 1) andalso
+                  safe_round_result_term(Value, Depth - 1)
+      end,
+      true, Map);
+safe_round_result_term(Tuple, Depth) when is_tuple(Tuple) ->
+    not forbidden_round_result_tuple(Tuple) andalso
+        safe_round_result_tuple(
+          1, tuple_size(Tuple), Tuple, Depth - 1);
+safe_round_result_term(_ProcessLocalOrUnsupported, _Depth) ->
+    false.
+
+safe_round_result_list([], _Depth) ->
+    true;
+safe_round_result_list([Value | Remaining], Depth) ->
+    safe_round_result_term(Value, Depth) andalso
+        safe_round_result_list(Remaining, Depth);
+safe_round_result_list(_ImproperTail, _Depth) ->
+    false.
+
+safe_round_result_key(Key, Depth) ->
+    not forbidden_round_result_name(Key) andalso
+        safe_round_result_term(Key, Depth).
+
+safe_round_result_tuple(Index, Size, _Tuple, _Depth)
+  when Index > Size ->
+    true;
+safe_round_result_tuple(Index, Size, Tuple, Depth) ->
+    safe_round_result_term(element(Index, Tuple), Depth) andalso
+        safe_round_result_tuple(
+          Index + 1, Size, Tuple, Depth).
+
+forbidden_round_result_tuple(Tuple) when tuple_size(Tuple) > 0 ->
+    forbidden_round_result_name(element(1, Tuple));
+forbidden_round_result_tuple(_Tuple) ->
+    false.
+
+forbidden_round_result_name(Name) when is_atom(Name) ->
+    forbidden_round_result_name(atom_to_binary(Name));
+forbidden_round_result_name(Name) when is_binary(Name) ->
+    lists:member(
+      Name,
+      [<<"pid">>, <<"worker_pid">>, <<"coordinator_pid">>,
+       <<"resource_manager_pid">>, <<"lease_guard_pid">>,
+       <<"monitor_ref">>, <<"mref">>, <<"ref">>, <<"port">>,
+       <<"function">>, <<"authentication">>,
+       <<"authentication_state">>, <<"auth">>,
+       <<"authorization">>, <<"bearer">>, <<"credentials">>,
+       <<"api_key">>, <<"secret">>, <<"password">>,
+       <<"provider_config">>, <<"model_config">>,
+       <<"product_conversation">>,
+       <<"product_conversation_data">>,
+       <<"conversation_history">>, <<"product_history">>,
+       <<"product_user">>, <<"product_user_id">>,
+       <<"user_identity">>, <<"user_id">>,
+       <<"product_session">>, <<"product_session_id">>,
+       <<"session_identity">>, <<"session_id">>,
+       <<"raw_lease">>, <<"raw_leases">>, <<"lease_guard">>,
+       <<"round_snapshot">>, <<"prior_snapshot">>]) orelse
+        raw_lease_name(Name);
+forbidden_round_result_name(_OtherName) ->
+    false.
+
+raw_lease_name(Name) ->
+    binary:match(Name, <<"raw_lease">>) =/= nomatch orelse
+        binary:match(Name, <<"raw-lease">>) =/= nomatch orelse
+        (binary:match(Name, <<"raw">>) =/= nomatch andalso
+         binary:match(Name, <<"lease">>) =/= nomatch).
 
 round_projection(#{status := succeeded}, RoundId) ->
     #{status => succeeded, round => RoundId};

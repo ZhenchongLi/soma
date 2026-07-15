@@ -52,8 +52,13 @@ handle_info(
     {noreply,
      reply_status_request(
        TaskId, CoordinatorPid, StatusRef, Reply, State)};
-handle_info({'DOWN', MRef, process, CoordinatorPid, _Reason}, State) ->
-    {noreply, remove_active_coordinator(MRef, CoordinatorPid, State)};
+handle_info({'DOWN', MRef, process, Pid, _Reason}, State) ->
+    case remove_dead_status_caller(MRef, Pid, State) of
+        {removed, UpdatedState} ->
+            {noreply, UpdatedState};
+        not_found ->
+            {noreply, remove_active_coordinator(MRef, Pid, State)}
+    end;
 handle_info({delegate_terminal, TaskId, CoordinatorPid, Projection}, State) ->
     {noreply,
      store_terminal_projection(
@@ -72,10 +77,14 @@ status_task(TaskId, From,
             {reply, {ok, public_projection(Route, Projection)}, State};
         #{coordinator_pid := CoordinatorPid} when is_pid(CoordinatorPid) ->
             StatusRef = make_ref(),
+            {CallerPid, _ReplyTag} = From,
+            CallerMRef = erlang:monitor(process, CallerPid),
             CoordinatorPid !
                 {delegate_status, TaskId, self(), StatusRef},
             StatusRequest = #{task_id => TaskId,
                               coordinator_pid => CoordinatorPid,
+                              caller_pid => CallerPid,
+                              caller_mref => CallerMRef,
                               from => From},
             {noreply,
              State#{status_requests :=
@@ -240,7 +249,9 @@ reply_status_request(
     case maps:get(StatusRef, StatusRequests, undefined) of
         #{task_id := TaskId,
           coordinator_pid := CoordinatorPid,
+          caller_mref := CallerMRef,
           from := From} ->
+            _ = erlang:demonitor(CallerMRef, [flush]),
             gen_server:reply(From, Reply),
             State#{status_requests :=
                        maps:remove(StatusRef, StatusRequests)};
@@ -254,10 +265,12 @@ reply_status_requests(
       fun(StatusRef,
           #{task_id := PendingTaskId,
             coordinator_pid := PendingCoordinatorPid,
+            caller_mref := CallerMRef,
             from := From} = StatusRequest,
           Remaining) ->
               case {PendingTaskId, PendingCoordinatorPid} of
                   {TaskId, CoordinatorPid} ->
+                      _ = erlang:demonitor(CallerMRef, [flush]),
                       gen_server:reply(From, Reply),
                       Remaining;
                   _OtherRequest ->
@@ -265,6 +278,33 @@ reply_status_requests(
               end
       end,
       #{}, StatusRequests).
+
+remove_dead_status_caller(
+  CallerMRef, CallerPid,
+  State = #{status_requests := StatusRequests}) ->
+    {Removed, Remaining} =
+        maps:fold(
+          fun(StatusRef,
+              StatusRequest =
+                  #{caller_pid := PendingCallerPid,
+                    caller_mref := PendingCallerMRef},
+              {Found, Acc}) ->
+                  case {PendingCallerPid, PendingCallerMRef} of
+                      {CallerPid, CallerMRef} ->
+                          {true, Acc};
+                      _OtherCaller ->
+                          {Found,
+                           maps:put(
+                             StatusRef, StatusRequest, Acc)}
+                  end
+          end,
+          {false, #{}}, StatusRequests),
+    case Removed of
+        true ->
+            {removed, State#{status_requests := Remaining}};
+        false ->
+            not_found
+    end.
 
 public_projection(Route, Projection) ->
     maps:merge(maps:get(accepted_handle, Route), Projection).
