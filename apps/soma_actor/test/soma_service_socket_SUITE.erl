@@ -7,14 +7,16 @@
          test_socket_disconnect_does_not_cancel_accepted_invocation/1,
          test_socket_duplicate_invoke_reuses_task_once/1,
          test_socket_watch_reconnect_resumes_after_cursor/1,
-         test_socket_cancel_is_repeatable_after_cli_process_exit/1]).
+         test_socket_cancel_is_repeatable_after_cli_process_exit/1,
+         test_socket_version_and_operation_errors_are_typed/1]).
 
 all() ->
     [test_socket_invoke_status_and_result_end_to_end,
      test_socket_disconnect_does_not_cancel_accepted_invocation,
      test_socket_duplicate_invoke_reuses_task_once,
      test_socket_watch_reconnect_resumes_after_cursor,
-     test_socket_cancel_is_repeatable_after_cli_process_exit].
+     test_socket_cancel_is_repeatable_after_cli_process_exit,
+     test_socket_version_and_operation_errors_are_typed].
 
 init_per_testcase(
   TestCase, Config)
@@ -307,19 +309,72 @@ test_socket_cancel_is_repeatable_after_cli_process_exit(Config) ->
         stop_listener(Listener, Path)
     end.
 
+%% RS.1d criterion 6: socket callers must receive bounded public errors rather
+%% than internal diagnostics. Version negotiation advertises the exact set
+%% owned by soma_service_envelope, while a structurally invalid invoke keeps
+%% its distinct operation code. Neither rejected row may start a run.
+test_socket_version_and_operation_errors_are_typed(_Config) ->
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        Rows =
+            [{unsupported_version,
+              <<"(invoke "
+                "(api-version \"2\") "
+                "(request-id \"socket-service-version-2\") "
+                "(tool (name echo) (args (value \"ignored\"))))">>,
+              {service_error,
+               unsupported_api_version,
+               [<<"1">>]}},
+             {invalid_operation,
+              <<"(invoke "
+                "(api-version \"1\") "
+                "(request-id \"socket-service-no-operation\"))">>,
+              {service_error, invalid_operation}}],
+        StorePid = runtime_event_store(),
+        RunStartsBefore = run_started_count(StorePid),
+        Observed =
+            [begin
+                 Payload = socket_response_payload(Path, Source),
+                 {Name,
+                  byte_size(Payload),
+                  decode_service_response(Payload),
+                  run_started_count(StorePid)}
+             end
+             || {Name, Source, _Expected} <- Rows],
+
+        ?assert(
+           lists:all(
+             fun({_Name, ReplyBytes, _Reply, _RunStarts}) ->
+                     ReplyBytes =< 1048576
+             end,
+             Observed)),
+        ?assertEqual(
+           lists:duplicate(length(Rows), RunStartsBefore),
+           [RunStarts || {_Name, _Bytes, _Reply, RunStarts} <- Observed]),
+        ?assertEqual(
+           [{Name, Expected} || {Name, _Source, Expected} <- Rows],
+           [{Name, Reply} || {Name, _Bytes, Reply, _RunStarts} <- Observed])
+    after
+        stop_listener(Listener, Path)
+    end.
+
 socket_request(Path, Source, Operation) ->
     {service_reply, Operation, Value} = socket_response(Path, Source),
     Value.
 
 socket_response(Path, Source) ->
+    decode_service_response(socket_response_payload(Path, Source)).
+
+socket_response_payload(Path, Source) ->
     {ok, Socket} =
         gen_tcp:connect(
           {local, Path}, 0,
           [binary, {packet, raw}, {active, false}], 5000),
     try
         ok = gen_tcp:send(Socket, frame(Source)),
-        Reply = recv_frame(Socket),
-        decode_service_response(Reply)
+        recv_frame(Socket)
     after
         gen_tcp:close(Socket)
     end.
@@ -344,9 +399,22 @@ decode_service_response(Payload) ->
         {ok,
          [[error,
            ['api-version', <<"1">>],
+           [code, Code],
+           ['supported-api-versions', SupportedApiVersions]]]} ->
+            {service_error,
+             decode_error_code(Code),
+             SupportedApiVersions};
+        {ok,
+         [[error,
+           ['api-version', <<"1">>],
            [code, Code]]]} ->
-            {service_error, Code}
+            {service_error, decode_error_code(Code)}
     end.
+
+decode_error_code('unsupported-api-version') -> unsupported_api_version;
+decode_error_code('invalid-operation') -> invalid_operation;
+decode_error_code('internal-error') -> internal_error;
+decode_error_code(Code) -> Code.
 
 decode_value([event | Pairs]) ->
     maps:from_list(
@@ -503,6 +571,12 @@ runtime_event_store() ->
     {soma_event_store, StorePid, _Type, _Modules} =
         lists:keyfind(soma_event_store, 1, Children),
     StorePid.
+
+run_started_count(StorePid) ->
+    length(
+      [Event
+       || Event <- soma_event_store:all(StorePid),
+          maps:get(event_type, Event) =:= <<"run.started">>]).
 
 socket_path() ->
     Tmp = case os:getenv("TMPDIR") of
