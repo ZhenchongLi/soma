@@ -6,10 +6,12 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([test_request_identity_reuses_one_live_coordinator/1]).
 -export([test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections/1]).
+-export([test_status_and_cancel_route_by_task_id/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
-     test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections].
+     test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections,
+     test_status_and_cancel_route_by_task_id].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -111,6 +113,37 @@ test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections(
       end,
       [Objective, OutputContract, Checkpoint, Budgets, LeaseRequests]).
 
+test_status_and_cancel_route_by_task_id(_Config) ->
+    RequestId = <<"delegate-request-status-cancel">>,
+    CorrelationId = <<"delegate-correlation-status-cancel">>,
+    TaskSpec = #{request_id => RequestId,
+                 correlation_id => CorrelationId,
+                 objective => <<"hold the delegated round for cancellation">>},
+
+    {ok, #{task_id := TaskId}} =
+        submit_through_production_ingress(TaskSpec),
+    [CoordinatorPid] = live_coordinators(),
+    RunningProjection = #{status => running,
+                          request_id => RequestId,
+                          task_id => TaskId,
+                          correlation_id => CorrelationId},
+    ?assertEqual({ok, RunningProjection}, soma_delegate:status(TaskId)),
+
+    UnknownTaskId = <<"delegate-task-not-found">>,
+    ?assertEqual({error, not_found}, soma_delegate:status(UnknownTaskId)),
+    ?assertEqual({error, not_found}, soma_delegate:cancel(UnknownTaskId)),
+    ?assertEqual(true, is_process_alive(CoordinatorPid)),
+
+    {ok, CancelledProjection} = soma_delegate:cancel(TaskId),
+    ?assertEqual(cancelled, maps:get(status, CancelledProjection)),
+    ?assertEqual(TaskId, maps:get(task_id, CancelledProjection)),
+    ?assertEqual(RequestId, maps:get(request_id, CancelledProjection)),
+    ?assertEqual(CorrelationId,
+                 maps:get(correlation_id, CancelledProjection)),
+    wait_for_process_dead(CoordinatorPid, 100),
+    ?assertEqual({ok, CancelledProjection}, soma_delegate:status(TaskId)),
+    ?assertEqual({ok, CancelledProjection}, soma_delegate:cancel(TaskId)).
+
 submit_through_production_ingress(TaskSpec) ->
     case code:ensure_loaded(soma_delegate) of
         {module, soma_delegate} ->
@@ -140,6 +173,17 @@ wait_for_terminal_projection(TaskId, Attempts) ->
             wait_for_terminal_projection(TaskId, Attempts - 1);
         Projection ->
             Projection
+    end.
+
+wait_for_process_dead(Pid, 0) ->
+    ?assertEqual(false, is_process_alive(Pid));
+wait_for_process_dead(Pid, Attempts) ->
+    case is_process_alive(Pid) of
+        true ->
+            timer:sleep(10),
+            wait_for_process_dead(Pid, Attempts - 1);
+        false ->
+            ok
     end.
 
 term_contains(Term, Term) ->
