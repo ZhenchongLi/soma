@@ -8,7 +8,7 @@
 -define(DEFAULT_ACTION_TIMEOUT_MS, 120000).
 
 -export([start_link/1]).
--export([init/1, callback_mode/0, handle_event/4]).
+-export([init/1, callback_mode/0, handle_event/4, terminate/3]).
 
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
@@ -204,6 +204,10 @@ handle_event(info, {'EXIT', _ChildPid, _Reason}, _StateName, Data) ->
     {keep_state, Data};
 handle_event(_EventType, _Event, _StateName, Data) ->
     {keep_state, Data}.
+
+terminate(_Reason, _StateName, Data) ->
+    stop_active_child(Data),
+    ok.
 
 start_llm_call(Data = #{work := Work, round_id := RoundId}) ->
     case maps:get(llm, Work, undefined) of
