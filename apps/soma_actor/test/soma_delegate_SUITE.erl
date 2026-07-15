@@ -8,12 +8,14 @@
 -export([test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections/1]).
 -export([test_status_and_cancel_route_by_task_id/1]).
 -export([test_coordinator_and_round_worker_crashes_leave_ingress_responsive/1]).
+-export([test_delegate_action_crosses_full_worker_run_tool_spine/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
      test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections,
      test_status_and_cancel_route_by_task_id,
-     test_coordinator_and_round_worker_crashes_leave_ingress_responsive].
+     test_coordinator_and_round_worker_crashes_leave_ingress_responsive,
+     test_delegate_action_crosses_full_worker_run_tool_spine].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -194,6 +196,56 @@ test_coordinator_and_round_worker_crashes_leave_ingress_responsive(_Config) ->
                  submit_through_production_ingress(FreshSpec)),
     ?assertEqual(IngressPid, whereis(soma_delegate)).
 
+test_delegate_action_crosses_full_worker_run_tool_spine(_Config) ->
+    CorrelationId = <<"delegate-correlation-full-process-spine">>,
+    FirstStepId = <<"delegate-spine-first">>,
+    SecondStepId = <<"delegate-spine-second">>,
+    Steps = [#{id => FirstStepId,
+               tool => echo,
+               args => #{value => <<"through-tool-worker-one">>}},
+             #{id => SecondStepId,
+               tool => echo,
+               args => #{from_step => FirstStepId}}],
+    TaskSpec =
+        #{request_id => <<"delegate-request-full-process-spine">>,
+          correlation_id => CorrelationId,
+          objective => <<"execute one canonical delegated action">>,
+          round_sequence =>
+              [#{llm =>
+                     #{directive => success,
+                       output => <<"fixed-round-decision">>},
+                 action_steps => Steps,
+                 decision => terminal}]},
+
+    {ok, #{task_id := TaskId}} =
+        submit_through_production_ingress(TaskSpec),
+    TerminalProjection = wait_for_terminal_projection(TaskId, 200),
+    ?assertEqual(succeeded, maps:get(status, TerminalProjection)),
+
+    StorePid = event_store_pid(),
+    CorrelatedEvents =
+        soma_event_store:by_correlation(StorePid, CorrelationId),
+    [RunStarted] =
+        [Event || Event <- CorrelatedEvents,
+                  maps:get(event_type, Event) =:= <<"run.started">>],
+    ?assertEqual(
+       Steps,
+       maps:get(steps, maps:get(payload, RunStarted))),
+    RunId = maps:get(run_id, RunStarted),
+    RunEvents = soma_event_store:by_run(StorePid, RunId),
+    ToolStarted =
+        [Event || Event <- RunEvents,
+                  maps:get(event_type, Event) =:= <<"tool.started">>],
+    ?assertEqual([FirstStepId, SecondStepId],
+                 [maps:get(step_id, Event) || Event <- ToolStarted]),
+    ToolWorkerPids =
+        [maps:get(tool_call_pid, Event) || Event <- ToolStarted],
+    ?assertEqual(2, length(lists:usort(ToolWorkerPids))),
+    ?assert(lists:all(fun erlang:is_pid/1, ToolWorkerPids)),
+    ?assert(lists:member(
+              <<"run.completed">>,
+              [maps:get(event_type, Event) || Event <- RunEvents])).
+
 crash_fixture(Suffix) ->
     #{request_id => <<"delegate-request-", Suffix/binary>>,
       objective => <<"hold a disposable round open">>,
@@ -207,6 +259,12 @@ submit_through_production_ingress(TaskSpec) ->
         {error, _Reason} ->
             {error, production_delegate_ingress_unavailable}
     end.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Modules} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
 
 live_coordinators() ->
     [Pid || {_Id, Pid, worker, _Modules} <-
