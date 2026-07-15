@@ -14,6 +14,7 @@
 -record(state, {event_store,
                 policy = #{allowed_tools => []},
                 result_inline_bytes = ?DEFAULT_RESULT_INLINE_BYTES,
+                data_dir,
                 tasks = #{},
                 requests = #{},
                 runs = #{},
@@ -40,9 +41,11 @@ init([]) ->
                soma_actor, service_policy,
                #{allowed_tools => []}),
     InlineBytes = configured_result_inline_bytes(),
+    DataDir = configured_service_data_dir(),
     State = #state{event_store = runtime_event_store(),
                    policy = Policy,
-                   result_inline_bytes = InlineBytes},
+                   result_inline_bytes = InlineBytes,
+                   data_dir = DataDir},
     {ok, rebuild_dedupe_index(State)}.
 
 handle_call({invoke, Envelope}, _From, State) ->
@@ -60,8 +63,10 @@ handle_call({status, TaskId}, _From, State = #state{tasks = Tasks}) ->
     {reply, Reply, State};
 handle_call({result, TaskId}, _From,
             State = #state{tasks = Tasks,
-                           result_inline_bytes = InlineBytes}) ->
-    Reply = task_result(maps:get(TaskId, Tasks, undefined), InlineBytes),
+                           result_inline_bytes = InlineBytes,
+                           data_dir = DataDir}) ->
+    Reply = task_result(
+              maps:get(TaskId, Tasks, undefined), InlineBytes, DataDir),
     {reply, Reply, State};
 handle_call({cancel, TaskId}, _From, State) ->
     cancel_task(TaskId, State);
@@ -99,17 +104,34 @@ configured_result_inline_bytes() ->
             ?DEFAULT_RESULT_INLINE_BYTES
     end.
 
-task_result(undefined, _InlineBytes) ->
+configured_service_data_dir() ->
+    case application:get_env(soma_actor, service_data_dir) of
+        {ok, DataDir} when is_binary(DataDir) ->
+            binary_to_list(DataDir);
+        {ok, DataDir} when is_list(DataDir) ->
+            DataDir;
+        _MissingOrInvalid ->
+            default_service_data_dir()
+    end.
+
+default_service_data_dir() ->
+    Home = case os:getenv("HOME") of
+               false -> ".";
+               HomeDir -> HomeDir
+           end,
+    filename:join([Home, ".soma", "data"]).
+
+task_result(undefined, _InlineBytes, _DataDir) ->
     {error, not_found};
 task_result(#{status := succeeded,
               task_id := TaskId,
-              result := Output}, InlineBytes) ->
-    soma_service_artifact:present(TaskId, Output, InlineBytes);
-task_result(#{status := accepted}, _InlineBytes) ->
+              result := Output}, InlineBytes, DataDir) ->
+    soma_service_artifact:present(TaskId, Output, InlineBytes, DataDir);
+task_result(#{status := accepted}, _InlineBytes, _DataDir) ->
     {error, not_ready};
-task_result(#{status := running}, _InlineBytes) ->
+task_result(#{status := running}, _InlineBytes, _DataDir) ->
     {error, not_ready};
-task_result(_Terminal, _InlineBytes) ->
+task_result(_Terminal, _InlineBytes, _DataDir) ->
     {error, result_unavailable}.
 
 invoke_normalized(Envelope,
