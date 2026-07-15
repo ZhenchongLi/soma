@@ -7,6 +7,7 @@
 -define(MAX_ID_BYTES, 256).
 -define(MAX_TASK_SPEC_BYTES, 65536).
 -define(MAX_TERMINAL_PROJECTION_BYTES, 512).
+-define(FORWARDED_REQUEST_TIMEOUT_MS, 2500).
 
 -export([start_link/0, submit/1, status/1, cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
@@ -52,12 +53,31 @@ handle_info(
     {noreply,
      reply_status_request(
        TaskId, CoordinatorPid, StatusRef, Reply, State)};
+handle_info(
+  {timeout, TimerRef,
+   {delegate_status_request_timeout, StatusRef}},
+  State) ->
+    {noreply,
+     expire_status_request(StatusRef, TimerRef, State)};
+handle_info(
+  {timeout, TimerRef,
+   {delegate_cancel_waiter_timeout, TaskId, WaiterRef}},
+  State) ->
+    {noreply,
+     expire_cancel_waiter(
+       TaskId, WaiterRef, TimerRef, State)};
 handle_info({'DOWN', MRef, process, Pid, _Reason}, State) ->
     case remove_dead_status_caller(MRef, Pid, State) of
         {removed, UpdatedState} ->
             {noreply, UpdatedState};
         not_found ->
-            {noreply, remove_active_coordinator(MRef, Pid, State)}
+            case remove_dead_cancel_caller(MRef, Pid, State) of
+                {removed, UpdatedState} ->
+                    {noreply, UpdatedState};
+                not_found ->
+                    {noreply,
+                     remove_active_coordinator(MRef, Pid, State)}
+            end
     end;
 handle_info({delegate_terminal, TaskId, CoordinatorPid, Projection}, State) ->
     {noreply,
@@ -79,12 +99,17 @@ status_task(TaskId, From,
             StatusRef = make_ref(),
             {CallerPid, _ReplyTag} = From,
             CallerMRef = erlang:monitor(process, CallerPid),
+            TimerRef =
+                erlang:start_timer(
+                  ?FORWARDED_REQUEST_TIMEOUT_MS, self(),
+                  {delegate_status_request_timeout, StatusRef}),
             CoordinatorPid !
                 {delegate_status, TaskId, self(), StatusRef},
             StatusRequest = #{task_id => TaskId,
                               coordinator_pid => CoordinatorPid,
                               caller_pid => CallerPid,
                               caller_mref => CallerMRef,
+                              timer_ref => TimerRef,
                               from => From},
             {noreply,
              State#{status_requests :=
@@ -103,13 +128,28 @@ cancel_task(TaskId, From, State = #{tasks := Tasks}) ->
             {reply, {error, not_running}, State};
         Route = #{coordinator_pid := CoordinatorPid}
           when is_pid(CoordinatorPid) ->
-            Waiters = maps:get(cancel_waiters, Route, []),
-            UpdatedRoute = Route#{cancel_waiters => [From | Waiters]},
-            case Waiters of
-                [] ->
+            Waiters = maps:get(cancel_waiters, Route, #{}),
+            WaiterRef = make_ref(),
+            {CallerPid, _ReplyTag} = From,
+            CallerMRef = erlang:monitor(process, CallerPid),
+            TimerRef =
+                erlang:start_timer(
+                  ?FORWARDED_REQUEST_TIMEOUT_MS, self(),
+                  {delegate_cancel_waiter_timeout,
+                   TaskId, WaiterRef}),
+            Waiter = #{caller_pid => CallerPid,
+                       caller_mref => CallerMRef,
+                       timer_ref => TimerRef,
+                       from => From},
+            UpdatedRoute =
+                Route#{cancel_waiters =>
+                           maps:put(WaiterRef, Waiter, Waiters),
+                       cancel_requested => true},
+            case maps:get(cancel_requested, Route, false) of
+                false ->
                     soma_delegate_coordinator:cancel(
                       CoordinatorPid, TaskId);
-                _AlreadyCancelling ->
+                true ->
                     ok
             end,
             {noreply,
@@ -239,9 +279,16 @@ store_terminal_projection(_TaskId, _CoordinatorPid, _Projection, State) ->
     State.
 
 reply_cancel_waiters(Route, Projection) ->
-    lists:foreach(
-      fun(From) -> gen_server:reply(From, {ok, Projection}) end,
-      maps:get(cancel_waiters, Route, [])).
+    maps:foreach(
+      fun(_WaiterRef,
+          #{caller_mref := CallerMRef,
+            timer_ref := TimerRef,
+            from := From}) ->
+              cancel_timer(TimerRef),
+              _ = erlang:demonitor(CallerMRef, [flush]),
+              gen_server:reply(From, {ok, Projection})
+      end,
+      maps:get(cancel_waiters, Route, #{})).
 
 reply_status_request(
   TaskId, CoordinatorPid, StatusRef, Reply,
@@ -250,7 +297,9 @@ reply_status_request(
         #{task_id := TaskId,
           coordinator_pid := CoordinatorPid,
           caller_mref := CallerMRef,
+          timer_ref := TimerRef,
           from := From} ->
+            cancel_timer(TimerRef),
             _ = erlang:demonitor(CallerMRef, [flush]),
             gen_server:reply(From, Reply),
             State#{status_requests :=
@@ -266,10 +315,12 @@ reply_status_requests(
           #{task_id := PendingTaskId,
             coordinator_pid := PendingCoordinatorPid,
             caller_mref := CallerMRef,
+            timer_ref := TimerRef,
             from := From} = StatusRequest,
           Remaining) ->
               case {PendingTaskId, PendingCoordinatorPid} of
                   {TaskId, CoordinatorPid} ->
+                      cancel_timer(TimerRef),
                       _ = erlang:demonitor(CallerMRef, [flush]),
                       gen_server:reply(From, Reply),
                       Remaining;
@@ -287,10 +338,12 @@ remove_dead_status_caller(
           fun(StatusRef,
               StatusRequest =
                   #{caller_pid := PendingCallerPid,
-                    caller_mref := PendingCallerMRef},
+                    caller_mref := PendingCallerMRef,
+                    timer_ref := TimerRef},
               {Found, Acc}) ->
                   case {PendingCallerPid, PendingCallerMRef} of
                       {CallerPid, CallerMRef} ->
+                          cancel_timer(TimerRef),
                           {true, Acc};
                       _OtherCaller ->
                           {Found,
@@ -305,6 +358,104 @@ remove_dead_status_caller(
         false ->
             not_found
     end.
+
+expire_status_request(
+  StatusRef, TimerRef,
+  State = #{status_requests := StatusRequests}) ->
+    case maps:get(StatusRef, StatusRequests, undefined) of
+        #{timer_ref := TimerRef,
+          caller_mref := CallerMRef,
+          from := From} ->
+            _ = erlang:demonitor(CallerMRef, [flush]),
+            gen_server:reply(From, {error, timeout}),
+            State#{status_requests :=
+                       maps:remove(StatusRef, StatusRequests)};
+        _StaleOrReplacedRequest ->
+            State
+    end.
+
+expire_cancel_waiter(
+  TaskId, WaiterRef, TimerRef,
+  State = #{tasks := Tasks}) ->
+    case maps:get(TaskId, Tasks, undefined) of
+        Route when is_map(Route) ->
+            Waiters = maps:get(cancel_waiters, Route, #{}),
+            case maps:get(WaiterRef, Waiters, undefined) of
+                #{timer_ref := TimerRef,
+                  caller_mref := CallerMRef,
+                  from := From} ->
+                    _ = erlang:demonitor(CallerMRef, [flush]),
+                    gen_server:reply(From, {error, timeout}),
+                    Remaining = maps:remove(WaiterRef, Waiters),
+                    UpdatedRoute =
+                        route_with_cancel_waiters(
+                          Route, Remaining),
+                    State#{tasks :=
+                               maps:put(
+                                 TaskId, UpdatedRoute, Tasks)};
+                _StaleOrReplacedWaiter ->
+                    State
+            end;
+        _MissingTask ->
+            State
+    end.
+
+remove_dead_cancel_caller(
+  CallerMRef, CallerPid,
+  State = #{tasks := Tasks}) ->
+    {Removed, UpdatedTasks} =
+        maps:fold(
+          fun(TaskId, Route, {Found, Acc}) ->
+                  case remove_cancel_waiter_by_monitor(
+                         CallerMRef, CallerPid, Route) of
+                      {removed, UpdatedRoute} ->
+                          {true,
+                           maps:put(TaskId, UpdatedRoute, Acc)};
+                      not_found ->
+                          {Found, maps:put(TaskId, Route, Acc)}
+                  end
+          end,
+          {false, #{}}, Tasks),
+    case Removed of
+        true -> {removed, State#{tasks := UpdatedTasks}};
+        false -> not_found
+    end.
+
+remove_cancel_waiter_by_monitor(CallerMRef, CallerPid, Route) ->
+    Waiters = maps:get(cancel_waiters, Route, #{}),
+    {Removed, Remaining} =
+        maps:fold(
+          fun(WaiterRef,
+              Waiter = #{caller_pid := PendingCallerPid,
+                         caller_mref := PendingCallerMRef,
+                         timer_ref := TimerRef},
+              {Found, Acc}) ->
+                  case {PendingCallerPid, PendingCallerMRef} of
+                      {CallerPid, CallerMRef} ->
+                          cancel_timer(TimerRef),
+                          {true, Acc};
+                      _OtherCaller ->
+                          {Found, maps:put(WaiterRef, Waiter, Acc)}
+                  end
+          end,
+          {false, #{}}, Waiters),
+    case Removed of
+        true ->
+            {removed,
+             route_with_cancel_waiters(Route, Remaining)};
+        false ->
+            not_found
+    end.
+
+route_with_cancel_waiters(Route, Waiters) when map_size(Waiters) =:= 0 ->
+    maps:remove(cancel_waiters, Route);
+route_with_cancel_waiters(Route, Waiters) ->
+    Route#{cancel_waiters => Waiters}.
+
+cancel_timer(TimerRef) when is_reference(TimerRef) ->
+    _ = erlang:cancel_timer(
+          TimerRef, [{async, false}, {info, false}]),
+    ok.
 
 public_projection(Route, Projection) ->
     maps:merge(maps:get(accepted_handle, Route), Projection).
@@ -328,10 +479,18 @@ validate_new_task(TaskSpec) when is_map(TaskSpec) ->
     case byte_size(term_to_binary(TaskSpec, [deterministic])) =<
              ?MAX_TASK_SPEC_BYTES of
         true ->
+            validate_new_task_state(TaskSpec);
+        false ->
+            {error, task_spec_too_large}
+    end.
+
+validate_new_task_state(TaskSpec) ->
+    case soma_delegate_task_data:valid_initial_task(TaskSpec) of
+        true ->
             validate_optional_correlation_id(
               maps:get(correlation_id, TaskSpec, default));
         false ->
-            {error, task_spec_too_large}
+            {error, invalid_task_state}
     end.
 
 validate_optional_correlation_id(default) ->

@@ -8,7 +8,6 @@
 -define(ROUND_FORCED_STOP_MS, 1000).
 -define(MAX_ROUND_SNAPSHOT_BYTES, 65536).
 -define(MAX_ROUND_RESULT_BYTES, 16384).
--define(MAX_ROUND_RESULT_DEPTH, 64).
 
 -export([start_link/1, status/1, cancel/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
@@ -167,7 +166,8 @@ handle_event(info,
                                 forced_stop_timer := ForcedStopTimer,
                                 cancel_status := CancelStatus}})
   when CancelStatus =:= timeout; CancelStatus =:= cancelled ->
-    exit(WorkerPid, kill),
+    _ = supervisor:terminate_child(
+          soma_delegate_round_sup, WorkerPid),
     {keep_state,
      Data#{active_round :=
                ActiveRound#{forced_stop_timer := undefined}}};
@@ -196,8 +196,8 @@ start_round(Data = #{round_sequence := [RoundEntry | Remaining],
             prepare_and_start_round(
               RoundEntry, Remaining, Snapshot, TaskId,
               CorrelationId, RoundId, Data);
-        {error, snapshot_too_large} ->
-            fail_before_round(Data, snapshot_too_large)
+        {error, Reason} ->
+            fail_before_round(Data, Reason)
     end.
 
 prepare_and_start_round(
@@ -562,7 +562,7 @@ valid_optional_enum(Key, Result, Allowed) ->
 valid_optional_result_map(Key, Result) ->
     case maps:find(Key, Result) of
         {ok, Value} when is_map(Value) ->
-            safe_round_result_term(Value, ?MAX_ROUND_RESULT_DEPTH);
+            soma_delegate_task_data:safe_term(Value);
         {ok, _InvalidValue} ->
             false;
         error ->
@@ -572,91 +572,10 @@ valid_optional_result_map(Key, Result) ->
 valid_optional_result_term(Key, Result) ->
     case maps:find(Key, Result) of
         {ok, Value} ->
-            safe_round_result_term(Value, ?MAX_ROUND_RESULT_DEPTH);
+            soma_delegate_task_data:safe_term(Value);
         error ->
             true
     end.
-
-safe_round_result_term(_Term, 0) ->
-    false;
-safe_round_result_term(Term, _Depth)
-  when is_binary(Term); is_integer(Term); is_float(Term); is_atom(Term) ->
-    true;
-safe_round_result_term([], _Depth) ->
-    true;
-safe_round_result_term([_Value | _Remaining] = List, Depth) ->
-    safe_round_result_list(List, Depth - 1);
-safe_round_result_term(Map, Depth) when is_map(Map) ->
-    maps:fold(
-      fun(Key, Value, Safe) ->
-              Safe andalso
-                  safe_round_result_key(Key, Depth - 1) andalso
-                  safe_round_result_term(Value, Depth - 1)
-      end,
-      true, Map);
-safe_round_result_term(Tuple, Depth) when is_tuple(Tuple) ->
-    not forbidden_round_result_tuple(Tuple) andalso
-        safe_round_result_tuple(
-          1, tuple_size(Tuple), Tuple, Depth - 1);
-safe_round_result_term(_ProcessLocalOrUnsupported, _Depth) ->
-    false.
-
-safe_round_result_list([], _Depth) ->
-    true;
-safe_round_result_list([Value | Remaining], Depth) ->
-    safe_round_result_term(Value, Depth) andalso
-        safe_round_result_list(Remaining, Depth);
-safe_round_result_list(_ImproperTail, _Depth) ->
-    false.
-
-safe_round_result_key(Key, Depth) ->
-    not forbidden_round_result_name(Key) andalso
-        safe_round_result_term(Key, Depth).
-
-safe_round_result_tuple(Index, Size, _Tuple, _Depth)
-  when Index > Size ->
-    true;
-safe_round_result_tuple(Index, Size, Tuple, Depth) ->
-    safe_round_result_term(element(Index, Tuple), Depth) andalso
-        safe_round_result_tuple(
-          Index + 1, Size, Tuple, Depth).
-
-forbidden_round_result_tuple(Tuple) when tuple_size(Tuple) > 0 ->
-    forbidden_round_result_name(element(1, Tuple));
-forbidden_round_result_tuple(_Tuple) ->
-    false.
-
-forbidden_round_result_name(Name) when is_atom(Name) ->
-    forbidden_round_result_name(atom_to_binary(Name));
-forbidden_round_result_name(Name) when is_binary(Name) ->
-    lists:member(
-      Name,
-      [<<"pid">>, <<"worker_pid">>, <<"coordinator_pid">>,
-       <<"resource_manager_pid">>, <<"lease_guard_pid">>,
-       <<"monitor_ref">>, <<"mref">>, <<"ref">>, <<"port">>,
-       <<"function">>, <<"authentication">>,
-       <<"authentication_state">>, <<"auth">>,
-       <<"authorization">>, <<"bearer">>, <<"credentials">>,
-       <<"api_key">>, <<"secret">>, <<"password">>,
-       <<"provider_config">>, <<"model_config">>,
-       <<"product_conversation">>,
-       <<"product_conversation_data">>,
-       <<"conversation_history">>, <<"product_history">>,
-       <<"product_user">>, <<"product_user_id">>,
-       <<"user_identity">>, <<"user_id">>,
-       <<"product_session">>, <<"product_session_id">>,
-       <<"session_identity">>, <<"session_id">>,
-       <<"raw_lease">>, <<"raw_leases">>, <<"lease_guard">>,
-       <<"round_snapshot">>, <<"prior_snapshot">>]) orelse
-        raw_lease_name(Name);
-forbidden_round_result_name(_OtherName) ->
-    false.
-
-raw_lease_name(Name) ->
-    binary:match(Name, <<"raw_lease">>) =/= nomatch orelse
-        binary:match(Name, <<"raw-lease">>) =/= nomatch orelse
-        (binary:match(Name, <<"raw">>) =/= nomatch andalso
-         binary:match(Name, <<"lease">>) =/= nomatch).
 
 round_projection(#{status := succeeded}, RoundId) ->
     #{status => succeeded, round => RoundId};
@@ -681,10 +600,15 @@ round_snapshot(Data = #{scoped_leases := #{handles := Handles}}) ->
             context_checkpoint, budgets, usage, mutation_ledger,
             unknown_outcome_ledger],
            Data))#{resource_handles => Handles},
-    case byte_size(term_to_binary(Snapshot, [deterministic])) =<
-             ?MAX_ROUND_SNAPSHOT_BYTES of
-        true -> {ok, Snapshot};
-        false -> {error, snapshot_too_large}
+    case soma_delegate_task_data:valid_snapshot(Snapshot) of
+        true ->
+            case byte_size(term_to_binary(Snapshot, [deterministic])) =<
+                     ?MAX_ROUND_SNAPSHOT_BYTES of
+                true -> {ok, Snapshot};
+                false -> {error, snapshot_too_large}
+            end;
+        false ->
+            {error, invalid_task_state}
     end.
 
 prepare_round_work(Work, _Snapshot) when is_map(Work) ->
