@@ -7,11 +7,13 @@
 -export([test_request_identity_reuses_one_live_coordinator/1]).
 -export([test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections/1]).
 -export([test_status_and_cancel_route_by_task_id/1]).
+-export([test_coordinator_and_round_worker_crashes_leave_ingress_responsive/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
      test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections,
-     test_status_and_cancel_route_by_task_id].
+     test_status_and_cancel_route_by_task_id,
+     test_coordinator_and_round_worker_crashes_leave_ingress_responsive].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -144,6 +146,60 @@ test_status_and_cancel_route_by_task_id(_Config) ->
     ?assertEqual({ok, CancelledProjection}, soma_delegate:status(TaskId)),
     ?assertEqual({ok, CancelledProjection}, soma_delegate:cancel(TaskId)).
 
+test_coordinator_and_round_worker_crashes_leave_ingress_responsive(_Config) ->
+    IngressPid = whereis(soma_delegate),
+    CoordinatorCrashSpec = crash_fixture(<<"coordinator-crash">>),
+    {ok, #{task_id := CoordinatorCrashTaskId}} =
+        submit_through_production_ingress(CoordinatorCrashSpec),
+    CoordinatorPid = coordinator_for_task(CoordinatorCrashTaskId),
+    CoordinatorOwnedWorker = wait_for_round_worker(100),
+
+    exit(CoordinatorPid, kill),
+    wait_for_process_dead(CoordinatorPid, 100),
+    wait_for_process_dead(CoordinatorOwnedWorker, 100),
+    CoordinatorCrashProjection =
+        wait_for_terminal_projection(CoordinatorCrashTaskId, 100),
+    ?assertEqual(#{status => failed, reason => coordinator_crashed},
+                 CoordinatorCrashProjection),
+    ?assert(byte_size(term_to_binary(CoordinatorCrashProjection,
+                                     [deterministic])) =< 512),
+    ?assertEqual(IngressPid, whereis(soma_delegate)),
+    ?assertMatch({ok, #{status := failed,
+                        reason := coordinator_crashed}},
+                 soma_delegate:status(CoordinatorCrashTaskId)),
+
+    WorkerCrashSpec = crash_fixture(<<"round-worker-crash">>),
+    {ok, #{task_id := WorkerCrashTaskId}} =
+        submit_through_production_ingress(WorkerCrashSpec),
+    RoundWorkerPid = wait_for_round_worker(100),
+    exit(RoundWorkerPid, kill),
+    wait_for_process_dead(RoundWorkerPid, 100),
+    WorkerCrashProjection =
+        wait_for_terminal_projection(WorkerCrashTaskId, 100),
+    ?assertEqual(#{status => failed,
+                   reason => round_worker_crashed,
+                   round => 1},
+                 WorkerCrashProjection),
+    ?assert(byte_size(term_to_binary(WorkerCrashProjection,
+                                     [deterministic])) =< 512),
+    ?assertEqual(IngressPid, whereis(soma_delegate)),
+    ?assertMatch({ok, #{status := failed,
+                        reason := round_worker_crashed,
+                        round := 1}},
+                 soma_delegate:status(WorkerCrashTaskId)),
+
+    FreshSpec = #{request_id => <<"delegate-request-after-crashes">>,
+                  objective => <<"prove ingress remains responsive">>},
+    ?assertMatch({ok, #{status := accepted, task_id := _}},
+                 submit_through_production_ingress(FreshSpec)),
+    ?assertEqual(IngressPid, whereis(soma_delegate)).
+
+crash_fixture(Suffix) ->
+    #{request_id => <<"delegate-request-", Suffix/binary>>,
+      objective => <<"hold a disposable round open">>,
+      round_sequence =>
+          [#{llm => #{directive => hang}, decision => continue}]}.
+
 submit_through_production_ingress(TaskSpec) ->
     case code:ensure_loaded(soma_delegate) of
         {module, soma_delegate} ->
@@ -157,6 +213,33 @@ live_coordinators() ->
                 supervisor:which_children(soma_delegate_coordinator_sup),
             is_pid(Pid),
             is_process_alive(Pid)].
+
+coordinator_for_task(TaskId) ->
+    [CoordinatorPid] =
+        [Pid || Pid <- live_coordinators(),
+                maps:get(task_id, element(2, sys:get_state(Pid))) =:= TaskId],
+    CoordinatorPid.
+
+wait_for_round_worker(0) ->
+    ct:fail(round_worker_not_started);
+wait_for_round_worker(Attempts) ->
+    RoundWorkers =
+        case whereis(soma_delegate_round_sup) of
+            undefined ->
+                [];
+            _RoundSupPid ->
+                [Pid || {_Id, Pid, worker, _Modules} <-
+                            supervisor:which_children(soma_delegate_round_sup),
+                        is_pid(Pid),
+                        is_process_alive(Pid)]
+        end,
+    case RoundWorkers of
+        [RoundWorkerPid] ->
+            RoundWorkerPid;
+        [] ->
+            timer:sleep(10),
+            wait_for_round_worker(Attempts - 1)
+    end.
 
 coordinator_identity(CoordinatorPid) ->
     {_StateName, Data} = sys:get_state(CoordinatorPid),
