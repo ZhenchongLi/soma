@@ -3,10 +3,12 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
--export([test_socket_invoke_status_and_result_end_to_end/1]).
+-export([test_socket_invoke_status_and_result_end_to_end/1,
+         test_socket_disconnect_does_not_cancel_accepted_invocation/1]).
 
 all() ->
-    [test_socket_invoke_status_and_result_end_to_end].
+    [test_socket_invoke_status_and_result_end_to_end,
+     test_socket_disconnect_does_not_cancel_accepted_invocation].
 
 init_per_testcase(_TestCase, Config) ->
     ok = ensure_loaded(soma_actor),
@@ -71,6 +73,37 @@ test_socket_invoke_status_and_result_end_to_end(_Config) ->
         ?assertEqual([], stop_llm_start_trace())
     after
         clear_llm_start_trace(),
+        stop_listener(Listener, Path)
+    end.
+
+%% RS.1d criterion 2: once the service accepts work, the socket connection has
+%% no cancellation authority. Closing the invoking client while a production
+%% sleep tool is still running must leave soma_service's run ownership intact.
+test_socket_disconnect_does_not_cancel_accepted_invocation(_Config) ->
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        RequestId = <<"socket-service-disconnect">>,
+        Invoke =
+            <<"(invoke "
+              "(api-version \"1\") "
+              "(request-id \"socket-service-disconnect\") "
+              "(tool (name sleep) (args (ms 300))) "
+              "(scope \"sleep\"))">>,
+
+        Accepted = socket_request(Path, Invoke, invoke),
+        #{task_id := TaskId,
+          request_id := RequestId,
+          status := accepted} = Accepted,
+
+        _Terminal = wait_for_socket_status(Path, TaskId, succeeded, 100),
+        Events =
+            soma_event_store:by_correlation(
+              runtime_event_store(), TaskId),
+        EventTypes = [maps:get(event_type, Event) || Event <- Events],
+        ?assert(lists:member(<<"run.cancelled">>, EventTypes))
+    after
         stop_listener(Listener, Path)
     end.
 
@@ -178,6 +211,12 @@ ensure_loaded(App) ->
         ok -> ok;
         {error, {already_loaded, App}} -> ok
     end.
+
+runtime_event_store() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, StorePid, _Type, _Modules} =
+        lists:keyfind(soma_event_store, 1, Children),
+    StorePid.
 
 socket_path() ->
     Tmp = case os:getenv("TMPDIR") of
