@@ -11,7 +11,7 @@
 -behaviour(gen_statem).
 
 -export([start_link/1, identity/1, adopt_owner/2]).
--export([callback_mode/0, init/1]).
+-export([callback_mode/0, init/1, terminate/3]).
 -export([executing/3, waiting_tool/3, completed/3, failed/3, timeout/3,
          cancelled/3]).
 
@@ -48,6 +48,10 @@ callback_mode() ->
     state_functions.
 
 init(Opts) ->
+    %% Tool-call workers link back to their run so an unexpected run death also
+    %% tears down the invocation. Trap those worker exits here; the existing
+    %% monitor remains the authoritative result/crash protocol.
+    process_flag(trap_exit, true),
     Data = #data{run_id = maps:get(run_id, Opts),
                  task_id = maps:get(task_id, Opts, undefined),
                  session_id = maps:get(session_id, Opts, undefined),
@@ -102,6 +106,10 @@ executing({call, From}, identity, Data) ->
     reply_identity(From, executing, Data);
 executing({call, From}, {adopt_owner, Owner}, Data) ->
     adopt_owner_reply(From, Owner, Data);
+executing(info, {'EXIT', _Pid, normal}, Data) ->
+    {keep_state, Data};
+executing(info, {'EXIT', _Pid, Reason}, Data) ->
+    {stop, Reason, Data};
 executing(internal, next_step, Data = #data{pending = []}) ->
     emit(Data, <<"run.completed">>, #{}),
     notify_session(Data),
@@ -196,6 +204,16 @@ waiting_tool({call, From}, identity, Data) ->
     reply_identity(From, waiting_tool, Data);
 waiting_tool({call, From}, {adopt_owner, Owner}, Data) ->
     adopt_owner_reply(From, Owner, Data);
+%% The worker is both linked and monitored. Its link makes ownership real when
+%% the run dies; while the run is alive, ignore the linked exit and let the
+%% monitor clause below preserve the exact worker crash reason.
+waiting_tool(info, {'EXIT', WorkerPid, _Reason},
+             Data = #data{worker_pid = WorkerPid}) ->
+    {keep_state, Data};
+waiting_tool(info, {'EXIT', _Pid, normal}, Data) ->
+    {keep_state, Data};
+waiting_tool(info, {'EXIT', _Pid, Reason}, Data) ->
+    {stop, Reason, Data};
 waiting_tool(info, {tool_started_os_pid, ToolCallId, _WorkerPid, OsPid},
              Data = #data{tool_call_id = ToolCallId}) ->
     {keep_state, Data#data{os_pid = OsPid}};
@@ -221,6 +239,7 @@ waiting_tool(info, {tool_result, ToolCallId, WorkerPid, {ok, Output}},
                         outputs = Outputs#{StepId => Output},
                         current = undefined,
                         tool_call_id = undefined,
+                        worker_pid = undefined,
                         worker_mref = undefined,
                         os_pid = undefined},
     {next_state, executing, NewData, [{next_event, internal, next_step}]};
@@ -249,7 +268,7 @@ waiting_tool(state_timeout, step_timeout,
                           os_pid = OsPid}) ->
     demonitor_flush(MRef),
     exit(WorkerPid, kill),
-    kill_os_process(OsPid),
+    soma_os_process:kill(OsPid),
     emit(Data, <<"run.timeout">>,
          #{step_id => maps:get(id, Step), tool_call_id => ToolCallId}),
     notify_session_timeout(Data),
@@ -268,7 +287,7 @@ waiting_tool(info, cancel,
                           os_pid = OsPid}) ->
     demonitor_flush(MRef),
     exit(WorkerPid, kill),
-    kill_os_process(OsPid),
+    soma_os_process:kill(OsPid),
     emit(Data, <<"run.cancelled">>,
          #{step_id => maps:get(id, Step), tool_call_id => ToolCallId}),
     notify_session_cancelled(Data),
@@ -311,6 +330,22 @@ cancelled({call, From}, {adopt_owner, _Owner}, Data) ->
     terminal_adoption_reply(From, cancelled, Data);
 cancelled(_EventType, _Event, Data) ->
     {keep_state, Data}.
+
+%% A graceful abnormal stop (including a trapped direct exit signal) cleans the
+%% invocation synchronously before the service can observe this run's `DOWN'.
+%% The worker link covers the untrappable `kill' case, where terminate/3 cannot
+%% run at all.
+terminate(_Reason, _State,
+          #data{worker_pid = WorkerPid,
+                worker_mref = MRef,
+                os_pid = OsPid})
+  when is_pid(WorkerPid), is_reference(MRef) ->
+    soma_os_process:kill(OsPid),
+    exit(WorkerPid, kill),
+    await_worker_down(MRef, WorkerPid),
+    ok;
+terminate(_Reason, _State, _Data) ->
+    ok.
 
 %%% Internal
 
@@ -547,38 +582,11 @@ fail_run(Data, Step, ToolCallId, WorkerPid, Reason) ->
                                    tool_call_id = undefined,
                                    worker_mref = undefined}}.
 
-%% Kill the external OS process a `cli' step launched, if one was reported.
-%% `exit(WorkerPid, kill)' removes only the BEAM worker; the OS child the worker's
-%% port spawned can outlive it as an orphan, so the run signals it directly. The
-%% OS pid is a BEAM-produced integer, never user text, so there is no shell
-%% interpolation surface. An `erlang_module' step reports no OS pid, so this is a
-%% no-op for the in-BEAM teardown.
-kill_os_process(undefined) ->
-    ok;
-kill_os_process(OsPid) when is_integer(OsPid) ->
-    case os:find_executable("kill") of
-        false ->
-            ok;
-        Kill ->
-            Port = open_port(
-                     {spawn_executable, Kill},
-                     [{args, ["-KILL", integer_to_list(OsPid)]},
-                      exit_status, binary, use_stdio, stderr_to_stdout]),
-            wait_kill_done(Port),
-            ok
-    end.
-
-%% Drain the kill port to completion so its `exit_status' message never leaks
-%% into the run's gen_statem mailbox. `kill -KILL' is near-instant; a short bound
-%% guards against a stuck child, after which the port is force-closed.
-wait_kill_done(Port) ->
+await_worker_down(MRef, WorkerPid) ->
     receive
-        {Port, {exit_status, _}} ->
-            ok;
-        {Port, {data, _}} ->
-            wait_kill_done(Port)
+        {'DOWN', MRef, process, WorkerPid, _Reason} ->
+            ok
     after 1000 ->
-        try erlang:port_close(Port) catch _:_ -> ok end,
         ok
     end.
 

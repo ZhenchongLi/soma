@@ -1,10 +1,16 @@
 %% @doc Read-only run resume reconstruction from the event trail.
 -module(soma_run_resume).
 
--export([reconstruct/2]).
+-export([reconstruct/2, reconstruct_events/1]).
 
 reconstruct(StorePid, RunId) ->
     Events = soma_event_store:by_run(StorePid, RunId),
+    reconstruct_events(Events).
+
+%% Reconstruct from an already-indexed run trail. Recovery owners that replay
+%% the complete event log can group trails once, then reuse the same canonical
+%% reconstruction without asking the store to scan its full list per run.
+reconstruct_events(Events) when is_list(Events) ->
     case journaled_run(Events) of
         {ok, Steps, RunOptions} ->
             Outputs = committed_outputs(Events),

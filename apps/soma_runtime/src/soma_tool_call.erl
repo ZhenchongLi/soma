@@ -16,8 +16,21 @@
 %% Spawn the worker for one invocation. `Opts' carries the tool `module', the
 %% resolved `input', the `ctx', the `tool_call_id', and the `reply_to' pid.
 start(Opts) when is_map(Opts) ->
-    {Pid, MRef} = spawn_monitor(fun() -> run(Opts) end),
-    {ok, Pid, MRef}.
+    Owner = self(),
+    ReadyRef = make_ref(),
+    {Pid, MRef} =
+        spawn_monitor(
+          fun() ->
+                  %% Link before invoking the tool, then acknowledge ownership
+                  %% so start/1 never returns a worker that can outlive its run.
+                  link(Owner),
+                  Owner ! {tool_call_linked, ReadyRef, self()},
+                  run(Opts)
+          end),
+    receive
+        {tool_call_linked, ReadyRef, Pid} ->
+            {ok, Pid, MRef}
+    end.
 
 %% Branch on which adapter opts the worker received. With a `module' it runs the
 %% in-BEAM tool. With an `executable' and `argv' it runs an external program
@@ -32,6 +45,10 @@ run(#{module := Module} = Opts) ->
     ReplyTo ! {tool_result, ToolCallId, self(), Result},
     ok;
 run(#{executable := Executable, argv := Argv} = Opts) ->
+    %% A CLI worker must handle its owner's linked exit long enough to kill the
+    %% port's OS process. In-BEAM workers keep the default untrappable ownership
+    %% behavior because their tool invocation cannot service mailbox messages.
+    process_flag(trap_exit, true),
     Input = maps:get(input, Opts),
     ToolCallId = maps:get(tool_call_id, Opts),
     ReplyTo = maps:get(reply_to, Opts),
@@ -124,7 +141,7 @@ await_cli(Port, ToolCallId, ReplyTo) ->
              undefined ->
                  ok
          end,
-    collect_cli(Port, [], 0).
+    collect_cli(Port, [], 0, ReplyTo).
 
 %% Collect the program's merged stdout/stderr until it exits. A clean exit
 %% (status 0) returns the full captured output as `{ok, Output}'. A non-zero exit
@@ -139,8 +156,11 @@ await_cli(Port, ToolCallId, ReplyTo) ->
 %% `{error, {cli_output_limit_exceeded, Limit}}' -- it does not keep buffering
 %% past the limit, so a program that floods output cannot make the worker buffer
 %% the whole stream in memory.
-collect_cli(Port, Acc, Bytes) ->
+collect_cli(Port, Acc, Bytes, ReplyTo) ->
     receive
+        {'EXIT', ReplyTo, Reason} ->
+            stop_cli_port(Port),
+            exit(Reason);
         {Port, {data, Data}} ->
             Bytes1 = Bytes + byte_size(Data),
             case Bytes1 > ?CLI_OUTPUT_LIMIT of
@@ -148,7 +168,7 @@ collect_cli(Port, Acc, Bytes) ->
                     try erlang:port_close(Port) catch _:_ -> ok end,
                     {error, {cli_output_limit_exceeded, ?CLI_OUTPUT_LIMIT}};
                 false ->
-                    collect_cli(Port, [Data | Acc], Bytes1)
+                    collect_cli(Port, [Data | Acc], Bytes1, ReplyTo)
             end;
         {Port, {exit_status, 0}} ->
             {ok, iolist_to_binary(lists:reverse(Acc))};
@@ -156,6 +176,15 @@ collect_cli(Port, Acc, Bytes) ->
             Excerpt = iolist_to_binary(lists:reverse(Acc)),
             {error, {cli_exit_status, N, Excerpt}}
     end.
+
+stop_cli_port(Port) ->
+    OsPid = case erlang:port_info(Port, os_pid) of
+                {os_pid, Pid} -> Pid;
+                undefined -> undefined
+            end,
+    soma_os_process:kill(OsPid),
+    try erlang:port_close(Port) catch _:_ -> ok end,
+    ok.
 
 %% Render one argv element as a flat string for the port. argv elements are
 %% authored as strings or binaries; both pass through as the literal argument the

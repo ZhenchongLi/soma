@@ -6,10 +6,19 @@
 
 -export([plan/2]).
 
+plan(Events, _RunId) when is_list(Events) ->
+    plan_events(Events);
 plan(StorePid, RunId) ->
-    case soma_run_resume:reconstruct(StorePid, RunId) of
+    Events = soma_event_store:by_run(StorePid, RunId),
+    plan_events(Events).
+
+%% Classify an already-indexed run trail. This keeps the descriptor-safety rule
+%% in the runtime while allowing a durable owner to replay many runs in one
+%% overall pass through the event store.
+plan_events(Events) when is_list(Events) ->
+    case soma_run_resume:reconstruct_events(Events) of
         {ok, Snapshot} ->
-            classify(StorePid, RunId, Snapshot);
+            classify(Events, Snapshot);
         {error, _} = Error ->
             Error
     end.
@@ -17,19 +26,18 @@ plan(StorePid, RunId) ->
 %% A terminal trail wins over an uncommitted next_step: a run that failed
 %% mid-step leaves the step uncommitted and writes a terminal event, so this is
 %% checked before next_step and never returns resume.
-classify(_StorePid, _RunId, #{terminal_status := Status})
+classify(_Events, #{terminal_status := Status})
   when Status =/= undefined ->
     {terminal, Status};
 %% Every journaled step is committed and no terminal event landed, so
 %% `reconstruct' found no uncommitted step: there is nothing left to resume.
-classify(_StorePid, _RunId, #{next_step := undefined}) ->
+classify(_Events, #{next_step := undefined}) ->
     nothing_to_do;
-classify(StorePid, RunId,
-         #{steps := Steps,
+classify(Events, #{steps := Steps,
            run_options := RunOptions,
            outputs := Outputs,
            next_step := NextStep = #{id := NextId, tool := Tool}}) ->
-    case in_flight(StorePid, RunId, NextId) andalso not safe_tool(Tool) of
+    case in_flight(Events, NextId) andalso not safe_tool(Tool) of
         true ->
             {unsafe, NextId};
         false ->
@@ -42,8 +50,7 @@ classify(StorePid, RunId,
 
 %% A `tool.started' for `next_step' means the step was mid-execution when the
 %% run was interrupted.
-in_flight(StorePid, RunId, StepId) ->
-    Events = soma_event_store:by_run(StorePid, RunId),
+in_flight(Events, StepId) ->
     lists:any(fun(#{event_type := <<"tool.started">>, step_id := Sid}) ->
                       Sid =:= StepId;
                  (_Event) ->
