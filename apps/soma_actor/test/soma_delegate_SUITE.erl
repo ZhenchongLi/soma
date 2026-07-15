@@ -1582,7 +1582,7 @@ test_completed_delegate_preserves_existing_result_contracts(_Config) ->
                       status => accepted},
                 terminal =>
                     #{request_id => ServiceRequestId,
-                      status => completed,
+                      status => succeeded,
                       summary =>
                           #{result_bytes =>
                                 byte_size(
