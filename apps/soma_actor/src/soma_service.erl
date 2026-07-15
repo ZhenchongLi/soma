@@ -151,7 +151,11 @@ start_allowed_invocation(Envelope, Steps, Task, Handle,
                  session_pid => self(),
                  event_store => EventStore,
                  steps => Steps},
-    RunOpts = maybe_add_correlation(Envelope, RunOpts0),
+    RunOpts1 = maps:merge(
+                 RunOpts0,
+                 maps:with(
+                   [max_output_bytes, deadline_at_ms], Task)),
+    RunOpts = maybe_add_correlation(Envelope, RunOpts1),
     case soma_run_sup:start_run(RunOpts) of
         {ok, RunPid} ->
             MRef = erlang:monitor(process, RunPid),
@@ -171,8 +175,14 @@ start_allowed_invocation(Envelope, Steps, Task, Handle,
                                #{run_id => RunId, run_pid => RunPid},
                                Monitors)},
             {reply, {ok, Handle}, NewState};
-        {error, Reason} ->
-            {reply, {error, {run_start_failed, Reason}}, State}
+        {error, _Reason} ->
+            Terminal = Task#{status => failed, reason => run_start_failed},
+            ok = emit_service_task(EventStore, <<"service.task.terminal">>,
+                                   Terminal,
+                                   terminal_event_payload(Terminal)),
+            NewState = State#state{
+                         tasks = maps:put(TaskId, Terminal, Tasks)},
+            {reply, {ok, public_task(Terminal)}, NewState}
     end.
 
 reject_invocation(Reason, Task,
@@ -393,7 +403,7 @@ accepted_task(#{task_id := TaskId,
               run_id => RunId,
               envelope_hash => EnvelopeHash,
               status => running},
-    Task = maybe_restore_max_output_bytes(Payload, Task0),
+    Task = restore_service_budgets(Payload, Task0),
     Request = #{envelope_hash => EnvelopeHash,
                 task_id => TaskId,
                 accepted_handle => Handle},
@@ -455,9 +465,10 @@ monitor_recovered_run(Task, Request, RunPid,
     MRef = erlang:monitor(process, RunPid),
     RunId = maps:get(run_id, Task),
     TaskId = maps:get(task_id, Task),
-    Running = Task#{status => running,
-                    run_pid => RunPid,
-                    run_mref => MRef},
+    Running = arm_deadline(
+                Task#{status => running,
+                      run_pid => RunPid,
+                      run_mref => MRef}),
     State#state{
       tasks = maps:put(TaskId, Running, Tasks),
       requests = maps:put(maps:get(request_id, Task), Request, Requests),
@@ -466,15 +477,10 @@ monitor_recovered_run(Task, Request, RunPid,
                           #{run_id => RunId, run_pid => RunPid},
                           Monitors)}.
 
-recover_from_run_trail(Task, Request,
-                       State = #state{event_store = EventStore}) ->
+recover_from_run_trail(Task, Request, State) ->
     case reconstructed_terminal(Task, State) of
         {ok, Terminal} ->
-            ok = emit_service_task(EventStore,
-                                   <<"service.task.terminal">>,
-                                   Terminal,
-                                   terminal_event_payload(Terminal)),
-            put_terminal_task(Terminal, Request, State);
+            record_recovered_terminal(Terminal, Request, State);
         error ->
             recover_nonterminal_run(Task, Request, State)
     end.
@@ -486,28 +492,64 @@ recover_nonterminal_run(Task, Request,
         {unsafe, StepId} ->
             InDoubt = Task#{status => in_doubt,
                             reason => {resume_unsafe, StepId}},
-            ok = emit_service_task(EventStore,
-                                   <<"service.task.terminal">>,
-                                   InDoubt,
-                                   terminal_event_payload(InDoubt)),
-            put_terminal_task(InDoubt, Request, State);
+            record_recovered_terminal(InDoubt, Request, State);
         {resume, _Plan} ->
-            case soma_run_resume_executor:resume(
-                   RunId, self(), EventStore) of
-                {ok, RunPid} ->
-                    monitor_recovered_run(
-                      Task, Request, RunPid, State);
-                _OtherResumeResult ->
-                    put_terminal_task(
-                      Task#{status => running}, Request, State)
-            end;
+            recover_resume_result(
+              soma_run_resume_executor:resume(
+                RunId, self(), EventStore),
+              Task, Request, State);
+        nothing_to_do ->
+            recover_committed_outputs(Task, Request, State);
+        {terminal, _Status} ->
+            recover_current_terminal(Task, Request, State);
+        {error, no_run_started_journal} ->
+            fail_recovery(
+              Task, Request, service_interrupted_before_start, State);
+        {error, _Reason} ->
+            fail_recovery(Task, Request, service_recovery_failed, State);
         _OtherVerdict ->
-            %% Keep the immutable dedupe identity for nonterminal work that is
-            %% not unsafe. A later recovery decision may resume it, but an
-            %% identical request must never start a replacement merely because
-            %% the in-memory owner restarted.
-            put_terminal_task(Task#{status => running}, Request, State)
+            fail_recovery(Task, Request, service_recovery_failed, State)
     end.
+
+recover_resume_result({ok, RunPid}, Task, Request, State) ->
+    monitor_recovered_run(Task, Request, RunPid, State);
+recover_resume_result(nothing_to_do, Task, Request, State) ->
+    recover_committed_outputs(Task, Request, State);
+recover_resume_result({terminal, _Status}, Task, Request, State) ->
+    recover_current_terminal(Task, Request, State);
+recover_resume_result(_Unrecoverable, Task, Request, State) ->
+    fail_recovery(Task, Request, resume_start_failed, State).
+
+recover_current_terminal(Task, Request, State) ->
+    case reconstructed_terminal(Task, State) of
+        {ok, Terminal} ->
+            record_recovered_terminal(Terminal, Request, State);
+        error ->
+            fail_recovery(Task, Request, service_recovery_failed, State)
+    end.
+
+recover_committed_outputs(Task, Request,
+                          State = #state{event_store = EventStore}) ->
+    RunId = maps:get(run_id, Task),
+    case soma_run_resume:reconstruct(EventStore, RunId) of
+        {ok, #{next_step := undefined, outputs := Outputs}} ->
+            Terminal = maps:merge(
+                         Task,
+                         terminal_for_task({completed, Outputs}, Task)),
+            record_recovered_terminal(Terminal, Request, State);
+        _Unrecoverable ->
+            fail_recovery(Task, Request, service_recovery_failed, State)
+    end.
+
+fail_recovery(Task, Request, Reason, State) ->
+    record_recovered_terminal(
+      Task#{status => failed, reason => Reason}, Request, State).
+
+record_recovered_terminal(
+  Terminal, Request, State = #state{event_store = EventStore}) ->
+    ok = emit_service_task(EventStore, <<"service.task.terminal">>,
+                           Terminal, terminal_event_payload(Terminal)),
+    put_terminal_task(Terminal, Request, State).
 
 reconstructed_terminal(Task, #state{event_store = EventStore}) ->
     RunId = maps:get(run_id, Task),
@@ -520,10 +562,28 @@ reconstructed_terminal(Task, #state{event_store = EventStore}) ->
         {ok, #{terminal_status := timeout}} ->
             {ok, Task#{status => failed, reason => timeout}};
         {ok, #{terminal_status := cancelled}} ->
-            {ok, Task#{status => cancelled}};
+            case deadline_expired_recorded(Task, EventStore) of
+                true ->
+                    {ok, Task#{status => failed,
+                               reason => deadline_exceeded}};
+                false ->
+                    {ok, Task#{status => cancelled}}
+            end;
         _ ->
             error
     end.
+
+deadline_expired_recorded(Task, EventStore) ->
+    TaskId = maps:get(task_id, Task),
+    RunId = maps:get(run_id, Task),
+    lists:any(
+      fun(#{event_type := <<"service.task.deadline_expired">>,
+            task_id := EventTaskId}) ->
+              EventTaskId =:= TaskId;
+         (_Event) ->
+              false
+      end,
+      soma_event_store:by_run(EventStore, RunId)).
 
 put_terminal_task(Task, Request,
                   State = #state{tasks = Tasks, requests = Requests}) ->
@@ -532,10 +592,10 @@ put_terminal_task(Task, Request,
     State#state{tasks = maps:put(TaskId, Task, Tasks),
                 requests = maps:put(RequestId, Request, Requests)}.
 
-maybe_restore_max_output_bytes(#{max_output_bytes := MaxOutputBytes}, Task) ->
-    Task#{max_output_bytes => MaxOutputBytes};
-maybe_restore_max_output_bytes(_Payload, Task) ->
-    Task.
+restore_service_budgets(Payload, Task) ->
+    maps:merge(
+      Task,
+      maps:with([max_output_bytes, deadline_at_ms], Payload)).
 
 accepted_event_payload(Task) ->
     maps:with([envelope_hash, max_output_bytes, deadline_at_ms], Task).
@@ -567,6 +627,6 @@ runtime_event_store() ->
     end.
 
 mint_id(Prefix) ->
-    list_to_binary(
-      Prefix ++ integer_to_list(
-                  erlang:unique_integer([positive, monotonic]))).
+    PrefixBin = list_to_binary(Prefix),
+    Random = binary:encode_hex(crypto:strong_rand_bytes(16)),
+    <<PrefixBin/binary, Random/binary>>.
