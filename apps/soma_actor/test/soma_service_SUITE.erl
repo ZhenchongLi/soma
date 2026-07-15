@@ -18,6 +18,7 @@
 -export([test_unknown_scope_entry_does_not_create_atom/1]).
 -export([test_deadline_exceeded_cleans_run_worker_and_cli_process/1]).
 -export([test_service_cancel_cleans_tool_worker_and_cli_process/1]).
+-export([test_tool_crash_is_bounded_and_service_runs_again/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -32,8 +33,17 @@ all() ->
      test_unscoped_invocation_uses_configured_or_empty_default_policy,
      test_unknown_scope_entry_does_not_create_atom,
      test_deadline_exceeded_cleans_run_worker_and_cli_process,
-     test_service_cancel_cleans_tool_worker_and_cli_process].
+     test_service_cancel_cleans_tool_worker_and_cli_process,
+     test_tool_crash_is_bounded_and_service_runs_again].
 
+init_per_testcase(
+  test_tool_crash_is_bounded_and_service_runs_again, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo, fail]}),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started} | Config];
 init_per_testcase(
   test_service_cancel_cleans_tool_worker_and_cli_process, Config) ->
     ok = ensure_loaded(soma_actor),
@@ -104,6 +114,7 @@ end_per_testcase(TestCase, Config)
            test_deadline_exceeded_cleans_run_worker_and_cli_process;
        TestCase =:=
            test_service_cancel_cleans_tool_worker_and_cli_process;
+       TestCase =:= test_tool_crash_is_bounded_and_service_runs_again;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -528,6 +539,30 @@ test_service_cancel_cleans_tool_worker_and_cli_process(Config) ->
     after
         maybe_cancel_run(RunPid)
     end.
+
+test_tool_crash_is_bounded_and_service_runs_again(_Config) ->
+    ServicePid = whereis(soma_service),
+    CrashEnvelope = tool_envelope(
+                      <<"service-crashing-tool">>, fail,
+                      #{mode => crash, reason => service_tool_boom}),
+    {ok, #{task_id := CrashTaskId, status := accepted}} =
+        soma_service:invoke(CrashEnvelope),
+    {ok, Failed} = wait_for_status(CrashTaskId, failed, 100),
+
+    EchoRequestId = <<"service-after-tool-crash">>,
+    EchoArgs = #{value => <<"service still usable">>},
+    {ok, #{task_id := EchoTaskId, status := accepted}} =
+        soma_service:invoke(
+          tool_envelope(EchoRequestId, echo, EchoArgs)),
+    {ok, Succeeded} = wait_for_status(EchoTaskId, succeeded, 100),
+
+    ?assertEqual(ServicePid, whereis(soma_service)),
+    ?assert(is_process_alive(ServicePid)),
+    ?assertEqual(#{EchoRequestId => EchoArgs}, maps:get(result, Succeeded)),
+    ?assertEqual(run_failed, maps:get(reason, Failed)),
+    EncodedFailed = term_to_binary(Failed, [deterministic]),
+    ?assert(byte_size(EncodedFailed) =< 512),
+    ?assertEqual(nomatch, binary:match(EncodedFailed, <<"soma_tool_fail">>)).
 
 ensure_loaded(App) ->
     case application:load(App) of
