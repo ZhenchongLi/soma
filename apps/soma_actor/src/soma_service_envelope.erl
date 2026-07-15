@@ -1,7 +1,7 @@
 %% @doc Pure validation boundary for runtime service invocation envelopes.
 -module(soma_service_envelope).
 
--export([normalize/1]).
+-export([normalize/1, timer_safe_ms/1]).
 
 -type envelope() :: map().
 -type diagnostic() :: map().
@@ -9,6 +9,11 @@
 -define(ALLOWED_FIELDS,
         [kind, api_version, request_id, operation, scope, deadline_ms,
          max_output_bytes, correlation_id, artifacts]).
+
+%% Keep service deadlines inside the portable timer range. Newer ERTS builds
+%% accept larger values, but this bound is safe across supported runtimes and
+%% prevents an otherwise valid envelope from crashing erlang:start_timer/3.
+-define(MAX_TIMER_MS, 16#ffffffff).
 
 -spec normalize(term()) -> {ok, envelope()} | {error, [diagnostic()]}.
 normalize(#{kind := invoke} = Candidate) ->
@@ -156,8 +161,23 @@ normalize_correlation_id(Candidate, RequestId, Operation) ->
     end.
 
 valid_budgets(Candidate) ->
-    valid_positive_optional(deadline_ms, Candidate) andalso
+    valid_deadline(Candidate) andalso
         valid_positive_optional(max_output_bytes, Candidate).
+
+valid_deadline(Candidate) ->
+    case maps:find(deadline_ms, Candidate) of
+        error -> true;
+        {ok, Value} when is_integer(Value), Value > 0 -> timer_safe_ms(Value);
+        {ok, _Invalid} -> false
+    end.
+
+-spec timer_safe_ms(term()) -> boolean().
+timer_safe_ms(Value) when is_integer(Value),
+                          Value >= 0,
+                          Value =< ?MAX_TIMER_MS ->
+    true;
+timer_safe_ms(_Value) ->
+    false.
 
 valid_positive_optional(Key, Candidate) ->
     case maps:find(Key, Candidate) of

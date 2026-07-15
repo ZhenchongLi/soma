@@ -11,6 +11,7 @@ teardown.
 | Guarantee | Proof |
 | --- | --- |
 | The permanent actor-layer service monitors its owned run, is restarted after a crash, and accepts successful work through the replacement process. | `soma_service_SUITE:test_supervised_service_restarts_and_serves_again` |
+| Timer-unsafe deadlines are rejected before journaling, and poison durable deadline metadata becomes bounded terminal failure after its live run and worker are removed. | `soma_service_SUITE:test_timer_unsafe_deadline_rejected_before_journaling`, `soma_service_SUITE:test_poison_deadline_metadata_recovers_bounded_terminal` |
 
 ## Criterion 2 — one tool succeeds through the production path without an LLM worker
 
@@ -77,6 +78,7 @@ teardown.
 | Guarantee | Proof |
 | --- | --- |
 | The service deadline cancels the active run, waits for BEAM-worker and external-process teardown, removes the run child, and then exposes `deadline_exceeded`. | `soma_service_SUITE:test_deadline_exceeded_cleans_run_worker_and_cli_process` |
+| Recovery compares a durable outcome with the persisted absolute deadline and never resumes safe work whose deadline already elapsed. | `soma_service_SUITE:test_recovery_enforces_deadline_before_terminal_or_resume` |
 
 ## Criterion 13 — public cancellation reaches cancelled and tears down CLI resources
 
