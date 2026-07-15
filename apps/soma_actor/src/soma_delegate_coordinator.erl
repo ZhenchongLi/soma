@@ -63,6 +63,15 @@ handle_event(info, {delegate_begin, TaskId}, awaiting_start,
 handle_event({call, From}, status, _StateName, Data) ->
     {keep_state, Data,
      [{reply, From, {ok, public_projection(Data)}}]};
+handle_event(info,
+             {delegate_status, TaskId, ReplyTo, StatusRef},
+             _StateName,
+             Data = #{task_id := TaskId})
+  when is_pid(ReplyTo), is_reference(StatusRef) ->
+    ReplyTo !
+        {delegate_status_reply, TaskId, self(), StatusRef,
+         {ok, public_projection(Data)}},
+    {keep_state, Data};
 handle_event(cast, {cancel, TaskId}, running,
              Data = #{task_id := TaskId,
                       active_round := ActiveRound})
@@ -116,10 +125,10 @@ handle_event(info,
                       active_round :=
                           #{round_id := RoundId,
                             worker_pid := WorkerPid,
-                            worker_mref := WorkerMRef,
+                            worker_mref := _WorkerMRef,
                             worker_identity := WorkerIdentity,
                             result_capability := ResultCapability}}) ->
-    commit_round_result(Result, RoundId, WorkerPid, WorkerMRef, Data);
+    commit_round_result(Result, RoundId, Data);
 handle_event(info,
              {'DOWN', WorkerMRef, process, WorkerPid, _Reason},
              running,
@@ -245,15 +254,10 @@ start_round_worker(
 fail_before_round(Data, Reason) ->
     start_cleanup(#{status => failed, reason => Reason}, Data).
 
-commit_round_result(Result, RoundId, WorkerPid, WorkerMRef, Data) ->
+commit_round_result(Result, RoundId, Data) ->
     case valid_round_result(Result) of
         true ->
-            ok = emit_round_completed(RoundId, Result, Data),
             ActiveRound = maps:get(active_round, Data),
-            cancel_round_timers(ActiveRound),
-            _ = erlang:demonitor(WorkerMRef, [flush]),
-            _ = supervisor:terminate_child(
-                  soma_delegate_round_sup, WorkerPid),
             commit_finished_round(Result, RoundId, ActiveRound, Data);
         false ->
             {keep_state, Data}
@@ -264,14 +268,42 @@ commit_finished_round(
   #{cancel_status := timeout,
     unsafe_action_dispatched := false},
   Data) ->
+    ActiveRound = maps:get(active_round, Data),
+    Failure = round_timeout_failure(RoundId),
+    ClearedData =
+        clear_committed_round(
+          Failure, RoundId, ActiveRound, Data),
     continue_after_pre_stateful_failure(
-      round_timeout_failure(RoundId),
-      Data#{active_round := undefined});
-commit_finished_round(Result, RoundId, _ActiveRound, Data) ->
+      Failure, ClearedData);
+commit_finished_round(
+  Result, RoundId,
+  ActiveRound = #{cancel_status := cancelled}, Data) ->
     CommittedData = commit_round_deltas(Result, Data),
-    advance_after_round(
-      Result, RoundId,
-      CommittedData#{active_round := undefined}).
+    Projection = #{status => cancelled, round => RoundId},
+    ClearedData =
+        clear_committed_round(
+          Projection, RoundId, ActiveRound, CommittedData),
+    start_cleanup(Projection, ClearedData);
+commit_finished_round(Result, RoundId, ActiveRound, Data) ->
+    CommittedData = commit_round_deltas(Result, Data),
+    ClearedData =
+        clear_committed_round(
+          Result, RoundId, ActiveRound, CommittedData),
+    advance_after_round(Result, RoundId, ClearedData).
+
+clear_committed_round(
+  EventOutcome, RoundId,
+  ActiveRound = #{worker_pid := WorkerPid,
+                  worker_mref := WorkerMRef},
+  CommittedData) ->
+    cancel_round_timers(ActiveRound),
+    _ = erlang:demonitor(WorkerMRef, [flush]),
+    _ = supervisor:terminate_child(
+          soma_delegate_round_sup, WorkerPid),
+    ClearedData = CommittedData#{active_round := undefined},
+    ok = emit_round_completed(
+           RoundId, EventOutcome, ClearedData),
+    ClearedData.
 
 commit_round_deltas(Result, Data) ->
     CheckpointData =
@@ -345,22 +377,22 @@ cancel_active_round(
     {keep_state, Data#{active_round := UpdatedRound}}.
 
 handle_round_worker_down(ActiveRound, RoundId, Data) ->
-    case {maps:get(cancel_status, ActiveRound, undefined),
-          maps:get(unsafe_action_dispatched, ActiveRound, false)} of
-        {cancelled, _UnsafeDispatchState} ->
+    case {maps:get(unsafe_action_dispatched, ActiveRound, false),
+          maps:get(cancel_status, ActiveRound, undefined)} of
+        {true, _CancelStatus} ->
+            finish_lost_unsafe_result(ActiveRound, RoundId, Data);
+        {false, cancelled} ->
             Projection = worker_down_projection(ActiveRound, RoundId),
             ok = emit_round_completed(RoundId, Projection, Data),
             finish_worker_down(
               Projection, Data);
-        {_NotCancelled, true} ->
-            finish_lost_unsafe_result(ActiveRound, RoundId, Data);
-        {undefined, false} ->
+        {false, undefined} ->
             Failure = round_worker_crash_failure(RoundId),
             ok = emit_round_completed(RoundId, Failure, Data),
             continue_after_pre_stateful_failure(
               Failure,
               Data#{active_round := undefined});
-        {timeout, false} ->
+        {false, timeout} ->
             Failure = round_timeout_failure(RoundId),
             ok = emit_round_completed(RoundId, Failure, Data),
             continue_after_pre_stateful_failure(
@@ -493,7 +525,8 @@ round_projection(#{status := Status} = Result, RoundId) ->
     Base = #{status => Status, round => RoundId},
     case maps:get(reason, Result, undefined) of
         undefined -> Base;
-        Reason -> Base#{reason => Reason}
+        Reason ->
+            Base#{reason => soma_delegate_event:reason_class(Reason)}
     end.
 
 mint_worker_identity(RoundId) ->
