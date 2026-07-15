@@ -126,6 +126,27 @@ test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections(
       end,
       [Objective, OutputContract, Checkpoint, Budgets, LeaseRequests]),
 
+    ok = sys:suspend(CoordinatorPid),
+    try
+        StatusCallers =
+            [spawn_monitor(
+               fun() ->
+                       try gen_server:call(
+                             soma_delegate,
+                             {status, TaskId}, 100) of
+                           _Reply -> ok
+                       catch
+                           exit:_Reason -> ok
+                       end
+               end)
+             || _ <- lists:seq(1, 25)],
+        wait_for_status_request_count(25, 100),
+        wait_for_status_callers_down(StatusCallers),
+        wait_for_status_request_count(0, 100)
+    after
+        ok = sys:resume(CoordinatorPid)
+    end,
+
     exit(CoordinatorPid, kill),
     TerminalProjection = wait_for_terminal_projection(TaskId, 100),
     ?assertEqual(#{status => failed, reason => coordinator_crashed},
@@ -702,6 +723,38 @@ test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages(
        {delegate_round_result, TaskId, FirstRoundId, FirstWorkerPid,
         FirstWorkerIdentity, _ResultCapability, ValidResult},
        ValidMessage),
+
+    ForbiddenPid = self(),
+    ForbiddenRef = make_ref(),
+    ForbiddenResult =
+        #{status => succeeded,
+          phase => decision,
+          decision => continue,
+          checkpoint =>
+              #{authentication_state =>
+                    #{bearer => <<"forbidden-authentication-state">>},
+                product_conversation_data =>
+                    [<<"forbidden-product-conversation">>],
+                product_user_id => <<"forbidden-product-user">>,
+                product_session_id => <<"forbidden-product-session">>,
+                resource_manager_pid => ForbiddenPid,
+                monitor_ref => ForbiddenRef,
+                raw_lease =>
+                    {raw_delegate_lease,
+                     <<"forbidden-raw-lease">>}},
+          usage => #{rounds => 1, tokens => 7},
+          mutation => #{resource_manager_pid => ForbiddenPid},
+          unknown_outcome => #{monitor_ref => ForbiddenRef},
+          terminal_result =>
+              #{product_conversation_data =>
+                    <<"forbidden-terminal-conversation">>}},
+    StableBeforeForbiddenResult = sys:get_state(CoordinatorPid),
+    CoordinatorPid !
+        round_result_message(
+          TaskId, FirstActiveRound, ForbiddenResult),
+    ?assertEqual(StableBeforeForbiddenResult,
+                 sys:get_state(CoordinatorPid)),
+
     CoordinatorPid ! ValidMessage,
 
     {CommittedData,
@@ -875,8 +928,7 @@ test_lost_state_result_is_in_doubt_without_replacement(_Config) ->
               end),
         wait_for_round_cancel_status(
           CoordinatorPid, 1, cancelled, 100),
-        exit(RoundWorkerPid, kill),
-        wait_for_process_dead(RoundWorkerPid, 100),
+        wait_for_process_dead(RoundWorkerPid, 300),
         wait_for_process_dead(ToolCallPid, 100),
 
         UnsafeCancelReply =
@@ -1031,6 +1083,7 @@ test_cancel_tears_down_llm_run_tool_and_os_children_once(Config) ->
         ok = soma_tool_registry:unregister_tool(ToolName)
     end,
 
+    assert_forced_cancel_stops_unresponsive_llm(),
     assert_cancel_wins_matching_pre_stateful_result().
 
 test_concurrent_tasks_isolate_state_workers_and_leases(_Config) ->
@@ -1510,19 +1563,18 @@ test_delegate_events_are_bounded_stable_and_scrubbed(_Config) ->
             #{status => succeeded,
               decision => continue,
               reason =>
-                  #{reason_class => OversizedReason,
-                    secret => Secret,
-                    pid => TaskPid,
-                    monitor_ref => MonitorRef,
-                    port => Port},
-              usage => #{tokens => 7, secret => Secret},
-              mutation => #{secret => Secret, pid => TaskPid},
+                  #{reason_class => OversizedReason},
+              usage => #{tokens => 7},
+              mutation =>
+                  #{invocation_id =>
+                        <<"delegate-event-safe-mutation">>},
               unknown_outcome =>
-                  #{raw_lease => RawLease, outcome => unknown},
+                  #{invocation_id =>
+                        <<"delegate-event-safe-unknown-outcome">>,
+                    outcome => unknown},
               terminal_result =>
-                  #{product_session_data => ProductSession,
-                    product_conversation_data => Conversation,
-                    round_snapshot => RoundSnapshot}},
+                  #{status => succeeded,
+                    summary => <<"delegate-event-safe-result">>}},
         ?assert(byte_size(
                   term_to_binary(OversizedOutcome, [deterministic])) <
                 16384),
@@ -2068,6 +2120,62 @@ assert_no_later_round(Phase) ->
         ok
     end.
 
+assert_forced_cancel_stops_unresponsive_llm() ->
+    TaskSpec =
+        #{request_id =>
+              <<"delegate-request-forced-cancel-unresponsive-llm">>,
+          correlation_id =>
+              <<"delegate-correlation-forced-cancel-unresponsive-llm">>,
+          objective =>
+              <<"force stop an unresponsive round worker and LLM child">>,
+          round_sequence =>
+              [#{llm => #{directive => hang, timeout_ms => 60000},
+                 round_timeout_ms => 60000,
+                 decision => terminal}]},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    {_CoordinatorData, ActiveRound} =
+        wait_for_active_round(CoordinatorPid, 1, 100),
+    WorkerPid = maps:get(worker_pid, ActiveRound),
+    {_WorkerData, #{pid := LlmPid}} =
+        wait_for_worker_phase(
+          WorkerPid, waiting_llm, active_llm, 100),
+    ok = sys:suspend(WorkerPid),
+    Observer = self(),
+    _CancelCaller =
+        spawn(
+          fun() ->
+                  Observer !
+                      {delegate_forced_cancel_reply,
+                       soma_delegate:cancel(TaskId)}
+          end),
+    try
+        wait_for_round_cancel_status(
+          CoordinatorPid, 1, cancelled, 100),
+        {running, CancelData} = sys:get_state(CoordinatorPid),
+        CancelRound = maps:get(active_round, CancelData),
+        ForcedStopTimer = maps:get(forced_stop_timer, CancelRound),
+        ?assert(is_reference(ForcedStopTimer)),
+        ?assert(is_integer(erlang:read_timer(ForcedStopTimer))),
+        CancelReply =
+            receive
+                {delegate_forced_cancel_reply, Reply} -> Reply
+            after 3000 ->
+                ct:fail(unresponsive_round_cancel_did_not_finish)
+            end,
+        ?assertMatch({ok, #{status := cancelled}}, CancelReply),
+        ?assertNot(is_process_alive(WorkerPid)),
+        ?assertNot(is_process_alive(LlmPid)),
+        ?assertMatch(
+           {ok, #{status := cancelled}},
+           soma_delegate:status(TaskId))
+    after
+        case is_process_alive(WorkerPid) of
+            true -> exit(WorkerPid, kill);
+            false -> ok
+        end
+    end.
+
 assert_cancel_wins_matching_pre_stateful_result() ->
     RequestId = <<"delegate-request-cancel-result-race">>,
     TaskSpec =
@@ -2354,6 +2462,31 @@ process_monitors(Pid) ->
 process_links(Pid) ->
     {links, Links} = process_info(Pid, links),
     Links.
+
+wait_for_status_request_count(Expected, 0) ->
+    State = sys:get_state(soma_delegate),
+    ?assertEqual(Expected,
+                 map_size(maps:get(status_requests, State)));
+wait_for_status_request_count(Expected, Attempts) ->
+    State = sys:get_state(soma_delegate),
+    case map_size(maps:get(status_requests, State)) of
+        Expected ->
+            ok;
+        _OtherCount ->
+            timer:sleep(10),
+            wait_for_status_request_count(
+              Expected, Attempts - 1)
+    end.
+
+wait_for_status_callers_down([]) ->
+    ok;
+wait_for_status_callers_down([{CallerPid, CallerMRef} | Remaining]) ->
+    receive
+        {'DOWN', CallerMRef, process, CallerPid, normal} ->
+            wait_for_status_callers_down(Remaining)
+    after 2000 ->
+        ct:fail({status_caller_did_not_exit, CallerPid})
+    end.
 
 coordinator_identity(CoordinatorPid) ->
     {_StateName, Data} = sys:get_state(CoordinatorPid),
