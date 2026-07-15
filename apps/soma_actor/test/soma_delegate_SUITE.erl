@@ -10,6 +10,7 @@
 -export([test_coordinator_and_round_worker_crashes_leave_ingress_responsive/1]).
 -export([test_delegate_action_crosses_full_worker_run_tool_spine/1]).
 -export([test_coordinator_and_round_worker_split_child_ownership/1]).
+-export([test_sequential_rounds_commit_before_distinct_next_worker/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -17,7 +18,8 @@ all() ->
      test_status_and_cancel_route_by_task_id,
      test_coordinator_and_round_worker_crashes_leave_ingress_responsive,
      test_delegate_action_crosses_full_worker_run_tool_spine,
-     test_coordinator_and_round_worker_split_child_ownership].
+     test_coordinator_and_round_worker_split_child_ownership,
+     test_sequential_rounds_commit_before_distinct_next_worker].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -338,6 +340,67 @@ test_coordinator_and_round_worker_split_child_ownership(_Config) ->
     assert_cancelled_timer(RunTimerRef),
     assert_cancelled_timer(RunRoundTimerRef).
 
+test_sequential_rounds_commit_before_distinct_next_worker(_Config) ->
+    InitialCheckpoint = #{cursor => <<"before-round-one">>},
+    CommittedCheckpoint = #{cursor => <<"after-round-one">>},
+    CommittedUsage = #{rounds => 1, tokens => 13},
+    FirstTerminalResult = #{status => succeeded,
+                            value => <<"round-one-committed">>},
+    TaskSpec =
+        #{request_id => <<"delegate-request-sequential-rounds">>,
+          correlation_id => <<"delegate-correlation-sequential-rounds">>,
+          objective => <<"commit before starting the next round">>,
+          checkpoint => InitialCheckpoint,
+          round_sequence =>
+              [#{llm => #{directive => hang}, decision => continue},
+               #{llm => #{directive => hang}, decision => terminal}]},
+
+    {ok, #{task_id := TaskId}} =
+        submit_through_production_ingress(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    {FirstCoordinatorData, FirstActiveRound} =
+        wait_for_active_round(CoordinatorPid, 1, 100),
+    FirstWorkerPid = maps:get(worker_pid, FirstActiveRound),
+    FirstRoundTimer = maps:get(round_timer, FirstActiveRound),
+    _ = wait_for_worker_phase(
+          FirstWorkerPid, waiting_llm, active_llm, 100),
+    ?assertEqual(InitialCheckpoint,
+                 maps:get(context_checkpoint, FirstCoordinatorData)),
+
+    send_round_result(
+      CoordinatorPid, TaskId, FirstActiveRound,
+      #{status => succeeded,
+        phase => decision,
+        decision => continue,
+        checkpoint => CommittedCheckpoint,
+        usage => CommittedUsage,
+        terminal_result => FirstTerminalResult}),
+
+    {SecondCoordinatorData, SecondActiveRound} =
+        wait_for_active_round(CoordinatorPid, 2, 100),
+    SecondWorkerPid = maps:get(worker_pid, SecondActiveRound),
+    {SecondWorkerData, _SecondActiveLlm} =
+        wait_for_worker_phase(
+          SecondWorkerPid, waiting_llm, active_llm, 100),
+    ?assertNotEqual(FirstWorkerPid, SecondWorkerPid),
+    ?assertEqual(false, is_process_alive(FirstWorkerPid)),
+    ?assertEqual(false, erlang:read_timer(FirstRoundTimer)),
+    ?assertEqual(false,
+                 lists:member(FirstWorkerPid,
+                              process_monitors(CoordinatorPid))),
+    ?assertEqual(CommittedCheckpoint,
+                 maps:get(context_checkpoint, SecondCoordinatorData)),
+    ?assertEqual(CommittedUsage,
+                 maps:get(usage, SecondCoordinatorData)),
+    ?assertEqual(FirstTerminalResult,
+                 maps:get(terminal_result, SecondCoordinatorData)),
+    SecondSnapshot = maps:get(snapshot, SecondWorkerData),
+    ?assertEqual(CommittedCheckpoint,
+                 maps:get(context_checkpoint, SecondSnapshot)),
+    ?assertEqual(CommittedUsage, maps:get(usage, SecondSnapshot)),
+
+    {ok, #{status := cancelled}} = soma_delegate:cancel(TaskId).
+
 crash_fixture(Suffix) ->
     #{request_id => <<"delegate-request-", Suffix/binary>>,
       objective => <<"hold a disposable round open">>,
@@ -409,6 +472,45 @@ wait_for_worker_phase(WorkerPid, StateName, ActiveKey, Attempts) ->
             wait_for_worker_phase(
               WorkerPid, StateName, ActiveKey, Attempts - 1)
     end.
+
+wait_for_active_round(_CoordinatorPid, ExpectedRoundId, 0) ->
+    ?assertEqual(ExpectedRoundId, round_worker_not_started);
+wait_for_active_round(CoordinatorPid, ExpectedRoundId, Attempts) ->
+    case is_process_alive(CoordinatorPid) of
+        false ->
+            ?assertEqual(ExpectedRoundId,
+                         coordinator_stopped_before_next_round);
+        true ->
+            try sys:get_state(CoordinatorPid) of
+                {_StateName, CoordinatorData} ->
+                    case maps:get(active_round, CoordinatorData,
+                                  undefined) of
+                        ActiveRound = #{round_id := ExpectedRoundId} ->
+                            {CoordinatorData, ActiveRound};
+                        _OtherRound ->
+                            timer:sleep(10),
+                            wait_for_active_round(
+                              CoordinatorPid, ExpectedRoundId,
+                              Attempts - 1)
+                    end
+            catch
+                exit:_Reason ->
+                    ?assertEqual(
+                       ExpectedRoundId,
+                       coordinator_stopped_before_next_round)
+            end
+    end.
+
+send_round_result(
+  CoordinatorPid, TaskId,
+  #{round_id := RoundId,
+    worker_pid := WorkerPid,
+    worker_identity := WorkerIdentity,
+    result_capability := ResultCapability},
+  Result) ->
+    CoordinatorPid !
+        {delegate_round_result, TaskId, RoundId, WorkerPid,
+         WorkerIdentity, ResultCapability, Result}.
 
 assert_coordinator_owns_round(
   CoordinatorPid, RoundWorkerPid,
