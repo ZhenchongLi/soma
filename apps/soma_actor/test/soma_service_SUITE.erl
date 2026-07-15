@@ -693,8 +693,8 @@ test_result_and_watch_unknown_task_are_not_found(_Config) ->
           end}],
     Replies = [{Name, Call()} || {Name, Call} <- Calls],
     ?assertEqual(
-       [{result, {error, unknown_task}},
-        {watch, {error, unknown_task}}],
+       [{result, {error, not_found}},
+        {watch, {error, not_found}}],
        Replies).
 
 test_oversized_result_fails_with_max_output_reason(_Config) ->
