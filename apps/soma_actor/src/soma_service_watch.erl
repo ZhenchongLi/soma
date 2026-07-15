@@ -5,6 +5,7 @@
 
 -define(CURSOR_TAG, soma_service_watch_cursor_v1).
 -define(MAX_CURSOR_BYTES, 4096).
+-define(MAX_PAYLOAD_BYTES, 16384).
 
 page(Events, Cursor, Limit, ServicePageEvents)
   when is_list(Events),
@@ -14,7 +15,8 @@ page(Events, Cursor, Limit, ServicePageEvents)
         {ok, RemainingEvents} ->
             PageLimit = erlang:min(Limit, ServicePageEvents),
             PageEvents = lists:sublist(RemainingEvents, PageLimit),
-            {ok, #{events => PageEvents,
+            WatchedEvents = [scrub_event(Event) || Event <- PageEvents],
+            {ok, #{events => WatchedEvents,
                    cursor => next_cursor(PageEvents, Cursor)}};
         {error, invalid_cursor} = Error ->
             Error
@@ -67,3 +69,48 @@ decode_cursor(Cursor)
     end;
 decode_cursor(_Cursor) ->
     {error, invalid_cursor}.
+
+scrub_event(Event) ->
+    EventId = maps:get(event_id, Event),
+    (scrub_term(Event))#{event_id => EventId}.
+
+scrub_term(Term)
+  when is_pid(Term); is_port(Term); is_reference(Term) ->
+    redacted;
+scrub_term(secret_value) ->
+    redacted;
+scrub_term(<<"secret_value">>) ->
+    redacted;
+scrub_term(Term) when is_map(Term) ->
+    maps:fold(fun scrub_map_entry/3, #{}, Term);
+scrub_term([]) ->
+    [];
+scrub_term([Head | Tail]) ->
+    [scrub_term(Head) | scrub_term(Tail)];
+scrub_term(Term) when is_tuple(Term) ->
+    list_to_tuple([scrub_term(Element) || Element <- tuple_to_list(Term)]);
+scrub_term(Term) ->
+    Term.
+
+scrub_map_entry(Key, _Value, Acc)
+  when Key =:= secret_value; Key =:= <<"secret_value">> ->
+    Acc;
+scrub_map_entry(Key, Value, Acc) ->
+    ScrubbedKey = scrub_term(Key),
+    ScrubbedValue = scrub_term(Value),
+    maps:put(
+      ScrubbedKey,
+      maybe_truncate_payload(ScrubbedKey, ScrubbedValue),
+      Acc).
+
+maybe_truncate_payload(Key, Value)
+  when Key =:= payload; Key =:= <<"payload">> ->
+    EncodedBytes = byte_size(term_to_binary(Value, [deterministic])),
+    case EncodedBytes > ?MAX_PAYLOAD_BYTES of
+        true ->
+            #{truncated => true, bytes => EncodedBytes};
+        false ->
+            Value
+    end;
+maybe_truncate_payload(_Key, Value) ->
+    Value.
