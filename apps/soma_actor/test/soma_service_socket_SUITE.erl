@@ -9,7 +9,8 @@
          test_socket_watch_reconnect_resumes_after_cursor/1,
          test_socket_cancel_is_repeatable_after_cli_process_exit/1,
          test_socket_version_and_operation_errors_are_typed/1,
-         test_socket_rejects_bad_and_oversized_frames_then_serves/1]).
+         test_socket_rejects_bad_and_oversized_frames_then_serves/1,
+         test_daemon_service_listener_is_config_opt_in_with_sibling_default/1]).
 
 all() ->
     [test_socket_invoke_status_and_result_end_to_end,
@@ -18,7 +19,8 @@ all() ->
      test_socket_watch_reconnect_resumes_after_cursor,
      test_socket_cancel_is_repeatable_after_cli_process_exit,
      test_socket_version_and_operation_errors_are_typed,
-     test_socket_rejects_bad_and_oversized_frames_then_serves].
+     test_socket_rejects_bad_and_oversized_frames_then_serves,
+     test_daemon_service_listener_is_config_opt_in_with_sibling_default].
 
 init_per_testcase(
   TestCase, Config)
@@ -34,6 +36,15 @@ init_per_testcase(
     [{started_apps, Started},
      {tmp_dir, TmpDir},
      {log_path, LogPath} | Config];
+init_per_testcase(
+  test_daemon_service_listener_is_config_opt_in_with_sibling_default,
+  Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy, #{allowed_tools => [echo]}),
+    TmpDir = make_tmp_dir(),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {tmp_dir, TmpDir} | Config];
 init_per_testcase(_TestCase, Config) ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
@@ -406,6 +417,46 @@ test_socket_rejects_bad_and_oversized_frames_then_serves(_Config) ->
         stop_listener(Listener, Path)
     end.
 
+%% RS.1d criterion 8: the production nonblocking daemon always starts its CLI
+%% socket, but exposes the separate service ingress only when the config file
+%% contains a [service] table. An empty table enables the listener and resolves
+%% its default beside the configured CLI socket as service.sock.
+test_daemon_service_listener_is_config_opt_in_with_sibling_default(Config) ->
+    TmpDir = proplists:get_value(tmp_dir, Config),
+    CliPath = filename:join(TmpDir, "soma.sock"),
+    ServicePath = filename:join(TmpDir, "service.sock"),
+    AbsentConfig = filename:join(TmpDir, "service-absent.toml"),
+    PresentConfig = filename:join(TmpDir, "service-present.toml"),
+    ToolsDir = filename:join(TmpDir, "tools"),
+    ok = file:make_dir(ToolsDir),
+    ok = file:write_file(AbsentConfig, <<"# service ingress disabled\n">>),
+    ok = file:write_file(PresentConfig, <<"[service]\n">>),
+    try
+        {ok, CliPath} =
+            soma_cli:daemon(
+              #{socket => CliPath,
+                config_path => AbsentConfig,
+                tools_dir => ToolsDir}),
+        ?assertEqual(0, soma_cli:ping(#{socket => CliPath})),
+        ?assertMatch({error, _}, connect_socket(ServicePath)),
+        ok = stop_daemon(CliPath),
+
+        {ok, CliPath} =
+            soma_cli:daemon(
+              #{socket => CliPath,
+                config_path => PresentConfig,
+                tools_dir => ToolsDir}),
+        ?assertEqual(0, soma_cli:ping(#{socket => CliPath})),
+        ?assert(service_socket_is_listening(ServicePath)),
+        ?assertEqual(
+           {service_error, not_found},
+           socket_response(
+             ServicePath,
+             lifecycle_source(status, <<"missing-daemon-service-task">>)))
+    after
+        maybe_stop_daemon(CliPath)
+    end.
+
 socket_request(Path, Source, Operation) ->
     {service_reply, Operation, Value} = socket_response(Path, Source),
     Value.
@@ -426,6 +477,41 @@ socket_wire_response_payload(Path, WireFrame) ->
         recv_frame(Socket)
     after
         gen_tcp:close(Socket)
+    end.
+
+connect_socket(Path) ->
+    gen_tcp:connect(
+      {local, Path}, 0,
+      [binary, {packet, raw}, {active, false}], 500).
+
+service_socket_is_listening(Path) ->
+    case connect_socket(Path) of
+        {ok, Socket} ->
+            gen_tcp:close(Socket),
+            true;
+        {error, _Reason} ->
+            false
+    end.
+
+stop_daemon(Path) ->
+    0 = soma_cli:stop(#{socket => Path}),
+    wait_for_daemon_stop(Path, 100).
+
+maybe_stop_daemon(Path) ->
+    case soma_cli:ping(#{socket => Path}) of
+        0 -> stop_daemon(Path);
+        1 -> ok
+    end.
+
+wait_for_daemon_stop(_Path, 0) ->
+    error(cli_daemon_did_not_stop);
+wait_for_daemon_stop(Path, Attempts) ->
+    case soma_cli:ping(#{socket => Path}) of
+        1 ->
+            ok;
+        0 ->
+            timer:sleep(10),
+            wait_for_daemon_stop(Path, Attempts - 1)
     end.
 
 frame(Payload) ->
