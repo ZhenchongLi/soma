@@ -5,7 +5,7 @@
 
 -define(ARTIFACT_VERSION, <<"soma-service-result-v1">>).
 
--export([present/4]).
+-export([present/4, publish/5]).
 
 -spec present(binary(), term(), pos_integer(), file:filename_all()) ->
     {ok, term()} | {error, artifact_publish_failed}.
@@ -29,8 +29,9 @@ present_artifact(TaskId, Encoded, InlineBytes, DataDir) ->
         matching ->
             {ok, Descriptor};
         missing ->
-            ensure_and_publish(
-              ArtifactPath, ArtifactId, Encoded, Descriptor);
+            publish(
+              ArtifactPath, ArtifactId, Encoded, Descriptor,
+              fun file:rename/2);
         invalid ->
             {error, artifact_publish_failed}
     end.
@@ -61,38 +62,73 @@ existing_artifact(ArtifactPath, Encoded) ->
             invalid
     end.
 
-ensure_and_publish(ArtifactPath, ArtifactId, Encoded, Descriptor) ->
+-spec publish(
+    file:filename_all(), binary(), binary(), map(),
+    fun((file:filename_all(), file:filename_all()) ->
+        ok | {error, term()})) ->
+    {ok, map()} | {error, artifact_publish_failed}.
+publish(ArtifactPath, ArtifactId, Encoded, Descriptor, Rename) ->
     case filelib:ensure_dir(ArtifactPath) of
         ok ->
             publish_if_missing(
-              ArtifactPath, ArtifactId, Encoded, Descriptor);
+              ArtifactPath, ArtifactId, Encoded, Descriptor, Rename);
         {error, _Reason} ->
             {error, artifact_publish_failed}
     end.
 
-publish_if_missing(ArtifactPath, ArtifactId, Encoded, Descriptor) ->
+publish_if_missing(
+  ArtifactPath, ArtifactId, Encoded, Descriptor, Rename) ->
     case existing_artifact(ArtifactPath, Encoded) of
         matching ->
             {ok, Descriptor};
         missing ->
-            publish_new(ArtifactPath, ArtifactId, Encoded, Descriptor);
+            publish_new(
+              ArtifactPath, ArtifactId, Encoded, Descriptor, Rename);
         invalid ->
             {error, artifact_publish_failed}
     end.
 
-publish_new(ArtifactPath, ArtifactId, Encoded, Descriptor) ->
+publish_new(ArtifactPath, ArtifactId, Encoded, Descriptor, Rename) ->
     TempPath = temporary_path(ArtifactPath, ArtifactId),
     case file:open(TempPath, [write, binary, raw, exclusive]) of
         {ok, IoDevice} ->
-            case write_sync_close(IoDevice, Encoded) of
-                ok ->
-                    rename_temp(
-                      TempPath, ArtifactPath, Encoded, Descriptor);
+            case temp_ownership(IoDevice, TempPath) of
+                {ok, Ownership} ->
+                    write_owned_temp(
+                      IoDevice, Ownership, ArtifactPath, Encoded,
+                      Descriptor, Rename);
                 error ->
-                    _ = file:delete(TempPath),
+                    _ = file:close(IoDevice),
                     {error, artifact_publish_failed}
             end;
         {error, _Reason} ->
+            {error, artifact_publish_failed}
+    end.
+
+temp_ownership(IoDevice, TempPath) ->
+    case file:read_file_info(IoDevice) of
+        {ok, #file_info{type = regular} = Info} ->
+            {ok, {owned_temp, TempPath, file_identity(Info)}};
+        {ok, _NonRegular} ->
+            error;
+        {error, _Reason} ->
+            error
+    end.
+
+file_identity(#file_info{
+                 major_device = MajorDevice,
+                 minor_device = MinorDevice,
+                 inode = Inode}) ->
+    {MajorDevice, MinorDevice, Inode}.
+
+write_owned_temp(
+  IoDevice, Ownership, ArtifactPath, Encoded, Descriptor, Rename) ->
+    case write_sync_close(IoDevice, Encoded) of
+        ok ->
+            rename_temp(
+              Ownership, ArtifactPath, Encoded, Descriptor, Rename);
+        error ->
+            _ = cleanup_owned_temp(Ownership),
             {error, artifact_publish_failed}
     end.
 
@@ -120,14 +156,29 @@ close_after_sync(IoDevice, {error, _Reason}) ->
     _ = file:close(IoDevice),
     error.
 
-rename_temp(TempPath, ArtifactPath, Encoded, Descriptor) ->
-    case file:rename(TempPath, ArtifactPath) of
+rename_temp(
+  {owned_temp, TempPath, _Identity} = Ownership,
+  ArtifactPath, Encoded, Descriptor, Rename) ->
+    case Rename(TempPath, ArtifactPath) of
         ok ->
             {ok, Descriptor};
         {error, _Reason} ->
-            _ = file:delete(TempPath),
+            _ = cleanup_owned_temp(Ownership),
             case existing_artifact(ArtifactPath, Encoded) of
                 matching -> {ok, Descriptor};
                 _MissingOrInvalid -> {error, artifact_publish_failed}
             end
+    end.
+
+cleanup_owned_temp({owned_temp, TempPath, Identity}) ->
+    case file:read_link_info(TempPath) of
+        {ok, #file_info{type = regular} = Info} ->
+            case file_identity(Info) =:= Identity of
+                true -> file:delete(TempPath);
+                false -> skipped
+            end;
+        {ok, _NonRegular} ->
+            skipped;
+        {error, _Reason} ->
+            skipped
     end.
