@@ -30,6 +30,8 @@
 -export([test_lifecycle_reads_are_monotonic/1]).
 -export([test_unsafe_interrupted_state_invocation_recovers_in_doubt/1]).
 -export([test_interrupted_reader_invocation_resumes_after_restart/1]).
+-export([test_boot_recovery_registers_actor_tools_first/1]).
+-export([test_rejection_reason_stays_bounded_for_large_plans/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -56,7 +58,9 @@ all() ->
      test_tool_crash_is_bounded_and_service_runs_again,
      test_lifecycle_reads_are_monotonic,
      test_unsafe_interrupted_state_invocation_recovers_in_doubt,
-     test_interrupted_reader_invocation_resumes_after_restart].
+     test_interrupted_reader_invocation_resumes_after_restart,
+     test_boot_recovery_registers_actor_tools_first,
+     test_rejection_reason_stays_bounded_for_large_plans].
 
 init_per_testcase(
   test_tool_crash_is_bounded_and_service_runs_again, Config) ->
@@ -96,6 +100,28 @@ init_per_testcase(
     {ok, Started} = application:ensure_all_started(soma_actor),
     ok = soma_tool_registry:register_tool(
            soma_service_hanging_state_tool:manifest()),
+    [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
+init_per_testcase(
+  test_boot_recovery_registers_actor_tools_first, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [sleep, ask_actor]}),
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    ok = application:set_env(soma_runtime, event_store_log, Path),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
+init_per_testcase(
+  test_rejection_reason_stays_bounded_for_large_plans, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo]}),
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    ok = application:set_env(soma_runtime, event_store_log, Path),
+    {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
 init_per_testcase(
   test_interrupted_reader_invocation_resumes_after_restart, Config) ->
@@ -190,6 +216,8 @@ end_per_testcase(TestCase, Config)
            test_service_cancel_cleans_tool_worker_and_cli_process;
        TestCase =:= test_tool_crash_is_bounded_and_service_runs_again;
        TestCase =:= test_lifecycle_reads_are_monotonic;
+       TestCase =:= test_boot_recovery_registers_actor_tools_first;
+       TestCase =:= test_rejection_reason_stays_bounded_for_large_plans;
        TestCase =:=
            test_unsafe_interrupted_state_invocation_recovers_in_doubt;
        TestCase =:=
@@ -1135,6 +1163,115 @@ test_interrupted_reader_invocation_resumes_after_restart(Config) ->
     ?assertEqual(1, length([started || <<"run.started">> <- RunEventTypes])),
     ?assertEqual(1, length([resumed || <<"run.resumed">> <- RunEventTypes])),
     ?assertNot(lists:member(<<"run.failed">>, RunEventTypes)).
+
+%% Review finding 1 (#244): service recovery must never run before the
+%% actor-owned descriptors exist. A durable crash-window trail (accepted +
+%% run.started, no tool.started) whose pending step is ask_actor has to
+%% resolve the descriptor on boot instead of failing {unregistered_tool, _}.
+test_boot_recovery_registers_actor_tools_first(Config) ->
+    StorePid = runtime_event_store(),
+
+    %% Seed one completed invocation to clone production event shapes from.
+    TemplateStep = #{id => template_sleep,
+                     tool => sleep,
+                     args => #{ms => 1},
+                     timeout_ms => 5000},
+    TemplateEnvelope = #{kind => invoke,
+                         api_version => <<"1">>,
+                         request_id => <<"svc-boot-order-template">>,
+                         operation => #{kind => steps,
+                                        steps => [TemplateStep]}},
+    {ok, #{task_id := TemplateTaskId}} =
+        soma_service:invoke(TemplateEnvelope),
+    {ok, _} = wait_for_status(TemplateTaskId, succeeded, 200),
+
+    Events = soma_event_store:all(StorePid),
+    [AcceptedTemplate | _] =
+        [Event || #{event_type := <<"service.task.accepted">>,
+                    task_id := EventTaskId} = Event <- Events,
+                  EventTaskId =:= TemplateTaskId],
+    TemplateRunId = maps:get(run_id, AcceptedTemplate),
+    [RunStartedTemplate | _] =
+        [Event || #{event_type := <<"run.started">>,
+                    run_id := EventRunId} = Event <- Events,
+                  EventRunId =:= TemplateRunId],
+
+    %% Synthesize the crash-window trail with an ask_actor pending step.
+    TaskId = <<"svc-boot-order-task">>,
+    RequestId = <<"svc-boot-order-request">>,
+    RunId = <<"svc-boot-order-run">>,
+    AskStep = #{id => boot_order_ask,
+                tool => ask_actor,
+                args => #{target => <<"svc-boot-order-nobody">>,
+                          message => <<"hello">>},
+                timeout_ms => 5000},
+    AcceptedSynthetic =
+        maps:without(
+          [event_id, timestamp],
+          AcceptedTemplate#{task_id => TaskId,
+                            request_id => RequestId,
+                            run_id => RunId}),
+    TemplatePayload = maps:get(payload, RunStartedTemplate),
+    TemplateOptions = maps:get(run_options, TemplatePayload),
+    SyntheticOptions = TemplateOptions#{run_id => RunId,
+                                        request_id => RequestId},
+    RunStartedSynthetic =
+        maps:without(
+          [event_id, timestamp],
+          RunStartedTemplate#{run_id => RunId,
+                              payload =>
+                                  TemplatePayload#{
+                                    steps => [AskStep],
+                                    run_options => SyntheticOptions}}),
+    ok = soma_event_store:append(StorePid, AcceptedSynthetic),
+    ok = soma_event_store:append(StorePid, RunStartedSynthetic),
+
+    ok = application:stop(soma_actor),
+    ok = application:stop(soma_runtime),
+
+    ok = application:set_env(
+           soma_runtime, event_store_log, ?config(log_path, Config)),
+    {ok, _RuntimeStarted} = application:ensure_all_started(soma_runtime),
+    {ok, _ActorStarted} = application:ensure_all_started(soma_actor),
+
+    %% The recovered run fails (the ask target does not exist), but it must
+    %% fail through a resolved, started tool call — never unregistered_tool.
+    {ok, Recovered} = wait_for_status(TaskId, failed, 200),
+    ReplayedStorePid = runtime_event_store(),
+    RunEvents = soma_event_store:by_run(ReplayedStorePid, RunId),
+    RunEventTypes = [maps:get(event_type, Event) || Event <- RunEvents],
+    ?assert(lists:member(<<"tool.started">>, RunEventTypes)),
+    Encoded = term_to_binary({Recovered, RunEvents}),
+    ?assertEqual(nomatch, binary:match(Encoded, <<"unregistered_tool">>)),
+    ok.
+
+%% Review finding 2 (#244): rejection data must not grow with the plan. A
+%% large all-disallowed plan keeps both the public reply and the durable
+%% terminal event bounded.
+test_rejection_reason_stays_bounded_for_large_plans(_Config) ->
+    StorePid = runtime_event_store(),
+    Steps =
+        [#{id => list_to_atom("reject_step_" ++ integer_to_list(N)),
+           tool => file_write,
+           args => #{}}
+         || N <- lists:seq(1, 300)],
+    Envelope = #{kind => invoke,
+                 api_version => <<"1">>,
+                 request_id => <<"svc-bounded-rejection">>,
+                 operation => #{kind => steps, steps => Steps}},
+    {ok, Public} = soma_service:invoke(Envelope),
+    ?assertEqual(rejected, maps:get(status, Public)),
+    {policy_rejected, {tools_not_allowed, Disallowed}} =
+        maps:get(reason, Public),
+    ?assertEqual([file_write], Disallowed),
+    ?assert(byte_size(term_to_binary(Public)) < 1024),
+    Events = soma_event_store:all(StorePid),
+    [TerminalEvent | _] =
+        [Event || #{event_type := <<"service.task.terminal">>,
+                    request_id := EventRequestId} = Event <- Events,
+                  EventRequestId =:= <<"svc-bounded-rejection">>],
+    ?assert(byte_size(term_to_binary(TerminalEvent)) < 1024),
+    ok.
 
 run_fresh_service_vm(Spec) ->
     EncodedSpec = base64:encode(term_to_binary(Spec, [deterministic])),
