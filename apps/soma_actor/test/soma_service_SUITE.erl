@@ -14,6 +14,7 @@
 -export([test_missing_correlation_defaults_to_task_watch_order/1]).
 -export([test_watch_cursor_resumes_and_page_limit_is_clamped/1]).
 -export([test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads/1]).
+-export([test_cancel_is_terminal_and_idempotent_after_teardown/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
@@ -49,6 +50,7 @@ all() ->
      test_missing_correlation_defaults_to_task_watch_order,
      test_watch_cursor_resumes_and_page_limit_is_clamped,
      test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads,
+     test_cancel_is_terminal_and_idempotent_after_teardown,
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
@@ -145,6 +147,17 @@ init_per_testcase(
            #{allowed_tools => [echo]}),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started} | Config];
+init_per_testcase(
+  test_cancel_is_terminal_and_idempotent_after_teardown, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [service_idempotent_cancel_cli]}),
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    ok = application:set_env(soma_runtime, event_store_log, Path),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
 init_per_testcase(
   test_service_cancel_cleans_tool_worker_and_cli_process, Config) ->
     ok = ensure_loaded(soma_actor),
@@ -285,6 +298,7 @@ end_per_testcase(TestCase, Config)
        TestCase =:= test_watch_cursor_resumes_and_page_limit_is_clamped;
        TestCase =:=
            test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads;
+       TestCase =:= test_cancel_is_terminal_and_idempotent_after_teardown;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
@@ -1388,6 +1402,74 @@ test_service_cancel_cleans_tool_worker_and_cli_process(Config) ->
 
         {ok, Terminal} = wait_for_status(TaskId, cancelled, 100),
         ?assertEqual(cancelled, maps:get(status, Terminal))
+    after
+        maybe_cancel_run(RunPid)
+    end.
+
+test_cancel_is_terminal_and_idempotent_after_teardown(Config) ->
+    ServicePid = whereis(soma_service),
+    {Helper, PidFile} = write_deadline_cli_stub(?config(tmp_dir, Config)),
+    ok = soma_tool_registry:register_tool(
+           #{name => service_idempotent_cancel_cli,
+             effect => reader,
+             idempotent => true,
+             timeout_ms => 60000,
+             adapter => cli,
+             executable => Helper,
+             argv => [PidFile]}),
+    Step = #{id => idempotent_cancel_step,
+             tool => service_idempotent_cancel_cli,
+             args => #{value => <<"ignored">>},
+             timeout_ms => 60000},
+    Envelope = #{kind => invoke,
+                 api_version => <<"1">>,
+                 request_id => <<"service-idempotent-cancel-cli">>,
+                 operation => #{kind => steps, steps => [Step]}},
+
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(Envelope),
+    RunPid = wait_for_monitored_run(ServicePid, 100),
+    StorePid = runtime_event_store(),
+    RunId = wait_for_run_started(StorePid, [Step], 100),
+    ok = wait_for_run_event(StorePid, RunId, <<"tool.started">>, 100),
+    WorkerPid = tool_call_pid_from(StorePid, RunId),
+    OsPid = wait_for_os_pid(PidFile, 100),
+    try
+        ?assert(is_process_alive(RunPid)),
+        ?assert(is_process_alive(WorkerPid)),
+        ?assert(os_process_alive(OsPid)),
+
+        {ok, #{status := cancelled} = InitialTerminal} =
+            soma_service:cancel(TaskId),
+        ?assertNot(is_process_alive(RunPid)),
+        ?assertNot(is_process_alive(WorkerPid)),
+        ?assertNot(os_process_alive(OsPid)),
+
+        InitialEvents =
+            soma_event_store:by_correlation(StorePid, TaskId),
+        InitialEventCount = length(InitialEvents),
+        ?assertEqual(
+           1,
+           length(
+             [Event || Event <- InitialEvents,
+                       maps:get(event_type, Event) =:=
+                           <<"service.task.cancel_requested">>])),
+        ?assertEqual(
+           1,
+           length(
+             [Event || Event <- InitialEvents,
+                       maps:get(event_type, Event) =:=
+                           <<"service.task.terminal">>])),
+
+        {ok, RepeatedTerminal} = soma_service:cancel(TaskId),
+        RepeatedEventCount = length(
+                               soma_event_store:by_correlation(
+                                 StorePid, TaskId)),
+        ?assertEqual(
+           {InitialTerminal, InitialEventCount},
+           {RepeatedTerminal, RepeatedEventCount}),
+        ?assertEqual(ServicePid, whereis(soma_service)),
+        ?assert(is_process_alive(ServicePid))
     after
         maybe_cancel_run(RunPid)
     end.
