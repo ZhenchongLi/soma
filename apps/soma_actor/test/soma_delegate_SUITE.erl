@@ -19,6 +19,7 @@
 -export([test_cancel_tears_down_llm_run_tool_and_os_children_once/1]).
 -export([test_concurrent_tasks_isolate_state_workers_and_leases/1]).
 -export([test_terminal_cleanup_scrubs_task_state_before_fresh_request/1]).
+-export([test_delegate_events_are_bounded_stable_and_scrubbed/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -35,7 +36,8 @@ all() ->
      test_task_leases_are_stable_and_released_once_for_all_outcomes,
      test_cancel_tears_down_llm_run_tool_and_os_children_once,
      test_concurrent_tasks_isolate_state_workers_and_leases,
-     test_terminal_cleanup_scrubs_task_state_before_fresh_request].
+     test_terminal_cleanup_scrubs_task_state_before_fresh_request,
+     test_delegate_events_are_bounded_stable_and_scrubbed].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -1354,6 +1356,208 @@ expected_cleanup_status(failed) -> failed;
 expected_cleanup_status(timeout) -> timeout;
 expected_cleanup_status(cancelled) -> cancelled;
 expected_cleanup_status(in_doubt) -> in_doubt.
+
+test_delegate_events_are_bounded_stable_and_scrubbed(_Config) ->
+    Observer = self(),
+    TaskPid = self(),
+    MonitorRef = make_ref(),
+    Secret = <<"delegate-api-key-secret-sentinel">>,
+    ProductSession = <<"delegate-product-session-sentinel">>,
+    Conversation = <<"delegate-product-conversation-sentinel">>,
+    RoundSnapshot = <<"delegate-round-snapshot-sentinel">>,
+    OpaqueHandle = <<"delegate-event-opaque-handle-sentinel">>,
+    OversizedReason =
+        binary:copy(<<"delegate-oversized-reason-class">>, 250),
+    Port = open_port({spawn_executable, "/bin/cat"}, [binary]),
+    RawLease =
+        {delegate_event_raw_lease, MonitorRef, Port, Secret},
+    LeaseRequest =
+        #{name => <<"delegate-event-lease">>,
+          adapter => soma_delegate_test_lease_adapter,
+          options => #{observer => Observer,
+                       opaque_handle => OpaqueHandle,
+                       raw_lease => RawLease}},
+    BlockedRound =
+        #{llm => #{directive => hang, timeout_ms => 60000},
+          decision => terminal,
+          round_snapshot => RoundSnapshot,
+          provider_config => #{api_key => Secret},
+          executable => <<"/secret/delegate/event/tool">>},
+    RequestId = <<"delegate-request-public-events">>,
+    CorrelationId = <<"delegate-correlation-public-events">>,
+    TaskSpec =
+        #{request_id => RequestId,
+          correlation_id => CorrelationId,
+          objective =>
+              #{pid => TaskPid,
+                monitor_ref => MonitorRef,
+                port => Port,
+                function => fun() -> Secret end,
+                secret => Secret},
+          output_contract => #{secret => Secret},
+          context_checkpoint =>
+              #{product_session_data => ProductSession,
+                product_conversation_data => Conversation,
+                round_snapshot => RoundSnapshot},
+          budgets => #{secret => Secret},
+          model_config => #{api_key => Secret},
+          lease_requests => [LeaseRequest],
+          round_sequence => [BlockedRound, BlockedRound]},
+    try
+        {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+        CoordinatorPid = coordinator_for_task(TaskId),
+        [{GuardPid, <<"delegate-event-lease">>, OpaqueHandle,
+          RawLease}] = wait_for_lease_acquisitions(1, []),
+        {_RoundOneData, RoundOne} =
+            wait_for_active_round(CoordinatorPid, 1, 100),
+        OversizedOutcome =
+            #{status => succeeded,
+              decision => continue,
+              reason =>
+                  #{reason_class => OversizedReason,
+                    secret => Secret,
+                    pid => TaskPid,
+                    monitor_ref => MonitorRef,
+                    port => Port},
+              usage => #{tokens => 7, secret => Secret},
+              mutation => #{secret => Secret, pid => TaskPid},
+              unknown_outcome =>
+                  #{raw_lease => RawLease, outcome => unknown},
+              terminal_result =>
+                  #{product_session_data => ProductSession,
+                    product_conversation_data => Conversation,
+                    round_snapshot => RoundSnapshot}},
+        ?assert(byte_size(
+                  term_to_binary(OversizedOutcome, [deterministic])) <
+                16384),
+        send_round_result(
+          CoordinatorPid, TaskId, RoundOne, OversizedOutcome),
+        {_RoundTwoData, _RoundTwo} =
+            wait_for_active_round(CoordinatorPid, 2, 100),
+
+        {ok, #{status := cancelled}} = soma_delegate:cancel(TaskId),
+        wait_for_process_dead(CoordinatorPid, 100),
+        wait_for_process_dead(GuardPid, 100),
+        ?assertEqual(
+           [{GuardPid, <<"delegate-event-lease">>, RawLease}],
+           wait_for_lease_releases(1, [])),
+
+        StorePid = event_store_pid(),
+        DelegateEvents =
+            [Event || Event <-
+                          soma_event_store:by_correlation(
+                            StorePid, CorrelationId),
+                      is_delegate_event(Event)],
+        ExpectedTypes =
+            [<<"delegate.task.accepted">>,
+             <<"delegate.task.running">>,
+             <<"delegate.round.started">>,
+             <<"delegate.round.completed">>,
+             <<"delegate.round.started">>,
+             <<"delegate.task.cancel_requested">>,
+             <<"delegate.round.completed">>,
+             <<"delegate.task.cleanup">>,
+             <<"delegate.task.terminal">>],
+        ?assertEqual(
+           ExpectedTypes,
+           [maps:get(event_type, Event) || Event <- DelegateEvents]),
+        ?assertEqual(
+           [0, 0, 1, 1, 2, 0, 2, 0, 0],
+           [maps:get(round, Event) || Event <- DelegateEvents]),
+        ?assert(lists:all(
+                  fun(Event) ->
+                          maps:get(task_id, Event) =:= TaskId andalso
+                          maps:get(correlation_id, Event) =:=
+                              CorrelationId
+                  end,
+                  DelegateEvents)),
+
+        EventKeys =
+            lists:sort(
+              [correlation_id, event_id, event_type, payload, round,
+               run_id, session_id, step_id, task_id, timestamp,
+               tool_call_id]),
+        AllowedPayloadKeys =
+            [mutation_count, original_bytes, phase, reason_class,
+             status, truncated, unknown_outcome_count, usage_count],
+        ?assertEqual(4096, soma_delegate_event:max_bytes()),
+        lists:foreach(
+          fun(Event) ->
+                  ?assertEqual(EventKeys,
+                               lists:sort(maps:keys(Event))),
+                  Payload = maps:get(payload, Event),
+                  ?assert(is_map(Payload)),
+                  ?assert(lists:all(
+                            fun(Key) ->
+                                    lists:member(
+                                      Key, AllowedPayloadKeys)
+                            end,
+                            maps:keys(Payload))),
+                  ?assert(byte_size(
+                            term_to_binary(Event, [deterministic])) =<
+                          soma_delegate_event:max_bytes()),
+                  ?assertEqual([], delegate_sensitive_terms(Event))
+          end,
+          DelegateEvents),
+        [FirstRoundCompleted | _] =
+            [Event || Event <- DelegateEvents,
+                      maps:get(event_type, Event) =:=
+                          <<"delegate.round.completed">>],
+        FirstRoundPayload = maps:get(payload, FirstRoundCompleted),
+        ?assertEqual(true, maps:get(truncated, FirstRoundPayload)),
+        ?assert(maps:get(original_bytes, FirstRoundPayload) >
+                soma_delegate_event:max_bytes()),
+        [TerminalEvent] =
+            [Event || Event <- DelegateEvents,
+                      maps:get(event_type, Event) =:=
+                          <<"delegate.task.terminal">>],
+        ?assertMatch(
+           #{status := cancelled,
+             mutation_count := 1,
+             unknown_outcome_count := 1},
+           maps:get(payload, TerminalEvent)),
+
+        ForbiddenValues =
+            [TaskPid, MonitorRef, Port, Secret, ProductSession,
+             Conversation, RoundSnapshot, OpaqueHandle, RawLease],
+        lists:foreach(
+          fun(ForbiddenValue) ->
+                  ?assertNot(
+                     term_contains(DelegateEvents, ForbiddenValue))
+          end,
+          ForbiddenValues),
+        Trace =
+            iolist_to_binary(
+              soma_trace:render(StorePid, CorrelationId)),
+        ?assertNotEqual(
+           nomatch,
+           binary:match(Trace,
+                        <<"delegate.round.completed">>)),
+        ?assertNotEqual(nomatch,
+                        binary:match(Trace, <<"round=2">>))
+    after
+        erlang:port_close(Port)
+    end.
+
+is_delegate_event(#{event_type := <<"delegate.", _/binary>>}) ->
+    true;
+is_delegate_event(_Event) ->
+    false.
+
+delegate_sensitive_terms(Term) when is_map(Term) ->
+    lists:append(
+      [delegate_sensitive_terms(Value)
+       || Value <- maps:keys(Term) ++ maps:values(Term)]);
+delegate_sensitive_terms(Term) when is_list(Term) ->
+    lists:append([delegate_sensitive_terms(Value) || Value <- Term]);
+delegate_sensitive_terms(Term) when is_tuple(Term) ->
+    delegate_sensitive_terms(tuple_to_list(Term));
+delegate_sensitive_terms(Term)
+  when is_pid(Term); is_port(Term); is_reference(Term);
+       is_function(Term) ->
+    [Term];
+delegate_sensitive_terms(_Term) ->
+    [].
 
 assert_task_lease_lifecycle(Outcome) ->
     OutcomeBin = atom_to_binary(Outcome),
