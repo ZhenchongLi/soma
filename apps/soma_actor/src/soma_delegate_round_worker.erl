@@ -140,22 +140,40 @@ handle_event(info,
                           ActiveRun =
                               #{run_id := RunId},
                       work := Work}) ->
-    finish_run_child(ActiveRun),
-    report_round_result(
-      Data#{active_run := undefined},
-      #{status => succeeded,
-        phase => action,
-        decision => maps:get(decision, Work, terminal),
-        terminal_result => #{status => succeeded, outputs => Outputs}});
+    %% A requested cancel (deadline or explicit) is sticky: a run success
+    %% racing in before the cancel took effect must not win back the round.
+    case maps:get(cancel_status, ActiveRun, undefined) of
+        undefined ->
+            finish_run_child(ActiveRun),
+            report_round_result(
+              Data#{active_run := undefined},
+              #{status => succeeded,
+                phase => action,
+                decision => maps:get(decision, Work, terminal),
+                terminal_result =>
+                    #{status => succeeded, outputs => Outputs}});
+        PendingStatus ->
+            finish_run_child(ActiveRun),
+            report_round_result(
+              Data#{active_run := undefined},
+              #{status => PendingStatus, phase => action})
+    end;
 handle_event(info,
              {run_failed, RunId, Reason},
              waiting_run,
              Data = #{active_run :=
                           ActiveRun = #{run_id := RunId}}) ->
     finish_run_child(ActiveRun),
-    report_round_result(
-      Data#{active_run := undefined},
-      #{status => failed, phase => action, reason => Reason});
+    case maps:get(cancel_status, ActiveRun, undefined) of
+        undefined ->
+            report_round_result(
+              Data#{active_run := undefined},
+              #{status => failed, phase => action, reason => Reason});
+        PendingStatus ->
+            report_round_result(
+              Data#{active_run := undefined},
+              #{status => PendingStatus, phase => action})
+    end;
 handle_event(info,
              {run_timeout, RunId},
              waiting_run,

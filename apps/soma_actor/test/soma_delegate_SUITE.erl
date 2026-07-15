@@ -889,11 +889,13 @@ test_round_snapshot_is_bounded_task_only_and_handle_scoped(_Config) ->
 
         CoordinatorPid = coordinator_for_task(TaskId),
         {running, CoordinatorData} = sys:get_state(CoordinatorPid),
+        ScopedLeases = maps:get(scoped_leases, CoordinatorData),
+        ?assert(is_reference(maps:get(guard_mref, ScopedLeases))),
         ?assertEqual(
            #{requests => [],
              handles => #{LeaseName => OpaqueHandle},
              guard => GuardPid},
-           maps:get(scoped_leases, CoordinatorData)),
+           maps:remove(guard_mref, ScopedLeases)),
         lists:foreach(
           fun(ForbiddenTerm) ->
                   ?assertEqual(false,
@@ -1426,6 +1428,16 @@ test_concurrent_tasks_isolate_state_workers_and_leases(_Config) ->
           {GuardPidB, LeaseNameB, OpaqueHandleB, RawLeaseB}]),
        lists:sort(Acquisitions)),
 
+    StripGuardMRef =
+        fun(Data) ->
+                Projected =
+                    maps:with([objective, context_checkpoint, budgets,
+                               usage, scoped_leases], Data),
+                Projected#{scoped_leases :=
+                               maps:remove(
+                                 guard_mref,
+                                 maps:get(scoped_leases, Projected))}
+        end,
     ?assertEqual(
        #{objective => ObjectiveA,
          context_checkpoint => CheckpointA,
@@ -1435,8 +1447,7 @@ test_concurrent_tasks_isolate_state_workers_and_leases(_Config) ->
              #{requests => [],
                handles => #{LeaseNameA => OpaqueHandleA},
                guard => GuardPidA}},
-       maps:with([objective, context_checkpoint, budgets, usage,
-                  scoped_leases], CoordinatorDataA)),
+       StripGuardMRef(CoordinatorDataA)),
     ?assertEqual(
        #{objective => ObjectiveB,
          context_checkpoint => CheckpointB,
@@ -1446,8 +1457,7 @@ test_concurrent_tasks_isolate_state_workers_and_leases(_Config) ->
              #{requests => [],
                handles => #{LeaseNameB => OpaqueHandleB},
                guard => GuardPidB}},
-       maps:with([objective, context_checkpoint, budgets, usage,
-                  scoped_leases], CoordinatorDataB)),
+       StripGuardMRef(CoordinatorDataB)),
     lists:foreach(
       fun(OtherTaskTerm) ->
               ?assertNot(term_contains(CoordinatorDataA, OtherTaskTerm))
@@ -1887,8 +1897,9 @@ assert_dead_lease_guard_fails_task() ->
     exit(GuardPid, kill),
     {ok, Terminal} = wait_for_task_terminal(TaskId, 200),
     ?assertEqual(failed, maps:get(status, Terminal)),
-    CancelReply = soma_delegate:cancel(TaskId),
-    ?assertMatch({ok, #{status := _Terminal}}, CancelReply),
+    %% Cancel after the terminal is the ingress's typed not_running —
+    %% bounded, and never a coordinator crash into the ingress.
+    ?assertEqual({error, not_running}, soma_delegate:cancel(TaskId)),
     {ok, _Status} = soma_delegate:status(TaskId),
     ok.
 

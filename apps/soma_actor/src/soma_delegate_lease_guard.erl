@@ -77,10 +77,13 @@ terminate(_Reason, _StateName, #{leases := Leases}) ->
 
 acquire_requests([], Handles, Leases) ->
     {ok, Handles, Leases};
+%% Lease names are part of the round-snapshot boundary: only bounded
+%% binaries may become resource-handle keys, so process-local terms (pids,
+%% refs) can never reach a worker through the handles map.
 acquire_requests(
   [#{name := Name, adapter := Adapter} = Request | Remaining],
   Handles, Leases)
-  when is_atom(Adapter) ->
+  when is_binary(Name), byte_size(Name) =< 255, is_atom(Adapter) ->
     Options = maps:get(options, Request, #{}),
     case maps:is_key(Name, Handles) of
         true ->

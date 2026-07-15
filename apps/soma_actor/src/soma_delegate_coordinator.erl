@@ -139,6 +139,33 @@ handle_event(info,
     cancel_round_timers(ActiveRound),
     handle_round_worker_down(ActiveRound, RoundId, Data);
 handle_event(info,
+             {'DOWN', GuardMRef, process, GuardPid, Reason},
+             _StateName,
+             Data = #{scoped_leases :=
+                          ScopedLeases = #{guard := GuardPid,
+                                           guard_mref := GuardMRef}}) ->
+    %% The lease guard died under the coordinator: its handles are stale
+    %% and its raw leases are lost, so the task fails here at the
+    %% ownership boundary — never a wedged `running` task or a `noproc`
+    %% crash inside a later cleanup.
+    ClearedLeases = ScopedLeases#{guard := undefined,
+                                  guard_mref := undefined},
+    Data1 = Data#{scoped_leases := ClearedLeases},
+    Data2 =
+        case maps:get(active_round, Data1, undefined) of
+            undefined ->
+                Data1;
+            ActiveRound = #{worker_pid := WorkerPid,
+                            worker_mref := WorkerMRef} ->
+                cancel_round_timers(ActiveRound),
+                _ = erlang:demonitor(WorkerMRef, [flush]),
+                _ = supervisor:terminate_child(
+                      soma_delegate_round_sup, WorkerPid),
+                Data1#{active_round := undefined}
+        end,
+    start_cleanup(
+      #{status => failed, reason => {lease_guard_lost, Reason}}, Data2);
+handle_event(info,
              {timeout, RoundTimer,
               {delegate_round_timeout, TaskId, RoundId, WorkerPid,
                WorkerIdentity, ResultCapability}},
@@ -277,6 +304,35 @@ commit_finished_round(
           Failure, RoundId, ActiveRound, Data),
     continue_after_pre_stateful_failure(
       Failure, ClearedData);
+commit_finished_round(
+  _Result, RoundId,
+  ActiveRound = #{cancel_status := timeout,
+                  unsafe_action_dispatched := true},
+  Data) ->
+    %% The deadline decision is sticky. A late result from dispatched
+    %% non-idempotent work can no longer succeed: the mutation happened,
+    %% so the honest terminal is in_doubt with the invocation on the
+    %% ledgers — never a post-deadline success.
+    InvocationIdentity = maps:get(unsafe_invocation, ActiveRound),
+    Mutation = InvocationIdentity#{round => RoundId},
+    UnknownOutcome =
+        #{round => RoundId,
+          invocation => InvocationIdentity,
+          outcome => unknown},
+    Projection = #{status => in_doubt,
+                   reason => deadline_after_unsafe_dispatch,
+                   round => RoundId},
+    LedgeredData =
+        Data#{mutation_ledger :=
+                  maps:get(mutation_ledger, Data) ++ [Mutation],
+              unknown_outcome_ledger :=
+                  maps:get(unknown_outcome_ledger, Data) ++
+                      [UnknownOutcome],
+              recent_round_data := Projection},
+    ClearedData =
+        clear_committed_round(
+          Projection, RoundId, ActiveRound, LedgeredData),
+    start_cleanup(Projection, ClearedData);
 commit_finished_round(
   Result, RoundId,
   ActiveRound = #{cancel_status := cancelled}, Data) ->
@@ -638,19 +694,36 @@ acquire_scoped_leases(
                   lease_requests => Requests},
     case soma_delegate_lease_sup:start_guard(GuardOpts) of
         {ok, GuardPid} ->
+            %% The coordinator owns the guard: monitor it so a guard death
+            %% fails the task at the ownership boundary instead of leaving
+            %% stale handles active behind a running task.
+            GuardMRef = erlang:monitor(process, GuardPid),
             Handles = soma_delegate_lease_guard:handles(GuardPid),
             UpdatedLeases = ScopedLeases#{requests := [],
                                           handles := Handles,
-                                          guard := GuardPid},
+                                          guard := GuardPid,
+                                          guard_mref => GuardMRef},
             {ok, Data#{scoped_leases := UpdatedLeases}};
         {error, _Reason} ->
             {error, lease_acquisition_failed, Data}
     end.
 
 release_scoped_leases(
-  #{scoped_leases := #{guard := GuardPid}})
+  #{scoped_leases := ScopedLeases = #{guard := GuardPid}})
   when is_pid(GuardPid) ->
-    ok = soma_delegate_lease_guard:release_all(GuardPid),
+    case maps:get(guard_mref, ScopedLeases, undefined) of
+        undefined -> ok;
+        GuardMRef -> erlang:demonitor(GuardMRef, [flush])
+    end,
+    %% A guard that died before cleanup has already lost its leases; the
+    %% release call must not crash the coordinator's terminal transition.
+    try soma_delegate_lease_guard:release_all(GuardPid) of
+        ok -> ok
+    catch
+        exit:{noproc, _CallDetails} -> ok;
+        exit:{normal, _CallDetails} -> ok;
+        exit:{shutdown, _CallDetails} -> ok
+    end,
     _ = supervisor:terminate_child(soma_delegate_lease_sup, GuardPid),
     ok;
 release_scoped_leases(_Data) ->
