@@ -142,7 +142,7 @@ test_socket_duplicate_invoke_reuses_task_once(_Config) ->
                     soma_event_store:by_correlation(
                       runtime_event_store(), TaskId),
                 maps:get(event_type, Event) =:= <<"run.started">>],
-        ?assertEqual(2, length(RunStarts))
+        ?assertEqual(1, length(RunStarts))
     after
         stop_listener(Listener, Path)
     end.
