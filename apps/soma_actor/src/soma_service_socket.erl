@@ -22,33 +22,44 @@ start_link(#{socket := Path}) ->
     end.
 
 listen(Parent, Path) ->
-    case gen_tcp:listen(
-           0,
-           [{ifaddr, {local, Path}}, binary, {packet, raw},
-            {active, false}, {reuseaddr, true}]) of
-        {ok, ListenSocket} ->
+    process_flag(trap_exit, true),
+    case soma_socket_path:listen(Path) of
+        {ok, ListenSocket, OwnershipToken} ->
             Parent ! {self(), listening},
-            accept_loop(ListenSocket);
+            try accept_loop(ListenSocket)
+            after
+                _ = soma_socket_path:close(
+                      ListenSocket, OwnershipToken)
+            end;
         {error, Reason} ->
             Parent ! {self(), {error, Reason}}
     end.
 
 accept_loop(ListenSocket) ->
-    case gen_tcp:accept(ListenSocket) of
-        {ok, Socket} ->
-            Handler = spawn(fun() -> wait_then_handle(Socket) end),
-            case gen_tcp:controlling_process(Socket, Handler) of
-                ok ->
-                    Handler ! proceed;
-                {error, _Reason} ->
-                    exit(Handler, kill),
-                    gen_tcp:close(Socket)
-            end,
+    receive
+        {'EXIT', _From, normal} ->
             accept_loop(ListenSocket);
-        {error, closed} ->
-            ok;
-        {error, _Reason} ->
-            accept_loop(ListenSocket)
+        {'EXIT', _From, _Reason} ->
+            ok
+    after 0 ->
+        case gen_tcp:accept(ListenSocket, 200) of
+            {ok, Socket} ->
+                Handler = spawn(fun() -> wait_then_handle(Socket) end),
+                case gen_tcp:controlling_process(Socket, Handler) of
+                    ok ->
+                        Handler ! proceed;
+                    {error, _Reason} ->
+                        exit(Handler, kill),
+                        gen_tcp:close(Socket)
+                end,
+                accept_loop(ListenSocket);
+            {error, timeout} ->
+                accept_loop(ListenSocket);
+            {error, closed} ->
+                ok;
+            {error, _Reason} ->
+                accept_loop(ListenSocket)
+        end
     end.
 
 wait_then_handle(Socket) ->
