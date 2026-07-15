@@ -20,6 +20,7 @@
 -export([test_concurrent_tasks_isolate_state_workers_and_leases/1]).
 -export([test_terminal_cleanup_scrubs_task_state_before_fresh_request/1]).
 -export([test_delegate_events_are_bounded_stable_and_scrubbed/1]).
+-export([test_completed_delegate_preserves_existing_result_contracts/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -37,7 +38,8 @@ all() ->
      test_cancel_tears_down_llm_run_tool_and_os_children_once,
      test_concurrent_tasks_isolate_state_workers_and_leases,
      test_terminal_cleanup_scrubs_task_state_before_fresh_request,
-     test_delegate_events_are_bounded_stable_and_scrubbed].
+     test_delegate_events_are_bounded_stable_and_scrubbed,
+     test_completed_delegate_preserves_existing_result_contracts].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -1537,6 +1539,209 @@ test_delegate_events_are_bounded_stable_and_scrubbed(_Config) ->
                         binary:match(Trace, <<"round=2">>))
     after
         erlang:port_close(Port)
+    end.
+
+test_completed_delegate_preserves_existing_result_contracts(_Config) ->
+    DelegateRequestId = <<"delegate-request-result-compatibility">>,
+    DelegateCorrelationId = <<"delegate-correlation-result-compatibility">>,
+    DelegateStep =
+        #{id => <<"delegate-result-compatibility-step">>,
+          tool => echo,
+          args => #{value => <<"delegate completed first">>}},
+    DelegateSpec =
+        #{request_id => DelegateRequestId,
+          correlation_id => DelegateCorrelationId,
+          objective => <<"complete before checking existing result contracts">>,
+          round_sequence =>
+              [#{llm =>
+                     #{directive => success,
+                       output => <<"fixed compatibility decision">>},
+                 action_steps => [DelegateStep],
+                 decision => terminal}]},
+    {ok, #{task_id := DelegateTaskId}} =
+        submit_through_production_ingress(DelegateSpec),
+    ?assertEqual(
+       {ok, #{request_id => DelegateRequestId,
+              task_id => DelegateTaskId,
+              correlation_id => DelegateCorrelationId,
+              status => succeeded,
+              round => 1}},
+       wait_for_task_status(DelegateTaskId, succeeded, 200)),
+
+    ActualContracts =
+        #{service => compatibility_service_result_shape(),
+          cli => compatibility_cli_result_shape(),
+          actor => compatibility_actor_result_shape()},
+    ServiceRequestId = <<"service-single-tool">>,
+    ServiceArgs = #{value => <<"exact service output">>},
+    ServiceOutputs = #{ServiceRequestId => ServiceArgs},
+    ExpectedContracts =
+        #{service =>
+              #{accepted =>
+                    #{request_id => ServiceRequestId,
+                      status => accepted},
+                terminal =>
+                    #{request_id => ServiceRequestId,
+                      status => completed,
+                      summary =>
+                          #{result_bytes =>
+                                byte_size(
+                                  term_to_binary(
+                                    ServiceOutputs,
+                                    [deterministic]))}},
+                result => {ok, ServiceOutputs}},
+          cli =>
+              #{result_form => match,
+                completed_status => match,
+                echo_output => match},
+          actor =>
+              #{status =>
+                    #{task_id => <<"task-result-outputs">>,
+                      correlation_id => <<"task-result-outputs">>,
+                      status => completed},
+                result =>
+                    {ok, #{s1 => #{value => <<"a">>}}}}},
+    ?assertEqual(ExpectedContracts, ActualContracts).
+
+compatibility_service_result_shape() ->
+    RequestId = <<"service-single-tool">>,
+    Args = #{value => <<"exact service output">>},
+    Envelope =
+        #{kind => invoke,
+          api_version => <<"1">>,
+          request_id => RequestId,
+          scope => [<<"echo">>],
+          operation =>
+              #{kind => tool,
+                step =>
+                    #{id => RequestId,
+                      tool => echo,
+                      args => Args}}},
+    {ok, Accepted = #{task_id := TaskId}} =
+        soma_service:invoke(Envelope),
+    {ok, Terminal} =
+        wait_for_compatibility_service_status(
+          TaskId, succeeded, 100),
+    #{accepted => maps:remove(task_id, Accepted),
+      terminal => maps:remove(task_id, Terminal),
+      result => soma_service:result(TaskId)}.
+
+wait_for_compatibility_service_status(_TaskId, Expected, 0) ->
+    ct:fail({service_task_did_not_reach_status, Expected});
+wait_for_compatibility_service_status(TaskId, Expected, Attempts) ->
+    case soma_service:status(TaskId) of
+        {ok, #{status := Expected}} = Reply ->
+            Reply;
+        _NotYetTerminal ->
+            timer:sleep(10),
+            wait_for_compatibility_service_status(
+              TaskId, Expected, Attempts - 1)
+    end.
+
+compatibility_cli_result_shape() ->
+    Path = compatibility_socket_path(),
+    {ok, ServerPid} = soma_cli_server:start_link(#{socket => Path}),
+    try
+        {ok, Client} = connect_compatibility_socket(Path, 80),
+        try
+            Request =
+                <<"(run (step s1 echo (args (value \"hi\"))))">>,
+            ok = gen_tcp:send(Client, Request),
+            {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
+            #{result_form =>
+                  re:run(Reply, "^\\(result ", [{capture, none}]),
+              completed_status =>
+                  re:run(
+                    Reply, "\\(status completed\\)",
+                    [{capture, none}]),
+              echo_output =>
+                  re:run(
+                    Reply,
+                    "\\(s1 \\(value \"hi\"\\)\\)",
+                    [{capture, none}])}
+        after
+            gen_tcp:close(Client)
+        end
+    after
+        stop_compatibility_cli_server(ServerPid, Path)
+    end.
+
+connect_compatibility_socket(_Path, 0) ->
+    {error, giving_up};
+connect_compatibility_socket(Path, Attempts) ->
+    case gen_tcp:connect(
+           {local, Path}, 0,
+           [binary, {packet, 4}, {active, false}]) of
+        {ok, Socket} ->
+            {ok, Socket};
+        {error, _Reason} ->
+            timer:sleep(25),
+            connect_compatibility_socket(Path, Attempts - 1)
+    end.
+
+compatibility_socket_path() ->
+    TmpDir =
+        case os:getenv("TMPDIR") of
+            false -> "/tmp";
+            Dir -> Dir
+        end,
+    Name =
+        "soma_delegate_compat_" ++ os:getpid() ++ "_" ++
+        integer_to_list(erlang:unique_integer([positive])) ++ ".sock",
+    Path = filename:join(TmpDir, Name),
+    _ = file:delete(Path),
+    Path.
+
+stop_compatibility_cli_server(ServerPid, Path) ->
+    unlink(ServerPid),
+    MRef = erlang:monitor(process, ServerPid),
+    exit(ServerPid, shutdown),
+    receive
+        {'DOWN', MRef, process, ServerPid, Reason}
+          when Reason =:= normal; Reason =:= shutdown ->
+            ok
+    after 1000 ->
+        ct:fail(compatibility_cli_server_did_not_stop)
+    end,
+    _ = file:delete(Path),
+    ok.
+
+compatibility_actor_result_shape() ->
+    StorePid = event_store_pid(),
+    Opts =
+        #{actor_id => <<"actor-result-outputs">>,
+          model_config => #{},
+          tool_policy => #{},
+          event_store => StorePid},
+    {ok, ActorPid} = soma_actor_sup:start_actor(Opts),
+    TaskId = <<"task-result-outputs">>,
+    Steps = [#{id => s1,
+               tool => echo,
+               args => #{value => <<"a">>}}],
+    Envelope =
+        #{type => <<"chat">>,
+          payload => #{text => <<"hello">>},
+          task_id => TaskId,
+          steps => Steps},
+    {ok, TaskId} = soma_actor:send(ActorPid, Envelope),
+    Status =
+        wait_for_compatibility_actor_status(
+          ActorPid, TaskId, completed, 100),
+    #{status => Status,
+      result => soma_actor:get_task_result(ActorPid, TaskId)}.
+
+wait_for_compatibility_actor_status(
+  _ActorPid, _TaskId, Expected, 0) ->
+    ct:fail({actor_task_did_not_reach_status, Expected});
+wait_for_compatibility_actor_status(
+  ActorPid, TaskId, Expected, Attempts) ->
+    case soma_actor:get_task_status(ActorPid, TaskId) of
+        #{status := Expected} = Status ->
+            Status;
+        _NotYetCompleted ->
+            timer:sleep(10),
+            wait_for_compatibility_actor_status(
+              ActorPid, TaskId, Expected, Attempts - 1)
     end.
 
 is_delegate_event(#{event_type := <<"delegate.", _/binary>>}) ->
