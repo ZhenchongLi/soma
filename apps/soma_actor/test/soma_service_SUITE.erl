@@ -15,6 +15,7 @@
 -export([test_watch_cursor_resumes_and_page_limit_is_clamped/1]).
 -export([test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads/1]).
 -export([test_cancel_is_terminal_and_idempotent_after_teardown/1]).
+-export([test_result_and_watch_unknown_task_are_not_found/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
@@ -51,6 +52,7 @@ all() ->
      test_watch_cursor_resumes_and_page_limit_is_clamped,
      test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads,
      test_cancel_is_terminal_and_idempotent_after_teardown,
+     test_result_and_watch_unknown_task_are_not_found,
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
@@ -275,6 +277,7 @@ init_per_testcase(TestCase, Config)
            test_unscoped_invocation_uses_configured_or_empty_default_policy;
        TestCase =:= test_unknown_scope_entry_does_not_create_atom;
        TestCase =:= test_timer_unsafe_deadline_rejected_before_journaling;
+       TestCase =:= test_result_and_watch_unknown_task_are_not_found;
        TestCase =:= test_lifecycle_reads_are_monotonic;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
@@ -299,6 +302,7 @@ end_per_testcase(TestCase, Config)
        TestCase =:=
            test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads;
        TestCase =:= test_cancel_is_terminal_and_idempotent_after_teardown;
+       TestCase =:= test_result_and_watch_unknown_task_are_not_found;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
@@ -678,6 +682,20 @@ test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads(
     after
         _ = erlang:port_close(Port)
     end.
+
+test_result_and_watch_unknown_task_are_not_found(_Config) ->
+    UnknownTaskId = <<"service-unknown-task-id">>,
+    Calls =
+        [{result, fun() -> soma_service:result(UnknownTaskId) end},
+         {watch,
+          fun() ->
+                  soma_service:watch(UnknownTaskId, undefined, 1)
+          end}],
+    Replies = [{Name, Call()} || {Name, Call} <- Calls],
+    ?assertEqual(
+       [{result, {error, unknown_task}},
+        {watch, {error, unknown_task}}],
+       Replies).
 
 test_oversized_result_fails_with_max_output_reason(_Config) ->
     RequestId = <<"service-oversized-result">>,
