@@ -12,6 +12,7 @@
 -export([test_coordinator_and_round_worker_split_child_ownership/1]).
 -export([test_sequential_rounds_commit_before_distinct_next_worker/1]).
 -export([test_round_snapshot_is_bounded_task_only_and_handle_scoped/1]).
+-export([test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -21,7 +22,8 @@ all() ->
      test_delegate_action_crosses_full_worker_run_tool_spine,
      test_coordinator_and_round_worker_split_child_ownership,
      test_sequential_rounds_commit_before_distinct_next_worker,
-     test_round_snapshot_is_bounded_task_only_and_handle_scoped].
+     test_round_snapshot_is_bounded_task_only_and_handle_scoped,
+     test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -567,6 +569,113 @@ test_round_snapshot_is_bounded_task_only_and_handle_scoped(_Config) ->
         end
     end.
 
+test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages(
+  _Config) ->
+    Checkpoint = #{cursor => <<"identity-commit">>},
+    Usage = #{rounds => 1, tokens => 7},
+    Mutation = #{invocation_id => <<"committed-mutation">>},
+    UnknownOutcome = #{invocation_id => <<"committed-unknown-outcome">>},
+    TerminalResult = #{status => succeeded,
+                       value => <<"committed-once">>},
+    TaskSpec =
+        #{request_id => <<"delegate-request-round-result-identity">>,
+          objective => <<"accept only the active round result">>,
+          round_sequence =>
+              [#{llm => #{directive => hang}, decision => continue},
+               #{llm => #{directive => hang}, decision => terminal}]},
+
+    {ok, #{task_id := TaskId}} =
+        submit_through_production_ingress(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    {_FirstCoordinatorData,
+     FirstActiveRound = #{round_id := FirstRoundId,
+                          worker_pid := FirstWorkerPid,
+                          worker_identity := FirstWorkerIdentity}} =
+        wait_for_active_round(CoordinatorPid, 1, 100),
+    _ = wait_for_worker_phase(
+          FirstWorkerPid, waiting_llm, active_llm, 100),
+    ?assertEqual(1, FirstRoundId),
+    ?assert(is_binary(FirstWorkerIdentity)),
+
+    ValidResult =
+        #{status => succeeded,
+          phase => decision,
+          decision => continue,
+          checkpoint => Checkpoint,
+          usage => Usage,
+          mutation => Mutation,
+          unknown_outcome => UnknownOutcome,
+          terminal_result => TerminalResult},
+    ValidMessage =
+        round_result_message(TaskId, FirstActiveRound, ValidResult),
+    ?assertMatch(
+       {delegate_round_result, TaskId, FirstRoundId, FirstWorkerPid,
+        FirstWorkerIdentity, _ResultCapability, ValidResult},
+       ValidMessage),
+    CoordinatorPid ! ValidMessage,
+
+    {CommittedData,
+     SecondActiveRound = #{round_id := SecondRoundId,
+                           worker_pid := SecondWorkerPid,
+                           worker_identity := SecondWorkerIdentity}} =
+        wait_for_active_round(CoordinatorPid, 2, 100),
+    _ = wait_for_worker_phase(
+          SecondWorkerPid, waiting_llm, active_llm, 100),
+    ?assertEqual(FirstRoundId + 1, SecondRoundId),
+    ?assertNotEqual(FirstWorkerPid, SecondWorkerPid),
+    ?assert(is_binary(SecondWorkerIdentity)),
+    ?assertNotEqual(FirstWorkerIdentity, SecondWorkerIdentity),
+
+    StableProjection = sys:get_state(CoordinatorPid),
+    InvalidRows =
+        [{stale,
+          round_result_message(
+            TaskId, FirstActiveRound#{round_id := 0}, ValidResult)},
+         {duplicate, ValidMessage},
+         {task_mismatched,
+          round_result_message(
+            <<"another-delegate-task">>, SecondActiveRound,
+            ValidResult)},
+         {round_mismatched,
+          round_result_message(
+            TaskId,
+            SecondActiveRound#{round_id := SecondRoundId + 1},
+            ValidResult)},
+         {worker_pid_mismatched,
+          round_result_message(
+            TaskId, SecondActiveRound#{worker_pid := self()},
+            ValidResult)},
+         {worker_identity_mismatched,
+          round_result_message(
+            TaskId,
+            SecondActiveRound#{worker_identity :=
+                                   <<"another-worker-identity">>},
+            ValidResult)},
+         {capability_mismatched,
+          round_result_message(
+            TaskId,
+            SecondActiveRound#{result_capability := make_ref()},
+            ValidResult)}],
+    lists:foreach(
+      fun({RowName, Message}) ->
+              CoordinatorPid ! Message,
+              ?assertEqual(
+                 {RowName, StableProjection},
+                 {RowName, sys:get_state(CoordinatorPid)})
+      end,
+      InvalidRows),
+
+    ?assertEqual(Checkpoint,
+                 maps:get(context_checkpoint, CommittedData)),
+    ?assertEqual(Usage, maps:get(usage, CommittedData)),
+    ?assertEqual([Mutation], maps:get(mutation_ledger, CommittedData)),
+    ?assertEqual([UnknownOutcome],
+                 maps:get(unknown_outcome_ledger, CommittedData)),
+    ?assertEqual(TerminalResult,
+                 maps:get(terminal_result, CommittedData)),
+
+    {ok, #{status := cancelled}} = soma_delegate:cancel(TaskId).
+
 crash_fixture(Suffix) ->
     #{request_id => <<"delegate-request-", Suffix/binary>>,
       objective => <<"hold a disposable round open">>,
@@ -677,6 +786,16 @@ send_round_result(
     CoordinatorPid !
         {delegate_round_result, TaskId, RoundId, WorkerPid,
          WorkerIdentity, ResultCapability, Result}.
+
+round_result_message(
+  TaskId,
+  #{round_id := RoundId,
+    worker_pid := WorkerPid,
+    worker_identity := WorkerIdentity,
+    result_capability := ResultCapability},
+  Result) ->
+    {delegate_round_result, TaskId, RoundId, WorkerPid,
+     WorkerIdentity, ResultCapability, Result}.
 
 assert_coordinator_owns_round(
   CoordinatorPid, RoundWorkerPid,
