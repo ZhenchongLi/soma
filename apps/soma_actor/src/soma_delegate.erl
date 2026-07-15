@@ -76,7 +76,8 @@ start_coordinator(CoordinatorOpts,
                       task_id => TaskId,
                       accepted_handle => Handle,
                       coordinator_pid => CoordinatorPid,
-                      coordinator_mref => MRef},
+                      coordinator_mref => MRef,
+                      terminal_projection => undefined},
             AdmittedState = State#{
                 requests := maps:put(RequestId, TaskId, Requests),
                 tasks := maps:put(TaskId, Route, Tasks),
@@ -97,7 +98,9 @@ remove_active_coordinator(MRef, CoordinatorPid,
                 case maps:get(coordinator_pid, Route, undefined) of
                     CoordinatorPid ->
                         Route#{coordinator_pid := undefined,
-                               coordinator_mref := undefined};
+                               coordinator_mref := undefined,
+                               terminal_projection :=
+                                   coordinator_crashed_projection()};
                     _OtherPid ->
                         Route
                 end,
@@ -143,3 +146,6 @@ mint_task_id() ->
     Suffix = integer_to_binary(
                erlang:unique_integer([positive, monotonic])),
     <<"delegate-task-", Suffix/binary>>.
+
+coordinator_crashed_projection() ->
+    #{status => failed, reason => coordinator_crashed}.
