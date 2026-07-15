@@ -10,6 +10,7 @@ ownership, and the runtime retains tool execution and resource teardown.
 | Guarantee | Proof |
 | --- | --- |
 | Separate framed AF_UNIX requests invoke an allowed tool, observe its successful lifecycle, and return the exact inline result through the production service and runtime layers without starting an LLM worker. | `soma_service_socket_SUITE:test_socket_invoke_status_and_result_end_to_end` |
+| Arbitrary non-UTF-8 bytes remain valid, lossless Lisp for both an inline result and an artifact descriptor over the real service socket. | `soma_service_socket_SUITE:test_socket_binary_results_use_lossless_lisp_bytes` |
 
 ## Criterion 2 — disconnect does not cancel accepted service work
 
@@ -45,13 +46,13 @@ ownership, and the runtime retains tool execution and resource teardown.
 
 | Guarantee | Proof |
 | --- | --- |
-| Malformed Lisp and an over-cap declared frame receive fixed typed errors before a fresh connection is served by the same listener. | `soma_service_socket_SUITE:test_socket_rejects_bad_and_oversized_frames_then_serves` |
+| A zero-length frame, malformed Lisp, and an over-cap declared frame receive fixed typed errors before a fresh connection is served by the same listener. | `soma_service_socket_SUITE:test_socket_rejects_bad_and_oversized_frames_then_serves` |
 
 ## Criterion 8 — daemon service ingress is enabled only by service configuration
 
 | Guarantee | Proof |
 | --- | --- |
-| Normal daemon startup always exposes the CLI socket and exposes the sibling service socket only when a `[service]` table is present. | `soma_service_socket_SUITE:test_daemon_service_listener_is_config_opt_in_with_sibling_default` |
+| Normal daemon startup always exposes the CLI socket and exposes the sibling service socket only when a valid `[service]` table is present; malformed table syntax and a non-string service socket reject boot before either listener starts. | `soma_service_socket_SUITE:test_daemon_service_listener_is_config_opt_in_with_sibling_default` |
 
 ## Criterion 9 — stale takeover is safe and a lost bind preserves the winner
 
@@ -64,6 +65,7 @@ ownership, and the runtime retains tool execution and resource teardown.
 | Guarantee | Proof |
 | --- | --- |
 | Both listeners delegate framing and path ownership to the shared helpers, the service socket delegates only to public service APIs, and the existing CLI disconnect-cancellation boundary remains present. | `soma_service_socket_boundary_tests:test_socket_adapters_share_transport_and_service_keeps_runtime_boundary` |
+| The new service-only `result` and `watch` forms receive bounded errors from the CLI listener without changing the pre-existing CLI wire suite. | `soma_service_socket_SUITE:test_cli_socket_rejects_service_only_forms_and_survives` |
 
 ## Criterion 11 — the compatibility matrix is complete and machine checked
 

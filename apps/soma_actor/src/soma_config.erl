@@ -85,6 +85,10 @@ collect_service([Line | Rest], Table, Service) ->
             {enabled, Config} = Service,
             collect_service(
               Rest, Table, {enabled, Config#{socket => Socket}});
+        {kv, "socket", _InvalidSocket} when Table =:= "service" ->
+            error({config_error, invalid_service_socket});
+        {invalid, Reason} ->
+            error({config_error, Reason});
         {kv, _Key, _Value} ->
             collect_service(Rest, Table, Service)
     end.
@@ -99,6 +103,8 @@ collect_llm([Line | Rest], Table, Acc) ->
             collect_llm(Rest, Table, Acc);
         {table, Name} ->
             collect_llm(Rest, Name, Acc);
+        {invalid, Reason} ->
+            error({config_error, Reason});
         {kv, Key, Value} when Table =:= "llm" ->
             collect_llm(Rest, Table, Acc#{Key => Value});
         {kv, _Key, _Value} ->
@@ -110,7 +116,7 @@ classify("") ->
 classify("#" ++ _) ->
     comment;
 classify("[" ++ Rest) ->
-    {table, string:trim(Rest, trailing, "]")};
+    classify_table(Rest);
 classify(Line) ->
     case string:split(Line, "=") of
         [RawKey, RawValue] ->
@@ -120,6 +126,23 @@ classify(Line) ->
         _ ->
             blank
     end.
+
+classify_table(Rest) ->
+    case lists:reverse(Rest) of
+        [$] | ReversedName] ->
+            Name = string:trim(lists:reverse(ReversedName)),
+            case Name =/= [] andalso valid_table_name(Name) of
+                true -> {table, Name};
+                false -> {invalid, malformed_table}
+            end;
+        _MissingClose ->
+            {invalid, malformed_table}
+    end.
+
+valid_table_name(Name) ->
+    not lists:any(
+          fun(Char) -> Char =:= $[ orelse Char =:= $] end,
+          Name).
 
 parse_value(_Key, [$" | _] = Quoted) ->
     Stripped = string:trim(Quoted, both, "\""),

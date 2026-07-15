@@ -687,11 +687,11 @@ test_daemon_service_listener_is_config_opt_in_with_sibling_default(Config) ->
         ok = stop_daemon(CliPath),
 
         assert_service_config_rejected(
-          TmpDir, ToolsDir, "malformed-service-table",
+          ToolsDir,
           <<"[service\n">>,
           {config_error, malformed_table}),
         assert_service_config_rejected(
-          TmpDir, ToolsDir, "non-string-service-socket",
+          ToolsDir,
           <<"[service]\nsocket = 123\n">>,
           {config_error, invalid_service_socket})
     after
@@ -859,31 +859,39 @@ file_read_invoke(RequestId, FileName, Root) ->
        "(args (path ", soma_lisp:render(list_to_binary(FileName)), ") "
        "(root ", soma_lisp:render(list_to_binary(Root)), "))))"]).
 
-assert_service_config_rejected(TmpDir, ToolsDir, Name, Source, ExpectedReason) ->
-    RowDir = filename:join(TmpDir, Name),
+assert_service_config_rejected(ToolsDir, Source, ExpectedReason) ->
+    RowDir =
+        filename:join(
+          "/tmp",
+          "soma_sc_" ++ os:getpid() ++ "_" ++
+              integer_to_list(erlang:unique_integer([positive]))),
     ok = file:make_dir(RowDir),
     CliPath = filename:join(RowDir, "soma.sock"),
     ServicePath = filename:join(RowDir, "service.sock"),
     ConfigPath = filename:join(RowDir, "config.toml"),
-    ok = file:write_file(ConfigPath, Source),
-    Opts = #{socket => CliPath,
-             config_path => ConfigPath,
-             tools_dir => ToolsDir},
-    LoadResult =
-        try soma_config:load_service(Opts) of
-            ServiceConfig -> {ok, ServiceConfig}
-        catch
-            error:LoadReason -> {error, LoadReason}
+    try
+        ok = file:write_file(ConfigPath, Source),
+        Opts = #{socket => CliPath,
+                 config_path => ConfigPath,
+                 tools_dir => ToolsDir},
+        LoadResult =
+            try soma_config:load_service(Opts) of
+                ServiceConfig -> {ok, ServiceConfig}
+            catch
+                error:LoadReason -> {error, LoadReason}
+            end,
+        DaemonResult = soma_cli:daemon(Opts),
+        case DaemonResult of
+            {ok, CliPath} -> ok = stop_daemon(CliPath);
+            {error, _Reason} -> ok
         end,
-    DaemonResult = soma_cli:daemon(Opts),
-    case DaemonResult of
-        {ok, CliPath} -> ok = stop_daemon(CliPath);
-        {error, _Reason} -> ok
-    end,
-    ?assertEqual({error, ExpectedReason}, LoadResult),
-    ?assertEqual({error, ExpectedReason}, DaemonResult),
-    ?assertMatch({error, _}, connect_socket(CliPath)),
-    ?assertMatch({error, _}, connect_socket(ServicePath)).
+        ?assertEqual({error, ExpectedReason}, LoadResult),
+        ?assertEqual({error, ExpectedReason}, DaemonResult),
+        ?assertMatch({error, _}, connect_socket(CliPath)),
+        ?assertMatch({error, _}, connect_socket(ServicePath))
+    after
+        _ = file:del_dir_r(RowDir)
+    end.
 
 socket_request(Path, Source, Operation) ->
     {service_reply, Operation, Value} = socket_response(Path, Source),
@@ -1045,6 +1053,7 @@ decode_key('request-id') -> request_id;
 decode_key('result-bytes') -> result_bytes;
 decode_key('reason-class') -> reason_class;
 decode_key('event-id') -> event_id;
+decode_key('truncated-inline') -> truncated_inline;
 decode_key(Key) -> Key.
 
 wait_for_socket_status(_Path, _TaskId, _Expected, 0) ->

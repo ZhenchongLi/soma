@@ -90,6 +90,8 @@ send_reply(Socket, Reply) ->
             Result
     end.
 
+handle_request(<<>>) ->
+    soma_lisp:render(service_error(malformed_request));
 handle_request(Source) ->
     Response =
         case soma_lfe:compile(Source, #{}) of
