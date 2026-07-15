@@ -6,6 +6,7 @@
 
 -define(MAX_ID_BYTES, 256).
 -define(MAX_TASK_SPEC_BYTES, 65536).
+-define(MAX_TERMINAL_PROJECTION_BYTES, 512).
 
 -export([start_link/0, submit/1, status/1, cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
@@ -23,7 +24,10 @@ cancel(TaskId) ->
     gen_server:call(?MODULE, {cancel, TaskId}).
 
 init([]) ->
-    {ok, #{requests => #{}, tasks => #{}, monitors => #{}}}.
+    {ok, #{requests => #{},
+           tasks => #{},
+           monitors => #{},
+           status_requests => #{}}}.
 
 handle_call({submit, TaskSpec}, _From, State) ->
     case request_id(TaskSpec) of
@@ -32,8 +36,8 @@ handle_call({submit, TaskSpec}, _From, State) ->
         {error, _Reason} = Error ->
             {reply, Error, State}
     end;
-handle_call({status, TaskId}, _From, State) ->
-    status_task(TaskId, State);
+handle_call({status, TaskId}, From, State) ->
+    status_task(TaskId, From, State);
 handle_call({cancel, TaskId}, From, State) ->
     cancel_task(TaskId, From, State);
 handle_call(_Request, _From, State) ->
@@ -42,6 +46,12 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Request, State) ->
     {noreply, State}.
 
+handle_info(
+  {delegate_status_reply, TaskId, CoordinatorPid, StatusRef, Reply},
+  State) ->
+    {noreply,
+     reply_status_request(
+       TaskId, CoordinatorPid, StatusRef, Reply, State)};
 handle_info({'DOWN', MRef, process, CoordinatorPid, _Reason}, State) ->
     {noreply, remove_active_coordinator(MRef, CoordinatorPid, State)};
 handle_info({delegate_terminal, TaskId, CoordinatorPid, Projection}, State) ->
@@ -51,7 +61,9 @@ handle_info({delegate_terminal, TaskId, CoordinatorPid, Projection}, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-status_task(TaskId, State = #{tasks := Tasks}) ->
+status_task(TaskId, From,
+            State = #{tasks := Tasks,
+                      status_requests := StatusRequests}) ->
     case maps:get(TaskId, Tasks, undefined) of
         undefined ->
             {reply, {error, not_found}, State};
@@ -59,7 +71,17 @@ status_task(TaskId, State = #{tasks := Tasks}) ->
           when is_map(Projection) ->
             {reply, {ok, public_projection(Route, Projection)}, State};
         #{coordinator_pid := CoordinatorPid} when is_pid(CoordinatorPid) ->
-            {reply, soma_delegate_coordinator:status(CoordinatorPid), State}
+            StatusRef = make_ref(),
+            CoordinatorPid !
+                {delegate_status, TaskId, self(), StatusRef},
+            StatusRequest = #{task_id => TaskId,
+                              coordinator_pid => CoordinatorPid,
+                              from => From},
+            {noreply,
+             State#{status_requests :=
+                        maps:put(
+                          StatusRef, StatusRequest,
+                          StatusRequests)}}
     end.
 
 cancel_task(TaskId, From, State = #{tasks := Tasks}) ->
@@ -143,27 +165,36 @@ start_coordinator(CoordinatorOpts,
 
 remove_active_coordinator(MRef, CoordinatorPid,
                           State = #{tasks := Tasks,
-                                    monitors := Monitors}) ->
+                                    monitors := Monitors,
+                                    status_requests := StatusRequests}) ->
     case maps:take(MRef, Monitors) of
         {TaskId, RemainingMonitors} ->
             Route = maps:get(TaskId, Tasks),
-            UpdatedRoute =
+            {UpdatedRoute, RemainingStatusRequests} =
                 case maps:get(coordinator_pid, Route, undefined) of
                     CoordinatorPid ->
-                        Projection = coordinator_crashed_projection(),
+                        Projection =
+                            bounded_terminal_projection(
+                              coordinator_crashed_projection()),
+                        PublicProjection =
+                            public_projection(Route, Projection),
                         ok = soma_delegate_event:append(
                                <<"delegate.task.terminal">>, TaskId,
                                route_correlation_id(Route), 0,
                                Projection),
                         reply_cancel_waiters(Route,
-                                             public_projection(
-                                               Route, Projection)),
-                        terminal_route(Route, Projection);
+                                             PublicProjection),
+                        {terminal_route(Route, Projection),
+                         reply_status_requests(
+                           TaskId, CoordinatorPid,
+                           {ok, PublicProjection},
+                           StatusRequests)};
                     _OtherPid ->
-                        Route
+                        {Route, StatusRequests}
                 end,
             State#{tasks := maps:put(TaskId, UpdatedRoute, Tasks),
-                   monitors := RemainingMonitors};
+                   monitors := RemainingMonitors,
+                   status_requests := RemainingStatusRequests};
         error ->
             State
     end.
@@ -177,12 +208,21 @@ store_terminal_projection(
                   coordinator_mref := MRef,
                   terminal_projection := undefined} ->
             _ = erlang:demonitor(MRef, [flush]),
-            PublicProjection = public_projection(Route, Projection),
+            BoundedProjection =
+                bounded_terminal_projection(Projection),
+            PublicProjection =
+                public_projection(Route, BoundedProjection),
             reply_cancel_waiters(Route, PublicProjection),
-            TerminalRoute = terminal_route(Route, Projection),
+            TerminalRoute =
+                terminal_route(Route, BoundedProjection),
             CoordinatorPid ! {delegate_terminal_stored, TaskId},
             State#{tasks := maps:put(TaskId, TerminalRoute, Tasks),
-                   monitors := maps:remove(MRef, Monitors)};
+                   monitors := maps:remove(MRef, Monitors),
+                   status_requests :=
+                       reply_status_requests(
+                         TaskId, CoordinatorPid,
+                         {ok, PublicProjection},
+                         maps:get(status_requests, State))};
         _StaleOrMismatchedCoordinator ->
             State
     end;
@@ -193,6 +233,38 @@ reply_cancel_waiters(Route, Projection) ->
     lists:foreach(
       fun(From) -> gen_server:reply(From, {ok, Projection}) end,
       maps:get(cancel_waiters, Route, [])).
+
+reply_status_request(
+  TaskId, CoordinatorPid, StatusRef, Reply,
+  State = #{status_requests := StatusRequests}) ->
+    case maps:get(StatusRef, StatusRequests, undefined) of
+        #{task_id := TaskId,
+          coordinator_pid := CoordinatorPid,
+          from := From} ->
+            gen_server:reply(From, Reply),
+            State#{status_requests :=
+                       maps:remove(StatusRef, StatusRequests)};
+        _StaleOrMismatchedReply ->
+            State
+    end.
+
+reply_status_requests(
+  TaskId, CoordinatorPid, Reply, StatusRequests) ->
+    maps:fold(
+      fun(StatusRef,
+          #{task_id := PendingTaskId,
+            coordinator_pid := PendingCoordinatorPid,
+            from := From} = StatusRequest,
+          Remaining) ->
+              case {PendingTaskId, PendingCoordinatorPid} of
+                  {TaskId, CoordinatorPid} ->
+                      gen_server:reply(From, Reply),
+                      Remaining;
+                  _OtherRequest ->
+                      maps:put(StatusRef, StatusRequest, Remaining)
+              end
+      end,
+      #{}, StatusRequests).
 
 public_projection(Route, Projection) ->
     maps:merge(maps:get(accepted_handle, Route), Projection).
@@ -246,3 +318,40 @@ mint_task_id() ->
 
 coordinator_crashed_projection() ->
     #{status => failed, reason => coordinator_crashed}.
+
+bounded_terminal_projection(Projection) ->
+    Status = terminal_status(maps:get(status, Projection, failed)),
+    Base = #{status => Status},
+    WithRound =
+        case maps:get(round, Projection, undefined) of
+            Round when is_integer(Round), Round >= 0 ->
+                Base#{round => Round};
+            _NoBoundedRound ->
+                Base
+        end,
+    Candidate =
+        case maps:get(reason, Projection, undefined) of
+            undefined ->
+                WithRound;
+            Reason ->
+                WithRound#{reason =>
+                               soma_delegate_event:reason_class(Reason)}
+        end,
+    case encoded_bytes(Candidate) =<
+             ?MAX_TERMINAL_PROJECTION_BYTES of
+        true ->
+            Candidate;
+        false ->
+            #{status => failed, reason => failed}
+    end.
+
+terminal_status(Status)
+  when Status =:= succeeded; Status =:= failed;
+       Status =:= timeout; Status =:= cancelled;
+       Status =:= in_doubt ->
+    Status;
+terminal_status(_InvalidStatus) ->
+    failed.
+
+encoded_bytes(Term) ->
+    byte_size(term_to_binary(Term, [deterministic])).

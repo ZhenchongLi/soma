@@ -5,7 +5,7 @@
 
 -define(MAX_BYTES, 4096).
 
--export([append/5, max_bytes/0]).
+-export([append/5, max_bytes/0, reason_class/1]).
 
 -spec max_bytes() -> pos_integer().
 max_bytes() ->
@@ -70,19 +70,30 @@ normalize_status(_Status) ->
     undefined.
 
 outcome_reason_class(Outcome) ->
-    normalize_reason_class(
+    reason_class(
       nested_value(reason, terminal_result, Outcome)).
 
-normalize_reason_class(#{reason_class := ReasonClass}) ->
-    normalize_reason_class(ReasonClass);
-normalize_reason_class(ReasonClass) when is_atom(ReasonClass);
-                                               is_binary(ReasonClass) ->
-    ReasonClass;
-normalize_reason_class({ReasonClass, _Detail})
-  when is_atom(ReasonClass); is_binary(ReasonClass) ->
-    ReasonClass;
-normalize_reason_class(_Reason) ->
-    undefined.
+-spec reason_class(term()) -> atom() | undefined.
+reason_class(undefined) -> undefined;
+reason_class(#{reason_class := ReasonClass}) ->
+    reason_class(ReasonClass);
+reason_class({ReasonClass, _Detail}) ->
+    reason_class(ReasonClass);
+reason_class(failed) -> failed;
+reason_class(coordinator_crashed) -> coordinator_crashed;
+reason_class(round_worker_crashed) -> round_worker_crashed;
+reason_class(round_timeout) -> round_timeout;
+reason_class(unsafe_result_lost) -> unsafe_result_lost;
+reason_class(invalid_round_sequence) -> invalid_round_sequence;
+reason_class(snapshot_too_large) -> snapshot_too_large;
+reason_class(round_worker_start_failed) -> round_worker_start_failed;
+reason_class(lease_acquisition_failed) -> lease_acquisition_failed;
+reason_class(invalid_llm) -> invalid_llm;
+reason_class(invalid_action_steps) -> invalid_action_steps;
+reason_class(llm_call_crashed) -> llm_call_crashed;
+reason_class(llm_start_failed) -> llm_start_failed;
+reason_class(run_start_failed) -> run_start_failed;
+reason_class(_PrivateOrUnknownReason) -> failed.
 
 usage_count(Outcome) ->
     case maps:get(usage_count, Outcome, undefined) of
