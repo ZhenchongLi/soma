@@ -17,6 +17,7 @@
 -export([test_lost_state_result_is_in_doubt_without_replacement/1]).
 -export([test_task_leases_are_stable_and_released_once_for_all_outcomes/1]).
 -export([test_cancel_tears_down_llm_run_tool_and_os_children_once/1]).
+-export([test_concurrent_tasks_isolate_state_workers_and_leases/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -31,7 +32,8 @@ all() ->
      test_pre_stateful_worker_crash_and_timeout_are_bounded,
      test_lost_state_result_is_in_doubt_without_replacement,
      test_task_leases_are_stable_and_released_once_for_all_outcomes,
-     test_cancel_tears_down_llm_run_tool_and_os_children_once].
+     test_cancel_tears_down_llm_run_tool_and_os_children_once,
+     test_concurrent_tasks_isolate_state_workers_and_leases].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -930,6 +932,183 @@ test_cancel_tears_down_llm_run_tool_and_os_children_once(Config) ->
     after
         ok = soma_tool_registry:unregister_tool(ToolName)
     end.
+
+test_concurrent_tasks_isolate_state_workers_and_leases(_Config) ->
+    Observer = self(),
+    ObjectiveA = #{goal => <<"keep task alpha context private">>},
+    ObjectiveB = #{goal => <<"keep task beta context private">>},
+    CheckpointA = #{cursor => <<"alpha-checkpoint">>},
+    CheckpointB = #{cursor => <<"beta-checkpoint">>},
+    BudgetsA = #{rounds => 2, tokens => 101},
+    BudgetsB = #{rounds => 3, tokens => 202},
+    LeaseNameA = <<"concurrent-lease-alpha">>,
+    LeaseNameB = <<"concurrent-lease-beta">>,
+    OpaqueHandleA = <<"concurrent-handle-alpha">>,
+    OpaqueHandleB = <<"concurrent-handle-beta">>,
+    RawLeaseA = {concurrent_raw_lease, alpha, make_ref()},
+    RawLeaseB = {concurrent_raw_lease, beta, make_ref()},
+    LeaseRequestA =
+        #{name => LeaseNameA,
+          adapter => soma_delegate_test_lease_adapter,
+          options => #{observer => Observer,
+                       opaque_handle => OpaqueHandleA,
+                       raw_lease => RawLeaseA}},
+    LeaseRequestB =
+        #{name => LeaseNameB,
+          adapter => soma_delegate_test_lease_adapter,
+          options => #{observer => Observer,
+                       opaque_handle => OpaqueHandleB,
+                       raw_lease => RawLeaseB}},
+    BlockedRound =
+        #{llm => #{directive => hang, timeout_ms => 60000},
+          decision => terminal},
+    TaskSpecA =
+        #{request_id => <<"delegate-request-concurrent-alpha">>,
+          correlation_id => <<"delegate-correlation-concurrent-alpha">>,
+          objective => ObjectiveA,
+          checkpoint => CheckpointA,
+          budgets => BudgetsA,
+          lease_requests => [LeaseRequestA],
+          round_sequence => [BlockedRound]},
+    TaskSpecB =
+        #{request_id => <<"delegate-request-concurrent-beta">>,
+          correlation_id => <<"delegate-correlation-concurrent-beta">>,
+          objective => ObjectiveB,
+          checkpoint => CheckpointB,
+          budgets => BudgetsB,
+          lease_requests => [LeaseRequestB],
+          round_sequence => [BlockedRound]},
+
+    {ok, #{task_id := TaskIdA}} =
+        submit_through_production_ingress(TaskSpecA),
+    {ok, #{task_id := TaskIdB}} =
+        submit_through_production_ingress(TaskSpecB),
+    ?assertNotEqual(TaskIdA, TaskIdB),
+    CoordinatorPidA = coordinator_for_task(TaskIdA),
+    CoordinatorPidB = coordinator_for_task(TaskIdB),
+    ?assertNotEqual(CoordinatorPidA, CoordinatorPidB),
+
+    Acquisitions = wait_for_lease_acquisitions(2, []),
+    {CoordinatorDataA, ActiveRoundA} =
+        wait_for_active_round(CoordinatorPidA, 1, 100),
+    {CoordinatorDataB, ActiveRoundB} =
+        wait_for_active_round(CoordinatorPidB, 1, 100),
+    WorkerPidA = maps:get(worker_pid, ActiveRoundA),
+    WorkerPidB = maps:get(worker_pid, ActiveRoundB),
+    ?assertNotEqual(WorkerPidA, WorkerPidB),
+    {WorkerDataA, #{pid := LlmPidA}} =
+        wait_for_worker_phase(WorkerPidA, waiting_llm, active_llm, 100),
+    {WorkerDataB, #{pid := LlmPidB}} =
+        wait_for_worker_phase(WorkerPidB, waiting_llm, active_llm, 100),
+    ?assertNotEqual(LlmPidA, LlmPidB),
+
+    ScopedLeasesA = maps:get(scoped_leases, CoordinatorDataA),
+    ScopedLeasesB = maps:get(scoped_leases, CoordinatorDataB),
+    GuardPidA = maps:get(guard, ScopedLeasesA),
+    GuardPidB = maps:get(guard, ScopedLeasesB),
+    ?assertNotEqual(GuardPidA, GuardPidB),
+    ?assertEqual(
+       lists:sort(
+         [{GuardPidA, LeaseNameA, OpaqueHandleA, RawLeaseA},
+          {GuardPidB, LeaseNameB, OpaqueHandleB, RawLeaseB}]),
+       lists:sort(Acquisitions)),
+
+    ?assertEqual(
+       #{objective => ObjectiveA,
+         context_checkpoint => CheckpointA,
+         budgets => BudgetsA,
+         usage => #{},
+         scoped_leases =>
+             #{requests => [],
+               handles => #{LeaseNameA => OpaqueHandleA},
+               guard => GuardPidA}},
+       maps:with([objective, context_checkpoint, budgets, usage,
+                  scoped_leases], CoordinatorDataA)),
+    ?assertEqual(
+       #{objective => ObjectiveB,
+         context_checkpoint => CheckpointB,
+         budgets => BudgetsB,
+         usage => #{},
+         scoped_leases =>
+             #{requests => [],
+               handles => #{LeaseNameB => OpaqueHandleB},
+               guard => GuardPidB}},
+       maps:with([objective, context_checkpoint, budgets, usage,
+                  scoped_leases], CoordinatorDataB)),
+    lists:foreach(
+      fun(OtherTaskTerm) ->
+              ?assertNot(term_contains(CoordinatorDataA, OtherTaskTerm))
+      end,
+      [ObjectiveB, CheckpointB, BudgetsB, OpaqueHandleB, RawLeaseB]),
+    lists:foreach(
+      fun(OtherTaskTerm) ->
+              ?assertNot(term_contains(CoordinatorDataB, OtherTaskTerm))
+      end,
+      [ObjectiveA, CheckpointA, BudgetsA, OpaqueHandleA, RawLeaseA]),
+
+    SnapshotA = maps:get(snapshot, WorkerDataA),
+    SnapshotB = maps:get(snapshot, WorkerDataB),
+    ?assertEqual(
+       #{task_id => TaskIdA,
+         objective => ObjectiveA,
+         context_checkpoint => CheckpointA,
+         budgets => BudgetsA,
+         resource_handles => #{LeaseNameA => OpaqueHandleA}},
+       maps:with([task_id, objective, context_checkpoint, budgets,
+                  resource_handles], SnapshotA)),
+    ?assertEqual(
+       #{task_id => TaskIdB,
+         objective => ObjectiveB,
+         context_checkpoint => CheckpointB,
+         budgets => BudgetsB,
+         resource_handles => #{LeaseNameB => OpaqueHandleB}},
+       maps:with([task_id, objective, context_checkpoint, budgets,
+                  resource_handles], SnapshotB)),
+    ?assertNot(term_contains(WorkerDataA, ObjectiveB)),
+    ?assertNot(term_contains(WorkerDataB, ObjectiveA)),
+
+    {active, GuardDataA} = sys:get_state(GuardPidA),
+    {active, GuardDataB} = sys:get_state(GuardPidB),
+    ?assertEqual(#{LeaseNameA => OpaqueHandleA},
+                 maps:get(handles, GuardDataA)),
+    ?assertEqual(#{LeaseNameB => OpaqueHandleB},
+                 maps:get(handles, GuardDataB)),
+    ?assert(term_contains(GuardDataA, RawLeaseA)),
+    ?assertNot(term_contains(GuardDataA, RawLeaseB)),
+    ?assert(term_contains(GuardDataB, RawLeaseB)),
+    ?assertNot(term_contains(GuardDataB, RawLeaseA)),
+    CoordinatorStateBBeforeCancel = sys:get_state(CoordinatorPidB),
+
+    {ok, #{status := cancelled}} = soma_delegate:cancel(TaskIdA),
+    wait_for_process_dead(CoordinatorPidA, 100),
+    wait_for_process_dead(WorkerPidA, 100),
+    wait_for_process_dead(LlmPidA, 100),
+    wait_for_process_dead(GuardPidA, 100),
+    ?assertEqual(
+       [{GuardPidA, LeaseNameA, RawLeaseA}],
+       wait_for_lease_releases(1, [])),
+    ?assertMatch({ok, #{status := cancelled, task_id := TaskIdA}},
+                 soma_delegate:status(TaskIdA)),
+    ?assertMatch({ok, #{status := cancelled, task_id := TaskIdB}},
+                 soma_delegate:status(TaskIdB)),
+    ?assertEqual(CoordinatorStateBBeforeCancel,
+                 sys:get_state(CoordinatorPidB)),
+    ?assert(is_process_alive(CoordinatorPidB)),
+    ?assert(is_process_alive(WorkerPidB)),
+    ?assert(is_process_alive(LlmPidB)),
+    ?assert(is_process_alive(GuardPidB)),
+    receive
+        {delegate_test_lease_released, GuardPidB,
+         LeaseNameB, RawLeaseB} = UnexpectedRelease ->
+            ct:fail({other_task_lease_released, UnexpectedRelease})
+    after 0 ->
+        ok
+    end,
+
+    {ok, #{status := cancelled}} = soma_delegate:cancel(TaskIdB),
+    ?assertEqual(
+       [{GuardPidB, LeaseNameB, RawLeaseB}],
+       wait_for_lease_releases(1, [])).
 
 assert_task_lease_lifecycle(Outcome) ->
     OutcomeBin = atom_to_binary(Outcome),
