@@ -119,16 +119,13 @@ scan_atom(Rest, Line, Buf, Acc, AtomMode) ->
             {error, [#{message => <<"atom name exceeds maximum length of 255 characters">>,
                        line => Line}]};
         false ->
-            case decode_atom(Name, AtomMode) of
-                {ok, Atom} ->
-                    scan(
-                      Rest, Line,
-                      [{atom, Line, Atom} | Acc], AtomMode);
-                error ->
-                    {error,
-                     [#{message => <<"symbol is not in the existing vocabulary">>,
-                        line => Line}]}
-            end
+            %% Both atom modes are total: create_atoms interns, and
+            %% existing_atoms_only wraps a fresh spelling as bounded
+            %% {external_symbol, _} data for the parser to place in context.
+            {ok, Atom} = decode_atom(Name, AtomMode),
+            scan(
+              Rest, Line,
+              [{atom, Line, Atom} | Acc], AtomMode)
     end.
 
 decode_atom(Name, create_atoms) ->
