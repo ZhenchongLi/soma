@@ -21,6 +21,7 @@
 -export([test_terminal_cleanup_scrubs_task_state_before_fresh_request/1]).
 -export([test_delegate_events_are_bounded_stable_and_scrubbed/1]).
 -export([test_completed_delegate_preserves_existing_result_contracts/1]).
+-export([test_review_boundaries_expire_calls_teardown_actions_and_reject_unsafe_state/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -39,7 +40,8 @@ all() ->
      test_concurrent_tasks_isolate_state_workers_and_leases,
      test_terminal_cleanup_scrubs_task_state_before_fresh_request,
      test_delegate_events_are_bounded_stable_and_scrubbed,
-     test_completed_delegate_preserves_existing_result_contracts].
+     test_completed_delegate_preserves_existing_result_contracts,
+     test_review_boundaries_expire_calls_teardown_actions_and_reject_unsafe_state].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -226,6 +228,256 @@ test_status_and_cancel_route_by_task_id(_Config) ->
     wait_for_process_dead(CoordinatorPid, 100),
     ?assertEqual({ok, CancelledProjection}, soma_delegate:status(TaskId)),
     ?assertEqual({ok, CancelledProjection}, soma_delegate:cancel(TaskId)).
+
+test_review_boundaries_expire_calls_teardown_actions_and_reject_unsafe_state(
+  _Config) ->
+    Rows =
+        [{forwarded_calls,
+          fun assert_timed_out_forwarded_calls_are_expired/0},
+         {forced_action_teardown,
+          fun assert_forced_action_cancel_waits_for_descendants/0},
+         {initial_task_state,
+          fun assert_unsafe_initial_task_state_is_rejected/0},
+         {round_result_state,
+          fun assert_noncanonical_forbidden_result_is_rejected/0}],
+    Failures =
+        [Failure || {Name, Assert} <- Rows,
+                    Failure <- [run_review_boundary_row(Name, Assert)],
+                    Failure =/= ok],
+    case Failures of
+        [] ->
+            ok;
+        _ ->
+            ct:fail({delegate_review_boundary_failures, Failures})
+    end.
+
+run_review_boundary_row(Name, Assert) ->
+    try Assert() of
+        ok ->
+            ok
+    catch
+        Class:Reason:Stacktrace ->
+            {Name, Class, Reason, Stacktrace}
+    end.
+
+assert_timed_out_forwarded_calls_are_expired() ->
+    TaskSpec =
+        #{request_id => <<"delegate-review-expiring-forwarded-calls">>,
+          objective => <<"keep timed out ingress callers bounded">>,
+          round_sequence =>
+              [#{llm => #{directive => hang, timeout_ms => 60000},
+                 decision => terminal}]},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    ok = sys:suspend(CoordinatorPid),
+    Observer = self(),
+    CallerKinds = lists:duplicate(8, status) ++ lists:duplicate(8, cancel),
+    Callers =
+        [spawn_monitor(
+           fun() ->
+                   Reply = timed_forwarded_call(Kind, TaskId),
+                   Observer ! {delegate_review_call_finished,
+                               self(), Kind, Reply},
+                   receive
+                       delegate_review_release_caller -> ok
+                   end
+           end)
+         || Kind <- CallerKinds],
+    try
+        Replies = wait_for_forwarded_call_replies(length(Callers), []),
+        ?assert(
+           lists:all(
+             fun({_CallerPid, _Kind, timed_out}) -> true;
+                (_OtherReply) -> false
+             end,
+             Replies)),
+        wait_for_status_request_count(8, 100),
+        wait_for_cancel_waiter_count(TaskId, 8, 100),
+        ?assert(lists:all(
+                  fun({CallerPid, _MRef}) ->
+                          is_process_alive(CallerPid)
+                  end,
+                  Callers)),
+        wait_for_forwarded_request_counts(TaskId, 0, 0, 300)
+    after
+        lists:foreach(
+          fun({CallerPid, _MRef}) ->
+                  CallerPid ! delegate_review_release_caller
+          end,
+          Callers),
+        ok = best_effort(fun() -> sys:resume(CoordinatorPid) end),
+        case is_process_alive(CoordinatorPid) of
+            true -> exit(CoordinatorPid, kill);
+            false -> ok
+        end
+    end.
+
+timed_forwarded_call(status, TaskId) ->
+    timed_ingress_call({status, TaskId});
+timed_forwarded_call(cancel, TaskId) ->
+    timed_ingress_call({cancel, TaskId}).
+
+timed_ingress_call(Request) ->
+    try gen_server:call(soma_delegate, Request, 50) of
+        Reply -> {unexpected_reply, Reply}
+    catch
+        exit:{timeout, _Call} -> timed_out;
+        exit:Reason -> {unexpected_exit, Reason}
+    end.
+
+wait_for_forwarded_call_replies(0, Replies) ->
+    Replies;
+wait_for_forwarded_call_replies(Remaining, Replies) ->
+    receive
+        {delegate_review_call_finished, CallerPid, Kind, Reply} ->
+            wait_for_forwarded_call_replies(
+              Remaining - 1, [{CallerPid, Kind, Reply} | Replies])
+    after 2000 ->
+        ct:fail({forwarded_calls_did_not_time_out, Remaining})
+    end.
+
+assert_forced_action_cancel_waits_for_descendants() ->
+    CorrelationId = <<"delegate-review-forced-action-teardown">>,
+    Step = #{id => <<"delegate-review-suspended-action">>,
+             tool => sleep,
+             args => #{ms => 60000},
+             timeout_ms => 60000},
+    TaskSpec =
+        #{request_id => <<"delegate-review-suspended-action">>,
+          correlation_id => CorrelationId,
+          objective => <<"force cleanup through a suspended action owner">>,
+          round_sequence =>
+              [#{llm => #{directive => success,
+                          output => <<"dispatch suspended action">>},
+                 action_steps => [Step],
+                 action_timeout_ms => 60000,
+                 round_timeout_ms => 60000,
+                 decision => terminal}]},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    {_CoordinatorData, ActiveRound} =
+        wait_for_active_round(CoordinatorPid, 1, 100),
+    WorkerPid = maps:get(worker_pid, ActiveRound),
+    {_WorkerData, #{pid := RunPid}} =
+        wait_for_worker_phase(
+          WorkerPid, waiting_run, active_run, 100),
+    [ToolStarted] =
+        wait_for_correlated_events(
+          event_store_pid(), CorrelationId, <<"tool.started">>, 100),
+    ToolCallPid = maps:get(tool_call_pid, ToolStarted),
+    ok = sys:suspend(WorkerPid),
+    ok = sys:suspend(RunPid),
+    Observer = self(),
+    _CancelCaller =
+        spawn(
+          fun() ->
+                  Observer !
+                      {delegate_review_forced_cancel_reply,
+                       soma_delegate:cancel(TaskId)}
+          end),
+    try
+        wait_for_round_cancel_status(
+          CoordinatorPid, 1, cancelled, 100),
+        CancelReply =
+            receive
+                {delegate_review_forced_cancel_reply, Reply} -> Reply
+            after 4000 ->
+                ct:fail(forced_action_cancel_did_not_finish)
+            end,
+        ?assertMatch({ok, #{status := cancelled}}, CancelReply),
+        ?assertNot(is_process_alive(WorkerPid)),
+        ?assertNot(is_process_alive(RunPid)),
+        ?assertNot(is_process_alive(ToolCallPid))
+    after
+        force_kill_if_alive(WorkerPid),
+        force_kill_if_alive(RunPid),
+        force_kill_if_alive(ToolCallPid)
+    end.
+
+force_kill_if_alive(Pid) when is_pid(Pid) ->
+    case is_process_alive(Pid) of
+        true -> exit(Pid, kill);
+        false -> ok
+    end.
+
+assert_unsafe_initial_task_state_is_rejected() ->
+    MonitorRef = make_ref(),
+    Port = open_port({spawn_executable, "/bin/cat"}, [binary]),
+    UnsafeTaskSpec =
+        #{request_id => <<"delegate-review-unsafe-initial-state">>,
+          objective => #{goal => <<"safe objective">>,
+                         pid => self(),
+                         monitor_ref => MonitorRef},
+          output_contract =>
+              #{format => <<"safe format">>,
+                <<"Product_Conversation_Data">> =>
+                    [<<"forbidden product conversation">>]},
+          context_checkpoint =>
+              #{cursor => <<"safe cursor">>,
+                "authentication_state" =>
+                    #{bearer => <<"forbidden authentication">>}},
+          budgets =>
+              #{rounds => 1,
+                <<"RawLease">> => <<"forbidden raw lease">>,
+                callback => fun() -> ok end,
+                port => Port},
+          round_sequence =>
+              [#{llm => #{directive => hang}, decision => terminal}]},
+    Reply = soma_delegate:submit(UnsafeTaskSpec),
+    try
+        ?assertEqual({error, invalid_task_state}, Reply)
+    after
+        case Reply of
+            {ok, #{task_id := TaskId}} ->
+                ok = best_effort(fun() -> soma_delegate:cancel(TaskId) end);
+            _Rejected ->
+                ok
+        end,
+        erlang:port_close(Port)
+    end.
+
+assert_noncanonical_forbidden_result_is_rejected() ->
+    TaskSpec =
+        #{request_id => <<"delegate-review-noncanonical-result-state">>,
+          objective => <<"reject forbidden result state before commit">>,
+          round_sequence =>
+              [#{llm => #{directive => hang}, decision => continue},
+               #{llm => #{directive => hang}, decision => terminal}]},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    {_CoordinatorData, ActiveRound} =
+        wait_for_active_round(CoordinatorPid, 1, 100),
+    WorkerPid = maps:get(worker_pid, ActiveRound),
+    _ = wait_for_worker_phase(
+          WorkerPid, waiting_llm, active_llm, 100),
+    ForbiddenResult =
+        #{status => succeeded,
+          phase => decision,
+          decision => continue,
+          checkpoint =>
+              #{"authentication_state" =>
+                    <<"forbidden authentication">>,
+                <<"Product_Conversation_Data">> =>
+                    [<<"forbidden conversation">>],
+                <<"RawLease">> => <<"forbidden raw lease">>},
+          usage => #{rounds => 1}},
+    StableBefore = sys:get_state(CoordinatorPid),
+    try
+        CoordinatorPid !
+            round_result_message(
+              TaskId, ActiveRound, ForbiddenResult),
+        timer:sleep(100),
+        ?assertEqual(StableBefore, sys:get_state(CoordinatorPid))
+    after
+        ok = best_effort(fun() -> soma_delegate:cancel(TaskId) end)
+    end.
+
+best_effort(Action) ->
+    try Action() of
+        _Result -> ok
+    catch
+        _Class:_Reason -> ok
+    end.
 
 test_coordinator_and_round_worker_crashes_leave_ingress_responsive(_Config) ->
     IngressPid = whereis(soma_delegate),
@@ -1529,7 +1781,12 @@ test_delegate_events_are_bounded_stable_and_scrubbed(_Config) ->
     BlockedRound =
         #{llm => #{directive => hang, timeout_ms => 60000},
           decision => terminal,
+          owner_pid => TaskPid,
+          monitor_ref => MonitorRef,
+          port => Port,
           round_snapshot => RoundSnapshot,
+          product_session_data => ProductSession,
+          product_conversation_data => Conversation,
           provider_config => #{api_key => Secret},
           executable => <<"/secret/delegate/event/tool">>},
     RequestId = <<"delegate-request-public-events">>,
@@ -1538,17 +1795,11 @@ test_delegate_events_are_bounded_stable_and_scrubbed(_Config) ->
         #{request_id => RequestId,
           correlation_id => CorrelationId,
           objective =>
-              #{pid => TaskPid,
-                monitor_ref => MonitorRef,
-                port => Port,
-                function => fun() -> Secret end,
-                secret => Secret},
-          output_contract => #{secret => Secret},
+              #{goal => <<"exercise bounded delegate lifecycle events">>},
+          output_contract => #{format => <<"bounded-event-proof">>},
           context_checkpoint =>
-              #{product_session_data => ProductSession,
-                product_conversation_data => Conversation,
-                round_snapshot => RoundSnapshot},
-          budgets => #{secret => Secret},
+              #{cursor => <<"bounded-event-checkpoint">>},
+          budgets => #{rounds => 2, tokens => 16},
           model_config => #{api_key => Secret},
           lease_requests => [LeaseRequest],
           round_sequence => [BlockedRound, BlockedRound]},
@@ -2476,6 +2727,51 @@ wait_for_status_request_count(Expected, Attempts) ->
             timer:sleep(10),
             wait_for_status_request_count(
               Expected, Attempts - 1)
+    end.
+
+wait_for_cancel_waiter_count(TaskId, Expected, 0) ->
+    State = sys:get_state(soma_delegate),
+    ?assertEqual(
+       Expected, cancel_waiter_count(TaskId, State));
+wait_for_cancel_waiter_count(TaskId, Expected, Attempts) ->
+    State = sys:get_state(soma_delegate),
+    case cancel_waiter_count(TaskId, State) of
+        Expected ->
+            ok;
+        _OtherCount ->
+            timer:sleep(10),
+            wait_for_cancel_waiter_count(
+              TaskId, Expected, Attempts - 1)
+    end.
+
+wait_for_forwarded_request_counts(
+  TaskId, ExpectedStatus, ExpectedCancel, 0) ->
+    State = sys:get_state(soma_delegate),
+    ?assertEqual(
+       {ExpectedStatus, ExpectedCancel},
+       {map_size(maps:get(status_requests, State)),
+        cancel_waiter_count(TaskId, State)});
+wait_for_forwarded_request_counts(
+  TaskId, ExpectedStatus, ExpectedCancel, Attempts) ->
+    State = sys:get_state(soma_delegate),
+    Counts =
+        {map_size(maps:get(status_requests, State)),
+         cancel_waiter_count(TaskId, State)},
+    case Counts of
+        {ExpectedStatus, ExpectedCancel} ->
+            ok;
+        _OtherCounts ->
+            timer:sleep(10),
+            wait_for_forwarded_request_counts(
+              TaskId, ExpectedStatus, ExpectedCancel,
+              Attempts - 1)
+    end.
+
+cancel_waiter_count(TaskId, State) ->
+    Route = maps:get(TaskId, maps:get(tasks, State)),
+    case maps:get(cancel_waiters, Route, []) of
+        Waiters when is_list(Waiters) -> length(Waiters);
+        Waiters when is_map(Waiters) -> map_size(Waiters)
     end.
 
 wait_for_status_callers_down([]) ->
