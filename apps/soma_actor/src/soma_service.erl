@@ -83,8 +83,8 @@ handle_call({watch, TaskId, Cursor, Limit}, _From,
               maps:get(TaskId, Tasks, undefined),
               Cursor, Limit, WatchPageEvents, EventStore),
     {reply, Reply, State};
-handle_call({cancel, TaskId}, _From, State) ->
-    cancel_task(TaskId, State);
+handle_call({cancel, TaskId}, From, State) ->
+    cancel_task(TaskId, From, State);
 handle_call(_Request, _From, State) ->
     {reply, {error, bad_request}, State}.
 
@@ -324,21 +324,26 @@ finish_run(RunId, Terminal,
             Task = maps:get(TaskId, Tasks),
             RunPid = maps:get(run_pid, Task),
             MRef = maps:get(run_mref, Task),
+            CancelWaiters = maps:get(cancel_waiters, Task, []),
             cancel_deadline(Task),
             erlang:demonitor(MRef, [flush]),
             terminate_run_child(RunPid),
             Task1 = maps:merge(
                       maps:without(
                         [run_pid, run_mref, deadline_tref,
-                         deadline_expired, cancel_requested],
+                         deadline_expired, cancel_requested,
+                         cancel_waiters],
                         Task),
                       terminal_for_task(Terminal, Task)),
             ok = emit_service_task(EventStore, <<"service.task.terminal">>,
                                    Task1, terminal_event_payload(Task1)),
-            State#state{
-              tasks = maps:put(TaskId, Task1, Tasks),
-              runs = NewRuns,
-              monitors = maps:remove(MRef, Monitors)}
+            NewState = State#state{
+                         tasks = maps:put(TaskId, Task1, Tasks),
+                         runs = NewRuns,
+                         monitors = maps:remove(MRef, Monitors)},
+            reply_cancel_waiters(
+              CancelWaiters, {ok, public_task(Task1)}),
+            NewState
     end.
 
 terminal_for_task(_Terminal, #{deadline_expired := true}) ->
@@ -410,27 +415,42 @@ expire_deadline(TRef, TaskId, RunId,
             State
     end.
 
-cancel_task(TaskId,
+cancel_task(TaskId, From,
             State = #state{event_store = EventStore,
                            tasks = Tasks}) ->
     case maps:get(TaskId, Tasks, undefined) of
         undefined ->
             {reply, {error, not_found}, State};
+        #{status := running,
+          cancel_requested := true} = Task ->
+            Waiters = maps:get(cancel_waiters, Task, []),
+            CancellingTask = Task#{cancel_waiters => [From | Waiters]},
+            {noreply,
+             State#state{tasks = maps:put(
+                                   TaskId, CancellingTask, Tasks)}};
         #{status := running, run_pid := RunPid} = Task ->
             cancel_deadline(Task),
             CancellingTask = maps:remove(
                                deadline_tref,
-                               Task#{cancel_requested => true}),
+                               Task#{cancel_requested => true,
+                                     cancel_waiters => [From]}),
             ok = emit_service_task(
                    EventStore, <<"service.task.cancel_requested">>,
                    CancellingTask, #{}),
             RunPid ! cancel,
-            {reply, ok,
+            {noreply,
              State#state{tasks = maps:put(
                                    TaskId, CancellingTask, Tasks)}};
+        #{status := cancelled} = Task ->
+            {reply, {ok, public_task(Task)}, State};
         _NotRunning ->
             {reply, {error, not_running}, State}
     end.
+
+reply_cancel_waiters(Waiters, Reply) ->
+    lists:foreach(
+      fun(Waiter) -> gen_server:reply(Waiter, Reply) end,
+      Waiters).
 
 cancel_deadline(#{deadline_tref := TRef}) ->
     _ = erlang:cancel_timer(TRef, [{async, false}, {info, false}]),

@@ -1392,7 +1392,7 @@ test_service_cancel_cleans_tool_worker_and_cli_process(Config) ->
         ?assert(is_process_alive(WorkerPid)),
         ?assert(os_process_alive(OsPid)),
 
-        ok = soma_service:cancel(TaskId),
+        {ok, #{status := cancelled}} = soma_service:cancel(TaskId),
         ok = wait_for_process_dead(WorkerPid, 100),
         ok = wait_for_os_process_dead(OsPid, 100),
         ?assertNot(is_process_alive(WorkerPid)),
