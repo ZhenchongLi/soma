@@ -9,6 +9,26 @@
 -spec render(term()) -> iodata().
 render(#{kind := invoke} = Invoke) ->
     render_invoke(Invoke);
+render(#{kind := service_reply,
+         api_version := ApiVersion,
+         operation := Operation,
+         value := Value}) ->
+    ["(reply ",
+     lists:join(
+       " ",
+       [render_pair(api_version, ApiVersion),
+        render_pair(operation, Operation),
+        render_pair(value, Value)]),
+     ")"];
+render(#{kind := service_error,
+         api_version := ApiVersion,
+         code := Code}) ->
+    ["(error ",
+     lists:join(
+       " ",
+       [render_pair(api_version, ApiVersion),
+        render_pair(code, Code)]),
+     ")"];
 render(#{kind := explore, steps := Steps}) when is_list(Steps) ->
     ["(explore ",
      lists:join(" ", [render_canonical_step(Step) || Step <- Steps]),
@@ -47,7 +67,12 @@ render(Other) ->
     render_string(iolist_to_binary(io_lib:format("~p", [Other]))).
 
 render_pair(Key, Value) ->
-    ["(", render_symbol(Key), " ", render_value(Value), ")"].
+    ["(", render_map_key(Key), " ", render_value(Value), ")"].
+
+render_map_key(Key) when is_atom(Key) ->
+    render_symbol(Key);
+render_map_key(Key) when is_binary(Key) ->
+    render_string(Key).
 
 %% Render a value in pair-value position. A single-key map whose value is a
 %% leaf collapses to its bare `(k v)' pair, so `#{value => <<"hi">>}' reads
