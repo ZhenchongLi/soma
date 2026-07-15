@@ -15,6 +15,7 @@
 -export([test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages/1]).
 -export([test_pre_stateful_worker_crash_and_timeout_are_bounded/1]).
 -export([test_lost_state_result_is_in_doubt_without_replacement/1]).
+-export([test_task_leases_are_stable_and_released_once_for_all_outcomes/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -27,7 +28,8 @@ all() ->
      test_round_snapshot_is_bounded_task_only_and_handle_scoped,
      test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages,
      test_pre_stateful_worker_crash_and_timeout_are_bounded,
-     test_lost_state_result_is_in_doubt_without_replacement].
+     test_lost_state_result_is_in_doubt_without_replacement,
+     test_task_leases_are_stable_and_released_once_for_all_outcomes].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -808,6 +810,183 @@ test_lost_state_result_is_in_doubt_without_replacement(_Config) ->
             _RegistryPid ->
                 ok = soma_tool_registry:unregister_tool(ToolName)
         end
+    end.
+
+test_task_leases_are_stable_and_released_once_for_all_outcomes(_Config) ->
+    Outcomes = [success, failure, timeout, cancellation,
+                coordinator_crash],
+    lists:foreach(fun assert_task_lease_lifecycle/1, Outcomes).
+
+assert_task_lease_lifecycle(Outcome) ->
+    OutcomeBin = atom_to_binary(Outcome),
+    RequestId = <<"delegate-request-task-leases-", OutcomeBin/binary>>,
+    LeaseNames =
+        [<<"delegate-lease-", OutcomeBin/binary, "-primary">>,
+         <<"delegate-lease-", OutcomeBin/binary, "-secondary">>],
+    OpaqueHandles =
+        maps:from_list(
+          [{Name, <<"opaque-handle:", Name/binary>>}
+           || Name <- LeaseNames]),
+    RawLeases =
+        maps:from_list(
+          [{Name, {raw_delegate_lease, Outcome, Name, make_ref()}}
+           || Name <- LeaseNames]),
+    Observer = self(),
+    LeaseRequests =
+        [#{name => Name,
+           adapter => soma_delegate_test_lease_adapter,
+           options =>
+               #{observer => Observer,
+                 opaque_handle => maps:get(Name, OpaqueHandles),
+                 raw_lease => maps:get(Name, RawLeases)}}
+         || Name <- LeaseNames],
+    FirstRound =
+        fun(Snapshot) ->
+                Observer !
+                    {delegate_lease_round_snapshot, Outcome, 1,
+                     Snapshot},
+                #{llm =>
+                      #{directive => success,
+                        output => <<"first-lease-round">>},
+                  decision => continue}
+        end,
+    SecondRound =
+        fun(Snapshot) ->
+                Observer !
+                    {delegate_lease_round_snapshot, Outcome, 2,
+                     Snapshot},
+                lease_terminal_round(Outcome)
+        end,
+    TaskSpec =
+        #{request_id => RequestId,
+          objective => <<"keep task leases stable across rounds">>,
+          lease_requests => LeaseRequests,
+          round_sequence => [FirstRound, SecondRound]},
+
+    {ok, #{task_id := TaskId}} =
+        submit_through_production_ingress(TaskSpec),
+    CoordinatorPid =
+        case Outcome of
+            cancellation -> coordinator_for_task(TaskId);
+            coordinator_crash -> coordinator_for_task(TaskId);
+            _TerminalOutcome -> undefined
+        end,
+    Acquisitions = wait_for_lease_acquisitions(length(LeaseNames), []),
+    [GuardPid] =
+        lists:usort(
+          [AcquiringGuardPid
+           || {AcquiringGuardPid, _Name, _Handle, _RawLease} <-
+                  Acquisitions]),
+    ?assertEqual(
+       lists:sort(
+         [{Name, maps:get(Name, OpaqueHandles), maps:get(Name, RawLeases)}
+          || Name <- LeaseNames]),
+       lists:sort(
+         [{Name, Handle, RawLease}
+          || {_AcquiringGuardPid, Name, Handle, RawLease} <-
+                 Acquisitions])),
+
+    Snapshots =
+        [wait_for_lease_snapshot(Outcome, RoundId)
+         || RoundId <- [1, 2]],
+    ?assertEqual(
+       [OpaqueHandles, OpaqueHandles],
+       [maps:get(resource_handles, Snapshot)
+        || Snapshot <- Snapshots]),
+
+    TerminalProjection =
+        finish_lease_outcome(Outcome, TaskId, CoordinatorPid),
+    ?assertEqual(expected_lease_outcome_status(Outcome),
+                 maps:get(status, TerminalProjection)),
+    Releases = wait_for_lease_releases(length(LeaseNames), []),
+    ?assertEqual(
+       lists:sort(
+         [{GuardPid, Name, maps:get(Name, RawLeases)}
+          || Name <- LeaseNames]),
+       lists:sort(Releases)),
+    wait_for_process_dead(GuardPid, 100),
+
+    ExpectedReleaseCount = length(LeaseNames) + 1,
+    ?assertEqual({Outcome, ExpectedReleaseCount},
+                 {Outcome, length(Releases)}),
+    assert_no_extra_lease_callbacks(Outcome).
+
+lease_terminal_round(success) ->
+    #{llm =>
+          #{directive => success,
+            output => <<"terminal-lease-round">>},
+      decision => terminal};
+lease_terminal_round(failure) ->
+    #{llm => #{directive => crash}, decision => terminal};
+lease_terminal_round(timeout) ->
+    #{llm => #{directive => hang, timeout_ms => 60000},
+      round_timeout_ms => 50,
+      decision => terminal};
+lease_terminal_round(cancellation) ->
+    #{llm => #{directive => hang}, decision => terminal};
+lease_terminal_round(coordinator_crash) ->
+    #{llm => #{directive => hang}, decision => terminal}.
+
+finish_lease_outcome(cancellation, TaskId, _CoordinatorPid) ->
+    {ok, Projection} = soma_delegate:cancel(TaskId),
+    Projection;
+finish_lease_outcome(coordinator_crash, TaskId, CoordinatorPid) ->
+    exit(CoordinatorPid, kill),
+    wait_for_process_dead(CoordinatorPid, 100),
+    wait_for_terminal_projection(TaskId, 100);
+finish_lease_outcome(_Outcome, TaskId, _CoordinatorPid) ->
+    wait_for_terminal_projection(TaskId, 200).
+
+expected_lease_outcome_status(success) -> succeeded;
+expected_lease_outcome_status(failure) -> failed;
+expected_lease_outcome_status(timeout) -> timeout;
+expected_lease_outcome_status(cancellation) -> cancelled;
+expected_lease_outcome_status(coordinator_crash) -> failed.
+
+wait_for_lease_acquisitions(0, Acquisitions) ->
+    Acquisitions;
+wait_for_lease_acquisitions(Remaining, Acquisitions) ->
+    receive
+        {delegate_test_lease_acquired, GuardPid, Name,
+         OpaqueHandle, RawLease} ->
+            wait_for_lease_acquisitions(
+              Remaining - 1,
+              [{GuardPid, Name, OpaqueHandle, RawLease}
+               | Acquisitions])
+    after 2000 ->
+        ct:fail(task_lease_not_acquired)
+    end.
+
+wait_for_lease_snapshot(Outcome, RoundId) ->
+    receive
+        {delegate_lease_round_snapshot, Outcome, RoundId, Snapshot} ->
+            Snapshot
+    after 2000 ->
+        ct:fail({task_lease_snapshot_not_recorded, Outcome, RoundId})
+    end.
+
+wait_for_lease_releases(0, Releases) ->
+    Releases;
+wait_for_lease_releases(Remaining, Releases) ->
+    receive
+        {delegate_test_lease_released, GuardPid, Name, RawLease} ->
+            wait_for_lease_releases(
+              Remaining - 1,
+              [{GuardPid, Name, RawLease} | Releases])
+    after 2000 ->
+        ct:fail(task_lease_not_released)
+    end.
+
+assert_no_extra_lease_callbacks(Outcome) ->
+    receive
+        {delegate_test_lease_acquired, _GuardPid, _Name,
+         _OpaqueHandle, _RawLease} = Callback ->
+            ct:fail({unexpected_extra_lease_callback, Outcome, Callback});
+        {delegate_test_lease_released, _GuardPid, _Name,
+         _RawLease} = Callback ->
+            ct:fail({unexpected_extra_lease_callback, Outcome, Callback})
+    after 0 ->
+        ok
     end.
 
 crash_fixture(Suffix) ->
