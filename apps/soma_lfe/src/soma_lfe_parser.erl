@@ -75,6 +75,8 @@ parse_invoke_fields([['correlation-id', Value] | Rest], Acc) ->
     add_invoke_field(correlation_id, Value, Rest, Acc);
 parse_invoke_fields([[artifacts | Values] | Rest], Acc) ->
     add_invoke_field(artifacts, Values, Rest, Acc);
+parse_invoke_fields([[{external_symbol, _Name} | _] | _], _Acc) ->
+    unknown_invoke_field();
 parse_invoke_fields([[Head | _] | _], Acc) when is_atom(Head) ->
     malformed_or_unknown_invoke_field(Head, Acc);
 parse_invoke_fields([_Other | _], _Acc) ->
@@ -707,6 +709,10 @@ parse_watch_fields([[cursor, _Invalid] | _Rest], _Watch) ->
     invalid_watch();
 parse_watch_fields([[Head | _Values] | _Rest], _Watch)
   when is_atom(Head) ->
+    {error, [#{code => unknown_field,
+               message => <<"watch field is unknown">>,
+               line => 0}]};
+parse_watch_fields([[{external_symbol, _Name} | _Values] | _Rest], _Watch) ->
     {error, [#{code => unknown_field,
                message => <<"watch field is unknown">>,
                line => 0}]};

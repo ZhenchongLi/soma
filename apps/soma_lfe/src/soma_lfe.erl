@@ -12,15 +12,26 @@
 %% {error, [#{message => binary(), line => non_neg_integer()}]} on failure.
 -spec compile(binary() | string(), map()) ->
     {ok, map()} | {error, [map()]}.
-compile(Source, _Opts) when is_list(Source) ->
-    compile(list_to_binary(Source), _Opts);
-compile(Source, _Opts) when is_binary(Source) ->
-    case soma_lfe_reader:read_forms(Source) of
+compile(Source, Opts) when is_list(Source) ->
+    compile(list_to_binary(Source), Opts);
+compile(Source, Opts) when is_binary(Source) ->
+    ReaderMode = reader_mode(Opts),
+    case soma_lfe_reader:read_forms(Source, ReaderMode) of
         {ok, Forms} ->
             dispatch(Forms);
         {error, Diags} ->
             {error, Diags}
     end.
+
+reader_mode(#{existing_atoms_only := true}) ->
+    %% Loading the pure parser before scanning makes its fixed grammar atoms
+    %% available to list_to_existing_atom/1. Dynamic service names must already
+    %% belong to a loaded/registered vocabulary; rejected names never enter the
+    %% VM atom table.
+    {module, soma_lfe_parser} = code:ensure_loaded(soma_lfe_parser),
+    existing_atoms_only;
+reader_mode(_Opts) ->
+    create_atoms.
 
 %% Route on the top-level head: a single (msg ...) form parses to an actor
 %% envelope; anything else stays on the run path.
