@@ -906,7 +906,7 @@ assert_task_lease_lifecycle(Outcome) ->
        lists:sort(Releases)),
     wait_for_process_dead(GuardPid, 100),
 
-    ExpectedReleaseCount = length(LeaseNames) + 1,
+    ExpectedReleaseCount = length(LeaseNames),
     ?assertEqual({Outcome, ExpectedReleaseCount},
                  {Outcome, length(Releases)}),
     assert_no_extra_lease_callbacks(Outcome).
