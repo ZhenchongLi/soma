@@ -147,6 +147,7 @@ start_allowed_invocation(Envelope, Steps, Task, Handle,
                  task_id => TaskId,
                  request_id => RequestId,
                  envelope_hash => EnvelopeHash,
+                 auto_resume => false,
                  session_pid => self(),
                  event_store => EventStore,
                  steps => Steps},
@@ -475,10 +476,26 @@ recover_from_run_trail(Task, Request,
                                    terminal_event_payload(Terminal)),
             put_terminal_task(Terminal, Request, State);
         error ->
-            %% Keep the immutable dedupe identity even when the trail is still
-            %% nonterminal. Later recovery criteria decide whether such a run is
-            %% resumable or in doubt; an identical request must never start a
-            %% replacement merely because the in-memory owner restarted.
+            recover_nonterminal_run(Task, Request, State)
+    end.
+
+recover_nonterminal_run(Task, Request,
+                        State = #state{event_store = EventStore}) ->
+    RunId = maps:get(run_id, Task),
+    case soma_run_resume_plan:plan(EventStore, RunId) of
+        {unsafe, StepId} ->
+            InDoubt = Task#{status => in_doubt,
+                            reason => {resume_unsafe, StepId}},
+            ok = emit_service_task(EventStore,
+                                   <<"service.task.terminal">>,
+                                   InDoubt,
+                                   terminal_event_payload(InDoubt)),
+            put_terminal_task(InDoubt, Request, State);
+        _OtherVerdict ->
+            %% Keep the immutable dedupe identity for nonterminal work that is
+            %% not unsafe. A later recovery decision may resume it, but an
+            %% identical request must never start a replacement merely because
+            %% the in-memory owner restarted.
             put_terminal_task(Task#{status => running}, Request, State)
     end.
 
