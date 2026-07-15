@@ -1,6 +1,6 @@
 %% @doc Root supervisor for the `soma_actor' application. It owns the actor-layer
 %% registry, the permanent runtime and delegate ingress services, and dynamic
-%% supervisors for delegated coordinators and actor instances.
+%% supervisors for delegated task children and actor instances.
 -module(soma_actor_sup).
 
 -behaviour(supervisor).
@@ -35,6 +35,16 @@ init([]) ->
           start => {soma_delegate_coordinator_sup, start_link, []},
           restart => permanent,
           type => supervisor},
+    DelegateRoundSup =
+        #{id => soma_delegate_round_sup,
+          start => {soma_delegate_round_sup, start_link, []},
+          restart => permanent,
+          type => supervisor},
+    DelegateLeaseSup =
+        #{id => soma_delegate_lease_sup,
+          start => {soma_delegate_lease_sup, start_link, []},
+          restart => permanent,
+          type => supervisor},
     Delegate = #{id => soma_delegate,
                  start => {soma_delegate, start_link, []},
                  restart => permanent,
@@ -46,7 +56,8 @@ init([]) ->
                       restart => permanent,
                       type => supervisor},
     {ok, {SupFlags, [Registry, Service, DelegateCoordinatorSup,
-                     Delegate, ActorChildSup]}};
+                     DelegateRoundSup, DelegateLeaseSup, Delegate,
+                     ActorChildSup]}};
 init(actor_children) ->
     SupFlags = #{strategy => simple_one_for_one,
                  intensity => 1,
