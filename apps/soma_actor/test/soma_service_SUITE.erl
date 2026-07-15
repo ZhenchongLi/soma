@@ -7,6 +7,7 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([test_supervised_service_restarts_and_serves_again/1]).
 -export([test_single_tool_invocation_runs_without_llm_worker/1]).
+-export([test_terminal_status_has_bounded_summary_only/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
@@ -36,6 +37,7 @@
 all() ->
     [test_supervised_service_restarts_and_serves_again,
      test_single_tool_invocation_runs_without_llm_worker,
+     test_terminal_status_has_bounded_summary_only,
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
@@ -62,8 +64,9 @@ all() ->
      test_boot_recovery_registers_actor_tools_first,
      test_rejection_reason_stays_bounded_for_large_plans].
 
-init_per_testcase(
-  test_tool_crash_is_bounded_and_service_runs_again, Config) ->
+init_per_testcase(TestCase, Config)
+  when TestCase =:= test_terminal_status_has_bounded_summary_only;
+       TestCase =:= test_tool_crash_is_bounded_and_service_runs_again ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -176,6 +179,7 @@ init_per_testcase(TestCase, Config)
 init_per_testcase(TestCase, Config)
   when TestCase =:= test_supervised_service_restarts_and_serves_again;
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
+       TestCase =:= test_terminal_status_has_bounded_summary_only;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
@@ -306,6 +310,40 @@ test_single_tool_invocation_runs_without_llm_worker(_Config) ->
     after
         clear_llm_start_trace()
     end.
+
+test_terminal_status_has_bounded_summary_only(_Config) ->
+    SuccessRequestId = <<"service-status-summary-success">>,
+    SuccessArgs = #{value => <<"summary-sized output">>},
+    {ok, #{task_id := SuccessTaskId, status := accepted}} =
+        soma_service:invoke(
+          tool_envelope(SuccessRequestId, echo, SuccessArgs)),
+    {ok, Succeeded} = wait_for_status(SuccessTaskId, succeeded, 100),
+
+    FailureRequestId = <<"service-status-summary-failure">>,
+    {ok, #{task_id := FailureTaskId, status := accepted}} =
+        soma_service:invoke(
+          tool_envelope(
+            FailureRequestId, fail,
+            #{mode => error, reason => <<"private failure detail">>})),
+    {ok, Failed} = wait_for_status(FailureTaskId, failed, 100),
+
+    ExpectedKeys = lists:sort([task_id, request_id, status, summary]),
+    lists:foreach(
+      fun(Terminal) ->
+              ?assertEqual(ExpectedKeys, lists:sort(maps:keys(Terminal))),
+              Summary = maps:get(summary, Terminal),
+              ?assert(
+                 byte_size(term_to_binary(Summary, [deterministic])) =< 512)
+      end,
+      [Succeeded, Failed]),
+    SuccessOutput = #{SuccessRequestId => SuccessArgs},
+    ?assertEqual(
+       #{result_bytes =>
+             byte_size(term_to_binary(SuccessOutput, [deterministic]))},
+       maps:get(summary, Succeeded)),
+    FailedSummary = maps:get(summary, Failed),
+    ?assertEqual([reason_class], maps:keys(FailedSummary)),
+    ?assertEqual(run_failed, maps:get(reason_class, FailedSummary)).
 
 test_oversized_result_fails_with_max_output_reason(_Config) ->
     RequestId = <<"service-oversized-result">>,
