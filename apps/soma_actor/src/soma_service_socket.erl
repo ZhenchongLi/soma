@@ -68,7 +68,7 @@ wait_then_handle(Socket) ->
     end.
 
 handle(Socket) ->
-    case soma_socket_frame:recv(Socket, 60000) of
+    _ = case soma_socket_frame:recv(Socket, 60000) of
         {ok, Source} ->
             Reply = handle_request(Source),
             _ = send_reply(Socket, Reply);
