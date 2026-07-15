@@ -22,6 +22,17 @@ render(#{kind := service_reply,
      ")"];
 render(#{kind := service_error,
          api_version := ApiVersion,
+         code := Code,
+         supported_api_versions := SupportedApiVersions}) ->
+    ["(error ",
+     lists:join(
+       " ",
+       [render_pair(api_version, ApiVersion),
+        render_pair(code, Code),
+        render_pair(supported_api_versions, SupportedApiVersions)]),
+     ")"];
+render(#{kind := service_error,
+         api_version := ApiVersion,
          code := Code}) ->
     ["(error ",
      lists:join(
