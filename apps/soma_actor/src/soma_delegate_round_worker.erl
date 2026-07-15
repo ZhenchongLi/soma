@@ -234,25 +234,18 @@ start_llm_call(Data = #{work := Work, round_id := RoundId}) ->
             LlmOpts = #{owner => self(),
                         llm_call_id => LlmCallId,
                         llm => Llm},
-            case soma_llm_call:start_owned(LlmOpts) of
-                {ok, LlmPid, LlmMRef} ->
-                    TimerRef = arm_phase_timer(
-                                 llm, LlmCallId,
-                                 maps:get(timeout_ms, Llm, undefined),
-                                 ?DEFAULT_LLM_TIMEOUT_MS),
-                    ActiveLlm = #{llm_call_id => LlmCallId,
-                                  pid => LlmPid,
-                                  mref => LlmMRef,
-                                  timer_ref => TimerRef},
-                    {next_state, waiting_llm,
-                     Data#{active_llm := ActiveLlm}};
-                {error, Reason} ->
-                    report_round_result(
-                      Data,
-                      #{status => failed,
-                        phase => llm,
-                        reason => {llm_start_failed, Reason}})
-            end;
+            %% start_owned spawns and monitors; it has no failure return.
+            {ok, LlmPid, LlmMRef} = soma_llm_call:start_owned(LlmOpts),
+            TimerRef = arm_phase_timer(
+                         llm, LlmCallId,
+                         maps:get(timeout_ms, Llm, undefined),
+                         ?DEFAULT_LLM_TIMEOUT_MS),
+            ActiveLlm = #{llm_call_id => LlmCallId,
+                          pid => LlmPid,
+                          mref => LlmMRef,
+                          timer_ref => TimerRef},
+            {next_state, waiting_llm,
+             Data#{active_llm := ActiveLlm}};
         _InvalidLlm ->
             report_round_result(
               Data,
