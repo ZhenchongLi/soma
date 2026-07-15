@@ -22,6 +22,8 @@
                correlation_id,
                request_id,
                envelope_hash,
+               max_output_bytes,
+               deadline_at_ms,
                auto_resume,
                event_store,
                steps = [],
@@ -53,6 +55,10 @@ init(Opts) ->
                  correlation_id = maps:get(correlation_id, Opts, undefined),
                  request_id = maps:get(request_id, Opts, undefined),
                  envelope_hash = maps:get(envelope_hash, Opts, undefined),
+                 max_output_bytes = maps:get(
+                                      max_output_bytes, Opts, undefined),
+                 deadline_at_ms = maps:get(
+                                    deadline_at_ms, Opts, undefined),
                  auto_resume = maps:get(auto_resume, Opts, undefined),
                  event_store = maps:get(event_store, Opts, undefined),
                  steps = maps:get(steps, Opts, []),
@@ -470,18 +476,25 @@ durable_run_options(#data{run_id = RunId,
                           correlation_id = CorrelationId,
                           request_id = RequestId,
                           envelope_hash = EnvelopeHash,
+                          max_output_bytes = MaxOutputBytes,
+                          deadline_at_ms = DeadlineAtMs,
                           auto_resume = AutoResume}) ->
     add_optional(
       auto_resume, AutoResume,
       add_optional(
-        task_id, TaskId,
+        deadline_at_ms, DeadlineAtMs,
         add_optional(
-          envelope_hash, EnvelopeHash,
+          max_output_bytes, MaxOutputBytes,
           add_optional(
-            request_id, RequestId,
+            task_id, TaskId,
             add_optional(
-              correlation_id, CorrelationId,
-              add_optional(session_id, SessionId, #{run_id => RunId})))))).
+              envelope_hash, EnvelopeHash,
+              add_optional(
+                request_id, RequestId,
+                add_optional(
+                  correlation_id, CorrelationId,
+                  add_optional(
+                    session_id, SessionId, #{run_id => RunId})))))))).
 
 add_optional(_Key, undefined, Acc) ->
     Acc;
