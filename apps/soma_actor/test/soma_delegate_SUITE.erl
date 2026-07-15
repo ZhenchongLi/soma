@@ -1089,7 +1089,7 @@ test_concurrent_tasks_isolate_state_workers_and_leases(_Config) ->
        wait_for_lease_releases(1, [])),
     ?assertMatch({ok, #{status := cancelled, task_id := TaskIdA}},
                  soma_delegate:status(TaskIdA)),
-    ?assertMatch({ok, #{status := cancelled, task_id := TaskIdB}},
+    ?assertMatch({ok, #{status := running, task_id := TaskIdB}},
                  soma_delegate:status(TaskIdB)),
     ?assertEqual(CoordinatorStateBBeforeCancel,
                  sys:get_state(CoordinatorPidB)),
