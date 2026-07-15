@@ -1,5 +1,6 @@
 -module(soma_service_socket_SUITE).
 
+-include_lib("kernel/include/file.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
@@ -10,7 +11,8 @@
          test_socket_cancel_is_repeatable_after_cli_process_exit/1,
          test_socket_version_and_operation_errors_are_typed/1,
          test_socket_rejects_bad_and_oversized_frames_then_serves/1,
-         test_daemon_service_listener_is_config_opt_in_with_sibling_default/1]).
+         test_daemon_service_listener_is_config_opt_in_with_sibling_default/1,
+         test_service_socket_stale_takeover_and_lost_bind_preserve_winner/1]).
 
 all() ->
     [test_socket_invoke_status_and_result_end_to_end,
@@ -20,7 +22,8 @@ all() ->
      test_socket_cancel_is_repeatable_after_cli_process_exit,
      test_socket_version_and_operation_errors_are_typed,
      test_socket_rejects_bad_and_oversized_frames_then_serves,
-     test_daemon_service_listener_is_config_opt_in_with_sibling_default].
+     test_daemon_service_listener_is_config_opt_in_with_sibling_default,
+     test_service_socket_stale_takeover_and_lost_bind_preserve_winner].
 
 init_per_testcase(
   TestCase, Config)
@@ -455,6 +458,54 @@ test_daemon_service_listener_is_config_opt_in_with_sibling_default(Config) ->
              lifecycle_source(status, <<"missing-daemon-service-task">>)))
     after
         maybe_stop_daemon(CliPath)
+    end.
+
+%% RS.1d criterion 9: only a listener that proves a leftover AF_UNIX path is
+%% stale may replace it. Once that replacement is live, a later contender must
+%% lose without unlinking the winner's path, and the winner must still answer a
+%% typed request from a fresh connection after the losing start has returned.
+test_service_socket_stale_takeover_and_lost_bind_preserve_winner(_Config) ->
+    Path = socket_path(),
+    {ok, StaleListener} =
+        soma_service_socket:start_link(#{socket => Path}),
+    unlink(StaleListener),
+    try
+        StaleRef = erlang:monitor(process, StaleListener),
+        exit(StaleListener, kill),
+        receive
+            {'DOWN', StaleRef, process, StaleListener, killed} -> ok
+        after 5000 ->
+            ct:fail(stale_service_listener_did_not_stop)
+        end,
+        ?assertMatch({ok, #file_info{type = other}},
+                     file:read_file_info(Path)),
+
+        ReplacementResult =
+            soma_service_socket:start_link(#{socket => Path}),
+        ?assertMatch({ok, _}, ReplacementResult),
+        {ok, Winner} = ReplacementResult,
+        unlink(Winner),
+        try
+            ?assertEqual(
+               {error, address_in_use},
+               soma_service_socket:start_link(#{socket => Path})),
+            ?assert(is_process_alive(Winner)),
+            ?assertEqual(
+               {service_error, not_found},
+               socket_response(
+                 Path,
+                 lifecycle_source(
+                   status, <<"missing-after-lost-service-bind">>))),
+            ?assert(is_process_alive(Winner))
+        after
+            stop_listener(Winner, Path)
+        end
+    after
+        case is_process_alive(StaleListener) of
+            true -> exit(StaleListener, kill);
+            false -> ok
+        end,
+        _ = file:delete(Path)
     end.
 
 socket_request(Path, Source, Operation) ->
