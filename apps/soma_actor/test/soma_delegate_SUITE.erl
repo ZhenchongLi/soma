@@ -13,6 +13,7 @@
 -export([test_sequential_rounds_commit_before_distinct_next_worker/1]).
 -export([test_round_snapshot_is_bounded_task_only_and_handle_scoped/1]).
 -export([test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages/1]).
+-export([test_pre_stateful_worker_crash_and_timeout_are_bounded/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -23,7 +24,8 @@ all() ->
      test_coordinator_and_round_worker_split_child_ownership,
      test_sequential_rounds_commit_before_distinct_next_worker,
      test_round_snapshot_is_bounded_task_only_and_handle_scoped,
-     test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages].
+     test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages,
+     test_pre_stateful_worker_crash_and_timeout_are_bounded].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -675,6 +677,68 @@ test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages(
                  maps:get(terminal_result, CommittedData)),
 
     {ok, #{status := cancelled}} = soma_delegate:cancel(TaskId).
+
+test_pre_stateful_worker_crash_and_timeout_are_bounded(_Config) ->
+    Rows =
+        [{crash,
+          #{status => failed, reason => round_worker_crashed}},
+         {timeout,
+          #{status => timeout, reason => round_timeout}}],
+    lists:foreach(
+      fun({FailureMode, ExpectedFailure}) ->
+              RequestId =
+                  <<"delegate-request-pre-stateful-",
+                    (atom_to_binary(FailureMode))/binary>>,
+              TaskSpec =
+                  #{request_id => RequestId,
+                    objective =>
+                        <<"continue after one bounded round failure">>,
+                    round_sequence =>
+                        [#{llm => #{directive => hang,
+                                   timeout_ms => 60000},
+                           round_timeout_ms => 250,
+                           decision => continue},
+                         #{llm => #{directive => hang},
+                           decision => terminal}]},
+              {ok, #{task_id := TaskId}} =
+                  submit_through_production_ingress(TaskSpec),
+              CoordinatorPid = coordinator_for_task(TaskId),
+              {_FirstData,
+               #{worker_pid := FirstWorkerPid}} =
+                  wait_for_active_round(CoordinatorPid, 1, 100),
+              _ = wait_for_worker_phase(
+                    FirstWorkerPid, waiting_llm, active_llm, 100),
+              {ok, #{restart := temporary}} =
+                  supervisor:get_childspec(
+                    soma_delegate_round_sup, FirstWorkerPid),
+
+              case FailureMode of
+                  crash ->
+                      exit(FirstWorkerPid, kill);
+                  timeout ->
+                      ok
+              end,
+
+              {SecondData,
+               #{worker_pid := SecondWorkerPid}} =
+                  wait_for_active_round(CoordinatorPid, 2, 200),
+              _ = wait_for_worker_phase(
+                    SecondWorkerPid, waiting_llm, active_llm, 100),
+              FailureData = maps:get(recent_round_data, SecondData),
+              ?assertEqual(ExpectedFailure#{round => 1}, FailureData),
+              ?assert(byte_size(
+                        term_to_binary(FailureData, [deterministic])) =<
+                      16384),
+              ?assertNotEqual(FirstWorkerPid, SecondWorkerPid),
+              ?assertEqual(false, is_process_alive(FirstWorkerPid)),
+              ?assertEqual(true, is_process_alive(CoordinatorPid)),
+              ?assertMatch(
+                 {ok, #{status := running, task_id := TaskId}},
+                 soma_delegate:status(TaskId)),
+              {ok, #{status := cancelled}} =
+                  soma_delegate:cancel(TaskId)
+      end,
+      Rows).
 
 crash_fixture(Suffix) ->
     #{request_id => <<"delegate-request-", Suffix/binary>>,
