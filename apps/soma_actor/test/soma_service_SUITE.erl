@@ -15,6 +15,9 @@
 -export([test_durable_restart_rebuilds_dedupe_without_new_run_started/1]).
 -export([test_fresh_vms_keep_durable_task_and_run_ids_distinct/1]).
 -export([test_restarted_service_rearms_absolute_deadline/1]).
+-export([test_timer_unsafe_deadline_rejected_before_journaling/1]).
+-export([test_poison_deadline_metadata_recovers_bounded_terminal/1]).
+-export([test_recovery_enforces_deadline_before_terminal_or_resume/1]).
 -export([test_recovery_lands_every_unowned_trail_terminal/1]).
 -export([test_recovery_preserves_owner_decisions_across_restarts/1]).
 -export([test_start_failures_land_terminal_task_data/1]).
@@ -39,6 +42,9 @@ all() ->
      test_durable_restart_rebuilds_dedupe_without_new_run_started,
      test_fresh_vms_keep_durable_task_and_run_ids_distinct,
      test_restarted_service_rearms_absolute_deadline,
+     test_timer_unsafe_deadline_rejected_before_journaling,
+     test_poison_deadline_metadata_recovers_bounded_terminal,
+     test_recovery_enforces_deadline_before_terminal_or_resume,
      test_recovery_lands_every_unowned_trail_terminal,
      test_recovery_preserves_owner_decisions_across_restarts,
      test_start_failures_land_terminal_task_data,
@@ -114,7 +120,9 @@ init_per_testcase(test_start_failures_land_terminal_task_data, Config) ->
            #{allowed_tools => [echo]}),
     Config;
 init_per_testcase(TestCase, Config)
-  when TestCase =:= test_recovery_lands_every_unowned_trail_terminal;
+  when TestCase =:= test_poison_deadline_metadata_recovers_bounded_terminal;
+       TestCase =:= test_recovery_enforces_deadline_before_terminal_or_resume;
+       TestCase =:= test_recovery_lands_every_unowned_trail_terminal;
        TestCase =:= test_recovery_preserves_owner_decisions_across_restarts ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
@@ -151,6 +159,7 @@ init_per_testcase(TestCase, Config)
        TestCase =:=
            test_unscoped_invocation_uses_configured_or_empty_default_policy;
        TestCase =:= test_unknown_scope_entry_does_not_create_atom;
+       TestCase =:= test_timer_unsafe_deadline_rejected_before_journaling;
        TestCase =:= test_lifecycle_reads_are_monotonic;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
@@ -191,6 +200,9 @@ end_per_testcase(TestCase, Config)
            test_durable_restart_rebuilds_dedupe_without_new_run_started;
        TestCase =:= test_fresh_vms_keep_durable_task_and_run_ids_distinct;
        TestCase =:= test_start_failures_land_terminal_task_data;
+       TestCase =:= test_timer_unsafe_deadline_rejected_before_journaling;
+       TestCase =:= test_poison_deadline_metadata_recovers_bounded_terminal;
+       TestCase =:= test_recovery_enforces_deadline_before_terminal_or_resume;
        TestCase =:= test_recovery_lands_every_unowned_trail_terminal;
        TestCase =:= test_recovery_preserves_owner_decisions_across_restarts;
        TestCase =:= test_restarted_service_rearms_absolute_deadline ->
@@ -503,6 +515,108 @@ test_restarted_service_rearms_absolute_deadline(_Config) ->
     ?assert(lists:member(
               <<"service.task.deadline_expired">>, RunEventTypes)),
     ?assert(lists:member(<<"run.cancelled">>, RunEventTypes)).
+
+test_timer_unsafe_deadline_rejected_before_journaling(_Config) ->
+    ServicePid = whereis(soma_service),
+    StorePid = runtime_event_store(),
+    EventsBefore = soma_event_store:all(StorePid),
+    Envelope =
+        (tool_envelope(
+           <<"service-timer-unsafe-deadline">>, sleep,
+           #{ms => 60000}))#{deadline_ms => 1 bsl 100},
+    Expected =
+        {error,
+         [#{code => invalid_budget,
+            message => <<"invoke budget is invalid">>}]},
+
+    ?assertEqual(Expected, soma_service_envelope:normalize(Envelope)),
+    ?assertEqual(Expected, soma_service:invoke(Envelope)),
+    ?assertEqual(ServicePid, whereis(soma_service)),
+    ?assert(is_process_alive(ServicePid)),
+    ?assertEqual(EventsBefore, soma_event_store:all(StorePid)).
+
+test_poison_deadline_metadata_recovers_bounded_terminal(_Config) ->
+    StorePid = runtime_event_store(),
+    Fixture0 = service_recovery_fixture(<<"poison-deadline">>),
+    Step = #{id => poison_deadline_step,
+             tool => sleep,
+             args => #{ms => 60000},
+             timeout_ms => 60000},
+    Fixture = Fixture0#{step := Step},
+    PoisonDeadline = erlang:system_time(millisecond) + (1 bsl 100),
+    append_service_accepted(
+      StorePid, Fixture, #{deadline_at_ms => PoisonDeadline}),
+    {ok, RunPid} = soma_run_sup:start_run(
+                     #{run_id => maps:get(run_id, Fixture),
+                       task_id => maps:get(task_id, Fixture),
+                       request_id => maps:get(request_id, Fixture),
+                       envelope_hash => maps:get(envelope_hash, Fixture),
+                       deadline_at_ms => PoisonDeadline,
+                       auto_resume => false,
+                       session_pid => self(),
+                       event_store => StorePid,
+                       steps => [Step]}),
+    ok = wait_for_run_event(
+           StorePid, maps:get(run_id, Fixture), <<"tool.started">>, 100),
+    WorkerPid = tool_call_pid_from(StorePid, maps:get(run_id, Fixture)),
+
+    {ok, _Started} = application:ensure_all_started(soma_actor),
+    {ok, Terminal} = soma_service:status(maps:get(task_id, Fixture)),
+
+    ?assertEqual(failed, maps:get(status, Terminal)),
+    ?assertEqual(service_recovery_failed, maps:get(reason, Terminal)),
+    ?assert(erlang:external_size(Terminal) =< 512),
+    ?assert(is_process_alive(whereis(soma_service))),
+    ok = wait_for_process_dead(RunPid, 100),
+    ok = wait_for_process_dead(WorkerPid, 100),
+    ?assertNot(lists:any(
+                 fun(#{event_type := <<"run.resumed">>}) -> true;
+                    (_Event) -> false
+                 end,
+                 soma_event_store:by_run(StorePid, maps:get(run_id, Fixture)))).
+
+test_recovery_enforces_deadline_before_terminal_or_resume(_Config) ->
+    StorePid = runtime_event_store(),
+    DeadlineAtMs = erlang:system_time(millisecond) - 1000,
+
+    Late = service_recovery_fixture(<<"late-completed-no-marker">>),
+    LateStep = maps:get(step, Late),
+    append_service_accepted(
+      StorePid, Late, #{deadline_at_ms => DeadlineAtMs}),
+    append_run_started(StorePid, Late),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => maps:get(run_id, Late),
+             step_id => maps:get(id, LateStep),
+             event_type => <<"step.succeeded">>,
+             payload => #{output => #{value => <<"too late">>}}}),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => maps:get(run_id, Late),
+             event_type => <<"run.completed">>,
+             payload => #{}}),
+
+    Expired = service_recovery_fixture(<<"expired-safe-reader">>),
+    append_service_accepted(
+      StorePid, Expired, #{deadline_at_ms => DeadlineAtMs}),
+    append_run_started(StorePid, Expired),
+
+    {ok, _Started} = application:ensure_all_started(soma_actor),
+    {ok, LateTerminal} = soma_service:status(maps:get(task_id, Late)),
+    {ok, ExpiredTerminal} = soma_service:status(maps:get(task_id, Expired)),
+
+    ?assertEqual(
+       #{status => failed, reason => deadline_exceeded},
+       maps:with([status, reason], LateTerminal)),
+    ?assertNot(maps:is_key(result, LateTerminal)),
+    ?assertEqual(
+       #{status => failed, reason => deadline_exceeded},
+       maps:with([status, reason], ExpiredTerminal)),
+    ?assertNot(lists:any(
+                 fun(#{event_type := <<"run.resumed">>}) -> true;
+                    (_Event) -> false
+                 end,
+                 soma_event_store:by_run(StorePid, maps:get(run_id, Expired)))).
 
 test_recovery_lands_every_unowned_trail_terminal(_Config) ->
     StorePid = runtime_event_store(),
