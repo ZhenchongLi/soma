@@ -587,6 +587,14 @@ recover_recorded_run_terminal(
     put_terminal_task(Terminal, Request, State).
 
 recover_unfinished_task(Task, Request, Trail, State) ->
+    case recovery_deadline_decision(Task, Trail) of
+        continue ->
+            recover_unfinished_before_deadline(Task, Request, Trail, State);
+        Decision ->
+            land_recovery_deadline(Decision, Task, Request, State)
+    end.
+
+recover_unfinished_before_deadline(Task, Request, Trail, State) ->
     RunId = maps:get(run_id, Task),
     case soma_run_sup:find_run(RunId) of
         {ok, RunPid} ->
@@ -599,7 +607,8 @@ recover_unfinished_task(Task, Request, Trail, State) ->
                       Task, Request, current_run_trail(Task, State), State)
             end;
         {error, not_found} ->
-            recover_from_run_trail(Task, Request, Trail, State)
+            recover_from_run_trail_before_deadline(
+              Task, Request, Trail, State)
     end.
 
 monitor_recovered_run(Task, Request, RunPid,
@@ -644,6 +653,15 @@ enforce_recovered_owner_decision(_Task) ->
     ok.
 
 recover_from_run_trail(Task, Request, Trail, State) ->
+    case recovery_deadline_decision(Task, Trail) of
+        continue ->
+            recover_from_run_trail_before_deadline(
+              Task, Request, Trail, State);
+        Decision ->
+            land_recovery_deadline(Decision, Task, Request, State)
+    end.
+
+recover_from_run_trail_before_deadline(Task, Request, Trail, State) ->
     case reconstructed_terminal(Task, Trail) of
         {ok, Terminal} ->
             record_recovered_terminal(Terminal, Request, State);
@@ -688,12 +706,7 @@ recover_resume_result(_Unrecoverable, Task, Request, _Trail, State) ->
     fail_recovery(Task, Request, resume_start_failed, State).
 
 recover_current_terminal(Task, Request, Trail, State) ->
-    case reconstructed_terminal(Task, Trail) of
-        {ok, Terminal} ->
-            record_recovered_terminal(Terminal, Request, State);
-        error ->
-            fail_recovery(Task, Request, service_recovery_failed, State)
-    end.
+    recover_from_run_trail(Task, Request, Trail, State).
 
 recover_committed_outputs(Task, Request, Trail, State) ->
     case soma_run_resume:reconstruct_events(Trail) of
@@ -709,6 +722,98 @@ recover_committed_outputs(Task, Request, Trail, State) ->
 fail_recovery(Task, Request, Reason, State) ->
     record_recovered_terminal(
       Task#{status => failed, reason => Reason}, Request, State).
+
+recovery_deadline_decision(#{deadline_expired := true}, _Trail) ->
+    continue;
+recovery_deadline_decision(#{cancel_requested := true}, _Trail) ->
+    continue;
+recovery_deadline_decision(Task, Trail) ->
+    case maps:find(deadline_at_ms, Task) of
+        error ->
+            continue;
+        {ok, DeadlineAtMs} when is_integer(DeadlineAtMs), DeadlineAtMs > 0 ->
+            classify_recovery_deadline(DeadlineAtMs, Trail);
+        {ok, _InvalidDeadline} ->
+            invalid
+    end.
+
+classify_recovery_deadline(DeadlineAtMs, Trail) ->
+    case durable_outcome_timestamp(Trail) of
+        {ok, TimestampNs} when is_integer(TimestampNs) ->
+            case TimestampNs > DeadlineAtMs * 1000000 of
+                true -> expired;
+                false -> continue
+            end;
+        none ->
+            RemainingMs = DeadlineAtMs - erlang:system_time(millisecond),
+            case RemainingMs =< 0 of
+                true -> expired;
+                false ->
+                    case soma_service_envelope:timer_safe_ms(RemainingMs) of
+                        true -> continue;
+                        false -> invalid
+                    end
+            end
+    end.
+
+durable_outcome_timestamp(Trail) ->
+    case soma_run_resume:reconstruct_events(Trail) of
+        {ok, #{terminal_status := Status}} when Status =/= undefined ->
+            last_event_timestamp(Trail, fun is_terminal_run_event/1);
+        {ok, #{next_step := undefined}} ->
+            last_event_timestamp(
+              Trail,
+              fun(#{event_type := <<"step.succeeded">>}) -> true;
+                 (_Event) -> false
+              end);
+        _ ->
+            none
+    end.
+
+last_event_timestamp(Trail, Predicate) ->
+    lists:foldl(
+      fun(Event, Acc) ->
+              case Predicate(Event) of
+                  true ->
+                      case maps:get(timestamp, Event, undefined) of
+                          Timestamp when is_integer(Timestamp) ->
+                              {ok, Timestamp};
+                          _InvalidTimestamp ->
+                              Acc
+                      end;
+                  false ->
+                      Acc
+              end
+      end,
+      none,
+      Trail).
+
+is_terminal_run_event(#{event_type := Type}) ->
+    Type =:= <<"run.completed">> orelse
+        Type =:= <<"run.failed">> orelse
+        Type =:= <<"run.timeout">> orelse
+        Type =:= <<"run.cancelled">>;
+is_terminal_run_event(_Event) ->
+    false.
+
+land_recovery_deadline(expired, Task, Request, State) ->
+    terminate_recovered_run(Task),
+    Expired = Task#{deadline_expired => true,
+                    status => failed,
+                    reason => deadline_exceeded},
+    ok = emit_service_task(
+           State#state.event_store,
+           <<"service.task.deadline_expired">>, Expired, #{}),
+    record_recovered_terminal(Expired, Request, State);
+land_recovery_deadline(invalid, Task, Request, State) ->
+    terminate_recovered_run(Task),
+    fail_recovery(Task, Request, service_recovery_failed, State).
+
+terminate_recovered_run(#{run_id := RunId}) ->
+    case soma_run_sup:find_run(RunId) of
+        {ok, RunPid} -> terminate_run_child(RunPid);
+        {error, not_found} -> ok
+    end.
 
 record_recovered_terminal(
   Terminal, Request, State = #state{event_store = EventStore}) ->
