@@ -16,6 +16,7 @@
 -export([test_pre_stateful_worker_crash_and_timeout_are_bounded/1]).
 -export([test_lost_state_result_is_in_doubt_without_replacement/1]).
 -export([test_task_leases_are_stable_and_released_once_for_all_outcomes/1]).
+-export([test_cancel_tears_down_llm_run_tool_and_os_children_once/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -29,7 +30,8 @@ all() ->
      test_round_result_identity_rejects_stale_duplicate_and_mismatched_messages,
      test_pre_stateful_worker_crash_and_timeout_are_bounded,
      test_lost_state_result_is_in_doubt_without_replacement,
-     test_task_leases_are_stable_and_released_once_for_all_outcomes].
+     test_task_leases_are_stable_and_released_once_for_all_outcomes,
+     test_cancel_tears_down_llm_run_tool_and_os_children_once].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -817,6 +819,118 @@ test_task_leases_are_stable_and_released_once_for_all_outcomes(_Config) ->
                 coordinator_crash],
     lists:foreach(fun assert_task_lease_lifecycle/1, Outcomes).
 
+test_cancel_tears_down_llm_run_tool_and_os_children_once(Config) ->
+    Observer = self(),
+    LlmCorrelationId = <<"delegate-correlation-cancel-llm">>,
+    LlmSpec =
+        #{request_id => <<"delegate-request-cancel-llm">>,
+          correlation_id => LlmCorrelationId,
+          objective => <<"cancel one blocked owned LLM call">>,
+          round_sequence =>
+              [#{llm => #{directive => hang}, decision => continue},
+               later_round_fixture(llm, Observer)]},
+    {ok, #{task_id := LlmTaskId}} =
+        submit_through_production_ingress(LlmSpec),
+    LlmCoordinatorPid = coordinator_for_task(LlmTaskId),
+    LlmRoundWorkerPid = wait_for_round_worker(100),
+    {_LlmWorkerData, #{pid := LlmPid}} =
+        wait_for_worker_phase(
+          LlmRoundWorkerPid, waiting_llm, active_llm, 100),
+
+    {ok, LlmCancelled = #{status := cancelled}} =
+        soma_delegate:cancel(LlmTaskId),
+    ?assertNot(is_process_alive(LlmPid)),
+    ?assertNot(is_process_alive(LlmRoundWorkerPid)),
+    ?assertEqual([], live_round_workers()),
+    assert_one_terminal_cancellation(LlmTaskId, LlmCancelled),
+    ?assertEqual(
+       [],
+       [Event || Event <-
+                     soma_event_store:by_correlation(
+                       event_store_pid(), LlmCorrelationId),
+                 maps:get(event_type, Event) =:= <<"run.started">>]),
+    assert_no_later_round(llm),
+    wait_for_process_dead(LlmCoordinatorPid, 100),
+
+    ToolName = delegate_cancel_cli,
+    ActionCorrelationId = <<"delegate-correlation-cancel-action">>,
+    {Helper, PidFile} =
+        write_delegate_cancel_cli_stub(
+          proplists:get_value(priv_dir, Config)),
+    ok = soma_tool_registry:register_tool(
+           #{name => ToolName,
+             effect => reader,
+             idempotent => true,
+             timeout_ms => 60000,
+             adapter => cli,
+             executable => Helper,
+             argv => [PidFile]}),
+    try
+        Step = #{id => <<"delegate-cancel-cli-step">>,
+                 tool => ToolName,
+                 args => #{value => <<"block until cancelled">>},
+                 timeout_ms => 60000},
+        ActionSpec =
+            #{request_id => <<"delegate-request-cancel-action">>,
+              correlation_id => ActionCorrelationId,
+              objective =>
+                  <<"cancel one delegated CLI action and its process">>,
+              round_sequence =>
+                  [#{llm =>
+                         #{directive => success,
+                           output => <<"dispatch-cli-action">>},
+                     action_steps => [Step],
+                     decision => continue},
+                   later_round_fixture(action, Observer)]},
+        {ok, #{task_id := ActionTaskId}} =
+            submit_through_production_ingress(ActionSpec),
+        ActionCoordinatorPid = coordinator_for_task(ActionTaskId),
+        ActionRoundWorkerPid = wait_for_round_worker(100),
+        {_ActionWorkerData,
+         #{pid := RunPid, run_id := RunId}} =
+            wait_for_worker_phase(
+              ActionRoundWorkerPid, waiting_run, active_run, 100),
+        [ToolStarted] =
+            wait_for_correlated_events(
+              event_store_pid(), ActionCorrelationId,
+              <<"tool.started">>, 100),
+        ToolCallPid = maps:get(tool_call_pid, ToolStarted),
+        OsPid = wait_for_delegate_os_pid(PidFile, 100),
+        ?assert(is_process_alive(ActionRoundWorkerPid)),
+        ?assert(is_process_alive(RunPid)),
+        ?assert(is_process_alive(ToolCallPid)),
+        ?assert(delegate_os_process_alive(OsPid)),
+
+        {ok, ActionCancelled = #{status := cancelled}} =
+            soma_delegate:cancel(ActionTaskId),
+        ?assertNot(is_process_alive(ActionRoundWorkerPid)),
+        ?assertNot(is_process_alive(RunPid)),
+        ?assertNot(is_process_alive(ToolCallPid)),
+        ?assertNot(delegate_os_process_alive(OsPid)),
+        ?assertEqual([], live_round_workers()),
+        ?assertEqual([], live_runs()),
+        assert_one_terminal_cancellation(
+          ActionTaskId, ActionCancelled),
+        RunEvents = soma_event_store:by_run(event_store_pid(), RunId),
+        ?assertEqual(
+           1,
+           length([Event || Event <- RunEvents,
+                            maps:get(event_type, Event) =:=
+                                <<"run.cancelled">>])),
+        ?assertEqual(
+           1,
+           length([Event || Event <-
+                                soma_event_store:by_correlation(
+                                  event_store_pid(),
+                                  ActionCorrelationId),
+                            maps:get(event_type, Event) =:=
+                                <<"run.started">>])),
+        assert_no_later_round(action),
+        wait_for_process_dead(ActionCoordinatorPid, 100)
+    after
+        ok = soma_tool_registry:unregister_tool(ToolName)
+    end.
+
 assert_task_lease_lifecycle(Outcome) ->
     OutcomeBin = atom_to_binary(Outcome),
     RequestId = <<"delegate-request-task-leases-", OutcomeBin/binary>>,
@@ -989,6 +1103,83 @@ assert_no_extra_lease_callbacks(Outcome) ->
         ok
     end.
 
+later_round_fixture(Phase, Observer) ->
+    fun(_Snapshot) ->
+            Observer ! {delegate_later_round_started, Phase},
+            #{llm => #{directive => hang}, decision => terminal}
+    end.
+
+assert_one_terminal_cancellation(TaskId, PublicProjection) ->
+    ?assertEqual(
+       [#{status => cancelled, round => 2}],
+       cancelled_terminal_projections(TaskId)),
+    ?assertEqual({ok, PublicProjection}, soma_delegate:status(TaskId)),
+    ?assertEqual({ok, PublicProjection}, soma_delegate:cancel(TaskId)),
+    ?assertEqual(
+       [#{status => cancelled, round => 2}],
+       cancelled_terminal_projections(TaskId)).
+
+cancelled_terminal_projections(TaskId) ->
+    IngressState = sys:get_state(soma_delegate),
+    Tasks = maps:get(tasks, IngressState),
+    [Projection
+     || {StoredTaskId, Route} <- maps:to_list(Tasks),
+        StoredTaskId =:= TaskId,
+        Projection <- [maps:get(terminal_projection, Route, undefined)],
+        is_map(Projection),
+        maps:get(status, Projection, undefined) =:= cancelled].
+
+assert_no_later_round(Phase) ->
+    receive
+        {delegate_later_round_started, Phase} ->
+            ct:fail({later_round_started_after_cancel, Phase})
+    after 100 ->
+        ok
+    end.
+
+write_delegate_cancel_cli_stub(TmpDir) ->
+    Helper = filename:join(TmpDir, "delegate-cancel-cli.sh"),
+    PidFile = filename:join(TmpDir, "delegate-cancel-cli.pid"),
+    Script = <<"#!/bin/sh\n"
+               "printf '%s\\n' \"$$\" > \"$1\"\n"
+               "sleep 30\n">>,
+    ok = filelib:ensure_dir(Helper),
+    ok = file:write_file(Helper, Script),
+    ok = file:change_mode(Helper, 8#755),
+    {Helper, PidFile}.
+
+wait_for_delegate_os_pid(_PidFile, 0) ->
+    ct:fail(delegate_cli_stub_did_not_write_os_pid);
+wait_for_delegate_os_pid(PidFile, Attempts) ->
+    case file:read_file(PidFile) of
+        {ok, Bytes} ->
+            list_to_integer(string:trim(binary_to_list(Bytes)));
+        {error, enoent} ->
+            timer:sleep(10),
+            wait_for_delegate_os_pid(PidFile, Attempts - 1)
+    end.
+
+delegate_os_process_alive(OsPid) ->
+    Kill = os:find_executable("kill"),
+    Port = open_port(
+             {spawn_executable, Kill},
+             [{args, ["-0", integer_to_list(OsPid)]},
+              exit_status, binary, use_stdio, stderr_to_stdout]),
+    delegate_os_process_probe_result(Port).
+
+delegate_os_process_probe_result(Port) ->
+    receive
+        {Port, {data, _Bytes}} ->
+            delegate_os_process_probe_result(Port);
+        {Port, {exit_status, 0}} ->
+            true;
+        {Port, {exit_status, _NonZero}} ->
+            false
+    after 1000 ->
+        erlang:port_close(Port),
+        ct:fail(delegate_os_process_probe_timeout)
+    end.
+
 crash_fixture(Suffix) ->
     #{request_id => <<"delegate-request-", Suffix/binary>>,
       objective => <<"hold a disposable round open">>,
@@ -1018,6 +1209,12 @@ live_coordinators() ->
 live_round_workers() ->
     [Pid || {_Id, Pid, worker, _Modules} <-
                 supervisor:which_children(soma_delegate_round_sup),
+            is_pid(Pid),
+            is_process_alive(Pid)].
+
+live_runs() ->
+    [Pid || {_Id, Pid, worker, _Modules} <-
+                supervisor:which_children(soma_run_sup),
             is_pid(Pid),
             is_process_alive(Pid)].
 
