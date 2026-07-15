@@ -116,6 +116,15 @@ teardown.
 | --- | --- |
 | Service recovery consumes the runtime-owned descriptor safety rule through the resume plan while runtime source and application dependencies remain actor-free. | `soma_service_boundary_tests:test_recovery_uses_shared_descriptor_safety_without_reverse_dependency` |
 
+## Review hardening — boot descriptor ordering and bounded rejection detail
+
+Two review findings on the criteria above, each pinned by a regression test:
+
+| Guarantee | Proof |
+| --- | --- |
+| Actor-owned descriptors register before the supervision tree starts, so boot-time durable replay resolves a pending `ask_actor` step through a started tool call instead of discarding restart-safe work as `{unregistered_tool, _}`. | `soma_service_SUITE:test_boot_recovery_registers_actor_tools_first` |
+| Rejection detail cannot grow with the plan: a large all-disallowed plan collapses to the distinct disallowed tools (capped at eight), keeping the public reply and the durable `service.task.terminal` event bounded. | `soma_service_SUITE:test_rejection_reason_stays_bounded_for_large_plans` |
+
 ## Criterion 19 — this contract maps every criterion to its proof
 
 | Guarantee | Proof |
