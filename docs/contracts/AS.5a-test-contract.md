@@ -181,3 +181,19 @@ issue #234.
 
 - Hermetic proof: `soma_as5a_contract_doc_tests:test_as5a_contract_maps_every_criterion_to_one_hermetic_test`
 - Hermetic boundary: EUnit reads this repository file directly and checks only deterministic binary content.
+
+## Review hardening — boundary rows
+
+Review findings on the criteria above are pinned as rows of one hermetic
+boundary case, `soma_delegate_SUITE:test_review_boundaries_expire_calls_teardown_actions_and_reject_unsafe_state`:
+
+| Guarantee | Row |
+| --- | --- |
+| Timed-out forwarded ingress calls expire bounded. | `forwarded_calls` |
+| Forced action cancellation waits for descendants. | `forced_action_teardown` |
+| Unsafe initial task state is rejected. | `initial_task_state` |
+| Non-canonical forbidden round results are rejected. | `round_result_state` |
+| An expired action deadline beats a late run success — the round reports the timeout, never `succeeded`. | `deadline_late_success` |
+| The round deadline holds for dispatched non-idempotent work: a late result lands `in_doubt` with the invocation on the mutation/unknown-outcome ledgers. | `deadline_unsafe_late_result` |
+| Lease names are bounded binaries; a pid or oversized name fails acquisition typed before any round starts. | `lease_name_boundary` |
+| A dead lease guard fails the task typed at the ownership boundary; cleanup survives it and cancel-after-terminal stays the typed `not_running`. | `lease_guard_down` |
