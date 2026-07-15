@@ -5,12 +5,15 @@
 
 -behaviour(gen_server).
 
+-define(DEFAULT_RESULT_INLINE_BYTES, 16384).
+
 -export([start_link/0]).
--export([invoke/1, status/1, cancel/1]).
+-export([invoke/1, status/1, result/1, cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(state, {event_store,
                 policy = #{allowed_tools => []},
+                result_inline_bytes = ?DEFAULT_RESULT_INLINE_BYTES,
                 tasks = #{},
                 requests = #{},
                 runs = #{},
@@ -26,6 +29,9 @@ invoke(Envelope) ->
 status(TaskId) ->
     gen_server:call(?MODULE, {status, TaskId}).
 
+result(TaskId) ->
+    gen_server:call(?MODULE, {result, TaskId}).
+
 cancel(TaskId) ->
     gen_server:call(?MODULE, {cancel, TaskId}).
 
@@ -33,7 +39,10 @@ init([]) ->
     Policy = application:get_env(
                soma_actor, service_policy,
                #{allowed_tools => []}),
-    State = #state{event_store = runtime_event_store(), policy = Policy},
+    InlineBytes = configured_result_inline_bytes(),
+    State = #state{event_store = runtime_event_store(),
+                   policy = Policy,
+                   result_inline_bytes = InlineBytes},
     {ok, rebuild_dedupe_index(State)}.
 
 handle_call({invoke, Envelope}, _From, State) ->
@@ -48,6 +57,11 @@ handle_call({status, TaskId}, _From, State = #state{tasks = Tasks}) ->
                 {ok, Task} -> {ok, public_task(Task)};
                 error -> {error, not_found}
             end,
+    {reply, Reply, State};
+handle_call({result, TaskId}, _From,
+            State = #state{tasks = Tasks,
+                           result_inline_bytes = InlineBytes}) ->
+    Reply = task_result(maps:get(TaskId, Tasks, undefined), InlineBytes),
     {reply, Reply, State};
 handle_call({cancel, TaskId}, _From, State) ->
     cancel_task(TaskId, State);
@@ -74,6 +88,29 @@ handle_info({'DOWN', MRef, process, Pid, _Reason}, State) ->
     {noreply, handle_process_down(MRef, Pid, State)};
 handle_info(_Info, State) ->
     {noreply, State}.
+
+configured_result_inline_bytes() ->
+    case application:get_env(
+           soma_actor, service_result_inline_bytes,
+           ?DEFAULT_RESULT_INLINE_BYTES) of
+        InlineBytes when is_integer(InlineBytes), InlineBytes > 0 ->
+            InlineBytes;
+        _Invalid ->
+            ?DEFAULT_RESULT_INLINE_BYTES
+    end.
+
+task_result(undefined, _InlineBytes) ->
+    {error, not_found};
+task_result(#{status := succeeded,
+              task_id := TaskId,
+              result := Output}, InlineBytes) ->
+    soma_service_artifact:present(TaskId, Output, InlineBytes);
+task_result(#{status := accepted}, _InlineBytes) ->
+    {error, not_ready};
+task_result(#{status := running}, _InlineBytes) ->
+    {error, not_ready};
+task_result(_Terminal, _InlineBytes) ->
+    {error, result_unavailable}.
 
 invoke_normalized(Envelope,
                   State = #state{requests = Requests, tasks = Tasks}) ->
