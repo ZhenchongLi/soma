@@ -10,6 +10,8 @@
          test_socket_watch_reconnect_resumes_after_cursor/1,
          test_socket_cancel_is_repeatable_after_cli_process_exit/1,
          test_socket_version_and_operation_errors_are_typed/1,
+         test_socket_preserves_published_v1_errors/1,
+         test_socket_oversized_response_returns_typed_error/1,
          test_socket_rejects_bad_and_oversized_frames_then_serves/1,
          test_daemon_service_listener_is_config_opt_in_with_sibling_default/1,
          test_service_socket_stale_takeover_and_lost_bind_preserve_winner/1]).
@@ -21,6 +23,8 @@ all() ->
      test_socket_watch_reconnect_resumes_after_cursor,
      test_socket_cancel_is_repeatable_after_cli_process_exit,
      test_socket_version_and_operation_errors_are_typed,
+     test_socket_preserves_published_v1_errors,
+     test_socket_oversized_response_returns_typed_error,
      test_socket_rejects_bad_and_oversized_frames_then_serves,
      test_daemon_service_listener_is_config_opt_in_with_sibling_default,
      test_service_socket_stale_takeover_and_lost_bind_preserve_winner].
@@ -48,6 +52,29 @@ init_per_testcase(
     TmpDir = make_tmp_dir(),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started}, {tmp_dir, TmpDir} | Config];
+init_per_testcase(test_socket_preserves_published_v1_errors, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy, #{allowed_tools => [echo, sleep]}),
+    ok = application:set_env(
+           soma_actor, service_result_inline_bytes, 1),
+    TmpDir = make_tmp_dir(),
+    InvalidDataDir = filename:join(TmpDir, "not-a-directory"),
+    ok = file:write_file(InvalidDataDir, <<"regular file">>),
+    ok = application:set_env(
+           soma_actor, service_data_dir, InvalidDataDir),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {tmp_dir, TmpDir} | Config];
+init_per_testcase(test_socket_oversized_response_returns_typed_error, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy, #{allowed_tools => [file_read]}),
+    ok = application:set_env(
+           soma_actor, service_result_inline_bytes,
+           4 * soma_socket_frame:max_bytes()),
+    TmpDir = make_tmp_dir(),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {tmp_dir, TmpDir} | Config];
 init_per_testcase(_TestCase, Config) ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
@@ -59,6 +86,8 @@ end_per_testcase(_TestCase, Config) ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
     application:unset_env(soma_actor, service_policy),
+    application:unset_env(soma_actor, service_result_inline_bytes),
+    application:unset_env(soma_actor, service_data_dir),
     application:unset_env(soma_runtime, event_store_log),
     application:unload(soma_actor),
     maybe_del_tmp_dir(Config),
@@ -344,9 +373,7 @@ test_socket_version_and_operation_errors_are_typed(_Config) ->
                unsupported_api_version,
                [<<"1">>]}},
              {invalid_operation,
-              <<"(invoke "
-                "(api-version \"1\") "
-                "(request-id \"socket-service-no-operation\"))">>,
+              <<"(run)">>,
               {service_error, invalid_operation}}],
         StorePid = runtime_event_store(),
         RunStartsBefore = run_started_count(StorePid),
@@ -372,6 +399,127 @@ test_socket_version_and_operation_errors_are_typed(_Config) ->
         ?assertEqual(
            [{Name, Expected} || {Name, _Source, Expected} <- Rows],
            [{Name, Reply} || {Name, _Bytes, Reply, _RunStarts} <- Observed])
+    after
+        stop_listener(Listener, Path)
+    end.
+
+%% Review regression: every v1 envelope diagnostic and service lifecycle error
+%% must survive the socket adapter's fixed allowlists. The invalid-operation row
+%% is a successfully compiled non-service `(run)' shape, while the lifecycle
+%% rows are produced by the real supervised service rather than parser failures.
+test_socket_preserves_published_v1_errors(_Config) ->
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        lists:foreach(
+          fun({Source, Expected}) ->
+                  ?assertEqual(Expected, socket_response(Path, Source))
+          end,
+          published_diagnostic_error_rows()),
+
+        FirstInvoke =
+            <<"(invoke "
+              "(api-version \"1\") "
+              "(request-id \"socket-service-public-errors\") "
+              "(tool (name echo) (args (value \"first\"))))">>,
+        #{task_id := FirstTaskId} =
+            socket_request(Path, FirstInvoke, invoke),
+        ConflictingInvoke =
+            <<"(invoke "
+              "(api-version \"1\") "
+              "(request-id \"socket-service-public-errors\") "
+              "(tool (name echo) (args (value \"second\"))))">>,
+        ?assertEqual(
+           {service_error, request_id_conflict},
+           socket_response(Path, ConflictingInvoke)),
+
+        _FirstTerminal =
+            wait_for_socket_status(Path, FirstTaskId, succeeded, 100),
+        ?assertEqual(
+           {service_error, invalid_cursor},
+           socket_response(
+             Path, watch_source(FirstTaskId, <<"not-a-cursor">>, 1))),
+        ?assertEqual(
+           {service_error, not_running},
+           socket_response(
+             Path, lifecycle_source(cancel, FirstTaskId))),
+        ?assertEqual(
+           {service_error, artifact_publish_failed},
+           socket_response(
+             Path, lifecycle_source(result, FirstTaskId))),
+
+        FailedInvoke =
+            <<"(invoke "
+              "(api-version \"1\") "
+              "(request-id \"socket-service-unavailable-result\") "
+              "(max-output-bytes 1) "
+              "(tool (name echo) (args (value \"too large\"))))">>,
+        #{task_id := FailedTaskId} =
+            socket_request(Path, FailedInvoke, invoke),
+        _FailedTerminal =
+            wait_for_socket_status(Path, FailedTaskId, failed, 100),
+        ?assertEqual(
+           {service_error, result_unavailable},
+           socket_response(
+             Path, lifecycle_source(result, FailedTaskId))),
+
+        SlowInvoke =
+            <<"(invoke "
+              "(api-version \"1\") "
+              "(request-id \"socket-service-not-ready\") "
+              "(tool (name sleep) (args (ms 30000))))">>,
+        #{task_id := SlowTaskId} =
+            socket_request(Path, SlowInvoke, invoke),
+        try
+            ?assertEqual(
+               {service_error, not_ready},
+               socket_response(
+                 Path, lifecycle_source(result, SlowTaskId)))
+        after
+            _ = socket_response(
+                  Path, lifecycle_source(cancel, SlowTaskId))
+        end
+    after
+        stop_listener(Listener, Path)
+    end.
+
+%% Review regression: a completed service result whose rendered reply exceeds
+%% the shared frame cap must receive the small response-too-large error over the
+%% same real socket. Closing without a frame would make a retryable presentation
+%% outcome indistinguishable from a transport failure.
+test_socket_oversized_response_returns_typed_error(Config) ->
+    TmpDir = proplists:get_value(tmp_dir, Config),
+    LargePath = filename:join(TmpDir, "large-inline-result.bin"),
+    LargeBytes =
+        binary:copy(<<"x">>, soma_socket_frame:max_bytes() + 65536),
+    ok = file:write_file(LargePath, LargeBytes),
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        Invoke =
+            iolist_to_binary(
+              ["(invoke "
+               "(api-version \"1\") "
+               "(request-id \"socket-service-large-inline\") "
+               "(tool (name file_read) "
+               "(args (path \"large-inline-result.bin\") "
+               "(root \"", TmpDir, "\"))))"]),
+        #{task_id := TaskId} = socket_request(Path, Invoke, invoke),
+        Terminal = wait_for_socket_status(Path, TaskId, succeeded, 100),
+        #{summary := #{result_bytes := ResultBytes}} = Terminal,
+        ?assert(ResultBytes > soma_socket_frame:max_bytes()),
+
+        ?assertEqual(
+           {ok, {service_error, response_too_large}},
+           socket_response_result(
+             Path, lifecycle_source(result, TaskId))),
+        ?assert(is_process_alive(Listener)),
+        ?assertMatch(
+           {service_reply, status, #{status := succeeded}},
+           socket_response(
+             Path, lifecycle_source(status, TaskId)))
     after
         stop_listener(Listener, Path)
     end.
@@ -508,6 +656,70 @@ test_service_socket_stale_takeover_and_lost_bind_preserve_winner(_Config) ->
         _ = file:delete(Path)
     end.
 
+published_diagnostic_error_rows() ->
+    LargeScopeEntry = binary:copy(<<"s">>, 256),
+    [{<<"(invoke "
+        "(request-id \"socket-missing-api-version\") "
+        "(tool (name echo) (args (value \"ignored\"))))">>,
+      {service_error, missing_api_version}},
+     {<<"(invoke "
+        "(api-version \"2\") "
+        "(request-id \"socket-unsupported-api-version\") "
+        "(tool (name echo) (args (value \"ignored\"))))">>,
+      {service_error, unsupported_api_version, [<<"1">>]}},
+     {<<"(invoke "
+        "(api-version \"1\") "
+        "(tool (name echo) (args (value \"ignored\"))))">>,
+      {service_error, missing_request_id}},
+     {<<"(invoke "
+        "(api-version \"1\") "
+        "(request-id invalid) "
+        "(tool (name echo) (args (value \"ignored\"))))">>,
+      {service_error, invalid_request_id}},
+     {<<"(invoke "
+        "(api-version \"1\") "
+        "(api-version \"1\") "
+        "(request-id \"socket-duplicate-field\") "
+        "(tool (name echo) (args (value \"ignored\"))))">>,
+      {service_error, duplicate_field}},
+     {<<"(invoke "
+        "(api-version \"1\") "
+        "(request-id \"socket-unknown-field\") "
+        "(credential \"must-not-echo\") "
+        "(tool (name echo) (args (value \"ignored\"))))">>,
+      {service_error, unknown_field}},
+     {<<"(run)">>,
+      {service_error, invalid_operation}},
+     {<<"(invoke "
+        "(api-version \"1\") "
+        "(request-id \"socket-invalid-budget\") "
+        "(deadline-ms 0) "
+        "(tool (name echo) (args (value \"ignored\"))))">>,
+      {service_error, invalid_budget}},
+     {iolist_to_binary(
+        ["(invoke "
+         "(api-version \"1\") "
+         "(request-id \"socket-scope-too-large\") "
+         "(scope \"", LargeScopeEntry, "\") "
+         "(tool (name echo) (args (value \"ignored\"))))"]),
+      {service_error, scope_entry_too_large}},
+     {<<"(invoke "
+        "(api-version \"1\") "
+        "(request-id \"socket-invalid-artifacts\") "
+        "(artifacts invalid) "
+        "(tool (name echo) (args (value \"ignored\"))))">>,
+      {service_error, invalid_artifacts}},
+     {<<"(invoke "
+        "(api-version \"1\") "
+        "(request-id \"socket-invalid-correlation\") "
+        "(correlation-id invalid) "
+        "(tool (name echo) (args (value \"ignored\"))))">>,
+      {service_error, invalid_correlation_id}},
+     {<<"(watch \"socket-invalid-watch\" (limit 0))">>,
+      {service_error, invalid_watch}},
+     {<<"(status \"socket-missing-task\")">>,
+      {service_error, not_found}}].
+
 socket_request(Path, Source, Operation) ->
     {service_reply, Operation, Value} = socket_response(Path, Source),
     Value.
@@ -515,17 +727,33 @@ socket_request(Path, Source, Operation) ->
 socket_response(Path, Source) ->
     decode_service_response(socket_response_payload(Path, Source)).
 
+socket_response_result(Path, Source) ->
+    case socket_response_payload_result(Path, Source) of
+        {ok, Payload} ->
+            {ok, decode_service_response(Payload)};
+        {error, _Reason} = Error ->
+            Error
+    end.
+
 socket_response_payload(Path, Source) ->
-    socket_wire_response_payload(Path, frame(Source)).
+    {ok, Payload} = socket_response_payload_result(Path, Source),
+    Payload.
+
+socket_response_payload_result(Path, Source) ->
+    socket_wire_response_payload_result(Path, frame(Source)).
 
 socket_wire_response_payload(Path, WireFrame) ->
+    {ok, Payload} = socket_wire_response_payload_result(Path, WireFrame),
+    Payload.
+
+socket_wire_response_payload_result(Path, WireFrame) ->
     {ok, Socket} =
         gen_tcp:connect(
           {local, Path}, 0,
           [binary, {packet, raw}, {active, false}], 5000),
     try
         ok = gen_tcp:send(Socket, WireFrame),
-        recv_frame(Socket)
+        recv_frame_result(Socket)
     after
         gen_tcp:close(Socket)
     end.
@@ -568,11 +796,13 @@ wait_for_daemon_stop(Path, Attempts) ->
 frame(Payload) ->
     <<(byte_size(Payload)):32/unsigned-big-integer, Payload/binary>>.
 
-recv_frame(Socket) ->
-    {ok, <<Length:32/unsigned-big-integer>>} =
-        gen_tcp:recv(Socket, 4, 5000),
-    {ok, Payload} = gen_tcp:recv(Socket, Length, 5000),
-    Payload.
+recv_frame_result(Socket) ->
+    case gen_tcp:recv(Socket, 4, 5000) of
+        {ok, <<Length:32/unsigned-big-integer>>} ->
+            gen_tcp:recv(Socket, Length, 5000);
+        {error, _Reason} = Error ->
+            Error
+    end.
 
 decode_service_response(Payload) ->
     case soma_lfe_reader:read_forms(Payload) of
@@ -598,10 +828,27 @@ decode_service_response(Payload) ->
     end.
 
 decode_error_code('unsupported-api-version') -> unsupported_api_version;
+decode_error_code('missing-api-version') -> missing_api_version;
+decode_error_code('missing-request-id') -> missing_request_id;
+decode_error_code('invalid-request-id') -> invalid_request_id;
+decode_error_code('duplicate-field') -> duplicate_field;
+decode_error_code('unknown-field') -> unknown_field;
 decode_error_code('invalid-operation') -> invalid_operation;
+decode_error_code('invalid-budget') -> invalid_budget;
+decode_error_code('scope-entry-too-large') -> scope_entry_too_large;
+decode_error_code('invalid-artifacts') -> invalid_artifacts;
+decode_error_code('invalid-correlation-id') -> invalid_correlation_id;
 decode_error_code('malformed-request') -> malformed_request;
 decode_error_code('frame-too-large') -> frame_too_large;
+decode_error_code('response-too-large') -> response_too_large;
+decode_error_code('request-id-conflict') -> request_id_conflict;
 decode_error_code('not-found') -> not_found;
+decode_error_code('not-ready') -> not_ready;
+decode_error_code('result-unavailable') -> result_unavailable;
+decode_error_code('invalid-cursor') -> invalid_cursor;
+decode_error_code('invalid-watch') -> invalid_watch;
+decode_error_code('not-running') -> not_running;
+decode_error_code('artifact-publish-failed') -> artifact_publish_failed;
 decode_error_code('internal-error') -> internal_error;
 decode_error_code(Code) -> Code.
 
