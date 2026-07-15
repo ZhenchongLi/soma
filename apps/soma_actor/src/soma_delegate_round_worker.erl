@@ -4,6 +4,9 @@
 
 -behaviour(gen_statem).
 
+-define(DEFAULT_LLM_TIMEOUT_MS, 60000).
+-define(DEFAULT_ACTION_TIMEOUT_MS, 120000).
+
 -export([start_link/1]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
@@ -48,21 +51,61 @@ handle_event(info,
                       result_capability := ResultCapability}) ->
     start_llm_call(Data);
 handle_event(info,
+             {delegate_round_cancel, TaskId, RoundId, WorkerIdentity,
+              ResultCapability, Status},
+             awaiting_start,
+             Data = #{task_id := TaskId,
+                      round_id := RoundId,
+                      worker_identity := WorkerIdentity,
+                      result_capability := ResultCapability})
+  when Status =:= cancelled; Status =:= timeout ->
+    report_round_result(
+      Data, #{status => Status, phase => decision});
+handle_event(info,
+             {delegate_round_cancel, TaskId, RoundId, WorkerIdentity,
+              ResultCapability, Status},
+             waiting_llm,
+             Data = #{task_id := TaskId,
+                      round_id := RoundId,
+                      worker_identity := WorkerIdentity,
+                      result_capability := ResultCapability,
+                      active_llm := ActiveLlm})
+  when Status =:= cancelled; Status =:= timeout ->
+    stop_llm_child(ActiveLlm),
+    report_round_result(
+      Data#{active_llm := undefined},
+      #{status => Status, phase => llm});
+handle_event(info,
+             {delegate_round_cancel, TaskId, RoundId, WorkerIdentity,
+              ResultCapability, Status},
+             waiting_run,
+             Data = #{task_id := TaskId,
+                      round_id := RoundId,
+                      worker_identity := WorkerIdentity,
+                      result_capability := ResultCapability,
+                      active_run := ActiveRun})
+  when Status =:= cancelled; Status =:= timeout ->
+    request_run_cancel(Status, ActiveRun, Data);
+handle_event(info,
              {llm_result, LlmCallId, LlmPid, {ok, _FixedResult}},
              waiting_llm,
              Data = #{active_llm :=
-                          #{llm_call_id := LlmCallId,
-                            pid := LlmPid,
-                            mref := LlmMRef}}) ->
+                          ActiveLlm =
+                              #{llm_call_id := LlmCallId,
+                                pid := LlmPid,
+                                mref := LlmMRef}}) ->
+    cancel_child_timer(ActiveLlm),
     release_child_monitor(LlmPid, LlmMRef),
     start_action(Data#{active_llm := undefined});
 handle_event(info,
              {llm_result, LlmCallId, LlmPid, {error, Reason}},
              waiting_llm,
              Data = #{active_llm :=
-                          #{llm_call_id := LlmCallId,
-                            pid := LlmPid,
-                            mref := LlmMRef}}) ->
+                          ActiveLlm =
+                              #{llm_call_id := LlmCallId,
+                                pid := LlmPid,
+                                mref := LlmMRef}}) ->
+    cancel_child_timer(ActiveLlm),
     release_child_monitor(LlmPid, LlmMRef),
     report_round_result(
       Data#{active_llm := undefined},
@@ -71,19 +114,32 @@ handle_event(info,
              {'DOWN', LlmMRef, process, LlmPid, Reason},
              waiting_llm,
              Data = #{active_llm :=
-                          #{pid := LlmPid, mref := LlmMRef}}) ->
+                          ActiveLlm =
+                              #{pid := LlmPid, mref := LlmMRef}}) ->
+    cancel_child_timer(ActiveLlm),
     report_round_result(
       Data#{active_llm := undefined},
       #{status => failed, phase => llm, reason => Reason});
 handle_event(info,
+             {timeout, TimerRef,
+              {delegate_phase_timeout, llm, LlmCallId}},
+             waiting_llm,
+             Data = #{active_llm :=
+                          ActiveLlm =
+                              #{llm_call_id := LlmCallId,
+                                timer_ref := TimerRef}}) ->
+    stop_llm_child(ActiveLlm),
+    report_round_result(
+      Data#{active_llm := undefined},
+      #{status => timeout, phase => llm});
+handle_event(info,
              {run_completed, RunId, Outputs},
              waiting_run,
              Data = #{active_run :=
-                          #{run_id := RunId,
-                            pid := RunPid,
-                            mref := RunMRef},
+                          ActiveRun =
+                              #{run_id := RunId},
                       work := Work}) ->
-    remove_run_child(RunPid, RunMRef),
+    finish_run_child(ActiveRun),
     report_round_result(
       Data#{active_run := undefined},
       #{status => succeeded,
@@ -94,10 +150,8 @@ handle_event(info,
              {run_failed, RunId, Reason},
              waiting_run,
              Data = #{active_run :=
-                          #{run_id := RunId,
-                            pid := RunPid,
-                            mref := RunMRef}}) ->
-    remove_run_child(RunPid, RunMRef),
+                          ActiveRun = #{run_id := RunId}}) ->
+    finish_run_child(ActiveRun),
     report_round_result(
       Data#{active_run := undefined},
       #{status => failed, phase => action, reason => Reason});
@@ -105,10 +159,8 @@ handle_event(info,
              {run_timeout, RunId},
              waiting_run,
              Data = #{active_run :=
-                          #{run_id := RunId,
-                            pid := RunPid,
-                            mref := RunMRef}}) ->
-    remove_run_child(RunPid, RunMRef),
+                          ActiveRun = #{run_id := RunId}}) ->
+    finish_run_child(ActiveRun),
     report_round_result(
       Data#{active_run := undefined},
       #{status => timeout, phase => action});
@@ -116,21 +168,30 @@ handle_event(info,
              {run_cancelled, RunId},
              waiting_run,
              Data = #{active_run :=
-                          #{run_id := RunId,
-                            pid := RunPid,
-                            mref := RunMRef}}) ->
-    remove_run_child(RunPid, RunMRef),
+                          ActiveRun = #{run_id := RunId}}) ->
+    Status = maps:get(cancel_status, ActiveRun, cancelled),
+    finish_run_child(ActiveRun),
     report_round_result(
       Data#{active_run := undefined},
-      #{status => cancelled, phase => action});
+      #{status => Status, phase => action});
 handle_event(info,
              {'DOWN', RunMRef, process, RunPid, Reason},
              waiting_run,
              Data = #{active_run :=
-                          #{pid := RunPid, mref := RunMRef}}) ->
+                          ActiveRun =
+                              #{pid := RunPid, mref := RunMRef}}) ->
+    cancel_child_timer(ActiveRun),
     report_round_result(
       Data#{active_run := undefined},
       #{status => failed, phase => action, reason => Reason});
+handle_event(info,
+             {timeout, TimerRef,
+              {delegate_phase_timeout, action, RunId}},
+             waiting_run,
+             Data = #{active_run :=
+                          ActiveRun = #{run_id := RunId,
+                                        timer_ref := TimerRef}}) ->
+    request_run_cancel(timeout, ActiveRun, Data);
 handle_event(info,
              {'DOWN', CoordinatorMRef, process, CoordinatorPid, _Reason},
              _StateName,
@@ -152,9 +213,14 @@ start_llm_call(Data = #{work := Work, round_id := RoundId}) ->
                         llm => Llm},
             case soma_llm_call:start_owned(LlmOpts) of
                 {ok, LlmPid, LlmMRef} ->
+                    TimerRef = arm_phase_timer(
+                                 llm, LlmCallId,
+                                 maps:get(timeout_ms, Llm, undefined),
+                                 ?DEFAULT_LLM_TIMEOUT_MS),
                     ActiveLlm = #{llm_call_id => LlmCallId,
                                   pid => LlmPid,
-                                  mref => LlmMRef},
+                                  mref => LlmMRef,
+                                  timer_ref => TimerRef},
                     {next_state, waiting_llm,
                      Data#{active_llm := ActiveLlm}};
                 {error, Reason} ->
@@ -200,7 +266,8 @@ start_action(Data = #{work := Work}) ->
 
 start_run(Steps,
           Data = #{task_id := TaskId,
-                   correlation_id := CorrelationId}) ->
+                   correlation_id := CorrelationId,
+                   work := Work}) ->
     RunId = mint_run_id(),
     RunOpts = #{run_id => RunId,
                 task_id => TaskId,
@@ -214,9 +281,15 @@ start_run(Steps,
         {ok, RunPid} ->
             link(RunPid),
             RunMRef = erlang:monitor(process, RunPid),
+            TimerRef = arm_phase_timer(
+                         action, RunId,
+                         maps:get(action_timeout_ms, Work, undefined),
+                         ?DEFAULT_ACTION_TIMEOUT_MS),
             ActiveRun = #{run_id => RunId,
                           pid => RunPid,
-                          mref => RunMRef},
+                          mref => RunMRef,
+                          timer_ref => TimerRef,
+                          cancel_status => undefined},
             {next_state, waiting_run,
              Data#{active_run := ActiveRun}};
         {error, Reason} ->
@@ -258,21 +331,68 @@ release_child_monitor(Pid, MRef) ->
     unlink(Pid),
     ok.
 
+finish_run_child(ActiveRun = #{pid := RunPid, mref := RunMRef}) ->
+    cancel_child_timer(ActiveRun),
+    remove_run_child(RunPid, RunMRef).
+
 remove_run_child(RunPid, RunMRef) ->
     release_child_monitor(RunPid, RunMRef),
     _ = supervisor:terminate_child(soma_run_sup, RunPid),
     ok.
 
-stop_active_child(#{active_llm :=
-                        #{pid := LlmPid, mref := LlmMRef}}) ->
-    _ = erlang:demonitor(LlmMRef, [flush]),
-    exit(LlmPid, kill),
-    ok;
-stop_active_child(#{active_run :=
-                        #{pid := RunPid, mref := RunMRef}}) ->
-    remove_run_child(RunPid, RunMRef);
+stop_active_child(#{active_llm := ActiveLlm})
+  when is_map(ActiveLlm) ->
+    stop_llm_child(ActiveLlm);
+stop_active_child(#{active_run := ActiveRun})
+  when is_map(ActiveRun) ->
+    finish_run_child(ActiveRun);
 stop_active_child(_Data) ->
     ok.
+
+stop_llm_child(ActiveLlm = #{pid := LlmPid, mref := LlmMRef}) ->
+    cancel_child_timer(ActiveLlm),
+    exit(LlmPid, kill),
+    await_child_down(LlmMRef, LlmPid),
+    unlink(LlmPid),
+    ok.
+
+request_run_cancel(Status, ActiveRun = #{pid := RunPid}, Data) ->
+    cancel_child_timer(ActiveRun),
+    RunPid ! cancel,
+    UpdatedRun = ActiveRun#{timer_ref := undefined,
+                            cancel_status := Status},
+    {keep_state, Data#{active_run := UpdatedRun}}.
+
+arm_phase_timer(Phase, ChildId, ConfiguredTimeout, DefaultTimeout) ->
+    TimeoutMs = timeout_ms(ConfiguredTimeout, DefaultTimeout),
+    erlang:start_timer(
+      TimeoutMs, self(),
+      {delegate_phase_timeout, Phase, ChildId}).
+
+timeout_ms(TimeoutMs, _Default)
+  when is_integer(TimeoutMs), TimeoutMs > 0 ->
+    TimeoutMs;
+timeout_ms(_InvalidOrMissing, Default) ->
+    Default.
+
+cancel_child_timer(ActiveChild) ->
+    cancel_timer(maps:get(timer_ref, ActiveChild, undefined)).
+
+cancel_timer(undefined) ->
+    ok;
+cancel_timer(TimerRef) when is_reference(TimerRef) ->
+    _ = erlang:cancel_timer(
+          TimerRef, [{async, false}, {info, false}]),
+    ok.
+
+await_child_down(MRef, ChildPid) ->
+    receive
+        {'DOWN', MRef, process, ChildPid, _Reason} ->
+            ok
+    after 1000 ->
+        _ = erlang:demonitor(MRef, [flush]),
+        ok
+    end.
 
 mint_llm_call_id(RoundId) ->
     Suffix = integer_to_binary(

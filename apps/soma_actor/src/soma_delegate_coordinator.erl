@@ -4,6 +4,8 @@
 
 -behaviour(gen_statem).
 
+-define(DEFAULT_ROUND_TIMEOUT_MS, 120000).
+
 -export([start_link/1, status/1, cancel/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
@@ -53,6 +55,11 @@ handle_event(info, {delegate_begin, TaskId}, awaiting_start,
 handle_event({call, From}, status, _StateName, Data) ->
     {keep_state, Data,
      [{reply, From, {ok, public_projection(Data)}}]};
+handle_event(cast, {cancel, TaskId}, running,
+             Data = #{task_id := TaskId,
+                      active_round := ActiveRound})
+  when is_map(ActiveRound) ->
+    cancel_active_round(cancelled, Data);
 handle_event(cast, {cancel, TaskId}, StateName,
              Data = #{task_id := TaskId})
   when StateName =:= awaiting_start; StateName =:= running ->
@@ -82,17 +89,30 @@ handle_event(info,
              {'DOWN', WorkerMRef, process, WorkerPid, _Reason},
              running,
              Data = #{active_round :=
-                          #{round_id := RoundId,
+                          ActiveRound = #{round_id := RoundId,
                             worker_pid := WorkerPid,
                             worker_mref := WorkerMRef}}) ->
-    Projection = #{status => failed,
-                   reason => round_worker_crashed,
-                   round => RoundId},
+    cancel_timer(maps:get(round_timer, ActiveRound, undefined)),
+    Projection = worker_down_projection(ActiveRound, RoundId),
+    Status = maps:get(status, Projection),
     {next_state, cleaning,
-     Data#{status := failed,
+     Data#{status := Status,
            active_round := undefined,
            terminal_result := Projection},
      [{next_event, internal, finish_cleanup}]};
+handle_event(info,
+             {timeout, RoundTimer,
+              {delegate_round_timeout, TaskId, RoundId, WorkerPid,
+               WorkerIdentity, ResultCapability}},
+             running,
+             Data = #{task_id := TaskId,
+                      active_round :=
+                          #{round_id := RoundId,
+                            worker_pid := WorkerPid,
+                            worker_identity := WorkerIdentity,
+                            result_capability := ResultCapability,
+                            round_timer := RoundTimer}}) ->
+    cancel_active_round(timeout, Data);
 handle_event(_EventType, _Event, _StateName, Data) ->
     {keep_state, Data}.
 
@@ -115,12 +135,16 @@ begin_task(Data = #{round_sequence := [Work | Remaining],
     case soma_delegate_round_sup:start_round(WorkerOpts) of
         {ok, WorkerPid} ->
             WorkerMRef = erlang:monitor(process, WorkerPid),
+            RoundTimer = arm_round_timer(
+                           Work, TaskId, RoundId, WorkerPid,
+                           WorkerIdentity, ResultCapability),
             ActiveRound = #{round_id => RoundId,
                             worker_identity => WorkerIdentity,
                             worker_pid => WorkerPid,
                             worker_mref => WorkerMRef,
                             result_capability => ResultCapability,
-                            round_timer => undefined,
+                            round_timer => RoundTimer,
+                            cancel_status => undefined,
                             unsafe_action_dispatched => false},
             StartedData = Data#{round_sequence := Remaining,
                                 next_round_id := RoundId + 1,
@@ -144,6 +168,8 @@ fail_before_round(Data, Reason) ->
 commit_round_result(Result, RoundId, WorkerPid, WorkerMRef, Data) ->
     case valid_round_result(Result) of
         true ->
+            ActiveRound = maps:get(active_round, Data),
+            cancel_timer(maps:get(round_timer, ActiveRound, undefined)),
             _ = erlang:demonitor(WorkerMRef, [flush]),
             _ = supervisor:terminate_child(
                   soma_delegate_round_sup, WorkerPid),
@@ -157,6 +183,57 @@ commit_round_result(Result, RoundId, WorkerPid, WorkerMRef, Data) ->
         false ->
             {keep_state, Data}
     end.
+
+cancel_active_round(
+  Status,
+  Data = #{task_id := TaskId,
+           active_round :=
+               ActiveRound = #{round_id := RoundId,
+                               worker_pid := WorkerPid,
+                               worker_identity := WorkerIdentity,
+                               result_capability := ResultCapability}}) ->
+    cancel_timer(maps:get(round_timer, ActiveRound, undefined)),
+    WorkerPid !
+        {delegate_round_cancel, TaskId, RoundId, WorkerIdentity,
+         ResultCapability, Status},
+    UpdatedRound = ActiveRound#{round_timer := undefined,
+                                cancel_status := Status},
+    {keep_state, Data#{active_round := UpdatedRound}}.
+
+worker_down_projection(ActiveRound, RoundId) ->
+    case maps:get(cancel_status, ActiveRound, undefined) of
+        cancelled ->
+            #{status => cancelled, round => RoundId};
+        timeout ->
+            #{status => timeout, round => RoundId};
+        undefined ->
+            #{status => failed,
+              reason => round_worker_crashed,
+              round => RoundId}
+    end.
+
+arm_round_timer(Work, TaskId, RoundId, WorkerPid,
+                WorkerIdentity, ResultCapability) ->
+    TimeoutMs = timeout_ms(
+                  maps:get(round_timeout_ms, Work, undefined),
+                  ?DEFAULT_ROUND_TIMEOUT_MS),
+    erlang:start_timer(
+      TimeoutMs, self(),
+      {delegate_round_timeout, TaskId, RoundId, WorkerPid,
+       WorkerIdentity, ResultCapability}).
+
+timeout_ms(TimeoutMs, _Default)
+  when is_integer(TimeoutMs), TimeoutMs > 0 ->
+    TimeoutMs;
+timeout_ms(_InvalidOrMissing, Default) ->
+    Default.
+
+cancel_timer(undefined) ->
+    ok;
+cancel_timer(TimerRef) when is_reference(TimerRef) ->
+    _ = erlang:cancel_timer(
+          TimerRef, [{async, false}, {info, false}]),
+    ok.
 
 valid_round_result(Result) when is_map(Result) ->
     byte_size(term_to_binary(Result, [deterministic])) =< 16384 andalso
