@@ -46,6 +46,7 @@ init(Opts = #{request_id := RequestId,
                    guard => undefined},
              next_round_id => 1,
              active_round => undefined,
+             cleanup_started => false,
              terminal_result => undefined,
              round_sequence => maps:get(round_sequence, Opts, [])},
     {ok, awaiting_start, Data}.
@@ -67,13 +68,11 @@ handle_event(cast, {cancel, TaskId}, running,
 handle_event(cast, {cancel, TaskId}, StateName,
              Data = #{task_id := TaskId})
   when StateName =:= awaiting_start; StateName =:= running ->
-    Projection = #{status => cancelled},
-    {next_state, cleaning,
-     Data#{status := cancelled, terminal_result := Projection},
-     [{next_event, internal, finish_cleanup}]};
+    start_cleanup(#{status => cancelled}, Data);
 handle_event(internal, finish_cleanup, cleaning,
              Data = #{ingress_pid := IngressPid,
                       task_id := TaskId,
+                      cleanup_started := true,
                       terminal_result := Projection}) ->
     ok = release_scoped_leases(Data),
     IngressPid ! {delegate_terminal, TaskId, self(), Projection},
@@ -228,10 +227,7 @@ start_round_worker(
     end.
 
 fail_before_round(Data, Reason) ->
-    Projection = #{status => failed, reason => Reason},
-    {next_state, cleaning,
-     Data#{status := failed, terminal_result := Projection},
-     [{next_event, internal, finish_cleanup}]}.
+    start_cleanup(#{status => failed, reason => Reason}, Data).
 
 commit_round_result(Result, RoundId, WorkerPid, WorkerMRef, Data) ->
     case valid_round_result(Result) of
@@ -308,10 +304,7 @@ advance_after_round(
     begin_task(Data);
 advance_after_round(Result, RoundId, Data) ->
     Projection = round_projection(Result, RoundId),
-    Status = maps:get(status, Projection),
-    {next_state, cleaning,
-     Data#{status := Status, terminal_result := Projection},
-     [{next_event, internal, finish_cleanup}]}.
+    start_cleanup(Projection, Data).
 
 cancel_active_round(
   Status,
@@ -375,12 +368,7 @@ finish_lost_unsafe_result(ActiveRound, RoundId, Data) ->
             recent_round_data := Projection}).
 
 finish_worker_down(Projection, Data) ->
-    Status = maps:get(status, Projection),
-    {next_state, cleaning,
-     Data#{status := Status,
-           active_round := undefined,
-           terminal_result := Projection},
-     [{next_event, internal, finish_cleanup}]}.
+    start_cleanup(Projection, Data#{active_round := undefined}).
 
 continue_after_pre_stateful_failure(
   Failure, Data = #{round_sequence := [_NextRound | _Remaining]}) ->
@@ -388,12 +376,17 @@ continue_after_pre_stateful_failure(
       Data#{status := running,
             recent_round_data := Failure});
 continue_after_pre_stateful_failure(Failure, Data) ->
-    Status = maps:get(status, Failure),
+    start_cleanup(Failure, Data#{recent_round_data := Failure}).
+
+start_cleanup(Projection, Data = #{cleanup_started := false}) ->
+    Status = maps:get(status, Projection),
     {next_state, cleaning,
      Data#{status := Status,
-           recent_round_data := Failure,
-           terminal_result := Failure},
-     [{next_event, internal, finish_cleanup}]}.
+           cleanup_started := true,
+           terminal_result := Projection},
+     [{next_event, internal, finish_cleanup}]};
+start_cleanup(_Projection, Data = #{cleanup_started := true}) ->
+    {keep_state, Data}.
 
 round_worker_crash_failure(RoundId) ->
     #{status => failed,

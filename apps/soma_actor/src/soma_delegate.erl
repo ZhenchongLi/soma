@@ -150,11 +150,7 @@ remove_active_coordinator(MRef, CoordinatorPid,
                         reply_cancel_waiters(Route,
                                              public_projection(
                                                Route, Projection)),
-                        maps:remove(
-                          cancel_waiters,
-                          Route#{coordinator_pid := undefined,
-                                 coordinator_mref := undefined,
-                                 terminal_projection := Projection});
+                        terminal_route(Route, Projection);
                     _OtherPid ->
                         Route
                 end,
@@ -175,12 +171,7 @@ store_terminal_projection(
             _ = erlang:demonitor(MRef, [flush]),
             PublicProjection = public_projection(Route, Projection),
             reply_cancel_waiters(Route, PublicProjection),
-            TerminalRoute =
-                maps:remove(
-                  cancel_waiters,
-                  Route#{coordinator_pid := undefined,
-                         coordinator_mref := undefined,
-                         terminal_projection := Projection}),
+            TerminalRoute = terminal_route(Route, Projection),
             State#{tasks := maps:put(TaskId, TerminalRoute, Tasks),
                    monitors := maps:remove(MRef, Monitors)};
         _StaleOrMismatchedCoordinator ->
@@ -196,6 +187,12 @@ reply_cancel_waiters(Route, Projection) ->
 
 public_projection(Route, Projection) ->
     maps:merge(maps:get(accepted_handle, Route), Projection).
+
+terminal_route(Route, Projection) ->
+    #{request_id => maps:get(request_id, Route),
+      task_id => maps:get(task_id, Route),
+      accepted_handle => maps:get(accepted_handle, Route),
+      terminal_projection => Projection}.
 
 request_id(#{request_id := RequestId}) ->
     validate_id(RequestId, invalid_request_id);
