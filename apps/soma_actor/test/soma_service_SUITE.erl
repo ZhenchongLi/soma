@@ -12,6 +12,7 @@
 -export([test_result_inline_uses_default_and_configured_cap/1]).
 -export([test_oversized_result_publishes_stable_artifact/1]).
 -export([test_missing_correlation_defaults_to_task_watch_order/1]).
+-export([test_watch_cursor_resumes_and_page_limit_is_clamped/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
@@ -45,6 +46,7 @@ all() ->
      test_result_inline_uses_default_and_configured_cap,
      test_oversized_result_publishes_stable_artifact,
      test_missing_correlation_defaults_to_task_watch_order,
+     test_watch_cursor_resumes_and_page_limit_is_clamped,
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
@@ -121,6 +123,17 @@ init_per_testcase(
     ok = application:set_env(soma_runtime, event_store_log, Path),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
+init_per_testcase(
+  test_watch_cursor_resumes_and_page_limit_is_clamped, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo]}),
+    PageCap = 3,
+    ok = application:set_env(
+           soma_actor, service_watch_page_events, PageCap),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {watch_page_cap, PageCap} | Config];
 init_per_testcase(
   test_service_cancel_cleans_tool_worker_and_cli_process, Config) ->
     ok = ensure_loaded(soma_actor),
@@ -258,6 +271,7 @@ end_per_testcase(TestCase, Config)
        TestCase =:= test_oversized_result_publishes_stable_artifact;
        TestCase =:=
            test_missing_correlation_defaults_to_task_watch_order;
+       TestCase =:= test_watch_cursor_resumes_and_page_limit_is_clamped;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
@@ -296,6 +310,7 @@ end_per_testcase(TestCase, Config)
     application:unset_env(soma_actor, service_policy),
     application:unset_env(soma_actor, service_result_inline_bytes),
     application:unset_env(soma_actor, service_data_dir),
+    application:unset_env(soma_actor, service_watch_page_events),
     application:unset_env(soma_runtime, event_store_log),
     application:unload(soma_actor),
     maybe_del_tmp_dir(Config),
@@ -523,6 +538,48 @@ test_missing_correlation_defaults_to_task_watch_order(_Config) ->
     ?assertEqual(
        DirectEventIds,
        [maps:get(event_id, Event) || Event <- WatchedEvents]).
+
+test_watch_cursor_resumes_and_page_limit_is_clamped(Config) ->
+    PageCap = ?config(watch_page_cap, Config),
+    CallerLimit = PageCap - 1,
+    RequestId = <<"service-watch-cursor-pages">>,
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(
+          tool_envelope(
+            RequestId, echo, #{value => <<"paged watch trail">>})),
+    {ok, _Terminal} = wait_for_status(TaskId, succeeded, 100),
+
+    DirectEvents =
+        soma_event_store:by_correlation(runtime_event_store(), TaskId),
+    DirectEventIds = [maps:get(event_id, Event) || Event <- DirectEvents],
+    ?assert(length(DirectEventIds) >= (PageCap * 2) + CallerLimit),
+    {ExpectedFirstIds, AfterFirstIds} =
+        lists:split(PageCap, DirectEventIds),
+    {ExpectedSecondIds, AfterSecondIds} =
+        lists:split(PageCap, AfterFirstIds),
+    {ExpectedThirdIds, _RemainingIds} =
+        lists:split(CallerLimit, AfterSecondIds),
+
+    {ok, #{events := FirstEvents, cursor := FirstCursor}} =
+        soma_service:watch(TaskId, undefined, PageCap + 100),
+    FirstIds = [maps:get(event_id, Event) || Event <- FirstEvents],
+    ?assertEqual(ExpectedFirstIds, FirstIds),
+    ?assert(is_binary(FirstCursor)),
+    ?assertNotEqual(lists:last(FirstIds), FirstCursor),
+
+    {ok, #{events := SecondEvents, cursor := SecondCursor}} =
+        soma_service:watch(TaskId, FirstCursor, PageCap + 100),
+    ?assertEqual(
+       ExpectedSecondIds,
+       [maps:get(event_id, Event) || Event <- SecondEvents]),
+    ?assert(is_binary(SecondCursor)),
+
+    {ok, #{events := ThirdEvents, cursor := ThirdCursor}} =
+        soma_service:watch(TaskId, SecondCursor, CallerLimit),
+    ?assertEqual(
+       ExpectedThirdIds,
+       [maps:get(event_id, Event) || Event <- ThirdEvents]),
+    ?assert(is_binary(ThirdCursor)).
 
 test_oversized_result_fails_with_max_output_reason(_Config) ->
     RequestId = <<"service-oversized-result">>,
