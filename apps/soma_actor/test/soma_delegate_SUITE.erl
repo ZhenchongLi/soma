@@ -9,13 +9,15 @@
 -export([test_status_and_cancel_route_by_task_id/1]).
 -export([test_coordinator_and_round_worker_crashes_leave_ingress_responsive/1]).
 -export([test_delegate_action_crosses_full_worker_run_tool_spine/1]).
+-export([test_coordinator_and_round_worker_split_child_ownership/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
      test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections,
      test_status_and_cancel_route_by_task_id,
      test_coordinator_and_round_worker_crashes_leave_ingress_responsive,
-     test_delegate_action_crosses_full_worker_run_tool_spine].
+     test_delegate_action_crosses_full_worker_run_tool_spine,
+     test_coordinator_and_round_worker_split_child_ownership].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -246,6 +248,96 @@ test_delegate_action_crosses_full_worker_run_tool_spine(_Config) ->
               <<"run.completed">>,
               [maps:get(event_type, Event) || Event <- RunEvents])).
 
+test_coordinator_and_round_worker_split_child_ownership(_Config) ->
+    LlmSpec =
+        #{request_id => <<"delegate-request-llm-child-owner">>,
+          objective => <<"inspect ownership while the LLM is blocked">>,
+          round_sequence =>
+              [#{llm => #{directive => hang}, decision => terminal}]},
+    {ok, #{task_id := LlmTaskId}} =
+        submit_through_production_ingress(LlmSpec),
+    LlmCoordinatorPid = coordinator_for_task(LlmTaskId),
+    LlmRoundWorkerPid = wait_for_round_worker(100),
+    {LlmWorkerData, ActiveLlm} =
+        wait_for_worker_phase(
+          LlmRoundWorkerPid, waiting_llm, active_llm, 100),
+    LlmPid = maps:get(pid, ActiveLlm),
+    LlmMRef = maps:get(mref, ActiveLlm),
+    LlmTimerRef = maps:get(timer_ref, ActiveLlm, undefined),
+    {running, LlmCoordinatorData} = sys:get_state(LlmCoordinatorPid),
+    LlmActiveRound = maps:get(active_round, LlmCoordinatorData),
+    LlmRoundTimerRef = maps:get(round_timer, LlmActiveRound),
+
+    assert_coordinator_owns_round(
+      LlmCoordinatorPid, LlmRoundWorkerPid, LlmActiveRound),
+    assert_live_timer(LlmRoundTimerRef),
+    ?assertEqual(false, term_contains(LlmCoordinatorData, LlmPid)),
+    ?assertEqual(false,
+                 lists:member(LlmPid, process_monitors(LlmCoordinatorPid))),
+    ?assertEqual(LlmCoordinatorPid,
+                 maps:get(coordinator_pid, LlmWorkerData)),
+    ?assertEqual(LlmMRef, maps:get(mref, ActiveLlm)),
+    ?assert(lists:member(LlmCoordinatorPid,
+                         process_monitors(LlmRoundWorkerPid))),
+    ?assert(lists:member(LlmPid, process_monitors(LlmRoundWorkerPid))),
+    ?assert(lists:member(LlmPid, process_links(LlmRoundWorkerPid))),
+    assert_live_timer(LlmTimerRef),
+
+    {ok, #{status := cancelled}} = soma_delegate:cancel(LlmTaskId),
+    wait_for_process_dead(LlmPid, 100),
+    wait_for_process_dead(LlmRoundWorkerPid, 100),
+    wait_for_process_dead(LlmCoordinatorPid, 100),
+    assert_cancelled_timer(LlmTimerRef),
+    assert_cancelled_timer(LlmRoundTimerRef),
+
+    RunSpec =
+        #{request_id => <<"delegate-request-run-child-owner">>,
+          objective => <<"inspect ownership while the run is blocked">>,
+          round_sequence =>
+              [#{llm =>
+                     #{directive => success,
+                       output => <<"fixed-run-phase-decision">>},
+                 action_steps =>
+                     [#{id => <<"delegate-owned-blocked-step">>,
+                        tool => sleep,
+                        args => #{ms => 60000}}],
+                 decision => terminal}]},
+    {ok, #{task_id := RunTaskId}} =
+        submit_through_production_ingress(RunSpec),
+    RunCoordinatorPid = coordinator_for_task(RunTaskId),
+    RunRoundWorkerPid = wait_for_round_worker(100),
+    {RunWorkerData, ActiveRun} =
+        wait_for_worker_phase(
+          RunRoundWorkerPid, waiting_run, active_run, 100),
+    RunPid = maps:get(pid, ActiveRun),
+    RunMRef = maps:get(mref, ActiveRun),
+    RunTimerRef = maps:get(timer_ref, ActiveRun, undefined),
+    {running, RunCoordinatorData} = sys:get_state(RunCoordinatorPid),
+    RunActiveRound = maps:get(active_round, RunCoordinatorData),
+    RunRoundTimerRef = maps:get(round_timer, RunActiveRound),
+
+    assert_coordinator_owns_round(
+      RunCoordinatorPid, RunRoundWorkerPid, RunActiveRound),
+    assert_live_timer(RunRoundTimerRef),
+    ?assertEqual(false, term_contains(RunCoordinatorData, RunPid)),
+    ?assertEqual(false,
+                 lists:member(RunPid, process_monitors(RunCoordinatorPid))),
+    ?assertEqual(RunCoordinatorPid,
+                 maps:get(coordinator_pid, RunWorkerData)),
+    ?assertEqual(RunMRef, maps:get(mref, ActiveRun)),
+    ?assert(lists:member(RunCoordinatorPid,
+                         process_monitors(RunRoundWorkerPid))),
+    ?assert(lists:member(RunPid, process_monitors(RunRoundWorkerPid))),
+    ?assert(lists:member(RunPid, process_links(RunRoundWorkerPid))),
+    assert_live_timer(RunTimerRef),
+
+    {ok, #{status := cancelled}} = soma_delegate:cancel(RunTaskId),
+    wait_for_process_dead(RunPid, 100),
+    wait_for_process_dead(RunRoundWorkerPid, 100),
+    wait_for_process_dead(RunCoordinatorPid, 100),
+    assert_cancelled_timer(RunTimerRef),
+    assert_cancelled_timer(RunRoundTimerRef).
+
 crash_fixture(Suffix) ->
     #{request_id => <<"delegate-request-", Suffix/binary>>,
       objective => <<"hold a disposable round open">>,
@@ -298,6 +390,54 @@ wait_for_round_worker(Attempts) ->
             timer:sleep(10),
             wait_for_round_worker(Attempts - 1)
     end.
+
+wait_for_worker_phase(_WorkerPid, _StateName, _ActiveKey, 0) ->
+    ct:fail(round_worker_phase_not_reached);
+wait_for_worker_phase(WorkerPid, StateName, ActiveKey, Attempts) ->
+    case sys:get_state(WorkerPid) of
+        {StateName, WorkerData} ->
+            case maps:get(ActiveKey, WorkerData, undefined) of
+                ActiveChild when is_map(ActiveChild) ->
+                    {WorkerData, ActiveChild};
+                undefined ->
+                    timer:sleep(10),
+                    wait_for_worker_phase(
+                      WorkerPid, StateName, ActiveKey, Attempts - 1)
+            end;
+        {_OtherStateName, _WorkerData} ->
+            timer:sleep(10),
+            wait_for_worker_phase(
+              WorkerPid, StateName, ActiveKey, Attempts - 1)
+    end.
+
+assert_coordinator_owns_round(
+  CoordinatorPid, RoundWorkerPid,
+  #{round_id := RoundId,
+    worker_identity := WorkerIdentity,
+    worker_pid := RoundWorkerPid,
+    worker_mref := WorkerMRef,
+    result_capability := ResultCapability}) ->
+    ?assert(is_integer(RoundId)),
+    ?assert(is_binary(WorkerIdentity)),
+    ?assert(is_reference(WorkerMRef)),
+    ?assert(is_reference(ResultCapability)),
+    ?assert(lists:member(RoundWorkerPid,
+                         process_monitors(CoordinatorPid))).
+
+assert_live_timer(TimerRef) ->
+    ?assert(is_reference(TimerRef)),
+    ?assert(is_integer(erlang:read_timer(TimerRef))).
+
+assert_cancelled_timer(TimerRef) ->
+    ?assertEqual(false, erlang:read_timer(TimerRef)).
+
+process_monitors(Pid) ->
+    {monitors, Monitors} = process_info(Pid, monitors),
+    [MonitoredPid || {process, MonitoredPid} <- Monitors].
+
+process_links(Pid) ->
+    {links, Links} = process_info(Pid, links),
+    Links.
 
 coordinator_identity(CoordinatorPid) ->
     {_StateName, Data} = sys:get_state(CoordinatorPid),
