@@ -13,13 +13,13 @@
 start_link(Opts) when is_map(Opts) ->
     gen_statem:start_link(?MODULE, Opts, []).
 
-init(#{coordinator_pid := CoordinatorPid,
-       task_id := TaskId,
-       correlation_id := CorrelationId,
-       round_id := RoundId,
-       worker_identity := WorkerIdentity,
-       result_capability := ResultCapability,
-       work := Work})
+init(Opts = #{coordinator_pid := CoordinatorPid,
+              task_id := TaskId,
+              correlation_id := CorrelationId,
+              round_id := RoundId,
+              worker_identity := WorkerIdentity,
+              result_capability := ResultCapability,
+              work := Work})
   when is_pid(CoordinatorPid), is_binary(TaskId),
        is_binary(CorrelationId), is_integer(RoundId), RoundId > 0,
        is_binary(WorkerIdentity), is_reference(ResultCapability),
@@ -33,6 +33,7 @@ init(#{coordinator_pid := CoordinatorPid,
              round_id => RoundId,
              worker_identity => WorkerIdentity,
              result_capability => ResultCapability,
+             snapshot => maps:get(snapshot, Opts, #{}),
              work => Work,
              active_llm => undefined,
              active_run => undefined},
