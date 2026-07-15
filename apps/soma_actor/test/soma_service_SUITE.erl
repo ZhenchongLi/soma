@@ -19,6 +19,7 @@
 -export([test_deadline_exceeded_cleans_run_worker_and_cli_process/1]).
 -export([test_service_cancel_cleans_tool_worker_and_cli_process/1]).
 -export([test_tool_crash_is_bounded_and_service_runs_again/1]).
+-export([test_lifecycle_reads_are_monotonic/1]).
 
 all() ->
     [test_supervised_service_restarts_and_serves_again,
@@ -34,7 +35,8 @@ all() ->
      test_unknown_scope_entry_does_not_create_atom,
      test_deadline_exceeded_cleans_run_worker_and_cli_process,
      test_service_cancel_cleans_tool_worker_and_cli_process,
-     test_tool_crash_is_bounded_and_service_runs_again].
+     test_tool_crash_is_bounded_and_service_runs_again,
+     test_lifecycle_reads_are_monotonic].
 
 init_per_testcase(
   test_tool_crash_is_bounded_and_service_runs_again, Config) ->
@@ -87,6 +89,7 @@ init_per_testcase(TestCase, Config)
        TestCase =:=
            test_unscoped_invocation_uses_configured_or_empty_default_policy;
        TestCase =:= test_unknown_scope_entry_does_not_create_atom;
+       TestCase =:= test_lifecycle_reads_are_monotonic;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -115,6 +118,7 @@ end_per_testcase(TestCase, Config)
        TestCase =:=
            test_service_cancel_cleans_tool_worker_and_cli_process;
        TestCase =:= test_tool_crash_is_bounded_and_service_runs_again;
+       TestCase =:= test_lifecycle_reads_are_monotonic;
        TestCase =:=
            test_run_started_journals_request_id_and_envelope_hash;
        TestCase =:=
@@ -563,6 +567,23 @@ test_tool_crash_is_bounded_and_service_runs_again(_Config) ->
     EncodedFailed = term_to_binary(Failed, [deterministic]),
     ?assert(byte_size(EncodedFailed) =< 512),
     ?assertEqual(nomatch, binary:match(EncodedFailed, <<"soma_tool_fail">>)).
+
+test_lifecycle_reads_are_monotonic(_Config) ->
+    Envelope = tool_envelope(
+                 <<"service-lifecycle-monotonic">>, sleep,
+                 #{ms => 300}),
+    {ok, #{task_id := TaskId, status := accepted} = Accepted} =
+        soma_service:invoke(Envelope),
+    {ok, #{status := running} = Running} =
+        soma_service:status(TaskId),
+    {ok, Terminal} = wait_for_status(TaskId, succeeded, 100),
+    {ok, RepeatedTerminal} = soma_service:status(TaskId),
+
+    ?assertEqual(
+       [accepted, running, succeeded, running],
+       [maps:get(status, Task)
+        || Task <- [Accepted, Running, Terminal, RepeatedTerminal]]),
+    ?assertEqual(Terminal, RepeatedTerminal).
 
 ensure_loaded(App) ->
     case application:load(App) of
