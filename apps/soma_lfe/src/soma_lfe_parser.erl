@@ -4,7 +4,8 @@
 
 -export([parse_run/1, parse_task/1, parse_msg/1, parse_explore/1,
          parse_invoke/1, parse_proposal/1, parse_ask/1, parse_trace/1,
-         parse_status/1, parse_result/1, parse_cancel/1, parse_stop/1]).
+         parse_status/1, parse_result/1, parse_watch/1, parse_cancel/1,
+         parse_stop/1]).
 
 -type diagnostic() :: #{code => atom(), message => binary(), line => non_neg_integer()}.
 
@@ -677,6 +678,54 @@ parse_result([result, TaskId]) when is_binary(TaskId) ->
 parse_result(_Other) ->
     {error, [#{code => malformed_form,
                message => <<"result requires a single string argument: (result \"<task-id>\")">>,
+               line => 0}]}.
+
+-spec parse_watch([term()]) -> {ok, map()} | {error, [diagnostic()]}.
+parse_watch([watch, TaskId | Fields]) when is_binary(TaskId) ->
+    case parse_watch_fields(Fields, #{task_id => TaskId}) of
+        {ok, Watch} ->
+            {ok, #{watch => Watch}};
+        {error, _Diagnostics} = Error ->
+            Error
+    end;
+parse_watch(_Other) ->
+    invalid_watch().
+
+parse_watch_fields([], #{limit := _Limit} = Watch) ->
+    {ok, Watch};
+parse_watch_fields([], _Watch) ->
+    invalid_watch();
+parse_watch_fields([[limit, Limit] | Rest], Watch)
+  when is_integer(Limit), Limit > 0 ->
+    add_watch_field(limit, Limit, Rest, Watch);
+parse_watch_fields([[cursor, Cursor] | Rest], Watch)
+  when is_binary(Cursor) ->
+    add_watch_field(cursor, Cursor, Rest, Watch);
+parse_watch_fields([[limit, _Invalid] | _Rest], _Watch) ->
+    invalid_watch();
+parse_watch_fields([[cursor, _Invalid] | _Rest], _Watch) ->
+    invalid_watch();
+parse_watch_fields([[Head | _Values] | _Rest], _Watch)
+  when is_atom(Head) ->
+    {error, [#{code => unknown_field,
+               message => <<"watch field is unknown">>,
+               line => 0}]};
+parse_watch_fields(_Other, _Watch) ->
+    invalid_watch().
+
+add_watch_field(Field, Value, Rest, Watch) ->
+    case maps:is_key(Field, Watch) of
+        true ->
+            {error, [#{code => duplicate_field,
+                       message => <<"watch field is duplicated">>,
+                       line => 0}]};
+        false ->
+            parse_watch_fields(Rest, Watch#{Field => Value})
+    end.
+
+invalid_watch() ->
+    {error, [#{code => invalid_watch,
+               message => <<"watch requires a task id and positive limit">>,
                line => 0}]}.
 
 -spec parse_cancel([term()]) -> {ok, map()} | {error, [diagnostic()]}.
