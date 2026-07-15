@@ -85,6 +85,8 @@ dispatch(#{result := #{task_id := TaskId}}) ->
 dispatch(#{watch := #{task_id := TaskId, limit := Limit} = Watch}) ->
     Cursor = maps:get(cursor, Watch, undefined),
     service_reply(watch, soma_service:watch(TaskId, Cursor, Limit));
+dispatch(#{cancel := #{task_id := TaskId}}) ->
+    service_reply(cancel, soma_service:cancel(TaskId));
 dispatch(_Other) ->
     service_error(internal_error).
 
