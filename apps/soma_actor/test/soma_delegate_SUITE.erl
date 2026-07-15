@@ -1111,12 +1111,12 @@ later_round_fixture(Phase, Observer) ->
 
 assert_one_terminal_cancellation(TaskId, PublicProjection) ->
     ?assertEqual(
-       [#{status => cancelled, round => 2}],
+       [#{status => cancelled, round => 1}],
        cancelled_terminal_projections(TaskId)),
     ?assertEqual({ok, PublicProjection}, soma_delegate:status(TaskId)),
     ?assertEqual({ok, PublicProjection}, soma_delegate:cancel(TaskId)),
     ?assertEqual(
-       [#{status => cancelled, round => 2}],
+       [#{status => cancelled, round => 1}],
        cancelled_terminal_projections(TaskId)).
 
 cancelled_terminal_projections(TaskId) ->
