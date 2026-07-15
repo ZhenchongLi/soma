@@ -18,6 +18,7 @@
 -export([test_task_leases_are_stable_and_released_once_for_all_outcomes/1]).
 -export([test_cancel_tears_down_llm_run_tool_and_os_children_once/1]).
 -export([test_concurrent_tasks_isolate_state_workers_and_leases/1]).
+-export([test_terminal_cleanup_scrubs_task_state_before_fresh_request/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -33,7 +34,8 @@ all() ->
      test_lost_state_result_is_in_doubt_without_replacement,
      test_task_leases_are_stable_and_released_once_for_all_outcomes,
      test_cancel_tears_down_llm_run_tool_and_os_children_once,
-     test_concurrent_tasks_isolate_state_workers_and_leases].
+     test_concurrent_tasks_isolate_state_workers_and_leases,
+     test_terminal_cleanup_scrubs_task_state_before_fresh_request].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -1109,6 +1111,249 @@ test_concurrent_tasks_isolate_state_workers_and_leases(_Config) ->
     ?assertEqual(
        [{GuardPidB, LeaseNameB, RawLeaseB}],
        wait_for_lease_releases(1, [])).
+
+test_terminal_cleanup_scrubs_task_state_before_fresh_request(_Config) ->
+    lists:foreach(
+      fun assert_terminal_cleanup_scrubs_task_state/1,
+      [succeeded, failed, timeout, cancelled, in_doubt]).
+
+assert_terminal_cleanup_scrubs_task_state(Outcome) ->
+    OutcomeBin = atom_to_binary(Outcome),
+    Observer = self(),
+    RequestId = <<"delegate-request-cleanup-", OutcomeBin/binary>>,
+    CorrelationId = <<"delegate-correlation-cleanup-", OutcomeBin/binary>>,
+    Objective =
+        #{objective_sentinel =>
+              <<"terminal-objective-", OutcomeBin/binary>>},
+    Transcript =
+        #{transcript_sentinel =>
+              <<"terminal-transcript-", OutcomeBin/binary>>},
+    Budgets =
+        #{budget_sentinel =>
+              <<"terminal-budget-", OutcomeBin/binary>>},
+    Usage =
+        #{usage_sentinel =>
+              <<"terminal-usage-", OutcomeBin/binary>>},
+    Mutation =
+        #{mutation_sentinel =>
+              <<"terminal-mutation-", OutcomeBin/binary>>},
+    ResultSentinel = <<"terminal-result-", OutcomeBin/binary>>,
+    LeaseName = <<"terminal-lease-", OutcomeBin/binary>>,
+    OpaqueHandle = <<"terminal-handle-", OutcomeBin/binary>>,
+    RawLease = {terminal_raw_lease, Outcome, make_ref()},
+    LeaseRequest =
+        #{name => LeaseName,
+          adapter => soma_delegate_test_lease_adapter,
+          options => #{observer => Observer,
+                       opaque_handle => OpaqueHandle,
+                       raw_lease => RawLease}},
+    BlockedRound =
+        #{llm => #{directive => hang, timeout_ms => 60000},
+          round_timeout_ms => 60000,
+          decision => terminal},
+    TaskSpec =
+        #{request_id => RequestId,
+          correlation_id => CorrelationId,
+          objective => Objective,
+          context_checkpoint => #{transcript => Transcript},
+          budgets => Budgets,
+          lease_requests => [LeaseRequest],
+          round_sequence => [BlockedRound, BlockedRound]},
+
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    CoordinatorMRef = erlang:monitor(process, CoordinatorPid),
+    [{GuardPid, LeaseName, OpaqueHandle, RawLease}] =
+        wait_for_lease_acquisitions(1, []),
+    {_FirstRoundData, FirstActiveRound} =
+        wait_for_active_round(CoordinatorPid, 1, 100),
+    send_round_result(
+      CoordinatorPid, TaskId, FirstActiveRound,
+      #{status => succeeded,
+        decision => continue,
+        checkpoint => #{transcript => Transcript},
+        usage => Usage,
+        mutation => Mutation,
+        terminal_result => #{result => ResultSentinel}}),
+    {CommittedData, TerminalActiveRound} =
+        wait_for_active_round(CoordinatorPid, 2, 100),
+    ResultCapability = maps:get(result_capability, TerminalActiveRound),
+    lists:foreach(
+      fun(TaskLocalValue) ->
+              ?assert(term_contains(CommittedData, TaskLocalValue))
+      end,
+      [Objective, Transcript, Budgets, Usage, Mutation, ResultSentinel,
+       OpaqueHandle, ResultCapability]),
+    ok = sys:install(
+           CoordinatorPid,
+           {terminal_cleanup_trace,
+            fun cleanup_transition_trace/3,
+            {Observer, Outcome}}),
+
+    trigger_terminal_cleanup(
+      Outcome, TaskId, CoordinatorPid, TerminalActiveRound),
+    TerminalProjection = wait_for_terminal_projection(TaskId, 200),
+    wait_for_cleanup_transition(Outcome),
+    assert_no_second_cleanup_transition(Outcome),
+    receive
+        {'DOWN', CoordinatorMRef, process, CoordinatorPid, normal} ->
+            ok
+    after 1000 ->
+        ct:fail({coordinator_did_not_exit_normally, Outcome})
+    end,
+    wait_for_process_dead(GuardPid, 100),
+    ?assertEqual(
+       [{GuardPid, LeaseName, RawLease}],
+       wait_for_lease_releases(1, [])),
+    ?assertEqual(expected_cleanup_status(Outcome),
+                 maps:get(status, TerminalProjection)),
+    ?assert(byte_size(term_to_binary(TerminalProjection, [deterministic])) =<
+            512),
+
+    TerminalIngressState = sys:get_state(soma_delegate),
+    TerminalRoute =
+        maps:get(TaskId, maps:get(tasks, TerminalIngressState)),
+    ?assertEqual(
+       [accepted_handle, request_id, task_id, terminal_projection],
+       lists:sort(maps:keys(TerminalRoute))),
+    RetainedEvents =
+        soma_event_store:by_correlation(
+          event_store_pid(), CorrelationId),
+    OldTaskState =
+        [Objective, Transcript, Budgets, Usage, Mutation, ResultSentinel,
+         OpaqueHandle, RawLease, ResultCapability],
+    lists:foreach(
+      fun(TaskLocalValue) ->
+              ?assertNot(term_contains(TerminalIngressState,
+                                       TaskLocalValue)),
+              ?assertNot(term_contains(RetainedEvents, TaskLocalValue))
+      end,
+      OldTaskState),
+
+    FreshRequestId =
+        <<"delegate-request-fresh-after-", OutcomeBin/binary>>,
+    FreshObjective =
+        #{objective_sentinel =>
+              <<"fresh-objective-", OutcomeBin/binary>>},
+    FreshTranscript =
+        #{transcript_sentinel =>
+              <<"fresh-transcript-", OutcomeBin/binary>>},
+    FreshBudgets =
+        #{budget_sentinel =>
+              <<"fresh-budget-", OutcomeBin/binary>>},
+    FreshSpec =
+        #{request_id => FreshRequestId,
+          objective => FreshObjective,
+          context_checkpoint => #{transcript => FreshTranscript},
+          budgets => FreshBudgets,
+          round_sequence => [BlockedRound]},
+    {ok, #{task_id := FreshTaskId}} = soma_delegate:submit(FreshSpec),
+    FreshCoordinatorPid = coordinator_for_task(FreshTaskId),
+    {FreshData, FreshActiveRound} =
+        wait_for_active_round(FreshCoordinatorPid, 1, 100),
+    ?assertEqual(
+       #{objective => FreshObjective,
+         context_checkpoint => #{transcript => FreshTranscript},
+         budgets => FreshBudgets,
+         usage => #{},
+         mutation_ledger => [],
+         unknown_outcome_ledger => []},
+       maps:with([objective, context_checkpoint, budgets, usage,
+                  mutation_ledger, unknown_outcome_ledger], FreshData)),
+    ?assertNotEqual(ResultCapability,
+                    maps:get(result_capability, FreshActiveRound)),
+    lists:foreach(
+      fun(TaskLocalValue) ->
+              ?assertNot(term_contains(FreshData, TaskLocalValue))
+      end,
+      OldTaskState),
+    {ok, #{status := cancelled}} = soma_delegate:cancel(FreshTaskId),
+    wait_for_process_dead(FreshCoordinatorPid, 100).
+
+cleanup_transition_trace(
+  TraceState = {Observer, Outcome},
+  {consume, _Event, _PriorState, cleaning}, _ProcessState) ->
+    Observer ! {delegate_cleanup_transition, Outcome},
+    TraceState;
+cleanup_transition_trace(TraceState, _Event, _ProcessState) ->
+    TraceState.
+
+trigger_terminal_cleanup(
+  succeeded, TaskId, CoordinatorPid, ActiveRound) ->
+    send_round_result(
+      CoordinatorPid, TaskId, ActiveRound,
+      #{status => succeeded, decision => terminal});
+trigger_terminal_cleanup(
+  failed, TaskId, CoordinatorPid, ActiveRound) ->
+    send_round_result(
+      CoordinatorPid, TaskId, ActiveRound,
+      #{status => failed,
+        reason => terminal_round_failed,
+        decision => terminal});
+trigger_terminal_cleanup(
+  timeout, TaskId, CoordinatorPid,
+  #{round_id := RoundId,
+    worker_pid := WorkerPid,
+    worker_identity := WorkerIdentity,
+    result_capability := ResultCapability,
+    round_timer := RoundTimer}) ->
+    CoordinatorPid !
+        {timeout, RoundTimer,
+         {delegate_round_timeout, TaskId, RoundId, WorkerPid,
+          WorkerIdentity, ResultCapability}};
+trigger_terminal_cleanup(
+  cancelled, TaskId, _CoordinatorPid, _ActiveRound) ->
+    {ok, #{status := cancelled}} = soma_delegate:cancel(TaskId);
+trigger_terminal_cleanup(
+  in_doubt, TaskId, CoordinatorPid,
+  #{round_id := RoundId,
+    worker_pid := WorkerPid,
+    worker_identity := WorkerIdentity,
+    result_capability := ResultCapability}) ->
+    InvocationIdentity =
+        #{tool => cleanup_state_tool,
+          step_id => <<"cleanup-in-doubt-step">>},
+    CoordinatorPid !
+        {delegate_unsafe_action_dispatched,
+         TaskId, RoundId, WorkerPid, WorkerIdentity,
+         ResultCapability, InvocationIdentity},
+    wait_for_unsafe_dispatch(CoordinatorPid, RoundId, 100),
+    exit(WorkerPid, kill).
+
+wait_for_unsafe_dispatch(_CoordinatorPid, _RoundId, 0) ->
+    ct:fail(unsafe_dispatch_not_recorded_before_cleanup);
+wait_for_unsafe_dispatch(CoordinatorPid, RoundId, Attempts) ->
+    {_StateName, Data} = sys:get_state(CoordinatorPid),
+    case maps:get(active_round, Data, undefined) of
+        #{round_id := RoundId, unsafe_action_dispatched := true} ->
+            ok;
+        _NotYetDispatched ->
+            timer:sleep(10),
+            wait_for_unsafe_dispatch(
+              CoordinatorPid, RoundId, Attempts - 1)
+    end.
+
+wait_for_cleanup_transition(Outcome) ->
+    receive
+        {delegate_cleanup_transition, Outcome} ->
+            ok
+    after 1000 ->
+        ct:fail({cleanup_transition_not_observed, Outcome})
+    end.
+
+assert_no_second_cleanup_transition(Outcome) ->
+    receive
+        {delegate_cleanup_transition, Outcome} ->
+            ct:fail({duplicate_cleanup_transition, Outcome})
+    after 0 ->
+        ok
+    end.
+
+expected_cleanup_status(succeeded) -> succeeded;
+expected_cleanup_status(failed) -> failed;
+expected_cleanup_status(timeout) -> timeout;
+expected_cleanup_status(cancelled) -> cancelled;
+expected_cleanup_status(in_doubt) -> in_doubt.
 
 assert_task_lease_lifecycle(Outcome) ->
     OutcomeBin = atom_to_binary(Outcome),
