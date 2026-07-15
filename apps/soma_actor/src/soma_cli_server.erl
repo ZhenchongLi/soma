@@ -436,9 +436,19 @@ handle_lfe_request(Bytes, Socket, ModelConfig, Listener) ->
             handle_cancel(TaskId);
         {ok, #{stop := _Stop}} ->
             handle_stop(Listener);
+        {ok, _UnsupportedOperation} ->
+            unsupported_cli_operation();
         {error, Diagnostics} ->
             soma_lisp:render(#{status => error, error => Diagnostics})
     end.
+
+unsupported_cli_operation() ->
+    soma_lisp:render(
+      #{status => error,
+        error =>
+            [#{code => invalid_top_level_form,
+               message => <<"top-level form is not a CLI operation">>,
+               line => 0}]}).
 
 %% Drive the agent decision loop for an `(ask (intent "..."))' request. The
 %% compiled ask map carries the required `intent' (plus optional `tool_policy' /

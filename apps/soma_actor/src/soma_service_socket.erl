@@ -71,14 +71,24 @@ handle(Socket) ->
     case soma_socket_frame:recv(Socket, 60000) of
         {ok, Source} ->
             Reply = handle_request(Source),
-            _ = soma_socket_frame:send(Socket, Reply);
+            _ = send_reply(Socket, Reply);
         {error, frame_too_large} ->
             Reply = soma_lisp:render(service_error(frame_too_large)),
-            _ = soma_socket_frame:send(Socket, Reply);
+            _ = send_reply(Socket, Reply);
         {error, _Reason} ->
             ok
     end,
     gen_tcp:close(Socket).
+
+send_reply(Socket, Reply) ->
+    case soma_socket_frame:send(Socket, Reply) of
+        {error, frame_too_large} ->
+            Fallback = soma_lisp:render(
+                         service_error(response_too_large)),
+            soma_socket_frame:send(Socket, Fallback);
+        Result ->
+            Result
+    end.
 
 handle_request(Source) ->
     Response =
@@ -102,7 +112,7 @@ dispatch(#{watch := #{task_id := TaskId, limit := Limit} = Watch}) ->
 dispatch(#{cancel := #{task_id := TaskId}}) ->
     service_reply(cancel, soma_service:cancel(TaskId));
 dispatch(_Other) ->
-    service_error(internal_error).
+    service_error(invalid_operation).
 
 service_reply(Operation, {ok, Value}) ->
     #{kind => service_reply,
@@ -121,11 +131,28 @@ service_diagnostic_error([_ReaderDiagnostic | _]) ->
 service_diagnostic_error(_Diagnostics) ->
     service_error(internal_error).
 
+public_diagnostic_code(missing_api_version) -> missing_api_version;
 public_diagnostic_code(unsupported_api_version) -> unsupported_api_version;
+public_diagnostic_code(missing_request_id) -> missing_request_id;
+public_diagnostic_code(invalid_request_id) -> invalid_request_id;
+public_diagnostic_code(duplicate_field) -> duplicate_field;
+public_diagnostic_code(unknown_field) -> unknown_field;
 public_diagnostic_code(invalid_operation) -> invalid_operation;
+public_diagnostic_code(invalid_budget) -> invalid_budget;
+public_diagnostic_code(scope_entry_too_large) -> scope_entry_too_large;
+public_diagnostic_code(invalid_artifacts) -> invalid_artifacts;
+public_diagnostic_code(invalid_correlation_id) -> invalid_correlation_id;
+public_diagnostic_code(invalid_watch) -> invalid_watch;
 public_diagnostic_code(_Unknown) -> internal_error.
 
+public_service_error_code(request_id_conflict) -> request_id_conflict;
 public_service_error_code(not_found) -> not_found;
+public_service_error_code(not_ready) -> not_ready;
+public_service_error_code(result_unavailable) -> result_unavailable;
+public_service_error_code(invalid_cursor) -> invalid_cursor;
+public_service_error_code(invalid_watch) -> invalid_watch;
+public_service_error_code(not_running) -> not_running;
+public_service_error_code(artifact_publish_failed) -> artifact_publish_failed;
 public_service_error_code(_Unknown) -> internal_error.
 
 service_error(unsupported_api_version) ->
