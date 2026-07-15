@@ -1,6 +1,7 @@
 -module(soma_service_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("kernel/include/file.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0]).
@@ -9,6 +10,7 @@
 -export([test_single_tool_invocation_runs_without_llm_worker/1]).
 -export([test_terminal_status_has_bounded_summary_only/1]).
 -export([test_result_inline_uses_default_and_configured_cap/1]).
+-export([test_oversized_result_publishes_stable_artifact/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
@@ -40,6 +42,7 @@ all() ->
      test_single_tool_invocation_runs_without_llm_worker,
      test_terminal_status_has_bounded_summary_only,
      test_result_inline_uses_default_and_configured_cap,
+     test_oversized_result_publishes_stable_artifact,
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
@@ -86,6 +89,23 @@ init_per_testcase(
     ok = application:set_env(soma_actor, service_data_dir, DataDir),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started},
+     {tmp_dir, TmpDir},
+     {service_data_dir, DataDir} | Config];
+init_per_testcase(
+  test_oversized_result_publishes_stable_artifact, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo]}),
+    InlineCap = 32,
+    TmpDir = make_tmp_dir(),
+    DataDir = filename:join(TmpDir, "service-data"),
+    ok = application:set_env(
+           soma_actor, service_result_inline_bytes, InlineCap),
+    ok = application:set_env(soma_actor, service_data_dir, DataDir),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started},
+     {inline_cap, InlineCap},
      {tmp_dir, TmpDir},
      {service_data_dir, DataDir} | Config];
 init_per_testcase(
@@ -222,6 +242,7 @@ end_per_testcase(TestCase, Config)
        TestCase =:= test_single_tool_invocation_runs_without_llm_worker;
        TestCase =:= test_terminal_status_has_bounded_summary_only;
        TestCase =:= test_result_inline_uses_default_and_configured_cap;
+       TestCase =:= test_oversized_result_publishes_stable_artifact;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
@@ -411,6 +432,51 @@ test_result_inline_uses_default_and_configured_cap(Config) ->
               ?assertEqual({error, enoent}, file:read_link_info(DataDir))
       end,
       Rows).
+
+test_oversized_result_publishes_stable_artifact(Config) ->
+    InlineCap = ?config(inline_cap, Config),
+    DataDir = ?config(service_data_dir, Config),
+    RequestId = <<"service-result-artifact">>,
+    Args = #{value => binary:copy(<<"complete artifact bytes">>, 16)},
+    Output = #{RequestId => Args},
+    Encoded = term_to_binary(Output, [deterministic]),
+    EncodedBytes = byte_size(Encoded),
+    ?assert(EncodedBytes > InlineCap),
+
+    try
+        {ok, #{task_id := TaskId, status := accepted}} =
+            soma_service:invoke(tool_envelope(RequestId, echo, Args)),
+        {ok, _Terminal} = wait_for_status(TaskId, succeeded, 100),
+        {ok, #{artifact := ArtifactId,
+               bytes := EncodedBytes,
+               truncated_inline := Prefix} = FirstDescriptor} =
+            soma_service:result(TaskId),
+        ?assert(is_binary(ArtifactId)),
+        ?assert(byte_size(ArtifactId) > 0),
+        ?assertEqual(InlineCap, byte_size(Prefix)),
+        ?assertEqual(binary:part(Encoded, 0, InlineCap), Prefix),
+
+        ArtifactDir = filename:join(DataDir, "artifacts"),
+        {ok, [ArtifactName]} = file:list_dir(ArtifactDir),
+        ArtifactPath = filename:join(ArtifactDir, ArtifactName),
+        {ok, Encoded} = file:read_file(ArtifactPath),
+        {ok, FirstInfo} = file:read_file_info(ArtifactPath),
+        FirstIdentity =
+            {ArtifactId, Encoded, FirstInfo#file_info.mtime},
+
+        timer:sleep(1100),
+        {ok, SecondDescriptor} = soma_service:result(TaskId),
+        ?assertEqual(FirstDescriptor, SecondDescriptor),
+        {ok, SecondFileBytes} = file:read_file(ArtifactPath),
+        {ok, SecondInfo} = file:read_file_info(ArtifactPath),
+        SecondIdentity =
+            {maps:get(artifact, SecondDescriptor),
+             SecondFileBytes,
+             SecondInfo#file_info.mtime},
+        ?assertEqual(FirstIdentity, SecondIdentity)
+    after
+        _ = file:del_dir_r(DataDir)
+    end.
 
 test_oversized_result_fails_with_max_output_reason(_Config) ->
     RequestId = <<"service-oversized-result">>,
