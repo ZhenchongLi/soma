@@ -5,6 +5,7 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_socket_invoke_status_and_result_end_to_end/1,
+         test_socket_binary_results_use_lossless_lisp_bytes/1,
          test_socket_disconnect_does_not_cancel_accepted_invocation/1,
          test_socket_duplicate_invoke_reuses_task_once/1,
          test_socket_watch_reconnect_resumes_after_cursor/1,
@@ -14,10 +15,12 @@
          test_socket_oversized_response_returns_typed_error/1,
          test_socket_rejects_bad_and_oversized_frames_then_serves/1,
          test_daemon_service_listener_is_config_opt_in_with_sibling_default/1,
+         test_cli_socket_rejects_service_only_forms_and_survives/1,
          test_service_socket_stale_takeover_and_lost_bind_preserve_winner/1]).
 
 all() ->
     [test_socket_invoke_status_and_result_end_to_end,
+     test_socket_binary_results_use_lossless_lisp_bytes,
      test_socket_disconnect_does_not_cancel_accepted_invocation,
      test_socket_duplicate_invoke_reuses_task_once,
      test_socket_watch_reconnect_resumes_after_cursor,
@@ -27,6 +30,7 @@ all() ->
      test_socket_oversized_response_returns_typed_error,
      test_socket_rejects_bad_and_oversized_frames_then_serves,
      test_daemon_service_listener_is_config_opt_in_with_sibling_default,
+     test_cli_socket_rejects_service_only_forms_and_survives,
      test_service_socket_stale_takeover_and_lost_bind_preserve_winner].
 
 init_per_testcase(
@@ -72,6 +76,15 @@ init_per_testcase(test_socket_oversized_response_returns_typed_error, Config) ->
     ok = application:set_env(
            soma_actor, service_result_inline_bytes,
            4 * soma_socket_frame:max_bytes()),
+    TmpDir = make_tmp_dir(),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {tmp_dir, TmpDir} | Config];
+init_per_testcase(test_socket_binary_results_use_lossless_lisp_bytes, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy, #{allowed_tools => [file_read]}),
+    ok = application:set_env(
+           soma_actor, service_result_inline_bytes, 64),
     TmpDir = make_tmp_dir(),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started}, {tmp_dir, TmpDir} | Config];
@@ -142,6 +155,70 @@ test_socket_invoke_status_and_result_end_to_end(_Config) ->
         ?assertEqual([], stop_llm_start_trace())
     after
         clear_llm_start_trace(),
+        stop_listener(Listener, Path)
+    end.
+
+%% Review regression: service results may contain arbitrary bytes rather than
+%% UTF-8 text. Both an inline one-byte file result and an artifact descriptor's
+%% external-term prefix must remain valid Lisp on the real socket and decode to
+%% the exact public soma_service terms. The v1 byte form is
+%% `(bytes (hex "..."))`, using an even-length uppercase hexadecimal payload.
+test_socket_binary_results_use_lossless_lisp_bytes(Config) ->
+    TmpDir = proplists:get_value(tmp_dir, Config),
+    InlineBytes = <<16#ff>>,
+    ArtifactBytes = binary:copy(<<16#ff>>, 256),
+    InlineFile = "inline-bytes.bin",
+    ArtifactFile = "artifact-bytes.bin",
+    ok = file:write_file(filename:join(TmpDir, InlineFile), InlineBytes),
+    ok = file:write_file(filename:join(TmpDir, ArtifactFile), ArtifactBytes),
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        InlineRequestId = <<"socket-binary-inline">>,
+        #{task_id := InlineTaskId} =
+            socket_request(
+              Path,
+              file_read_invoke(InlineRequestId, InlineFile, TmpDir),
+              invoke),
+        _InlineTerminal =
+            wait_for_socket_status(Path, InlineTaskId, succeeded, 100),
+        InlinePayload =
+            socket_response_payload(
+              Path, lifecycle_source(result, InlineTaskId)),
+
+        ArtifactRequestId = <<"socket-binary-artifact">>,
+        #{task_id := ArtifactTaskId} =
+            socket_request(
+              Path,
+              file_read_invoke(ArtifactRequestId, ArtifactFile, TmpDir),
+              invoke),
+        _ArtifactTerminal =
+            wait_for_socket_status(Path, ArtifactTaskId, succeeded, 100),
+        {ok, ExpectedArtifact} = soma_service:result(ArtifactTaskId),
+        ?assertMatch(
+           #{truncated_inline := <<131, _/binary>>}, ExpectedArtifact),
+        ArtifactPayload =
+            socket_response_payload(
+              Path, lifecycle_source(result, ArtifactTaskId)),
+
+        Parsed =
+            [soma_lfe_reader:read_forms(Payload)
+             || Payload <- [InlinePayload, ArtifactPayload]],
+        ?assert(
+           lists:all(
+             fun({ok, [_]}) -> true;
+                (_) -> false
+             end,
+             Parsed)),
+        ?assertEqual(
+           {service_reply, result,
+            #{InlineRequestId => InlineBytes}},
+           decode_service_response(InlinePayload)),
+        ?assertEqual(
+           {service_reply, result, ExpectedArtifact},
+           decode_service_response(ArtifactPayload))
+    after
         stop_listener(Listener, Path)
     end.
 
@@ -534,7 +611,10 @@ test_socket_rejects_bad_and_oversized_frames_then_serves(_Config) ->
     unlink(Listener),
     try
         Rows =
-            [{malformed_lisp,
+            [{zero_length_frame,
+              fun() -> <<0:32/unsigned-big-integer>> end,
+              malformed_request},
+             {malformed_lisp,
               fun() -> frame(<<"(">>) end,
               malformed_request},
              {oversized_frame,
@@ -603,9 +683,59 @@ test_daemon_service_listener_is_config_opt_in_with_sibling_default(Config) ->
            {service_error, not_found},
            socket_response(
              ServicePath,
-             lifecycle_source(status, <<"missing-daemon-service-task">>)))
+             lifecycle_source(status, <<"missing-daemon-service-task">>))),
+        ok = stop_daemon(CliPath),
+
+        assert_service_config_rejected(
+          TmpDir, ToolsDir, "malformed-service-table",
+          <<"[service\n">>,
+          {config_error, malformed_table}),
+        assert_service_config_rejected(
+          TmpDir, ToolsDir, "non-string-service-socket",
+          <<"[service]\nsocket = 123\n">>,
+          {config_error, invalid_service_socket})
     after
         maybe_stop_daemon(CliPath)
+    end.
+
+%% Criterion 10 regression proof moved out of the pre-existing CLI wire suite:
+%% service-only lifecycle forms must receive a bounded CLI error, and the same
+%% CLI listener must remain available for a normal CLI status request.
+test_cli_socket_rejects_service_only_forms_and_survives(_Config) ->
+    Path = socket_path(),
+    {ok, Server} = soma_cli_server:start_link(#{socket => Path}),
+    unlink(Server),
+    try
+        Requests =
+            [<<"(result \"not-a-cli-task\")">>,
+             <<"(watch \"not-a-cli-task\" (limit 1))">>],
+        lists:foreach(
+          fun(Request) ->
+                  Reply = socket_response_payload(Path, Request),
+                  ?assert(byte_size(Reply) =< 1024),
+                  ?assertMatch(
+                     match,
+                     re:run(Reply, "^\\(result ", [{capture, none}])),
+                  ?assertMatch(
+                     match,
+                     re:run(
+                       Reply, "\\(status error\\)", [{capture, none}])),
+                  ?assertMatch(
+                     match,
+                     re:run(
+                       Reply, "invalid-top-level-form", [{capture, none}])),
+                  ?assert(is_process_alive(Server)),
+                  Probe =
+                      socket_response_payload(
+                        Path, <<"(status \"not-a-cli-task\")">>),
+                  ?assertMatch(
+                     match,
+                     re:run(
+                       Probe, "\\(state unknown\\)", [{capture, none}]))
+          end,
+          Requests)
+    after
+        stop_listener(Server, Path)
     end.
 
 %% RS.1d criterion 9: only a listener that proves a leftover AF_UNIX path is
@@ -719,6 +849,41 @@ published_diagnostic_error_rows() ->
       {service_error, invalid_watch}},
      {<<"(status \"socket-missing-task\")">>,
       {service_error, not_found}}].
+
+file_read_invoke(RequestId, FileName, Root) ->
+    iolist_to_binary(
+      ["(invoke "
+       "(api-version \"1\") "
+       "(request-id ", soma_lisp:render(RequestId), ") "
+       "(tool (name file_read) "
+       "(args (path ", soma_lisp:render(list_to_binary(FileName)), ") "
+       "(root ", soma_lisp:render(list_to_binary(Root)), "))))"]).
+
+assert_service_config_rejected(TmpDir, ToolsDir, Name, Source, ExpectedReason) ->
+    RowDir = filename:join(TmpDir, Name),
+    ok = file:make_dir(RowDir),
+    CliPath = filename:join(RowDir, "soma.sock"),
+    ServicePath = filename:join(RowDir, "service.sock"),
+    ConfigPath = filename:join(RowDir, "config.toml"),
+    ok = file:write_file(ConfigPath, Source),
+    Opts = #{socket => CliPath,
+             config_path => ConfigPath,
+             tools_dir => ToolsDir},
+    LoadResult =
+        try soma_config:load_service(Opts) of
+            ServiceConfig -> {ok, ServiceConfig}
+        catch
+            error:LoadReason -> {error, LoadReason}
+        end,
+    DaemonResult = soma_cli:daemon(Opts),
+    case DaemonResult of
+        {ok, CliPath} -> ok = stop_daemon(CliPath);
+        {error, _Reason} -> ok
+    end,
+    ?assertEqual({error, ExpectedReason}, LoadResult),
+    ?assertEqual({error, ExpectedReason}, DaemonResult),
+    ?assertMatch({error, _}, connect_socket(CliPath)),
+    ?assertMatch({error, _}, connect_socket(ServicePath)).
 
 socket_request(Path, Source, Operation) ->
     {service_reply, Operation, Value} = socket_response(Path, Source),
@@ -856,6 +1021,8 @@ decode_value([event | Pairs]) ->
     maps:from_list(
       [{decode_key(Key), decode_value(Value)}
        || [Key, Value] <- Pairs]);
+decode_value([bytes, [hex, Hex]]) when is_binary(Hex) ->
+    binary:decode_hex(Hex);
 decode_value([Key, Value]) when is_atom(Key); is_binary(Key) ->
     #{decode_key(Key) => decode_value(Value)};
 decode_value(List) when is_list(List) ->
