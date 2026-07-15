@@ -16,6 +16,7 @@
 -export([test_fresh_vms_keep_durable_task_and_run_ids_distinct/1]).
 -export([test_restarted_service_rearms_absolute_deadline/1]).
 -export([test_recovery_lands_every_unowned_trail_terminal/1]).
+-export([test_recovery_preserves_owner_decisions_across_restarts/1]).
 -export([test_start_failures_land_terminal_task_data/1]).
 -export([test_out_of_scope_invocation_rejected_through_policy/1]).
 -export([test_unscoped_invocation_uses_configured_or_empty_default_policy/1]).
@@ -39,6 +40,7 @@ all() ->
      test_fresh_vms_keep_durable_task_and_run_ids_distinct,
      test_restarted_service_rearms_absolute_deadline,
      test_recovery_lands_every_unowned_trail_terminal,
+     test_recovery_preserves_owner_decisions_across_restarts,
      test_start_failures_land_terminal_task_data,
      test_out_of_scope_invocation_rejected_through_policy,
      test_unscoped_invocation_uses_configured_or_empty_default_policy,
@@ -111,7 +113,9 @@ init_per_testcase(test_start_failures_land_terminal_task_data, Config) ->
            soma_actor, service_policy,
            #{allowed_tools => [echo]}),
     Config;
-init_per_testcase(test_recovery_lands_every_unowned_trail_terminal, Config) ->
+init_per_testcase(TestCase, Config)
+  when TestCase =:= test_recovery_lands_every_unowned_trail_terminal;
+       TestCase =:= test_recovery_preserves_owner_decisions_across_restarts ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy,
@@ -188,6 +192,7 @@ end_per_testcase(TestCase, Config)
        TestCase =:= test_fresh_vms_keep_durable_task_and_run_ids_distinct;
        TestCase =:= test_start_failures_land_terminal_task_data;
        TestCase =:= test_recovery_lands_every_unowned_trail_terminal;
+       TestCase =:= test_recovery_preserves_owner_decisions_across_restarts;
        TestCase =:= test_restarted_service_rearms_absolute_deadline ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
@@ -582,6 +587,62 @@ test_recovery_lands_every_unowned_trail_terminal(_Config) ->
                                        maps:get(payload, TerminalEvent)))
       end,
       [AcceptedOnly, AllCommitted, DeadlineCancelled, Unrecoverable]).
+
+test_recovery_preserves_owner_decisions_across_restarts(_Config) ->
+    StorePid = runtime_event_store(),
+
+    Deadline = service_recovery_fixture(<<"deadline-completed">>),
+    DeadlineStep = maps:get(step, Deadline),
+    DeadlineOutput = #{value => <<"completed after deadline decision">>},
+    append_service_accepted(
+      StorePid, Deadline,
+      #{deadline_at_ms => erlang:system_time(millisecond) - 1}),
+    append_run_started(StorePid, Deadline),
+    append_service_event(
+      StorePid, Deadline, <<"service.task.deadline_expired">>, #{}),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => maps:get(run_id, Deadline),
+             step_id => maps:get(id, DeadlineStep),
+             event_type => <<"step.succeeded">>,
+             payload => #{output => DeadlineOutput}}),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => maps:get(run_id, Deadline),
+             event_type => <<"run.completed">>,
+             payload => #{}}),
+
+    Committed = service_recovery_fixture(<<"committed-twice">>),
+    CommittedStep = maps:get(step, Committed),
+    CommittedOutput = #{value => <<"survives every restart">>},
+    append_service_accepted(StorePid, Committed, #{}),
+    append_run_started(StorePid, Committed),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => maps:get(run_id, Committed),
+             step_id => maps:get(id, CommittedStep),
+             event_type => <<"step.succeeded">>,
+             payload => #{output => CommittedOutput}}),
+
+    {ok, _Started} = application:ensure_all_started(soma_actor),
+    First = recovery_outcomes(Deadline, Committed),
+    ok = application:stop(soma_actor),
+    {ok, _Restarted} = application:ensure_all_started(soma_actor),
+    Second = recovery_outcomes(Deadline, Committed),
+
+    Expected =
+        [#{status => failed, reason => deadline_exceeded},
+         #{status => succeeded,
+           result => #{maps:get(id, CommittedStep) => CommittedOutput}}],
+    ?assertEqual({Expected, Expected}, {First, Second}).
+
+recovery_outcomes(Deadline, Committed) ->
+    {ok, DeadlineTask} =
+        soma_service:status(maps:get(task_id, Deadline)),
+    {ok, CommittedTask} =
+        soma_service:status(maps:get(task_id, Committed)),
+    [maps:with([status, result, reason], Task)
+     || Task <- [DeadlineTask, CommittedTask]].
 
 test_start_failures_land_terminal_task_data(_Config) ->
     {ok, StorePid} = soma_event_store:start_link(),
