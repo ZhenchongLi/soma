@@ -239,7 +239,15 @@ test_review_boundaries_expire_calls_teardown_actions_and_reject_unsafe_state(
          {initial_task_state,
           fun assert_unsafe_initial_task_state_is_rejected/0},
          {round_result_state,
-          fun assert_noncanonical_forbidden_result_is_rejected/0}],
+          fun assert_noncanonical_forbidden_result_is_rejected/0},
+         {deadline_late_success,
+          fun assert_deadline_beats_late_round_success/0},
+         {deadline_unsafe_late_result,
+          fun assert_deadline_holds_for_unsafe_late_result/0},
+         {lease_name_boundary,
+          fun assert_lease_names_are_bounded_binaries/0},
+         {lease_guard_down,
+          fun assert_dead_lease_guard_fails_task/0}],
     Failures =
         [Failure || {Name, Assert} <- Rows,
                     Failure <- [run_review_boundary_row(Name, Assert)],
@@ -1722,6 +1730,180 @@ trigger_terminal_cleanup(
          ResultCapability, InvocationIdentity},
     wait_for_unsafe_dispatch(CoordinatorPid, RoundId, 100),
     exit(WorkerPid, kill).
+
+%% Review finding 1a (#234): an expired action deadline must beat a late
+%% run success. The worker is suspended so the fired phase timer and the
+%% run's completion queue in deadline-first order; on resume the round must
+%% report the timeout, never `succeeded`.
+assert_deadline_beats_late_round_success() ->
+    CorrelationId = <<"delegate-review-late-success-correlation">>,
+    TaskSpec =
+        #{request_id => <<"delegate-review-late-success-deadline">>,
+          correlation_id => CorrelationId,
+          objective => <<"deadline must beat a late run success">>,
+          round_sequence =>
+              [#{llm => #{directive => success,
+                          output => <<"dispatch slow action">>},
+                 action_steps =>
+                     [#{id => <<"delegate-review-late-success-step">>,
+                        tool => sleep,
+                        args => #{ms => 150},
+                        timeout_ms => 60000}],
+                 action_timeout_ms => 50,
+                 decision => terminal}]},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    RoundWorkerPid = wait_for_round_worker(100),
+    {_WorkerData, _ActiveRun} =
+        wait_for_worker_phase(
+          RoundWorkerPid, waiting_run, active_run, 100),
+    ok = sys:suspend(RoundWorkerPid),
+    %% The 50 ms action deadline fires into the suspended mailbox first;
+    %% the run then completes (~150 ms) and its success queues behind it.
+    [_RunCompleted] =
+        wait_for_correlated_events(
+          event_store_pid(), CorrelationId, <<"run.completed">>, 100),
+    ok = sys:resume(RoundWorkerPid),
+    {ok, Terminal} = wait_for_task_terminal(TaskId, 200),
+    ?assertNotEqual(succeeded, maps:get(status, Terminal)),
+    ok.
+
+%% Review finding 1b (#234): the coordinator's round deadline must hold for
+%% unsafe work. A late success from a dispatched non-idempotent action lands
+%% `in_doubt` (the mutation happened; the deadline decision is sticky) —
+%% never `succeeded`.
+assert_deadline_holds_for_unsafe_late_result() ->
+    TaskSpec =
+        #{request_id => <<"delegate-review-unsafe-late-result">>,
+          objective => <<"deadline must hold for unsafe late results">>,
+          round_sequence =>
+              [#{llm => #{directive => success,
+                          output => <<"dispatch unsafe slow action">>},
+                 action_steps =>
+                     [#{id => <<"delegate-review-unsafe-late-step">>,
+                        tool => sleep,
+                        args => #{ms => 150},
+                        timeout_ms => 60000}],
+                 round_timeout_ms => 50,
+                 decision => terminal}]},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    RoundWorkerPid = wait_for_round_worker(100),
+    {_WorkerData, _ActiveRun} =
+        wait_for_worker_phase(
+          RoundWorkerPid, waiting_run, active_run, 100),
+    {_StateName, CoordinatorData} = sys:get_state(CoordinatorPid),
+    #{round_id := RoundId,
+      worker_identity := WorkerIdentity,
+      result_capability := ResultCapability} =
+        maps:get(active_round, CoordinatorData),
+    InvocationIdentity =
+        #{tool => sleep,
+          step_id => <<"delegate-review-unsafe-late-step">>},
+    CoordinatorPid !
+        {delegate_unsafe_action_dispatched,
+         TaskId, RoundId, RoundWorkerPid, WorkerIdentity,
+         ResultCapability, InvocationIdentity},
+    ok = wait_for_unsafe_dispatch(CoordinatorPid, RoundId, 100),
+    ok = sys:suspend(CoordinatorPid),
+    %% The round deadline (50 ms) fires into the suspended mailbox first;
+    %% the worker's successful round result (~150 ms) queues behind it.
+    timer:sleep(250),
+    ok = sys:resume(CoordinatorPid),
+    {ok, Terminal} = wait_for_task_terminal(TaskId, 200),
+    ?assertEqual(in_doubt, maps:get(status, Terminal)),
+    ok.
+
+%% Review finding 2 (#234): lease names are part of the snapshot boundary.
+%% A non-binary name (a pid) or an oversized binary must fail acquisition
+%% typed before any round starts — process-local state can never reach a
+%% round snapshot through resource handles.
+assert_lease_names_are_bounded_binaries() ->
+    Rows =
+        [{pid_name, self()},
+         {oversized_name, binary:copy(<<"n">>, 256)}],
+    lists:foreach(
+      fun({Label, Name}) ->
+              LabelBin = atom_to_binary(Label),
+              TaskSpec =
+                  #{request_id =>
+                        <<"delegate-review-lease-name-", LabelBin/binary>>,
+                    objective => <<"reject unsafe lease names">>,
+                    lease_requests =>
+                        [#{name => Name,
+                           adapter => soma_delegate_test_lease_adapter,
+                           options =>
+                               #{observer => self(),
+                                 opaque_handle =>
+                                     <<"opaque-handle:unsafe-name">>,
+                                 raw_lease =>
+                                     {raw_delegate_lease, Label,
+                                      unsafe_name, make_ref()}}}],
+                    round_sequence =>
+                        [#{llm => #{directive => success,
+                                    output => <<"never reached">>},
+                           decision => terminal}]},
+              {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+              {ok, Terminal} = wait_for_task_terminal(TaskId, 200),
+              ?assertEqual(failed, maps:get(status, Terminal)),
+              ?assertEqual([], live_round_workers())
+      end,
+      Rows),
+    ok.
+
+%% Review finding 3 (#234): the coordinator must monitor its lease guard.
+%% A dead guard fails the task at the ownership boundary instead of leaving
+%% it running, and a later cancel returns the terminal without crashing the
+%% coordinator into the ingress.
+assert_dead_lease_guard_fails_task() ->
+    LeaseName = <<"delegate-review-guard-down-lease">>,
+    TaskSpec =
+        #{request_id => <<"delegate-review-guard-down">>,
+          objective => <<"guard death fails the task cleanly">>,
+          lease_requests =>
+              [#{name => LeaseName,
+                 adapter => soma_delegate_test_lease_adapter,
+                 options =>
+                     #{observer => self(),
+                       opaque_handle =>
+                           <<"opaque-handle:", LeaseName/binary>>,
+                       raw_lease =>
+                           {raw_delegate_lease, guard_down, LeaseName,
+                            make_ref()}}}],
+          round_sequence =>
+              [#{llm => #{directive => success,
+                          output => <<"dispatch blocked action">>},
+                 action_steps =>
+                     [#{id => <<"delegate-review-guard-down-step">>,
+                        tool => sleep,
+                        args => #{ms => 60000},
+                        timeout_ms => 60000}],
+                 decision => terminal}]},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    _RoundWorkerPid = wait_for_round_worker(100),
+    {_StateName, CoordinatorData} = sys:get_state(CoordinatorPid),
+    #{guard := GuardPid} = maps:get(scoped_leases, CoordinatorData),
+    ?assert(is_pid(GuardPid)),
+    exit(GuardPid, kill),
+    {ok, Terminal} = wait_for_task_terminal(TaskId, 200),
+    ?assertEqual(failed, maps:get(status, Terminal)),
+    CancelReply = soma_delegate:cancel(TaskId),
+    ?assertMatch({ok, #{status := _Terminal}}, CancelReply),
+    {ok, _Status} = soma_delegate:status(TaskId),
+    ok.
+
+wait_for_task_terminal(_TaskId, 0) ->
+    ct:fail(delegate_task_never_reached_terminal);
+wait_for_task_terminal(TaskId, Attempts) ->
+    {ok, Status} = soma_delegate:status(TaskId),
+    case maps:get(status, Status) of
+        Running when Running =:= accepted; Running =:= running ->
+            timer:sleep(10),
+            wait_for_task_terminal(TaskId, Attempts - 1);
+        _Terminal ->
+            {ok, Status}
+    end.
+
 
 wait_for_unsafe_dispatch(_CoordinatorPid, _RoundId, 0) ->
     ct:fail(unsafe_dispatch_not_recorded_before_cleanup);
