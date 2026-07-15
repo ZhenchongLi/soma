@@ -11,6 +11,7 @@
 -export([test_terminal_status_has_bounded_summary_only/1]).
 -export([test_result_inline_uses_default_and_configured_cap/1]).
 -export([test_oversized_result_publishes_stable_artifact/1]).
+-export([test_missing_correlation_defaults_to_task_watch_order/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
@@ -43,6 +44,7 @@ all() ->
      test_terminal_status_has_bounded_summary_only,
      test_result_inline_uses_default_and_configured_cap,
      test_oversized_result_publishes_stable_artifact,
+     test_missing_correlation_defaults_to_task_watch_order,
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
@@ -108,6 +110,17 @@ init_per_testcase(
      {inline_cap, InlineCap},
      {tmp_dir, TmpDir},
      {service_data_dir, DataDir} | Config];
+init_per_testcase(
+  test_missing_correlation_defaults_to_task_watch_order, Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo]}),
+    TmpDir = make_tmp_dir(),
+    Path = filename:join(TmpDir, "events.log"),
+    ok = application:set_env(soma_runtime, event_store_log, Path),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started}, {tmp_dir, TmpDir}, {log_path, Path} | Config];
 init_per_testcase(
   test_service_cancel_cleans_tool_worker_and_cli_process, Config) ->
     ok = ensure_loaded(soma_actor),
@@ -243,6 +256,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:= test_terminal_status_has_bounded_summary_only;
        TestCase =:= test_result_inline_uses_default_and_configured_cap;
        TestCase =:= test_oversized_result_publishes_stable_artifact;
+       TestCase =:=
+           test_missing_correlation_defaults_to_task_watch_order;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
@@ -477,6 +492,37 @@ test_oversized_result_publishes_stable_artifact(Config) ->
     after
         _ = file:del_dir_r(DataDir)
     end.
+
+test_missing_correlation_defaults_to_task_watch_order(_Config) ->
+    RequestId = <<"service-watch-default-correlation">>,
+    Envelope = tool_envelope(
+                 RequestId, echo,
+                 #{value => <<"durable correlation trail">>}),
+    ?assertNot(maps:is_key(correlation_id, Envelope)),
+
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(Envelope),
+    {ok, _Terminal} = wait_for_status(TaskId, succeeded, 100),
+
+    StorePid = runtime_event_store(),
+    CorrelationEvents =
+        soma_event_store:by_correlation(StorePid, TaskId),
+    ?assertNotEqual([], CorrelationEvents),
+    EventTypes = [maps:get(event_type, Event)
+                  || Event <- CorrelationEvents],
+    lists:foreach(
+      fun(Type) -> ?assert(lists:member(Type, EventTypes)) end,
+      [<<"service.task.accepted">>, <<"service.task.running">>,
+       <<"run.started">>, <<"run.completed">>,
+       <<"service.task.terminal">>]),
+
+    DirectEventIds = [maps:get(event_id, Event)
+                      || Event <- CorrelationEvents],
+    {ok, #{events := WatchedEvents}} =
+        soma_service:watch(TaskId, undefined, 1000),
+    ?assertEqual(
+       DirectEventIds,
+       [maps:get(event_id, Event) || Event <- WatchedEvents]).
 
 test_oversized_result_fails_with_max_output_reason(_Config) ->
     RequestId = <<"service-oversized-result">>,
