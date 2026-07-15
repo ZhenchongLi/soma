@@ -6,16 +6,20 @@
 -export([test_socket_invoke_status_and_result_end_to_end/1,
          test_socket_disconnect_does_not_cancel_accepted_invocation/1,
          test_socket_duplicate_invoke_reuses_task_once/1,
-         test_socket_watch_reconnect_resumes_after_cursor/1]).
+         test_socket_watch_reconnect_resumes_after_cursor/1,
+         test_socket_cancel_is_repeatable_after_cli_process_exit/1]).
 
 all() ->
     [test_socket_invoke_status_and_result_end_to_end,
      test_socket_disconnect_does_not_cancel_accepted_invocation,
      test_socket_duplicate_invoke_reuses_task_once,
-     test_socket_watch_reconnect_resumes_after_cursor].
+     test_socket_watch_reconnect_resumes_after_cursor,
+     test_socket_cancel_is_repeatable_after_cli_process_exit].
 
 init_per_testcase(
-  test_socket_watch_reconnect_resumes_after_cursor, Config) ->
+  TestCase, Config)
+  when TestCase =:= test_socket_watch_reconnect_resumes_after_cursor;
+       TestCase =:= test_socket_cancel_is_repeatable_after_cli_process_exit ->
     ok = ensure_loaded(soma_actor),
     ok = application:set_env(
            soma_actor, service_policy, #{allowed_tools => [echo]}),
@@ -234,6 +238,75 @@ test_socket_watch_reconnect_resumes_after_cursor(Config) ->
         stop_listener(Listener, Path)
     end.
 
+%% RS.1d criterion 5: socket cancellation must expose only soma_service's
+%% cleaned terminal projection. The first reply therefore arrives after the
+%% CLI worker and its external process are gone; a later connection receives
+%% the same projection without appending another durable event.
+test_socket_cancel_is_repeatable_after_cli_process_exit(Config) ->
+    TmpDir = proplists:get_value(tmp_dir, Config),
+    LogPath = proplists:get_value(log_path, Config),
+    {Helper, PidFile} = write_cancel_cli_stub(TmpDir),
+    ok = soma_tool_registry:register_tool(
+           #{name => socket_cancel_cli,
+             effect => reader,
+             idempotent => true,
+             timeout_ms => 60000,
+             adapter => cli,
+             executable => Helper,
+             argv => [PidFile]}),
+    Path = socket_path(),
+    {ok, Listener} = soma_service_socket:start_link(#{socket => Path}),
+    unlink(Listener),
+    try
+        RequestId = <<"socket-service-repeatable-cancel">>,
+        Invoke =
+            <<"(invoke "
+              "(api-version \"1\") "
+              "(request-id \"socket-service-repeatable-cancel\") "
+              "(tool (name socket_cancel_cli) "
+              "(args (value \"ignored\"))) "
+              "(scope \"socket_cancel_cli\"))">>,
+
+        #{task_id := TaskId, status := accepted} =
+            socket_request(Path, Invoke, invoke),
+        StorePid = runtime_event_store(),
+        WorkerPid = wait_for_task_tool_worker(StorePid, TaskId, 100),
+        OsPid = wait_for_cli_os_pid(PidFile, 100),
+        try
+            ?assert(is_process_alive(WorkerPid)),
+            ?assert(cli_os_process_alive(OsPid)),
+
+            Cancel = lifecycle_source(cancel, TaskId),
+            ExpectedTerminal =
+                #{task_id => TaskId,
+                  request_id => RequestId,
+                  status => cancelled,
+                  summary => #{reason_class => cancelled}},
+            InitialResponse = socket_response(Path, Cancel),
+            ?assertEqual(
+               {service_reply, cancel, ExpectedTerminal},
+               InitialResponse),
+            ?assertNot(is_process_alive(WorkerPid)),
+            ?assertNot(cli_os_process_alive(OsPid)),
+
+            ?assert(filelib:is_regular(LogPath)),
+            InitialEventCount =
+                length(
+                  soma_event_store:by_correlation(StorePid, TaskId)),
+            RepeatedResponse = socket_response(Path, Cancel),
+            RepeatedEventCount =
+                length(
+                  soma_event_store:by_correlation(StorePid, TaskId)),
+            ?assertEqual(
+               {InitialResponse, InitialEventCount},
+               {RepeatedResponse, RepeatedEventCount})
+        after
+            _ = soma_service:cancel(TaskId)
+        end
+    after
+        stop_listener(Listener, Path)
+    end.
+
 socket_request(Path, Source, Operation) ->
     {service_reply, Operation, Value} = socket_response(Path, Source),
     Value.
@@ -299,6 +372,7 @@ is_pair(_Other) -> false.
 decode_key('task-id') -> task_id;
 decode_key('request-id') -> request_id;
 decode_key('result-bytes') -> result_bytes;
+decode_key('reason-class') -> reason_class;
 decode_key('event-id') -> event_id;
 decode_key(Key) -> Key.
 
@@ -357,6 +431,66 @@ clear_llm_start_trace() ->
     _ = erlang:trace_pattern(
           {soma_llm_call, start, 1}, false, [local]),
     ok.
+
+write_cancel_cli_stub(TmpDir) ->
+    Helper = filename:join(TmpDir, "cancel-cli.sh"),
+    PidFile = filename:join(TmpDir, "cancel-cli.pid"),
+    Script = <<"#!/bin/sh\n"
+               "printf '%s\\n' \"$$\" > \"$1\"\n"
+               "sleep 30\n">>,
+    ok = file:write_file(Helper, Script),
+    ok = file:change_mode(Helper, 8#755),
+    {Helper, PidFile}.
+
+wait_for_task_tool_worker(_StorePid, _TaskId, 0) ->
+    error(service_socket_tool_worker_did_not_start);
+wait_for_task_tool_worker(StorePid, TaskId, Attempts) ->
+    case [WorkerPid
+          || #{event_type := <<"tool.started">>,
+               tool_call_pid := WorkerPid} <-
+                 soma_event_store:by_correlation(StorePid, TaskId),
+             is_pid(WorkerPid)] of
+        [WorkerPid | _] ->
+            WorkerPid;
+        [] ->
+            timer:sleep(10),
+            wait_for_task_tool_worker(StorePid, TaskId, Attempts - 1)
+    end.
+
+wait_for_cli_os_pid(_PidFile, 0) ->
+    error(cli_stub_did_not_write_os_pid);
+wait_for_cli_os_pid(PidFile, Attempts) ->
+    case file:read_file(PidFile) of
+        {ok, Bytes} when byte_size(Bytes) > 0 ->
+            list_to_integer(string:trim(binary_to_list(Bytes)));
+        {ok, _Empty} ->
+            timer:sleep(10),
+            wait_for_cli_os_pid(PidFile, Attempts - 1);
+        {error, enoent} ->
+            timer:sleep(10),
+            wait_for_cli_os_pid(PidFile, Attempts - 1)
+    end.
+
+cli_os_process_alive(OsPid) ->
+    Kill = os:find_executable("kill"),
+    Port = open_port(
+             {spawn_executable, Kill},
+             [{args, ["-0", integer_to_list(OsPid)]},
+              exit_status, binary, use_stdio, stderr_to_stdout]),
+    cli_os_process_probe_result(Port).
+
+cli_os_process_probe_result(Port) ->
+    receive
+        {Port, {data, _Bytes}} ->
+            cli_os_process_probe_result(Port);
+        {Port, {exit_status, 0}} ->
+            true;
+        {Port, {exit_status, _NonZero}} ->
+            false
+    after 1000 ->
+        erlang:port_close(Port),
+        error(os_process_probe_timeout)
+    end.
 
 ensure_loaded(App) ->
     case application:load(App) of
