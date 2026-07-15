@@ -21,6 +21,7 @@ init(#{coordinator_pid := CoordinatorPid,
        is_binary(CorrelationId), is_integer(RoundId), RoundId > 0,
        is_binary(WorkerIdentity), is_reference(ResultCapability),
        is_map(Work) ->
+    process_flag(trap_exit, true),
     CoordinatorMRef = erlang:monitor(process, CoordinatorPid),
     Data = #{coordinator_pid => CoordinatorPid,
              coordinator_mref => CoordinatorMRef,
@@ -29,7 +30,9 @@ init(#{coordinator_pid := CoordinatorPid,
              round_id => RoundId,
              worker_identity => WorkerIdentity,
              result_capability => ResultCapability,
-             work => Work},
+             work => Work,
+             active_llm => undefined,
+             active_run => undefined},
     {ok, awaiting_start, Data}.
 
 callback_mode() ->
@@ -43,12 +46,247 @@ handle_event(info,
                       round_id := RoundId,
                       worker_identity := WorkerIdentity,
                       result_capability := ResultCapability}) ->
-    {next_state, running, Data};
+    start_llm_call(Data);
+handle_event(info,
+             {llm_result, LlmCallId, LlmPid, {ok, _FixedResult}},
+             waiting_llm,
+             Data = #{active_llm :=
+                          #{llm_call_id := LlmCallId,
+                            pid := LlmPid,
+                            mref := LlmMRef}}) ->
+    release_child_monitor(LlmPid, LlmMRef),
+    start_action(Data#{active_llm := undefined});
+handle_event(info,
+             {llm_result, LlmCallId, LlmPid, {error, Reason}},
+             waiting_llm,
+             Data = #{active_llm :=
+                          #{llm_call_id := LlmCallId,
+                            pid := LlmPid,
+                            mref := LlmMRef}}) ->
+    release_child_monitor(LlmPid, LlmMRef),
+    report_round_result(
+      Data#{active_llm := undefined},
+      #{status => failed, phase => llm, reason => Reason});
+handle_event(info,
+             {'DOWN', LlmMRef, process, LlmPid, Reason},
+             waiting_llm,
+             Data = #{active_llm :=
+                          #{pid := LlmPid, mref := LlmMRef}}) ->
+    report_round_result(
+      Data#{active_llm := undefined},
+      #{status => failed, phase => llm, reason => Reason});
+handle_event(info,
+             {run_completed, RunId, Outputs},
+             waiting_run,
+             Data = #{active_run :=
+                          #{run_id := RunId,
+                            pid := RunPid,
+                            mref := RunMRef},
+                      work := Work}) ->
+    remove_run_child(RunPid, RunMRef),
+    report_round_result(
+      Data#{active_run := undefined},
+      #{status => succeeded,
+        phase => action,
+        decision => maps:get(decision, Work, terminal),
+        terminal_result => #{status => succeeded, outputs => Outputs}});
+handle_event(info,
+             {run_failed, RunId, Reason},
+             waiting_run,
+             Data = #{active_run :=
+                          #{run_id := RunId,
+                            pid := RunPid,
+                            mref := RunMRef}}) ->
+    remove_run_child(RunPid, RunMRef),
+    report_round_result(
+      Data#{active_run := undefined},
+      #{status => failed, phase => action, reason => Reason});
+handle_event(info,
+             {run_timeout, RunId},
+             waiting_run,
+             Data = #{active_run :=
+                          #{run_id := RunId,
+                            pid := RunPid,
+                            mref := RunMRef}}) ->
+    remove_run_child(RunPid, RunMRef),
+    report_round_result(
+      Data#{active_run := undefined},
+      #{status => timeout, phase => action});
+handle_event(info,
+             {run_cancelled, RunId},
+             waiting_run,
+             Data = #{active_run :=
+                          #{run_id := RunId,
+                            pid := RunPid,
+                            mref := RunMRef}}) ->
+    remove_run_child(RunPid, RunMRef),
+    report_round_result(
+      Data#{active_run := undefined},
+      #{status => cancelled, phase => action});
+handle_event(info,
+             {'DOWN', RunMRef, process, RunPid, Reason},
+             waiting_run,
+             Data = #{active_run :=
+                          #{pid := RunPid, mref := RunMRef}}) ->
+    report_round_result(
+      Data#{active_run := undefined},
+      #{status => failed, phase => action, reason => Reason});
 handle_event(info,
              {'DOWN', CoordinatorMRef, process, CoordinatorPid, _Reason},
              _StateName,
              Data = #{coordinator_pid := CoordinatorPid,
                       coordinator_mref := CoordinatorMRef}) ->
+    stop_active_child(Data),
     {stop, normal, Data};
+handle_event(info, {'EXIT', _ChildPid, _Reason}, _StateName, Data) ->
+    {keep_state, Data};
 handle_event(_EventType, _Event, _StateName, Data) ->
     {keep_state, Data}.
+
+start_llm_call(Data = #{work := Work, round_id := RoundId}) ->
+    case maps:get(llm, Work, undefined) of
+        Llm when is_map(Llm) ->
+            LlmCallId = mint_llm_call_id(RoundId),
+            LlmOpts = #{owner => self(),
+                        llm_call_id => LlmCallId,
+                        llm => Llm},
+            case soma_llm_call:start_owned(LlmOpts) of
+                {ok, LlmPid, LlmMRef} ->
+                    ActiveLlm = #{llm_call_id => LlmCallId,
+                                  pid => LlmPid,
+                                  mref => LlmMRef},
+                    {next_state, waiting_llm,
+                     Data#{active_llm := ActiveLlm}};
+                {error, Reason} ->
+                    report_round_result(
+                      Data,
+                      #{status => failed,
+                        phase => llm,
+                        reason => {llm_start_failed, Reason}})
+            end;
+        _InvalidLlm ->
+            report_round_result(
+              Data,
+              #{status => failed, phase => llm, reason => invalid_llm})
+    end.
+
+start_action(Data = #{work := Work}) ->
+    case maps:get(action_steps, Work, undefined) of
+        Steps when is_list(Steps) ->
+            case canonical_steps(Steps) of
+                true ->
+                    start_run(Steps, Data);
+                false ->
+                    report_round_result(
+                      Data,
+                      #{status => failed,
+                        phase => action,
+                        reason => invalid_action_steps})
+            end;
+        undefined ->
+            report_round_result(
+              Data,
+              #{status => succeeded,
+                phase => decision,
+                decision => maps:get(decision, Work, terminal),
+                terminal_result => #{status => succeeded}});
+        _InvalidSteps ->
+            report_round_result(
+              Data,
+              #{status => failed,
+                phase => action,
+                reason => invalid_action_steps})
+    end.
+
+start_run(Steps,
+          Data = #{task_id := TaskId,
+                   correlation_id := CorrelationId}) ->
+    RunId = mint_run_id(),
+    RunOpts = #{run_id => RunId,
+                task_id => TaskId,
+                session_id => TaskId,
+                session_pid => self(),
+                correlation_id => CorrelationId,
+                event_store => event_store_pid(),
+                steps => Steps,
+                auto_resume => false},
+    case soma_run_sup:start_run(RunOpts) of
+        {ok, RunPid} ->
+            link(RunPid),
+            RunMRef = erlang:monitor(process, RunPid),
+            ActiveRun = #{run_id => RunId,
+                          pid => RunPid,
+                          mref => RunMRef},
+            {next_state, waiting_run,
+             Data#{active_run := ActiveRun}};
+        {error, Reason} ->
+            report_round_result(
+              Data,
+              #{status => failed,
+                phase => action,
+                reason => {run_start_failed, Reason}})
+    end.
+
+report_round_result(
+  Data = #{coordinator_pid := CoordinatorPid,
+           task_id := TaskId,
+           round_id := RoundId,
+           worker_identity := WorkerIdentity,
+           result_capability := ResultCapability},
+  Result) ->
+    CoordinatorPid !
+        {delegate_round_result, TaskId, RoundId, self(), WorkerIdentity,
+         ResultCapability, Result},
+    {stop, normal, Data}.
+
+canonical_steps(Steps) ->
+    lists:all(fun canonical_step/1, Steps).
+
+canonical_step(#{id := _StepId, tool := _ToolName} = Step) ->
+    is_map(maps:get(args, Step, #{})) andalso
+        valid_timeout(maps:get(timeout_ms, Step, undefined));
+canonical_step(_Step) ->
+    false.
+
+valid_timeout(undefined) ->
+    true;
+valid_timeout(TimeoutMs) ->
+    is_integer(TimeoutMs) andalso TimeoutMs > 0.
+
+release_child_monitor(Pid, MRef) ->
+    _ = erlang:demonitor(MRef, [flush]),
+    unlink(Pid),
+    ok.
+
+remove_run_child(RunPid, RunMRef) ->
+    release_child_monitor(RunPid, RunMRef),
+    _ = supervisor:terminate_child(soma_run_sup, RunPid),
+    ok.
+
+stop_active_child(#{active_llm :=
+                        #{pid := LlmPid, mref := LlmMRef}}) ->
+    _ = erlang:demonitor(LlmMRef, [flush]),
+    exit(LlmPid, kill),
+    ok;
+stop_active_child(#{active_run :=
+                        #{pid := RunPid, mref := RunMRef}}) ->
+    remove_run_child(RunPid, RunMRef);
+stop_active_child(_Data) ->
+    ok.
+
+mint_llm_call_id(RoundId) ->
+    Suffix = integer_to_binary(
+               erlang:unique_integer([positive, monotonic])),
+    <<"delegate-llm-", (integer_to_binary(RoundId))/binary,
+      "-", Suffix/binary>>.
+
+mint_run_id() ->
+    Suffix = integer_to_binary(
+               erlang:unique_integer([positive, monotonic])),
+    <<"delegate-run-", Suffix/binary>>.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Modules} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
