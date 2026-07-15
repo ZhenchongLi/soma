@@ -37,6 +37,12 @@ test_service_contract_defines_compatibility_matrix() ->
       ResponseFieldsRow,
       [<<"additive">>, <<"must ignore unknown response fields">>]),
 
+    BinaryValuesRow = matrix_row(Doc, <<"Binary values">>),
+    assert_contains_all(
+      BinaryValuesRow,
+      [<<"valid UTF-8">>, <<"(bytes (hex ">>, <<"uppercase hexadecimal">>,
+       <<"lossless">>, <<"inline">>, <<"artifact">>]),
+
     StatusRow = matrix_row(Doc, <<"Typed statuses">>),
     assert_contains_all(
       StatusRow,

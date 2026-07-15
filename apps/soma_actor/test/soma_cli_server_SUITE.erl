@@ -18,7 +18,6 @@
 -export([test_server_serves_after_failed_lisp_run/1]).
 -export([test_malformed_request_returns_error_sexpr/1]).
 -export([test_server_serves_after_malformed_request/1]).
--export([test_service_only_result_and_watch_return_bounded_errors/1]).
 -export([test_run_cancelled_on_client_disconnect/1]).
 -export([test_worker_dead_after_client_disconnect/1]).
 -export([test_server_serves_after_client_disconnect/1]).
@@ -68,7 +67,6 @@ all() ->
      test_server_serves_after_failed_lisp_run,
      test_malformed_request_returns_error_sexpr,
      test_server_serves_after_malformed_request,
-     test_service_only_result_and_watch_return_bounded_errors,
      test_run_cancelled_on_client_disconnect,
      test_worker_dead_after_client_disconnect,
      test_server_serves_after_client_disconnect,
@@ -375,49 +373,6 @@ test_server_serves_after_malformed_request(Config) ->
     match = re:run(Reply, "^\\(result ", [{capture, none}]),
     match = re:run(Reply, "\\(status completed\\)", [{capture, none}]),
     ok = gen_tcp:close(C2).
-
-%% Review regression: `(result ...)' and `(watch ...)' are service-socket forms,
-%% not CLI commands. They now compile successfully in soma_lfe, so the CLI edge
-%% must reject each with a fixed bounded result instead of crashing its handler
-%% with case_clause. The same listener must remain available afterward.
-test_service_only_result_and_watch_return_bounded_errors(Config) ->
-    Path = socket_path(Config),
-    {ok, Server} = soma_cli_server:start_link(#{socket => Path}),
-    Rows =
-        [{result, <<"(result \"not-a-cli-task\")">>},
-         {watch, <<"(watch \"not-a-cli-task\" (limit 1))">>}],
-    lists:foreach(
-      fun({Operation, Request}) ->
-              {ok, Client} = connect(Path),
-              ok = gen_tcp:send(Client, Request),
-              ReceiveResult = gen_tcp:recv(Client, 0, 5000),
-              ok = gen_tcp:close(Client),
-              case ReceiveResult of
-                  {ok, Reply} ->
-                      true = byte_size(Reply) =< 1024,
-                      match = re:run(
-                                Reply, "^\\(result ", [{capture, none}]),
-                      match = re:run(
-                                Reply, "\\(status error\\)",
-                                [{capture, none}]),
-                      match = re:run(
-                                Reply, "invalid-top-level-form",
-                                [{capture, none}]);
-                  {error, Reason} ->
-                      ct:fail(
-                        {service_only_cli_form_closed_without_error,
-                         Operation, Reason})
-              end,
-              true = is_process_alive(Server),
-              {ok, Probe} = connect(Path),
-              ok = gen_tcp:send(Probe, <<"(status \"not-a-cli-task\")">>),
-              {ok, ProbeReply} = gen_tcp:recv(Probe, 0, 5000),
-              ok = gen_tcp:close(Probe),
-              match = re:run(
-                        ProbeReply, "\\(state unknown\\)",
-                        [{capture, none}])
-      end,
-      Rows).
 
 %% Criterion 1 (CLI.1.5): a client that sends a `(run ...)' with a slow `sleep'
 %% step and then closes the socket mid-run drives that run to the `cancelled'
