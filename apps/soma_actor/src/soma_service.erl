@@ -6,6 +6,7 @@
 -behaviour(gen_server).
 
 -define(DEFAULT_RESULT_INLINE_BYTES, 16384).
+-define(DEFAULT_WATCH_PAGE_EVENTS, 100).
 
 -export([start_link/0]).
 -export([invoke/1, status/1, result/1, watch/3, cancel/1]).
@@ -15,6 +16,7 @@
                 policy = #{allowed_tools => []},
                 result_inline_bytes = ?DEFAULT_RESULT_INLINE_BYTES,
                 data_dir,
+                watch_page_events = ?DEFAULT_WATCH_PAGE_EVENTS,
                 tasks = #{},
                 requests = #{},
                 runs = #{},
@@ -45,10 +47,12 @@ init([]) ->
                #{allowed_tools => []}),
     InlineBytes = configured_result_inline_bytes(),
     DataDir = configured_service_data_dir(),
+    WatchPageEvents = configured_watch_page_events(),
     State = #state{event_store = runtime_event_store(),
                    policy = Policy,
                    result_inline_bytes = InlineBytes,
-                   data_dir = DataDir},
+                   data_dir = DataDir,
+                   watch_page_events = WatchPageEvents},
     {ok, rebuild_dedupe_index(State)}.
 
 handle_call({invoke, Envelope}, _From, State) ->
@@ -72,10 +76,12 @@ handle_call({result, TaskId}, _From,
               maps:get(TaskId, Tasks, undefined), InlineBytes, DataDir),
     {reply, Reply, State};
 handle_call({watch, TaskId, Cursor, Limit}, _From,
-            State = #state{event_store = EventStore, tasks = Tasks}) ->
+            State = #state{event_store = EventStore,
+                           watch_page_events = WatchPageEvents,
+                           tasks = Tasks}) ->
     Reply = task_watch(
               maps:get(TaskId, Tasks, undefined),
-              Cursor, Limit, EventStore),
+              Cursor, Limit, WatchPageEvents, EventStore),
     {reply, Reply, State};
 handle_call({cancel, TaskId}, _From, State) ->
     cancel_task(TaskId, State);
@@ -104,13 +110,19 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 configured_result_inline_bytes() ->
-    case application:get_env(
-           soma_actor, service_result_inline_bytes,
-           ?DEFAULT_RESULT_INLINE_BYTES) of
-        InlineBytes when is_integer(InlineBytes), InlineBytes > 0 ->
-            InlineBytes;
+    configured_positive_integer(
+      service_result_inline_bytes, ?DEFAULT_RESULT_INLINE_BYTES).
+
+configured_watch_page_events() ->
+    configured_positive_integer(
+      service_watch_page_events, ?DEFAULT_WATCH_PAGE_EVENTS).
+
+configured_positive_integer(Key, Default) ->
+    case application:get_env(soma_actor, Key, Default) of
+        Value when is_integer(Value), Value > 0 ->
+            Value;
         _Invalid ->
-            ?DEFAULT_RESULT_INLINE_BYTES
+            Default
     end.
 
 configured_service_data_dir() ->
@@ -143,13 +155,14 @@ task_result(#{status := running}, _InlineBytes, _DataDir) ->
 task_result(_Terminal, _InlineBytes, _DataDir) ->
     {error, result_unavailable}.
 
-task_watch(undefined, _Cursor, _Limit, _EventStore) ->
+task_watch(undefined, _Cursor, _Limit, _PageEvents, _EventStore) ->
     {error, not_found};
-task_watch(#{correlation_id := CorrelationId}, undefined, Limit, EventStore)
-  when is_integer(Limit), Limit > 0, is_pid(EventStore) ->
+task_watch(#{correlation_id := CorrelationId}, Cursor, Limit,
+           PageEvents, EventStore)
+  when is_pid(EventStore) ->
     Events = soma_event_store:by_correlation(EventStore, CorrelationId),
-    {ok, #{events => lists:sublist(Events, Limit), cursor => undefined}};
-task_watch(_Task, _Cursor, _Limit, _EventStore) ->
+    soma_service_watch:page(Events, Cursor, Limit, PageEvents);
+task_watch(_Task, _Cursor, _Limit, _PageEvents, _EventStore) ->
     {error, invalid_watch}.
 
 invoke_normalized(Envelope,
