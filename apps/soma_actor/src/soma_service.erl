@@ -8,7 +8,7 @@
 -define(DEFAULT_RESULT_INLINE_BYTES, 16384).
 
 -export([start_link/0]).
--export([invoke/1, status/1, result/1, cancel/1]).
+-export([invoke/1, status/1, result/1, watch/3, cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(state, {event_store,
@@ -32,6 +32,9 @@ status(TaskId) ->
 
 result(TaskId) ->
     gen_server:call(?MODULE, {result, TaskId}).
+
+watch(TaskId, Cursor, Limit) ->
+    gen_server:call(?MODULE, {watch, TaskId, Cursor, Limit}).
 
 cancel(TaskId) ->
     gen_server:call(?MODULE, {cancel, TaskId}).
@@ -67,6 +70,12 @@ handle_call({result, TaskId}, _From,
                            data_dir = DataDir}) ->
     Reply = task_result(
               maps:get(TaskId, Tasks, undefined), InlineBytes, DataDir),
+    {reply, Reply, State};
+handle_call({watch, TaskId, Cursor, Limit}, _From,
+            State = #state{event_store = EventStore, tasks = Tasks}) ->
+    Reply = task_watch(
+              maps:get(TaskId, Tasks, undefined),
+              Cursor, Limit, EventStore),
     {reply, Reply, State};
 handle_call({cancel, TaskId}, _From, State) ->
     cancel_task(TaskId, State);
@@ -134,6 +143,15 @@ task_result(#{status := running}, _InlineBytes, _DataDir) ->
 task_result(_Terminal, _InlineBytes, _DataDir) ->
     {error, result_unavailable}.
 
+task_watch(undefined, _Cursor, _Limit, _EventStore) ->
+    {error, not_found};
+task_watch(#{correlation_id := CorrelationId}, undefined, Limit, EventStore)
+  when is_integer(Limit), Limit > 0, is_pid(EventStore) ->
+    Events = soma_event_store:by_correlation(EventStore, CorrelationId),
+    {ok, #{events => lists:sublist(Events, Limit), cursor => undefined}};
+task_watch(_Task, _Cursor, _Limit, _EventStore) ->
+    {error, invalid_watch}.
+
 invoke_normalized(Envelope,
                   State = #state{requests = Requests, tasks = Tasks}) ->
     RequestId = maps:get(request_id, Envelope),
@@ -156,6 +174,7 @@ start_invocation(Envelope, EnvelopeHash,
     TaskId = mint_id("service-task-"),
     RunId = mint_id("service-run-"),
     RequestId = maps:get(request_id, Envelope),
+    CorrelationId = maps:get(correlation_id, Envelope, TaskId),
     Handle = #{task_id => TaskId,
                request_id => RequestId,
                status => accepted},
@@ -163,7 +182,8 @@ start_invocation(Envelope, EnvelopeHash,
               request_id => RequestId,
               envelope_hash => EnvelopeHash,
               status => accepted,
-              run_id => RunId},
+              run_id => RunId,
+              correlation_id => CorrelationId},
     Task = maybe_add_deadline(
              Envelope, maybe_add_max_output_bytes(Envelope, Task0)),
     Request = #{envelope_hash => EnvelopeHash,
@@ -179,12 +199,12 @@ start_invocation(Envelope, EnvelopeHash,
     case soma_policy:check(Proposal, Policy) of
         allow ->
             start_allowed_invocation(
-              Envelope, Steps, Task, Handle, AdmittedState);
+              Steps, Task, Handle, AdmittedState);
         {reject, Reason} ->
             reject_invocation(Reason, Task, AdmittedState)
     end.
 
-start_allowed_invocation(Envelope, Steps, Task, Handle,
+start_allowed_invocation(Steps, Task, Handle,
                          State = #state{event_store = EventStore,
                                         tasks = Tasks,
                                         runs = Runs,
@@ -205,7 +225,8 @@ start_allowed_invocation(Envelope, Steps, Task, Handle,
                  RunOpts0,
                  maps:with(
                    [max_output_bytes, deadline_at_ms], Task)),
-    RunOpts = maybe_add_correlation(Envelope, RunOpts1),
+    RunOpts = RunOpts1#{correlation_id =>
+                            maps:get(correlation_id, Task)},
     case soma_run_sup:start_run(RunOpts) of
         {ok, RunPid} ->
             MRef = erlang:monitor(process, RunPid),
@@ -277,14 +298,6 @@ invocation_policy(_Envelope, ConfiguredPolicy) ->
 projected_scope_tools(Scope) ->
     [Name || #{name := Name} <- soma_tool_registry:list_tools(),
              lists:member(atom_to_binary(Name, utf8), Scope)].
-
-maybe_add_correlation(Envelope, RunOpts) ->
-    case maps:find(correlation_id, Envelope) of
-        {ok, CorrelationId} ->
-            RunOpts#{correlation_id => CorrelationId};
-        error ->
-            RunOpts
-    end.
 
 finish_run(RunId, Terminal,
            State = #state{tasks = Tasks,
@@ -637,13 +650,15 @@ restore_owner_decisions(
 accepted_task(#{task_id := TaskId,
                 request_id := RequestId,
                 run_id := RunId,
-                payload := #{envelope_hash := EnvelopeHash} = Payload}) ->
+                payload := #{envelope_hash := EnvelopeHash} = Payload} = Event) ->
+    CorrelationId = maps:get(correlation_id, Event, TaskId),
     Handle = #{task_id => TaskId,
                request_id => RequestId,
                status => accepted},
     Task0 = #{task_id => TaskId,
               request_id => RequestId,
               run_id => RunId,
+              correlation_id => CorrelationId,
               envelope_hash => EnvelopeHash,
               status => running},
     Task = restore_service_budgets(Payload, Task0),
@@ -995,7 +1010,8 @@ terminal_event_payload(Task) ->
 emit_service_task(undefined, _Type, _Task, _Payload) ->
     ok;
 emit_service_task(EventStore, Type, Task, Payload) ->
-    StableIds = maps:with([task_id, request_id, run_id], Task),
+    StableIds = maps:with(
+                  [task_id, request_id, run_id, correlation_id], Task),
     soma_event_store:append(
       EventStore,
       StableIds#{event_type => Type, payload => Payload}).
