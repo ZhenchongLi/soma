@@ -56,7 +56,10 @@ callback_mode() ->
 
 handle_event(info, {delegate_begin, TaskId}, awaiting_start,
              Data = #{task_id := TaskId}) ->
-    begin_task(Data#{status := running});
+    RunningData = Data#{status := running},
+    ok = emit_delegate_event(
+           <<"delegate.task.running">>, 0, RunningData, RunningData),
+    begin_task(RunningData);
 handle_event({call, From}, status, _StateName, Data) ->
     {keep_state, Data,
      [{reply, From, {ok, public_projection(Data)}}]};
@@ -64,10 +67,14 @@ handle_event(cast, {cancel, TaskId}, running,
              Data = #{task_id := TaskId,
                       active_round := ActiveRound})
   when is_map(ActiveRound) ->
+    ok = emit_delegate_event(
+           <<"delegate.task.cancel_requested">>, 0, Data, Data),
     cancel_active_round(cancelled, Data);
 handle_event(cast, {cancel, TaskId}, StateName,
              Data = #{task_id := TaskId})
   when StateName =:= awaiting_start; StateName =:= running ->
+    ok = emit_delegate_event(
+           <<"delegate.task.cancel_requested">>, 0, Data, Data),
     start_cleanup(#{status => cancelled}, Data);
 handle_event(internal, finish_cleanup, cleaning,
              Data = #{ingress_pid := IngressPid,
@@ -75,7 +82,13 @@ handle_event(internal, finish_cleanup, cleaning,
                       cleanup_started := true,
                       terminal_result := Projection}) ->
     ok = release_scoped_leases(Data),
+    ok = emit_delegate_event(
+           <<"delegate.task.terminal">>, 0, Data, Data),
     IngressPid ! {delegate_terminal, TaskId, self(), Projection},
+    {next_state, awaiting_terminal_store, Data};
+handle_event(info, {delegate_terminal_stored, TaskId},
+             awaiting_terminal_store,
+             Data = #{task_id := TaskId}) ->
     {stop, normal, Data};
 handle_event(info,
              {delegate_unsafe_action_dispatched,
@@ -218,6 +231,9 @@ start_round_worker(
             StartedData = Data#{round_sequence := Remaining,
                                 next_round_id := RoundId + 1,
                                 active_round := ActiveRound},
+            ok = emit_delegate_event(
+                   <<"delegate.round.started">>, RoundId,
+                   StartedData, StartedData),
             WorkerPid !
                 {delegate_round_begin, TaskId, RoundId, WorkerIdentity,
                  ResultCapability},
@@ -232,6 +248,7 @@ fail_before_round(Data, Reason) ->
 commit_round_result(Result, RoundId, WorkerPid, WorkerMRef, Data) ->
     case valid_round_result(Result) of
         true ->
+            ok = emit_round_completed(RoundId, Result, Data),
             ActiveRound = maps:get(active_round, Data),
             cancel_round_timers(ActiveRound),
             _ = erlang:demonitor(WorkerMRef, [flush]),
@@ -331,21 +348,29 @@ handle_round_worker_down(ActiveRound, RoundId, Data) ->
     case {maps:get(cancel_status, ActiveRound, undefined),
           maps:get(unsafe_action_dispatched, ActiveRound, false)} of
         {cancelled, _UnsafeDispatchState} ->
+            Projection = worker_down_projection(ActiveRound, RoundId),
+            ok = emit_round_completed(RoundId, Projection, Data),
             finish_worker_down(
-              worker_down_projection(ActiveRound, RoundId), Data);
+              Projection, Data);
         {_NotCancelled, true} ->
             finish_lost_unsafe_result(ActiveRound, RoundId, Data);
         {undefined, false} ->
+            Failure = round_worker_crash_failure(RoundId),
+            ok = emit_round_completed(RoundId, Failure, Data),
             continue_after_pre_stateful_failure(
-              round_worker_crash_failure(RoundId),
+              Failure,
               Data#{active_round := undefined});
         {timeout, false} ->
+            Failure = round_timeout_failure(RoundId),
+            ok = emit_round_completed(RoundId, Failure, Data),
             continue_after_pre_stateful_failure(
-              round_timeout_failure(RoundId),
+              Failure,
               Data#{active_round := undefined});
         _OtherWorkerLoss ->
+            Projection = worker_down_projection(ActiveRound, RoundId),
+            ok = emit_round_completed(RoundId, Projection, Data),
             finish_worker_down(
-              worker_down_projection(ActiveRound, RoundId), Data)
+              Projection, Data)
     end.
 
 finish_lost_unsafe_result(ActiveRound, RoundId, Data) ->
@@ -360,6 +385,7 @@ finish_lost_unsafe_result(ActiveRound, RoundId, Data) ->
     Projection = #{status => in_doubt,
                    reason => unsafe_result_lost,
                    round => RoundId},
+    ok = emit_round_completed(RoundId, Projection, Data),
     finish_worker_down(
       Projection,
       Data#{mutation_ledger := MutationLedger ++ [Mutation],
@@ -380,10 +406,14 @@ continue_after_pre_stateful_failure(Failure, Data) ->
 
 start_cleanup(Projection, Data = #{cleanup_started := false}) ->
     Status = maps:get(status, Projection),
+    CleanupData = Data#{status := Status,
+                        cleanup_started := true,
+                        terminal_result := Projection},
+    ok = emit_delegate_event(
+           <<"delegate.task.cleanup">>, 0,
+           CleanupData, CleanupData),
     {next_state, cleaning,
-     Data#{status := Status,
-           cleanup_started := true,
-           terminal_result := Projection},
+     CleanupData,
      [{next_event, internal, finish_cleanup}]};
 start_cleanup(_Projection, Data = #{cleanup_started := true}) ->
     {keep_state, Data}.
@@ -532,6 +562,16 @@ release_scoped_leases(_Data) ->
 
 initial_checkpoint(Opts) ->
     maps:get(context_checkpoint, Opts, maps:get(checkpoint, Opts, #{})).
+
+emit_delegate_event(
+  EventType, Round, Outcome,
+  #{task_id := TaskId, correlation_id := CorrelationId}) ->
+    soma_delegate_event:append(
+      EventType, TaskId, CorrelationId, Round, Outcome).
+
+emit_round_completed(RoundId, Outcome, Data) ->
+    emit_delegate_event(
+      <<"delegate.round.completed">>, RoundId, Outcome, Data).
 
 public_projection(Data) ->
     maps:with([request_id, task_id, correlation_id, status], Data).
