@@ -183,17 +183,9 @@ test_invalid_invoke_classes_return_fixed_typed_errors() ->
                 Base#{operation => invalid_tool_operation(Large)}
             )},
            %% Non-reader-representable raw argument terms must be rejected:
-           %% a binary arg key crashes the canonical renderer, and a float
-           %% value renders but can never recompile. Neither may normalize.
-           {normalizer,
-            soma_service_envelope:normalize(
-                Base#{operation =>
-                          tool_operation_with_args(#{<<"value">> => <<"x">>})}
-            ),
-            soma_service_envelope:normalize(
-                Base#{operation =>
-                          tool_operation_with_args(#{<<"value">> => Large})}
-            )},
+           %% a float renders but can never recompile. (Binary arg keys are
+           %% canonical string/fresh-symbol spellings since RS.1d and render
+           %% as strings, so they are no longer a rejection case here.)
            {normalizer,
             soma_service_envelope:normalize(
                 Base#{operation =>

@@ -165,8 +165,15 @@ task_watch(#{correlation_id := CorrelationId}, Cursor, Limit,
 task_watch(_Task, _Cursor, _Limit, _PageEvents, _EventStore) ->
     {error, invalid_watch}.
 
-invoke_normalized(Envelope,
+invoke_normalized(Envelope0,
                   State = #state{requests = Requests, tasks = Tasks}) ->
+    %% Wire canonicalization happens before dedupe hashing so the same
+    %% source hashes identically on a fresh or warm VM: caller identifiers
+    %% (step ids, from_step references) become binaries, binary tool names
+    %% resolve to their registered atoms, and binary arg keys map through
+    %% the resolved tool's declared params — all by registered vocabulary,
+    %% never by interning.
+    Envelope = canonicalize_wire_identifiers(Envelope0),
     RequestId = maps:get(request_id, Envelope),
     EnvelopeHash = envelope_hash(Envelope),
     case maps:get(RequestId, Requests, undefined) of
@@ -211,8 +218,13 @@ start_invocation(Envelope, EnvelopeHash,
     Policy = invocation_policy(Envelope, ConfiguredPolicy),
     case soma_policy:check(Proposal, Policy) of
         allow ->
-            start_allowed_invocation(
-              Steps, Task, Handle, AdmittedState);
+            case unknown_wire_arg_names(maps:get(operation, Envelope)) of
+                [] ->
+                    start_allowed_invocation(
+                      Steps, Task, Handle, AdmittedState);
+                UnknownArgs ->
+                    reject_unknown_args(UnknownArgs, Task, AdmittedState)
+            end;
         {reject, Reason} ->
             reject_invocation(Reason, Task, AdmittedState)
     end.
@@ -269,10 +281,19 @@ start_allowed_invocation(Steps, Task, Handle,
             {reply, {ok, public_task(Terminal)}, NewState}
     end.
 
-reject_invocation(Reason, Task,
-                  State = #state{event_store = EventStore,
-                                 tasks = Tasks}) ->
-    Rejection = {policy_rejected, bounded_policy_reason(Reason)},
+reject_invocation(Reason, Task, State) ->
+    reject_with({policy_rejected, bounded_policy_reason(Reason)},
+                Task, State).
+
+%% Argument names outside the resolved tool's declared vocabulary are a
+%% typed rejection before any run starts — bounded like every rejection.
+reject_unknown_args(UnknownArgs, Task, State) ->
+    Bounded = lists:sublist(lists:usort(UnknownArgs), 8),
+    reject_with({invalid_args, {unknown_arg_names, Bounded}}, Task, State).
+
+reject_with(Rejection, Task,
+            State = #state{event_store = EventStore,
+                           tasks = Tasks}) ->
     Terminal = Task#{status => rejected, reason => Rejection},
     ok = emit_service_task(EventStore, <<"service.task.terminal">>,
                            Terminal, terminal_event_payload(Terminal)),
@@ -286,6 +307,109 @@ reject_invocation(Reason, Task,
 %% disallowed tools, capped at a fixed count.
 bounded_policy_reason({tools_not_allowed, Tools}) ->
     {tools_not_allowed, lists:sublist(lists:usort(Tools), 8)}.
+
+%% --- Wire identifier canonicalization -----------------------------------
+
+canonicalize_wire_identifiers(#{operation := Operation} = Envelope) ->
+    Envelope#{operation := canonicalize_operation(Operation)}.
+
+canonicalize_operation(#{kind := tool, step := Step} = Operation) ->
+    Operation#{step := canonicalize_step(Step)};
+canonicalize_operation(#{kind := steps, steps := Steps} = Operation) ->
+    Operation#{steps := [canonicalize_step(Step) || Step <- Steps]}.
+
+canonicalize_step(#{tool := Tool0, args := Args0} = Step0) ->
+    Tool = canonical_tool(Tool0),
+    Step1 = Step0#{tool := Tool, args := canonicalize_args(Tool, Args0)},
+    case maps:find(id, Step1) of
+        {ok, Id} -> Step1#{id := identifier_binary(Id)};
+        error -> Step1
+    end.
+
+identifier_binary(Id) when is_atom(Id) -> atom_to_binary(Id, utf8);
+identifier_binary(Id) when is_binary(Id) -> Id.
+
+%% A binary tool spelling resolves to its registered atom when the live
+%% registry knows the name; an unknown spelling stays binary and is rejected
+%% downstream (policy or unregistered-tool handling) without interning.
+canonical_tool(Tool) when is_atom(Tool) ->
+    Tool;
+canonical_tool(Tool) when is_binary(Tool) ->
+    Summaries = try soma_tool_registry:list_tools() catch _:_ -> [] end,
+    Names = [maps:get(name, Summary) || Summary <- Summaries],
+    case [Name || Name <- Names,
+                  is_atom(Name),
+                  atom_to_binary(Name, utf8) =:= Tool] of
+        [Registered | _] -> Registered;
+        [] -> Tool
+    end.
+
+canonicalize_args(_Tool, #{from_step := Reference} = Args)
+  when map_size(Args) =:= 1 ->
+    #{from_step => identifier_binary(Reference)};
+canonicalize_args(Tool, Args) when is_map(Args) ->
+    maps:fold(
+      fun(Key, Value, Acc) ->
+              maps:put(canonical_arg_key(Tool, Key),
+                       canonical_arg_value(Value), Acc)
+      end,
+      #{}, Args).
+
+canonical_arg_value({from_step, Reference}) ->
+    {from_step, identifier_binary(Reference)};
+canonical_arg_value(Value) ->
+    Value.
+
+%% Binary arg keys map through the resolved tool's declared params. A
+%% loaded erlang_module tool's param atoms exist by module load, so
+%% binary_to_existing_atom is deterministic; a cli tool's param may have no
+%% atom, in which case the binary key stays (the cli adapter reads declared
+%% names as binaries). Keys outside the declared vocabulary stay binary and
+%% fail admission with a typed rejection.
+canonical_arg_key(Tool, Key) when is_binary(Key), is_atom(Tool) ->
+    case declared_param_names(Tool) of
+        {ok, Names} ->
+            case lists:member(Key, Names) of
+                true ->
+                    try binary_to_existing_atom(Key, utf8) of
+                        Atom -> Atom
+                    catch
+                        error:badarg -> Key
+                    end;
+                false ->
+                    Key
+            end;
+        error ->
+            Key
+    end;
+canonical_arg_key(_Tool, Key) ->
+    Key.
+
+declared_param_names(Tool) ->
+    case soma_tool_registry:resolve_descriptor(Tool) of
+        {ok, Descriptor} ->
+            case maps:get(params, Descriptor, undefined) of
+                Params when is_list(Params) ->
+                    {ok, [maps:get(name, Param)
+                          || Param <- Params, is_map(Param)]};
+                _NoParams ->
+                    error
+            end;
+        {error, not_found} ->
+            error
+    end.
+
+%% Admission gate: after canonicalization, a step that still carries binary
+%% arg keys names arguments outside the tool's declared vocabulary (or a
+%% tool with no declared params). That is a typed rejection before any run
+%% starts — never a silent pass-through to the tool.
+unknown_wire_arg_names(#{kind := tool, step := Step}) ->
+    unknown_step_arg_names(Step);
+unknown_wire_arg_names(#{kind := steps, steps := Steps}) ->
+    lists:flatmap(fun unknown_step_arg_names/1, Steps).
+
+unknown_step_arg_names(#{tool := Tool, args := Args}) when is_map(Args) ->
+    [{Tool, Key} || {Key, _Value} <- maps:to_list(Args), is_binary(Key)].
 
 duplicate_reply(#{task_id := TaskId,
                   accepted_handle := Handle}, Tasks) ->
@@ -579,6 +703,7 @@ reason_class(service_interrupted_before_start) ->
 reason_class(service_recovery_failed) -> service_recovery_failed;
 reason_class(resume_start_failed) -> resume_start_failed;
 reason_class({policy_rejected, _Reason}) -> policy_rejected;
+reason_class({invalid_args, _Reason}) -> invalid_args;
 reason_class({resume_unsafe, _StepId}) -> resume_unsafe;
 reason_class(_Unknown) -> failed.
 

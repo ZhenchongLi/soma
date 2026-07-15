@@ -1090,8 +1090,11 @@ test_socket_fresh_symbols_are_deterministic_and_total(_Config) ->
               "(request-id \"fresh-key-", Seed/binary, "\") "
               "(tool (name echo) (args (", FreshKey/binary,
               " \"v\"))))">>,
-        KeyResponse = socket_response(Path, KeyInvoke),
-        ?assertMatch({service_error, _}, KeyResponse),
+        KeyRejected = socket_request(Path, KeyInvoke, invoke),
+        ?assertEqual(rejected, maps:get(status, KeyRejected)),
+        ?assertEqual(
+           #{reason_class => 'invalid-args'},
+           maps:get(summary, KeyRejected)),
 
         %% 5) None of the above interned a single new atom, and the
         %% listener still serves.

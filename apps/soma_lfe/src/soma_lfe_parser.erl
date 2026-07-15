@@ -517,9 +517,19 @@ parse_proposal_steps([Other | _], _Acc) ->
 
 parse_proposal_step([], Acc) ->
     validate_proposal_step(Acc);
-parse_proposal_step([[id, Id] | Rest], Acc) when is_atom(Id) ->
+%% Step ids and tool names are caller-defined identifiers. Symbol, string,
+%% and safe-mode fresh-symbol spellings are all total: a fresh symbol (an
+%% {external_symbol, _} token from the existing_atoms_only reader) and a
+%% string both become binaries, so acceptance never depends on whether some
+%% earlier code happened to intern the spelling.
+parse_proposal_step([[id, Id] | Rest], Acc) when is_atom(Id); is_binary(Id) ->
     parse_proposal_step(Rest, Acc#{id => Id});
-parse_proposal_step([[tool, Tool] | Rest], Acc) when is_atom(Tool) ->
+parse_proposal_step([[id, {external_symbol, Id}] | Rest], Acc) ->
+    parse_proposal_step(Rest, Acc#{id => Id});
+parse_proposal_step([[tool, Tool] | Rest], Acc)
+        when is_atom(Tool); is_binary(Tool) ->
+    parse_proposal_step(Rest, Acc#{tool => Tool});
+parse_proposal_step([[tool, {external_symbol, Tool}] | Rest], Acc) ->
     parse_proposal_step(Rest, Acc#{tool => Tool});
 parse_proposal_step([[args | KVPairs] | Rest], Acc) ->
     case parse_args(KVPairs, #{}) of
@@ -553,7 +563,8 @@ parse_proposal_step([Other | _], _Acc) ->
                line => 0}]}.
 
 validate_proposal_step(#{id := Id, tool := Tool} = Step)
-        when is_atom(Id), is_atom(Tool) ->
+        when (is_atom(Id) orelse is_binary(Id)),
+             (is_atom(Tool) orelse is_binary(Tool)) ->
     {ok, Step};
 validate_proposal_step(_Step) ->
     invalid_proposal_step().
@@ -856,16 +867,22 @@ check_duplicate_ids(Steps) ->
 
 check_from_step_refs(Steps) ->
     %% Walk steps in order, maintaining a set of ids seen so far.
-    %% A from_step reference is invalid if the target id is not in the seen set.
+    %% A from_step reference is invalid if the target id is not in the seen
+    %% set. Ids compare by spelling: a symbol id and a string/fresh-symbol
+    %% reference of the same name refer to the same step.
     {_, Diags} = lists:foldl(fun(Step, {SeenIds, Acc}) ->
-        Id = maps:get(id, Step),
+        Id = identifier_spelling(maps:get(id, Step)),
         Args = maps:get(args, Step, #{}),
         StepDiags = check_args_from_step(Args, SeenIds),
         {sets:add_element(Id, SeenIds), Acc ++ StepDiags}
     end, {sets:new(), []}, Steps),
     Diags.
 
-check_args_from_step(#{from_step := RefId}, SeenIds) ->
+identifier_spelling(Id) when is_atom(Id) -> atom_to_binary(Id, utf8);
+identifier_spelling(Id) when is_binary(Id) -> Id.
+
+check_args_from_step(#{from_step := RefId0}, SeenIds) ->
+    RefId = identifier_spelling(RefId0),
     case sets:is_element(RefId, SeenIds) of
         true  -> [];
         false ->
@@ -876,7 +893,8 @@ check_args_from_step(#{from_step := RefId}, SeenIds) ->
     end;
 check_args_from_step(Args, SeenIds) ->
     %% Check field-level {from_step, Id} values in the args map.
-    maps:fold(fun(_Key, {from_step, RefId}, Acc) ->
+    maps:fold(fun(_Key, {from_step, RefId0}, Acc) ->
+        RefId = identifier_spelling(RefId0),
         case sets:is_element(RefId, SeenIds) of
             true  -> Acc;
             false ->
@@ -949,15 +967,21 @@ parse_step_children([Other | Rest], Acc, ErrAcc) ->
 parse_args([], Acc) ->
     {ok, Acc};
 parse_args([[from_step, Id]], Acc) when map_size(Acc) =:= 0 ->
-    {ok, #{from_step => Id}};
+    {ok, #{from_step => coerce_identifier(Id)}};
 parse_args([[from_step, _Id] | _Rest], _Acc) ->
     {error, [#{code => invalid_step,
                message => <<"bare (from_step Id) must be the only arg entry">>,
                line => 0}]};
-parse_args([[Key, Value] | Rest], Acc) when is_atom(Key) ->
+%% Arg keys accept symbol, string, and safe-mode fresh-symbol spellings;
+%% the latter two become binary keys that a consumer maps through a declared
+%% vocabulary before execution.
+parse_args([[Key, Value] | Rest], Acc) when is_atom(Key); is_binary(Key) ->
     RealValue = coerce_value(Value),
     parse_args(Rest, Acc#{Key => RealValue});
-parse_args([[Key | _] | _], _Acc) when is_atom(Key) ->
+parse_args([[{external_symbol, Key}, Value] | Rest], Acc) ->
+    RealValue = coerce_value(Value),
+    parse_args(Rest, Acc#{Key => RealValue});
+parse_args([[Key | _] | _], _Acc) when is_atom(Key); is_binary(Key) ->
     {error, [#{code => invalid_step,
                message => iolist_to_binary(
                    io_lib:format("malformed arg pair for key '~s'", [Key])),
@@ -971,5 +995,12 @@ parse_args([Other | _], _Acc) ->
 coerce_value(V) when is_binary(V) -> V;
 coerce_value(V) when is_integer(V) -> V;
 coerce_value(V) when is_atom(V) -> V;
-coerce_value([from_step, Id]) -> {from_step, Id};
+%% A fresh symbol read in safe mode is bounded caller data, not a new atom.
+coerce_value({external_symbol, Name}) -> Name;
+coerce_value([from_step, Id]) -> {from_step, coerce_identifier(Id)};
 coerce_value(V) when is_list(V) -> V.
+
+%% from_step references are identifiers like step ids: symbols stay atoms,
+%% strings and safe-mode fresh symbols are binaries.
+coerce_identifier({external_symbol, Name}) -> Name;
+coerce_identifier(Id) -> Id.

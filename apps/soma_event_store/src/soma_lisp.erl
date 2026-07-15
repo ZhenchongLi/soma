@@ -186,8 +186,13 @@ render_canonical_value(List) when is_list(List) ->
 render_canonical_value(Value) ->
     render(Value).
 
+%% Canonical identifiers carry two spellings: symbols (atoms) render bare,
+%% and string/fresh-symbol identifiers (binaries) render as strings, which
+%% recompile to the same binary — the round trip holds for both.
 render_canonical_symbol(Atom) when is_atom(Atom) ->
-    atom_to_list(Atom).
+    atom_to_list(Atom);
+render_canonical_symbol(Bin) when is_binary(Bin) ->
+    render_binary(Bin).
 
 %% A result map is marked by a `status' whose value is one of the terminal
 %% statuses the CLI emits. The completed case keeps its fixed

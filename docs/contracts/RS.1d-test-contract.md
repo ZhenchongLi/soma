@@ -75,6 +75,14 @@ ownership, and the runtime retains tool execution and resource teardown.
 | --- | --- |
 | The published matrix defines version evolution, request and response field rules, typed lifecycle values, cursor semantics, numeric limits, and the support and deprecation policy while matching production constants. | `soma_service_contract_doc_tests:test_service_contract_defines_compatibility_matrix` |
 
+## Review hardening — total, history-free fresh-symbol handling
+
+The review's counterexamples, pinned by one real-socket regression:
+
+| Guarantee | Proof |
+| --- | --- |
+| Fresh symbols are total and deterministic in every accepted invoke position: a fresh nested arg value never crashes the handler and reaches the tool as a binary; fresh step ids and `from_step` references are accepted, executed, and keyed as binaries; the string spelling of the same identifiers behaves identically; an argument name outside the resolved tool's declared params is a typed `invalid_args` rejection; and none of it interns a single atom (acceptance never depends on VM warm-up). | `soma_service_socket_SUITE:test_socket_fresh_symbols_are_deterministic_and_total` |
+
 ## Criterion 12 — this contract maps every criterion to its proof
 
 | Guarantee | Proof |
