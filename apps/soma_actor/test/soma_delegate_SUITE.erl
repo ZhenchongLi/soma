@@ -44,12 +44,14 @@ all() ->
      test_review_boundaries_expire_calls_teardown_actions_and_reject_unsafe_state].
 
 init_per_testcase(_TestCase, Config) ->
+    ok = application:unset_env(soma_actor, delegate_runtime_options),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started} | Config].
 
 end_per_testcase(_TestCase, _Config) ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
+    ok = application:unset_env(soma_actor, delegate_runtime_options),
     ok.
 
 test_request_identity_reuses_one_live_coordinator(_Config) ->
@@ -184,7 +186,7 @@ test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections(
                                   reason => ProcessLocalReason}}],
                  decision => terminal}]},
     {ok, #{task_id := LargeFailureTaskId}} =
-        soma_delegate:submit(LargeFailureSpec),
+        submit_delegate_fixture(LargeFailureSpec),
     {ok, LargeFailureStatus = #{status := failed}} =
         wait_for_task_status(LargeFailureTaskId, failed, 200),
     LargeTerminalProjection =
@@ -275,7 +277,7 @@ assert_timed_out_forwarded_calls_are_expired() ->
           round_sequence =>
               [#{llm => #{directive => hang, timeout_ms => 60000},
                  decision => terminal}]},
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     CoordinatorPid = coordinator_for_task(TaskId),
     ok = sys:suspend(CoordinatorPid),
     Observer = self(),
@@ -361,7 +363,7 @@ assert_forced_action_cancel_waits_for_descendants() ->
                  action_timeout_ms => 60000,
                  round_timeout_ms => 60000,
                  decision => terminal}]},
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     CoordinatorPid = coordinator_for_task(TaskId),
     {_CoordinatorData, ActiveRound} =
         wait_for_active_round(CoordinatorPid, 1, 100),
@@ -431,9 +433,9 @@ assert_unsafe_initial_task_state_is_rejected() ->
                 port => Port},
           round_sequence =>
               [#{llm => #{directive => hang}, decision => terminal}]},
-    Reply = soma_delegate:submit(UnsafeTaskSpec),
+    Reply = submit_delegate_fixture(UnsafeTaskSpec),
     try
-        ?assertEqual({error, invalid_task_state}, Reply)
+        ?assertEqual({error, invalid_delegate_request}, Reply)
     after
         case Reply of
             {ok, #{task_id := TaskId}} ->
@@ -451,7 +453,7 @@ assert_noncanonical_forbidden_result_is_rejected() ->
           round_sequence =>
               [#{llm => #{directive => hang}, decision => continue},
                #{llm => #{directive => hang}, decision => terminal}]},
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     CoordinatorPid = coordinator_for_task(TaskId),
     {_CoordinatorData, ActiveRound} =
         wait_for_active_round(CoordinatorPid, 1, 100),
@@ -1581,7 +1583,7 @@ assert_terminal_cleanup_scrubs_task_state(Outcome) ->
           lease_requests => [LeaseRequest],
           round_sequence => [BlockedRound, BlockedRound]},
 
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     CoordinatorPid = coordinator_for_task(TaskId),
     CoordinatorMRef = erlang:monitor(process, CoordinatorPid),
     [{GuardPid, LeaseName, OpaqueHandle, RawLease}] =
@@ -1668,7 +1670,7 @@ assert_terminal_cleanup_scrubs_task_state(Outcome) ->
           context_checkpoint => #{transcript => FreshTranscript},
           budgets => FreshBudgets,
           round_sequence => [BlockedRound]},
-    {ok, #{task_id := FreshTaskId}} = soma_delegate:submit(FreshSpec),
+    {ok, #{task_id := FreshTaskId}} = submit_delegate_fixture(FreshSpec),
     FreshCoordinatorPid = coordinator_for_task(FreshTaskId),
     {FreshData, FreshActiveRound} =
         wait_for_active_round(FreshCoordinatorPid, 1, 100),
@@ -1761,7 +1763,7 @@ assert_deadline_beats_late_round_success() ->
                         timeout_ms => 60000}],
                  action_timeout_ms => 50,
                  decision => terminal}]},
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     RoundWorkerPid = wait_for_round_worker(100),
     {_WorkerData, _ActiveRun} =
         wait_for_worker_phase(
@@ -1795,7 +1797,7 @@ assert_deadline_holds_for_unsafe_late_result() ->
                         timeout_ms => 60000}],
                  round_timeout_ms => 50,
                  decision => terminal}]},
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     CoordinatorPid = coordinator_for_task(TaskId),
     RoundWorkerPid = wait_for_round_worker(100),
     {_WorkerData, _ActiveRun} =
@@ -1852,7 +1854,7 @@ assert_lease_names_are_bounded_binaries() ->
                         [#{llm => #{directive => success,
                                     output => <<"never reached">>},
                            decision => terminal}]},
-              {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+              {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
               {ok, Terminal} = wait_for_task_terminal(TaskId, 200),
               ?assertEqual(failed, maps:get(status, Terminal)),
               ?assertEqual([], live_round_workers())
@@ -1888,7 +1890,7 @@ assert_dead_lease_guard_fails_task() ->
                         args => #{ms => 60000},
                         timeout_ms => 60000}],
                  decision => terminal}]},
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     CoordinatorPid = coordinator_for_task(TaskId),
     _RoundWorkerPid = wait_for_round_worker(100),
     {_StateName, CoordinatorData} = sys:get_state(CoordinatorPid),
@@ -1997,7 +1999,7 @@ test_delegate_events_are_bounded_stable_and_scrubbed(_Config) ->
           lease_requests => [LeaseRequest],
           round_sequence => [BlockedRound, BlockedRound]},
     try
-        {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+        {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
         CoordinatorPid = coordinator_for_task(TaskId),
         [{GuardPid, <<"delegate-event-lease">>, OpaqueHandle,
           RawLease}] = wait_for_lease_acquisitions(1, []),
@@ -2576,7 +2578,7 @@ assert_forced_cancel_stops_unresponsive_llm() ->
               [#{llm => #{directive => hang, timeout_ms => 60000},
                  round_timeout_ms => 60000,
                  decision => terminal}]},
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     CoordinatorPid = coordinator_for_task(TaskId),
     {_CoordinatorData, ActiveRound} =
         wait_for_active_round(CoordinatorPid, 1, 100),
@@ -2629,7 +2631,7 @@ assert_cancel_wins_matching_pre_stateful_result() ->
           round_sequence =>
               [#{llm => #{directive => hang, timeout_ms => 60000},
                  decision => terminal}]},
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     CoordinatorPid = coordinator_for_task(TaskId),
     {_CoordinatorData, ActiveRound} =
         wait_for_active_round(CoordinatorPid, 1, 100),
@@ -2683,7 +2685,7 @@ assert_production_failure_reason_is_not_in_delegate_events(Secret) ->
                         tool => fail,
                         args => #{mode => error, reason => Secret}}],
                  decision => terminal}]},
-    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{task_id := TaskId}} = submit_delegate_fixture(TaskSpec),
     {ok, #{status := failed}} =
         wait_for_task_status(TaskId, failed, 200),
     FailureEvents =
@@ -2754,10 +2756,20 @@ crash_fixture(Suffix) ->
 submit_through_production_ingress(TaskSpec) ->
     case code:ensure_loaded(soma_delegate) of
         {module, soma_delegate} ->
-            soma_delegate:submit(TaskSpec);
+            submit_delegate_fixture(TaskSpec);
         {error, _Reason} ->
             {error, production_delegate_ingress_unavailable}
     end.
+
+submit_delegate_fixture(TaskSpec) ->
+    RequestKeys =
+        [request_id, correlation_id, objective, output_contract,
+         capability_scope, resource_handles, artifacts, budgets],
+    Request = maps:with(RequestKeys, TaskSpec),
+    RuntimeOptions = maps:without(RequestKeys, TaskSpec),
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options, RuntimeOptions),
+    soma_delegate:submit(Request).
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
