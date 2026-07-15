@@ -13,6 +13,7 @@
 -export([test_oversized_result_publishes_stable_artifact/1]).
 -export([test_missing_correlation_defaults_to_task_watch_order/1]).
 -export([test_watch_cursor_resumes_and_page_limit_is_clamped/1]).
+-export([test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads/1]).
 -export([test_oversized_result_fails_with_max_output_reason/1]).
 -export([test_flat_plan_preserves_order_and_from_step_output/1]).
 -export([test_identical_duplicate_reuses_running_handle_and_terminal_result/1]).
@@ -47,6 +48,7 @@ all() ->
      test_oversized_result_publishes_stable_artifact,
      test_missing_correlation_defaults_to_task_watch_order,
      test_watch_cursor_resumes_and_page_limit_is_clamped,
+     test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads,
      test_oversized_result_fails_with_max_output_reason,
      test_flat_plan_preserves_order_and_from_step_output,
      test_identical_duplicate_reuses_running_handle_and_terminal_result,
@@ -134,6 +136,15 @@ init_per_testcase(
            soma_actor, service_watch_page_events, PageCap),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started}, {watch_page_cap, PageCap} | Config];
+init_per_testcase(
+  test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads,
+  Config) ->
+    ok = ensure_loaded(soma_actor),
+    ok = application:set_env(
+           soma_actor, service_policy,
+           #{allowed_tools => [echo]}),
+    {ok, Started} = application:ensure_all_started(soma_actor),
+    [{started_apps, Started} | Config];
 init_per_testcase(
   test_service_cancel_cleans_tool_worker_and_cli_process, Config) ->
     ok = ensure_loaded(soma_actor),
@@ -272,6 +283,8 @@ end_per_testcase(TestCase, Config)
        TestCase =:=
            test_missing_correlation_defaults_to_task_watch_order;
        TestCase =:= test_watch_cursor_resumes_and_page_limit_is_clamped;
+       TestCase =:=
+           test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads;
        TestCase =:= test_oversized_result_fails_with_max_output_reason;
        TestCase =:= test_flat_plan_preserves_order_and_from_step_output;
        TestCase =:=
@@ -580,6 +593,77 @@ test_watch_cursor_resumes_and_page_limit_is_clamped(Config) ->
        ExpectedThirdIds,
        [maps:get(event_id, Event) || Event <- ThirdEvents]),
     ?assert(is_binary(ThirdCursor)).
+
+test_watch_recursively_scrubs_secrets_runtime_terms_and_large_payloads(
+  _Config) ->
+    {ok, #{task_id := TaskId, status := accepted}} =
+        soma_service:invoke(
+          tool_envelope(
+            <<"service-watch-scrub">>, echo, #{value => <<"scrub trail">>})),
+    {ok, _Terminal} = wait_for_status(TaskId, succeeded, 100),
+
+    Pid = self(),
+    Ref = make_ref(),
+    Cat = os:find_executable("cat"),
+    ?assert(is_list(Cat)),
+    Port = open_port(
+             {spawn_executable, Cat},
+             [binary, use_stdio, exit_status]),
+    LargePayload = binary:copy(<<"p">>, 20000),
+    EncodedPayloadBytes =
+        byte_size(term_to_binary(LargePayload, [deterministic])),
+    PayloadMarker =
+        #{truncated => true, bytes => EncodedPayloadBytes},
+    Nested =
+        #{secret_value => #{not_walked => Pid},
+          <<"secret_value">> => #{not_walked => Port},
+          atom_sentinel => secret_value,
+          binary_sentinel => <<"secret_value">>,
+          runtime_values => [Pid, {Port, #{reference => Ref}}],
+          pid_key => #{Pid => <<"pid-key">>},
+          port_key => #{Port => <<"port-key">>},
+          ref_key => #{Ref => <<"ref-key">>},
+          tuple_key => #{{runtime, Ref} => <<"tuple-key">>},
+          nested_payload => #{payload => LargePayload}},
+    EventId = <<"service-watch-controlled-unsafe-event">>,
+    ControlledEvent =
+        #{event_id => EventId,
+          correlation_id => TaskId,
+          event_type => <<"service.watch.controlled">>,
+          payload => LargePayload,
+          nested => Nested},
+    StorePid = runtime_event_store(),
+    ok = soma_event_store:append(StorePid, ControlledEvent),
+    try
+        {ok, #{events := WatchedEvents}} =
+            soma_service:watch(TaskId, undefined, 1000),
+        [WatchedEvent] =
+            [Event || Event <- WatchedEvents,
+                      maps:get(event_id, Event) =:= EventId],
+        ?assertEqual(EventId, maps:get(event_id, WatchedEvent)),
+        ?assertEqual(PayloadMarker, maps:get(payload, WatchedEvent)),
+        ?assertEqual(
+           #{atom_sentinel => redacted,
+             binary_sentinel => redacted,
+             runtime_values =>
+                 [redacted, {redacted, #{reference => redacted}}],
+             pid_key => #{redacted => <<"pid-key">>},
+             port_key => #{redacted => <<"port-key">>},
+             ref_key => #{redacted => <<"ref-key">>},
+             tuple_key => #{{runtime, redacted} => <<"tuple-key">>},
+             nested_payload => #{payload => PayloadMarker}},
+           maps:get(nested, WatchedEvent)),
+        ?assert(lists:all(fun watch_term_is_safe/1, WatchedEvents)),
+
+        [StoredEvent] =
+            [Event || Event <-
+                          soma_event_store:by_correlation(StorePid, TaskId),
+                      maps:get(event_id, Event) =:= EventId],
+        ?assertEqual(LargePayload, maps:get(payload, StoredEvent)),
+        ?assertEqual(Nested, maps:get(nested, StoredEvent))
+    after
+        _ = erlang:port_close(Port)
+    end.
 
 test_oversized_result_fails_with_max_output_reason(_Config) ->
     RequestId = <<"service-oversized-result">>,
@@ -1847,6 +1931,34 @@ tool_envelope(RequestId, Tool, Args) ->
       operation =>
           #{kind => tool,
             step => #{id => RequestId, tool => Tool, args => Args}}}.
+
+watch_term_is_safe(Term)
+  when is_pid(Term); is_port(Term); is_reference(Term) ->
+    false;
+watch_term_is_safe(secret_value) ->
+    false;
+watch_term_is_safe(<<"secret_value">>) ->
+    false;
+watch_term_is_safe(Term) when is_map(Term) ->
+    lists:all(
+      fun({Key, Value}) ->
+              watch_payload_is_bounded(Key, Value)
+                  andalso watch_term_is_safe(Key)
+                  andalso watch_term_is_safe(Value)
+      end,
+      maps:to_list(Term));
+watch_term_is_safe(Term) when is_list(Term) ->
+    lists:all(fun watch_term_is_safe/1, Term);
+watch_term_is_safe(Term) when is_tuple(Term) ->
+    watch_term_is_safe(tuple_to_list(Term));
+watch_term_is_safe(_Term) ->
+    true.
+
+watch_payload_is_bounded(Key, Value)
+  when Key =:= payload; Key =:= <<"payload">> ->
+    byte_size(term_to_binary(Value, [deterministic])) =< 16384;
+watch_payload_is_bounded(_Key, _Value) ->
+    true.
 
 write_deadline_cli_stub(TmpDir) ->
     Helper = filename:join(TmpDir, "deadline-cli.sh"),
