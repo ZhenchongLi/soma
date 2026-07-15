@@ -1,6 +1,6 @@
 %% @doc CLI daemon socket server. A Unix-domain (`{local, Path}') listener with
-%% `{packet, 4}' framing; one handler process per accepted connection. The wire is
-%% Lisp s-exprs, and Lisp only. A `(run (step ...) ...)' request is parsed by
+%% shared bounded framing; one handler process per accepted connection. The wire
+%% is Lisp s-exprs, and Lisp only. A `(run (step ...) ...)' request is parsed by
 %% `soma_lfe:compile/2', run under a `soma_run' the handler owns, and the terminal
 %% result is rendered back as a `(result ...)' s-expr by `soma_lisp:render/1'. An
 %% `(ask (intent "..."))' request drives the agent decision loop instead: the
@@ -9,14 +9,12 @@
 %% same `(result ...)' form.
 -module(soma_cli_server).
 
--include_lib("kernel/include/file.hrl").
-
 -export([start_link/1, frame/1, unframe/1]).
 -export([ask_envelope/4]).
 
 %% Start the listener. `start_link(#{socket => Path})' opens an AF_UNIX
-%% (`{local, Path}') listening socket with `{packet, 4}' framing and runs an
-%% accept loop in a linked process, spawning one handler per accepted connection.
+%% (`{local, Path}') raw socket through the shared path owner and runs an accept
+%% loop in a linked process, spawning one handler per accepted connection.
 %% An optional `model_config' is the agent decision config the ask path drives the
 %% mock (or, by config, a real provider) with; absent it, the ask path has no mock
 %% to drive and the run path is unchanged.
@@ -35,43 +33,21 @@ start_link(#{socket := Path} = Opts) ->
     end.
 
 listen(Parent, Path, ModelConfig, ToolsDir) ->
-    _ = unlink_stale(Path),
-    case gen_tcp:listen(0, [{ifaddr, {local, Path}},
-                            {packet, 4}, binary,
-                            {active, false}, {reuseaddr, true}]) of
-        {ok, ListenSocket} ->
-            ok = ensure_task_registry(),
-            Parent ! {self(), listening},
-            accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, self());
+    process_flag(trap_exit, true),
+    case soma_socket_path:listen(Path) of
+        {ok, ListenSocket, OwnershipToken} ->
+            try
+                ok = ensure_task_registry(),
+                Parent ! {self(), listening},
+                accept_loop(ListenSocket, ModelConfig, ToolsDir, self())
+            after
+                _ = soma_socket_path:close(ListenSocket, OwnershipToken)
+            end;
         {error, Reason} ->
             Parent ! {self(), {error, Reason}}
     end.
 
-%% Unlink only a *stale* leftover AF_UNIX socket at Path -- a socket file no live
-%% server answers -- so a restart after a crash still binds. Ordinary files and
-%% non-socket special files are left in place so bind fails without data loss.
-%% Probe by connecting: a live server answers; a killed listener's socket path
-%% normally returns econnrefused and is safe to unlink; enotsock and other errors
-%% are preserved because they are not proof of a stale Soma socket.
-unlink_stale(Path) ->
-    case file:read_file_info(Path) of
-        {ok, #file_info{type = regular}} ->
-            ok;
-        {ok, _} ->
-            case gen_tcp:connect({local, Path}, 0,
-                                 [binary, {active, false}], 200) of
-                {ok, Probe} ->
-                    gen_tcp:close(Probe);
-                {error, econnrefused} ->
-                    file:delete(Path);
-                {error, _Other} ->
-                    ok
-            end;
-        {error, _} ->
-            ok
-    end.
-
-accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener) ->
+accept_loop(ListenSocket, ModelConfig, ToolsDir, Listener) ->
     %% Drain any pending teardown signal before each accept. A `(stop)' handler
     %% (which does not own the listen socket) sends `close_listen' to this
     %% listener -- the process that owns the listen socket -- and the listener
@@ -81,12 +57,11 @@ accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener) ->
     %% starve the signal.
     receive
         close_listen ->
-            %% Closing the listen socket frees the descriptor but leaves the
-            %% AF_UNIX path as a leftover file on disk, so unlink it here -- the
-            %% listener owns the path -- once the socket is closed.
-            gen_tcp:close(ListenSocket),
-            _ = file:delete(Path),
-            accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener)
+            ok;
+        {'EXIT', _From, normal} ->
+            accept_loop(ListenSocket, ModelConfig, ToolsDir, Listener);
+        {'EXIT', _From, _Reason} ->
+            ok
     after 0 ->
         %% A short accept timeout bounds the wait so the signal is observed even
         %% when no connection arrives.
@@ -108,9 +83,9 @@ accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener) ->
                             end),
                 ok = gen_tcp:controlling_process(Socket, Handler),
                 Handler ! proceed,
-                accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener);
+                accept_loop(ListenSocket, ModelConfig, ToolsDir, Listener);
             {error, timeout} ->
-                accept_loop(ListenSocket, Path, ModelConfig, ToolsDir, Listener);
+                accept_loop(ListenSocket, ModelConfig, ToolsDir, Listener);
             {error, closed} ->
                 ok
         end
@@ -123,18 +98,17 @@ wait_then_handle(Socket, ModelConfig, ToolsDir, Listener) ->
 
 %% Per-connection handler, one process per accepted connection. It reads one
 %% framed `(run ...)' request, drives a supervised run it owns directly, frames
-%% the terminal `(result ...)' s-expr back, then closes. The socket is
-%% `{packet, 4}', so the driver strips the length prefix on recv and prepends it
-%% on send -- the payload here is the bare s-expr.
+%% the terminal `(result ...)' s-expr back, then closes. The shared codec reads
+%% and writes the length prefix while this handler sees the bare s-expression.
 handle(Socket, ModelConfig, ToolsDir, Listener) ->
-    case gen_tcp:recv(Socket, 0, 60000) of
+    case soma_socket_frame:recv(Socket, 60000) of
         {ok, Bytes} ->
             case handle_lisp_request(Bytes, Socket, ModelConfig, ToolsDir,
                                      Listener) of
                 noreply ->
                     gen_tcp:close(Socket);
                 Reply ->
-                    _ = gen_tcp:send(Socket, iolist_to_binary(Reply)),
+                    _ = soma_socket_frame:send(Socket, Reply),
                     gen_tcp:close(Socket)
             end;
         {error, _} ->
@@ -846,15 +820,12 @@ mint_id(Prefix) ->
     list_to_binary(
       Prefix ++ "-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
 
-%% Prepend a 4-byte big-endian length prefix to an s-expr payload, the wire frame
-%% a client reads. `{packet, 4}' produces the same shape in the driver; this is
-%% the pure, documented contract a non-Erlang client reproduces.
+%% Compatibility wrappers retained for callers that exercise the pure wire
+%% contract without opening a socket. The shared codec owns the prefix logic.
 -spec frame(iodata()) -> iolist().
 frame(Payload) ->
-    Bin = iolist_to_binary(Payload),
-    [<<(byte_size(Bin)):32/big>>, Bin].
+    soma_socket_frame:frame(Payload).
 
-%% Split the 4-byte big-endian length prefix off a frame, returning the payload.
 -spec unframe(binary()) -> binary().
-unframe(<<Len:32/big, Payload:Len/binary>>) ->
-    Payload.
+unframe(Framed) ->
+    soma_socket_frame:unframe(Framed).
