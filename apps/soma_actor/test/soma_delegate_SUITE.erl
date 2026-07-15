@@ -11,6 +11,7 @@
 -export([test_delegate_action_crosses_full_worker_run_tool_spine/1]).
 -export([test_coordinator_and_round_worker_split_child_ownership/1]).
 -export([test_sequential_rounds_commit_before_distinct_next_worker/1]).
+-export([test_round_snapshot_is_bounded_task_only_and_handle_scoped/1]).
 
 all() ->
     [test_request_identity_reuses_one_live_coordinator,
@@ -19,7 +20,8 @@ all() ->
      test_coordinator_and_round_worker_crashes_leave_ingress_responsive,
      test_delegate_action_crosses_full_worker_run_tool_spine,
      test_coordinator_and_round_worker_split_child_ownership,
-     test_sequential_rounds_commit_before_distinct_next_worker].
+     test_sequential_rounds_commit_before_distinct_next_worker,
+     test_round_snapshot_is_bounded_task_only_and_handle_scoped].
 
 init_per_testcase(_TestCase, Config) ->
     {ok, Started} = application:ensure_all_started(soma_actor),
@@ -400,6 +402,170 @@ test_sequential_rounds_commit_before_distinct_next_worker(_Config) ->
     ?assertEqual(CommittedUsage, maps:get(usage, SecondSnapshot)),
 
     {ok, #{status := cancelled}} = soma_delegate:cancel(TaskId).
+
+test_round_snapshot_is_bounded_task_only_and_handle_scoped(_Config) ->
+    ResourceManagerName = soma_delegate_test_resource_manager,
+    undefined = whereis(ResourceManagerName),
+    true = register(ResourceManagerName, self()),
+    ok = soma_tool_registry:register_tool(
+           soma_delegate_handle_test_tool:manifest()),
+    try
+        RequestId = <<"delegate-request-bounded-snapshot">>,
+        CorrelationId = <<"delegate-correlation-bounded-snapshot">>,
+        Objective = #{goal => <<"use the task-scoped resource handle">>},
+        OutputContract = #{format => <<"opaque-handle-proof">>},
+        Checkpoint = #{cursor => <<"snapshot-checkpoint">>},
+        Budgets = #{rounds => 1, tokens => 32},
+        LeaseName = <<"criterion-eight-resource">>,
+        OpaqueHandle = <<"opaque-task-resource-handle">>,
+        RawLease = {raw_resource_lease, make_ref()},
+        ConversationData =
+            #{messages => [<<"product-conversation-must-not-cross">>]},
+        UserIdentity = <<"product-user-must-not-cross">>,
+        SessionIdentity = <<"product-session-must-not-cross">>,
+        AuthenticationState =
+            #{bearer => <<"authentication-state-must-not-cross">>},
+        ResourceManagerPid = self(),
+        Observer = self(),
+        PrepareRound =
+            fun(Snapshot) ->
+                    Observer ! {delegate_round_snapshot, Snapshot},
+                    Handles = maps:get(resource_handles, Snapshot),
+                    Handle = maps:get(LeaseName, Handles),
+                    #{llm =>
+                          #{directive => success,
+                            output => <<"fixed-handle-decision">>},
+                      action_steps =>
+                          [#{id => <<"use-opaque-handle">>,
+                             tool => delegate_handle_test,
+                             args => #{handle => Handle}}],
+                      decision => terminal}
+            end,
+        LeaseRequest =
+            #{name => LeaseName,
+              adapter => soma_delegate_test_lease_adapter,
+              options => #{observer => Observer,
+                           opaque_handle => OpaqueHandle,
+                           raw_lease => RawLease,
+                           resource_manager_pid => ResourceManagerPid}},
+        TaskSpec =
+            #{request_id => RequestId,
+              correlation_id => CorrelationId,
+              objective => Objective,
+              output_contract => OutputContract,
+              checkpoint => Checkpoint,
+              budgets => Budgets,
+              lease_requests => [LeaseRequest],
+              round_sequence => [PrepareRound],
+              product_conversation => ConversationData,
+              product_user_id => UserIdentity,
+              product_session_id => SessionIdentity,
+              authentication_state => AuthenticationState,
+              resource_manager_pid => ResourceManagerPid},
+
+        {ok, #{task_id := TaskId}} =
+            submit_through_production_ingress(TaskSpec),
+        Snapshot =
+            receive
+                {delegate_round_snapshot, ActualSnapshot} ->
+                    ActualSnapshot
+            after 1000 ->
+                ct:fail(round_snapshot_not_recorded)
+            end,
+        GuardPid =
+            receive
+                {delegate_test_lease_acquired, AcquiringGuardPid,
+                 LeaseName, OpaqueHandle, RawLease} ->
+                    AcquiringGuardPid
+            after 1000 ->
+                ct:fail(task_lease_not_acquired)
+            end,
+        ToolWorkerPid =
+            receive
+                {delegate_test_handle_used, InvokingToolPid,
+                 #{handle := OpaqueHandle}} ->
+                    InvokingToolPid
+            after 1000 ->
+                ct:fail(opaque_handle_not_used_by_tool)
+            end,
+
+        ExpectedSnapshot =
+            #{task_id => TaskId,
+              correlation_id => CorrelationId,
+              objective => Objective,
+              output_contract => OutputContract,
+              context_checkpoint => Checkpoint,
+              budgets => Budgets,
+              usage => #{},
+              mutation_ledger => [],
+              unknown_outcome_ledger => [],
+              resource_handles => #{LeaseName => OpaqueHandle}},
+        ?assertEqual(ExpectedSnapshot, Snapshot),
+        ?assert(byte_size(term_to_binary(Snapshot, [deterministic])) =<
+                65536),
+
+        ForbiddenSnapshotTerms =
+            [ConversationData, UserIdentity, SessionIdentity,
+             AuthenticationState, RawLease, ResourceManagerPid, GuardPid],
+        lists:foreach(
+          fun(ForbiddenTerm) ->
+                  ?assertEqual(false,
+                               term_contains(Snapshot, ForbiddenTerm))
+          end,
+          ForbiddenSnapshotTerms),
+
+        CoordinatorPid = coordinator_for_task(TaskId),
+        {running, CoordinatorData} = sys:get_state(CoordinatorPid),
+        ?assertEqual(
+           #{requests => [],
+             handles => #{LeaseName => OpaqueHandle},
+             guard => GuardPid},
+           maps:get(scoped_leases, CoordinatorData)),
+        lists:foreach(
+          fun(ForbiddenTerm) ->
+                  ?assertEqual(false,
+                               term_contains(CoordinatorData,
+                                             ForbiddenTerm))
+          end,
+          [ConversationData, UserIdentity, SessionIdentity,
+           AuthenticationState, RawLease, ResourceManagerPid]),
+
+        RoundWorkerPid = wait_for_round_worker(100),
+        {waiting_run, WorkerData} = sys:get_state(RoundWorkerPid),
+        ?assertEqual(Snapshot, maps:get(snapshot, WorkerData)),
+        ?assertEqual(
+           #{handle => OpaqueHandle},
+           maps:get(args,
+                    hd(maps:get(action_steps,
+                                maps:get(work, WorkerData))))),
+        lists:foreach(
+          fun(ForbiddenTerm) ->
+                  ?assertEqual(false,
+                               term_contains(WorkerData, ForbiddenTerm))
+          end,
+          ForbiddenSnapshotTerms),
+
+        {GuardState, GuardData} = sys:get_state(GuardPid),
+        ?assertEqual(active, GuardState),
+        ?assertEqual(true, term_contains(GuardData, RawLease)),
+        ToolWorkerPid ! {delegate_test_continue, OpaqueHandle},
+        TerminalProjection = wait_for_terminal_projection(TaskId, 200),
+        ?assertEqual(succeeded, maps:get(status, TerminalProjection))
+    after
+        case whereis(soma_tool_registry) of
+            undefined ->
+                ok;
+            _RegistryPid ->
+                ok = soma_tool_registry:unregister_tool(
+                       delegate_handle_test)
+        end,
+        case whereis(ResourceManagerName) of
+            undefined ->
+                ok;
+            _ResourceManagerPid ->
+                true = unregister(ResourceManagerName)
+        end
+    end.
 
 crash_fixture(Suffix) ->
     #{request_id => <<"delegate-request-", Suffix/binary>>,
