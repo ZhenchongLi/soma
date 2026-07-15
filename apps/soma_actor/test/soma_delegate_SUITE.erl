@@ -139,7 +139,41 @@ test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections(
                            term_contains(TerminalIngressState,
                                          TaskLocalValue))
       end,
-      [Objective, OutputContract, Checkpoint, Budgets, LeaseRequests]).
+      [Objective, OutputContract, Checkpoint, Budgets, LeaseRequests]),
+
+    LargeSecret =
+        binary:copy(<<"sk-live-terminal-projection-secret">>, 250),
+    ProcessLocalReason =
+        #{detail => LargeSecret, pid => self(), ref => make_ref()},
+    LargeFailureSpec =
+        #{request_id => <<"delegate-request-large-terminal-projection">>,
+          correlation_id =>
+              <<"delegate-correlation-large-terminal-projection">>,
+          objective => <<"bound a normal delegated tool failure">>,
+          round_sequence =>
+              [#{llm =>
+                     #{directive => success,
+                       output => <<"dispatch bounded failure">>},
+                 action_steps =>
+                     [#{id => <<"large-terminal-projection-failure">>,
+                        tool => fail,
+                        args => #{mode => error,
+                                  reason => ProcessLocalReason}}],
+                 decision => terminal}]},
+    {ok, #{task_id := LargeFailureTaskId}} =
+        soma_delegate:submit(LargeFailureSpec),
+    {ok, LargeFailureStatus = #{status := failed}} =
+        wait_for_task_status(LargeFailureTaskId, failed, 200),
+    LargeTerminalProjection =
+        wait_for_terminal_projection(LargeFailureTaskId, 100),
+    ?assert(byte_size(
+              term_to_binary(LargeTerminalProjection, [deterministic])) =<
+            512),
+    ?assertEqual(failed, maps:get(reason, LargeTerminalProjection)),
+    ?assertEqual([], delegate_sensitive_terms(LargeTerminalProjection)),
+    ?assertNot(term_contains(LargeTerminalProjection, LargeSecret)),
+    ?assertNot(term_contains(LargeFailureStatus, LargeSecret)),
+    ?assertNot(term_contains(sys:get_state(soma_delegate), LargeSecret)).
 
 test_status_and_cancel_route_by_task_id(_Config) ->
     RequestId = <<"delegate-request-status-cancel">>,
@@ -175,14 +209,38 @@ test_status_and_cancel_route_by_task_id(_Config) ->
 test_coordinator_and_round_worker_crashes_leave_ingress_responsive(_Config) ->
     IngressPid = whereis(soma_delegate),
     CoordinatorCrashSpec = crash_fixture(<<"coordinator-crash">>),
-    {ok, #{task_id := CoordinatorCrashTaskId}} =
+    {ok, CoordinatorCrashHandle = #{task_id := CoordinatorCrashTaskId}} =
         submit_through_production_ingress(CoordinatorCrashSpec),
     CoordinatorPid = coordinator_for_task(CoordinatorCrashTaskId),
     CoordinatorOwnedWorker = wait_for_round_worker(100),
 
+    ok = sys:suspend(CoordinatorPid),
+    1 = erlang:trace(
+          IngressPid, true, ['receive', {tracer, self()}]),
+    Observer = self(),
+    _StatusCaller =
+        spawn(
+          fun() ->
+                  Observer !
+                      {delegate_status_crash_race_reply,
+                       try soma_delegate:status(CoordinatorCrashTaskId)
+                       catch
+                           exit:Reason -> {status_call_exit, Reason}
+                       end}
+          end),
+    wait_for_ingress_status_call(
+      IngressPid, CoordinatorCrashTaskId, 100),
     exit(CoordinatorPid, kill),
     wait_for_process_dead(CoordinatorPid, 100),
     wait_for_process_dead(CoordinatorOwnedWorker, 100),
+    StatusCrashRaceReply =
+        receive
+            {delegate_status_crash_race_reply, Reply} ->
+                Reply
+        after 2000 ->
+            ct:fail(status_call_did_not_finish_after_coordinator_crash)
+        end,
+    ?assertEqual(IngressPid, whereis(soma_delegate)),
     CoordinatorCrashProjection =
         wait_for_terminal_projection(CoordinatorCrashTaskId, 100),
     ?assertEqual(#{status => failed, reason => coordinator_crashed},
@@ -193,6 +251,13 @@ test_coordinator_and_round_worker_crashes_leave_ingress_responsive(_Config) ->
     ?assertMatch({ok, #{status := failed,
                         reason := coordinator_crashed}},
                  soma_delegate:status(CoordinatorCrashTaskId)),
+    ?assertMatch({ok, #{status := failed,
+                        reason := coordinator_crashed}},
+                 StatusCrashRaceReply),
+    ?assertEqual(
+       {ok, CoordinatorCrashHandle},
+       submit_through_production_ingress(CoordinatorCrashSpec)),
+    ?assertEqual([], live_coordinators()),
 
     WorkerCrashSpec = crash_fixture(<<"round-worker-crash">>),
     {ok, #{task_id := WorkerCrashTaskId}} =
@@ -387,14 +452,23 @@ test_sequential_rounds_commit_before_distinct_next_worker(_Config) ->
     ?assertEqual(InitialCheckpoint,
                  maps:get(context_checkpoint, FirstCoordinatorData)),
 
-    send_round_result(
-      CoordinatorPid, TaskId, FirstActiveRound,
-      #{status => succeeded,
-        phase => decision,
-        decision => continue,
-        checkpoint => CommittedCheckpoint,
-        usage => CommittedUsage,
-        terminal_result => FirstTerminalResult}),
+    RoundResult =
+        #{status => succeeded,
+          phase => decision,
+          decision => continue,
+          checkpoint => CommittedCheckpoint,
+          usage => CommittedUsage,
+          terminal_result => FirstTerminalResult},
+    CommitOrder =
+        try
+            start_round_commit_order_trace(CoordinatorPid),
+            send_round_result(
+              CoordinatorPid, TaskId, FirstActiveRound, RoundResult),
+            collect_round_commit_order(CoordinatorPid, [])
+        after
+            clear_round_commit_order_trace(CoordinatorPid)
+        end,
+    ?assertEqual([commit_round_deltas, remove_round_worker], CommitOrder),
 
     {SecondCoordinatorData, SecondActiveRound} =
         wait_for_active_round(CoordinatorPid, 2, 100),
@@ -790,10 +864,28 @@ test_lost_state_result_is_in_doubt_without_replacement(_Config) ->
         ?assertEqual(StepId, maps:get(step_id, ToolStarted)),
         ?assertEqual(true, is_process_alive(ToolCallPid)),
 
+        ok = sys:suspend(RoundWorkerPid),
+        Observer = self(),
+        _CancelCaller =
+            spawn(
+              fun() ->
+                      Observer !
+                          {delegate_unsafe_cancel_reply,
+                           soma_delegate:cancel(TaskId)}
+              end),
+        wait_for_round_cancel_status(
+          CoordinatorPid, 1, cancelled, 100),
         exit(RoundWorkerPid, kill),
         wait_for_process_dead(RoundWorkerPid, 100),
         wait_for_process_dead(ToolCallPid, 100),
 
+        UnsafeCancelReply =
+            receive
+                {delegate_unsafe_cancel_reply, Reply} -> Reply
+            after 2000 ->
+                ct:fail(unsafe_cancel_did_not_finish)
+            end,
+        ?assertMatch({ok, #{status := in_doubt}}, UnsafeCancelReply),
         StatusReply = wait_for_task_status(TaskId, in_doubt, 100),
         ?assertMatch({ok, #{status := in_doubt}}, StatusReply),
         CorrelatedEvents =
@@ -937,7 +1029,9 @@ test_cancel_tears_down_llm_run_tool_and_os_children_once(Config) ->
         wait_for_process_dead(ActionCoordinatorPid, 100)
     after
         ok = soma_tool_registry:unregister_tool(ToolName)
-    end.
+    end,
+
+    assert_cancel_wins_matching_pre_stateful_result().
 
 test_concurrent_tasks_isolate_state_workers_and_leases(_Config) ->
     Observer = self(),
@@ -1506,9 +1600,10 @@ test_delegate_events_are_bounded_stable_and_scrubbed(_Config) ->
                       maps:get(event_type, Event) =:=
                           <<"delegate.round.completed">>],
         FirstRoundPayload = maps:get(payload, FirstRoundCompleted),
-        ?assertEqual(true, maps:get(truncated, FirstRoundPayload)),
-        ?assert(maps:get(original_bytes, FirstRoundPayload) >
-                soma_delegate_event:max_bytes()),
+        ?assertEqual(failed,
+                     maps:get(reason_class, FirstRoundPayload, missing)),
+        ?assertNot(maps:is_key(truncated, FirstRoundPayload)),
+        ?assertNot(maps:is_key(original_bytes, FirstRoundPayload)),
         [TerminalEvent] =
             [Event || Event <- DelegateEvents,
                       maps:get(event_type, Event) =:=
@@ -1536,7 +1631,10 @@ test_delegate_events_are_bounded_stable_and_scrubbed(_Config) ->
            binary:match(Trace,
                         <<"delegate.round.completed">>)),
         ?assertNotEqual(nomatch,
-                        binary:match(Trace, <<"round=2">>))
+                        binary:match(Trace, <<"round=2">>)),
+
+        assert_production_failure_reason_is_not_in_delegate_events(
+          Secret)
     after
         erlang:port_close(Port)
     end.
@@ -1970,6 +2068,88 @@ assert_no_later_round(Phase) ->
         ok
     end.
 
+assert_cancel_wins_matching_pre_stateful_result() ->
+    RequestId = <<"delegate-request-cancel-result-race">>,
+    TaskSpec =
+        #{request_id => RequestId,
+          correlation_id => <<"delegate-correlation-cancel-result-race">>,
+          objective => <<"keep cancellation terminal after acceptance">>,
+          round_sequence =>
+              [#{llm => #{directive => hang, timeout_ms => 60000},
+                 decision => terminal}]},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    CoordinatorPid = coordinator_for_task(TaskId),
+    {_CoordinatorData, ActiveRound} =
+        wait_for_active_round(CoordinatorPid, 1, 100),
+    WorkerPid = maps:get(worker_pid, ActiveRound),
+    _ = wait_for_worker_phase(
+          WorkerPid, waiting_llm, active_llm, 100),
+    ok = sys:suspend(WorkerPid),
+    Observer = self(),
+    _CancelCaller =
+        spawn(
+          fun() ->
+                  Observer !
+                      {delegate_pre_stateful_cancel_reply,
+                       soma_delegate:cancel(TaskId)}
+          end),
+    wait_for_round_cancel_status(
+      CoordinatorPid, 1, cancelled, 100),
+    send_round_result(
+      CoordinatorPid, TaskId, ActiveRound,
+      #{status => succeeded,
+        phase => decision,
+        decision => terminal,
+        terminal_result => #{status => succeeded}}),
+    ok = sys:resume(WorkerPid),
+    CancelReply =
+        receive
+            {delegate_pre_stateful_cancel_reply, Reply} -> Reply
+        after 7000 ->
+            ct:fail(pre_stateful_cancel_result_race_did_not_finish)
+        end,
+    ?assertMatch({ok, #{status := cancelled}}, CancelReply),
+    wait_for_process_dead(WorkerPid, 100),
+    wait_for_process_dead(CoordinatorPid, 100),
+    ?assertMatch({ok, #{status := cancelled}},
+                 soma_delegate:status(TaskId)).
+
+assert_production_failure_reason_is_not_in_delegate_events(Secret) ->
+    CorrelationId =
+        <<"delegate-correlation-production-failure-reason">>,
+    TaskSpec =
+        #{request_id =>
+              <<"delegate-request-production-failure-reason">>,
+          correlation_id => CorrelationId,
+          objective => <<"keep raw tool failures out of delegate events">>,
+          round_sequence =>
+              [#{llm =>
+                     #{directive => success,
+                       output => <<"dispatch secret failure">>},
+                 action_steps =>
+                     [#{id => <<"delegate-secret-failure">>,
+                        tool => fail,
+                        args => #{mode => error, reason => Secret}}],
+                 decision => terminal}]},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(TaskSpec),
+    {ok, #{status := failed}} =
+        wait_for_task_status(TaskId, failed, 200),
+    FailureEvents =
+        [Event || Event <-
+                      soma_event_store:by_correlation(
+                        event_store_pid(), CorrelationId),
+                  lists:member(
+                    maps:get(event_type, Event),
+                    [<<"delegate.round.completed">>,
+                     <<"delegate.task.cleanup">>,
+                     <<"delegate.task.terminal">>])],
+    ?assertEqual(3, length(FailureEvents)),
+    ?assertEqual(
+       [failed, failed, failed],
+       [maps:get(reason_class, maps:get(payload, Event))
+        || Event <- FailureEvents]),
+    ?assertNot(term_contains(FailureEvents, Secret)).
+
 write_delegate_cancel_cli_stub(TmpDir) ->
     Helper = filename:join(TmpDir, "delegate-cancel-cli.sh"),
     PidFile = filename:join(TmpDir, "delegate-cancel-cli.pid"),
@@ -2178,6 +2358,80 @@ process_links(Pid) ->
 coordinator_identity(CoordinatorPid) ->
     {_StateName, Data} = sys:get_state(CoordinatorPid),
     maps:with([request_id, task_id, correlation_id], Data).
+
+wait_for_ingress_status_call(_IngressPid, _TaskId, 0) ->
+    ct:fail(ingress_status_call_not_received);
+wait_for_ingress_status_call(IngressPid, TaskId, Attempts) ->
+    receive
+        {trace, IngressPid, 'receive',
+         {'$gen_call', _From, {status, TaskId}}} ->
+            _ = erlang:trace(IngressPid, false, ['receive']),
+            ok
+    after 10 ->
+        wait_for_ingress_status_call(
+          IngressPid, TaskId, Attempts - 1)
+    end.
+
+start_round_commit_order_trace(CoordinatorPid) ->
+    {module, soma_delegate_coordinator} =
+        code:ensure_loaded(soma_delegate_coordinator),
+    {module, supervisor} = code:ensure_loaded(supervisor),
+    1 = erlang:trace_pattern(
+          {soma_delegate_coordinator, commit_round_deltas, 2},
+          true, [local]),
+    1 = erlang:trace_pattern(
+          {supervisor, terminate_child, 2}, true, [local]),
+    1 = erlang:trace(
+          CoordinatorPid, true, [call, {tracer, self()}]),
+    ok.
+
+collect_round_commit_order(_CoordinatorPid,
+                           [Second, First]) ->
+    [First, Second];
+collect_round_commit_order(CoordinatorPid, Markers) ->
+    receive
+        {trace, CoordinatorPid, call,
+         {soma_delegate_coordinator, commit_round_deltas, _Args}} ->
+            collect_round_commit_order(
+              CoordinatorPid, [commit_round_deltas | Markers]);
+        {trace, CoordinatorPid, call,
+         {supervisor, terminate_child,
+          [soma_delegate_round_sup, _WorkerPid]}} ->
+            collect_round_commit_order(
+              CoordinatorPid, [remove_round_worker | Markers]);
+        {trace, CoordinatorPid, call, _OtherCall} ->
+            collect_round_commit_order(CoordinatorPid, Markers)
+    after 2000 ->
+        ct:fail({round_commit_order_not_observed,
+                 lists:reverse(Markers)})
+    end.
+
+clear_round_commit_order_trace(CoordinatorPid) ->
+    _ = erlang:trace(CoordinatorPid, false, [call]),
+    _ = erlang:trace_pattern(
+          {soma_delegate_coordinator, commit_round_deltas, 2},
+          false, [local]),
+    _ = erlang:trace_pattern(
+          {supervisor, terminate_child, 2}, false, [local]),
+    ok.
+
+wait_for_round_cancel_status(
+  _CoordinatorPid, RoundId, ExpectedStatus, 0) ->
+    ct:fail({round_cancel_status_not_recorded,
+             RoundId, ExpectedStatus});
+wait_for_round_cancel_status(
+  CoordinatorPid, RoundId, ExpectedStatus, Attempts) ->
+    {_StateName, Data} = sys:get_state(CoordinatorPid),
+    case maps:get(active_round, Data, undefined) of
+        #{round_id := RoundId,
+          cancel_status := ExpectedStatus} ->
+            ok;
+        _NotYetRecorded ->
+            timer:sleep(10),
+            wait_for_round_cancel_status(
+              CoordinatorPid, RoundId, ExpectedStatus,
+              Attempts - 1)
+    end.
 
 wait_for_terminal_projection(_TaskId, 0) ->
     ct:fail(terminal_projection_not_stored);
