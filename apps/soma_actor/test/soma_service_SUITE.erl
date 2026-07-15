@@ -580,7 +580,7 @@ test_lifecycle_reads_are_monotonic(_Config) ->
     {ok, RepeatedTerminal} = soma_service:status(TaskId),
 
     ?assertEqual(
-       [accepted, running, succeeded, running],
+       [accepted, running, succeeded, succeeded],
        [maps:get(status, Task)
         || Task <- [Accepted, Running, Terminal, RepeatedTerminal]]),
     ?assertEqual(Terminal, RepeatedTerminal).
