@@ -28,7 +28,7 @@ ownership, and the runtime retains tool execution and resource teardown.
 
 | Guarantee | Proof |
 | --- | --- |
-| A watch request returns durable events in append order, and a later connection resumes exclusively after the event represented by the first page's opaque cursor. | `soma_service_socket_SUITE:test_socket_watch_reconnect_resumes_after_cursor` |
+| A watch request returns durable events in append order, and a later connection resumes exclusively after the event represented by the first page's opaque cursor. The same real-socket trail preserves an invalid-byte event as the lossless byte form while an identical `base64:`-prefixed text value remains text. | `soma_service_socket_SUITE:test_socket_watch_reconnect_resumes_after_cursor` |
 
 ## Criterion 5 — repeated socket cancellation preserves the cleaned terminal task
 
@@ -47,6 +47,8 @@ ownership, and the runtime retains tool execution and resource teardown.
 | Guarantee | Proof |
 | --- | --- |
 | A zero-length frame, malformed Lisp, and an over-cap declared frame receive fixed typed errors before a fresh connection is served by the same listener. | `soma_service_socket_SUITE:test_socket_rejects_bad_and_oversized_frames_then_serves` |
+| Malformed `status`, `result`, and `cancel` lifecycle forms return the client-facing `malformed_request` code and leave the listener serving. | `soma_service_socket_SUITE:test_socket_malformed_lifecycle_forms_are_request_errors` |
+| Repeated in-cap frames carrying unique unknown symbols do not grow the VM atom table, and the same listener remains useful afterward. | `soma_service_socket_SUITE:test_socket_unknown_symbols_do_not_grow_atom_table` |
 
 ## Criterion 8 — daemon service ingress is enabled only by service configuration
 

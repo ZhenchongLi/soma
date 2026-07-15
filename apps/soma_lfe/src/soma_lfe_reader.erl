@@ -8,18 +8,26 @@
 %% integers are integers, lists are lists.
 -module(soma_lfe_reader).
 
--export([read_forms/1]).
+-export([read_forms/1, read_forms/2]).
 
 -type diagnostic() :: #{message => binary(), line => non_neg_integer()}.
 
 -spec read_forms(binary()) ->
     {ok, [term()]} | {error, [diagnostic()]}.
 read_forms(Source) when is_binary(Source) ->
+    read_forms(Source, create_atoms).
+
+-spec read_forms(binary(), create_atoms | existing_atoms_only) ->
+    {ok, [term()]} | {error, [diagnostic()]}.
+read_forms(Source, AtomMode)
+  when is_binary(Source),
+       (AtomMode =:= create_atoms orelse
+        AtomMode =:= existing_atoms_only) ->
     %% Invalid UTF-8 makes characters_to_list/1 return an error/incomplete
     %% tuple, not a list — a bounded diagnostic, never a scan crash.
     case unicode:characters_to_list(Source) of
         Input when is_list(Input) ->
-            case scan(Input, 1, []) of
+            case scan(Input, 1, [], AtomMode) of
                 {ok, Tokens} ->
                     parse_all_forms(Tokens, []);
                 {error, Diags} ->
@@ -31,85 +39,108 @@ read_forms(Source) when is_binary(Source) ->
 
 %%% --- Scanner ---
 
-scan([], _Line, Acc) ->
+scan([], _Line, Acc, _AtomMode) ->
     {ok, lists:reverse(Acc)};
-scan([$\n | Rest], Line, Acc) ->
-    scan(Rest, Line + 1, Acc);
-scan([C | Rest], Line, Acc) when C =:= $\s; C =:= $\t; C =:= $\r ->
-    scan(Rest, Line, Acc);
-scan([$( | Rest], Line, Acc) ->
-    scan(Rest, Line, [{open_paren, Line} | Acc]);
-scan([$) | Rest], Line, Acc) ->
-    scan(Rest, Line, [{close_paren, Line} | Acc]);
-scan([$" | Rest], Line, Acc) ->
-    scan_string(Rest, Line, [], Acc);
-scan([C | Rest], Line, Acc) when C >= $0, C =< $9 ->
-    scan_integer(Rest, Line, [C], Acc);
-scan([$- | Rest], Line, Acc) ->
+scan([$\n | Rest], Line, Acc, AtomMode) ->
+    scan(Rest, Line + 1, Acc, AtomMode);
+scan([C | Rest], Line, Acc, AtomMode)
+  when C =:= $\s; C =:= $\t; C =:= $\r ->
+    scan(Rest, Line, Acc, AtomMode);
+scan([$( | Rest], Line, Acc, AtomMode) ->
+    scan(Rest, Line, [{open_paren, Line} | Acc], AtomMode);
+scan([$) | Rest], Line, Acc, AtomMode) ->
+    scan(Rest, Line, [{close_paren, Line} | Acc], AtomMode);
+scan([$" | Rest], Line, Acc, AtomMode) ->
+    scan_string(Rest, Line, [], Acc, AtomMode);
+scan([C | Rest], Line, Acc, AtomMode) when C >= $0, C =< $9 ->
+    scan_integer(Rest, Line, [C], Acc, AtomMode);
+scan([$- | Rest], Line, Acc, AtomMode) ->
     case Rest of
         [D | _] when D >= $0, D =< $9 ->
-            scan_integer(Rest, Line, [$-], Acc);
+            scan_integer(Rest, Line, [$-], Acc, AtomMode);
         _ ->
-            scan_atom(Rest, Line, [$-], Acc)
+            scan_atom(Rest, Line, [$-], Acc, AtomMode)
     end;
-scan([C | Rest], Line, Acc) when C >= $a, C =< $z;
-                                  C >= $A, C =< $Z;
-                                  C =:= $_; C =:= $!; C =:= $?;
-                                  C =:= $+; C =:= $*; C =:= $/;
-                                  C =:= $=; C =:= $<; C =:= $>;
-                                  C =:= $&; C =:= $^; C =:= $~;
-                                  C =:= $@; C =:= $# ->
-    scan_atom(Rest, Line, [C], Acc);
-scan([C | _Rest], Line, _Acc) ->
+scan([C | Rest], Line, Acc, AtomMode) when C >= $a, C =< $z;
+                                            C >= $A, C =< $Z;
+                                            C =:= $_; C =:= $!; C =:= $?;
+                                            C =:= $+; C =:= $*; C =:= $/;
+                                            C =:= $=; C =:= $<; C =:= $>;
+                                            C =:= $&; C =:= $^; C =:= $~;
+                                            C =:= $@; C =:= $# ->
+    scan_atom(Rest, Line, [C], Acc, AtomMode);
+scan([C | _Rest], Line, _Acc, _AtomMode) ->
     %% ~tc + characters_to_binary: the unrecognised character may be a code
     %% point above 255, which ~c / iolist_to_binary would crash on.
     {error, [#{message => unicode:characters_to_binary(
                     io_lib:format("unrecognised character: ~tc", [C])),
                line => Line}]}.
 
-scan_string([], Line, _Buf, _Acc) ->
+scan_string([], Line, _Buf, _Acc, _AtomMode) ->
     {error, [#{message => <<"unterminated string">>, line => Line}]};
-scan_string([$\\, $" | Rest], Line, Buf, Acc) ->
-    scan_string(Rest, Line, [$" | Buf], Acc);
-scan_string([$\\, $\\ | Rest], Line, Buf, Acc) ->
-    scan_string(Rest, Line, [$\\ | Buf], Acc);
-scan_string([$\\, $n | Rest], Line, Buf, Acc) ->
-    scan_string(Rest, Line, [$\n | Buf], Acc);
-scan_string([$\n | Rest], Line, Buf, Acc) ->
-    scan_string(Rest, Line + 1, [$\n | Buf], Acc);
-scan_string([$" | Rest], Line, Buf, Acc) ->
+scan_string([$\\, $" | Rest], Line, Buf, Acc, AtomMode) ->
+    scan_string(Rest, Line, [$" | Buf], Acc, AtomMode);
+scan_string([$\\, $\\ | Rest], Line, Buf, Acc, AtomMode) ->
+    scan_string(Rest, Line, [$\\ | Buf], Acc, AtomMode);
+scan_string([$\\, $n | Rest], Line, Buf, Acc, AtomMode) ->
+    scan_string(Rest, Line, [$\n | Buf], Acc, AtomMode);
+scan_string([$\n | Rest], Line, Buf, Acc, AtomMode) ->
+    scan_string(Rest, Line + 1, [$\n | Buf], Acc, AtomMode);
+scan_string([$" | Rest], Line, Buf, Acc, AtomMode) ->
     %% characters_to_binary, not list_to_binary: string content may carry
     %% code points above 255 (an em-dash, an accent, Chinese text).
     Str = unicode:characters_to_binary(lists:reverse(Buf)),
-    scan(Rest, Line, [{string, Line, Str} | Acc]);
-scan_string([C | Rest], Line, Buf, Acc) ->
-    scan_string(Rest, Line, [C | Buf], Acc).
+    scan(Rest, Line, [{string, Line, Str} | Acc], AtomMode);
+scan_string([C | Rest], Line, Buf, Acc, AtomMode) ->
+    scan_string(Rest, Line, [C | Buf], Acc, AtomMode).
 
-scan_integer([C | Rest], Line, Buf, Acc) when C >= $0, C =< $9 ->
-    scan_integer(Rest, Line, [C | Buf], Acc);
-scan_integer(Rest, Line, Buf, Acc) ->
+scan_integer([C | Rest], Line, Buf, Acc, AtomMode)
+  when C >= $0, C =< $9 ->
+    scan_integer(Rest, Line, [C | Buf], Acc, AtomMode);
+scan_integer(Rest, Line, Buf, Acc, AtomMode) ->
     %% next char must be whitespace, paren, or end — else it's an error token
     N = list_to_integer(lists:reverse(Buf)),
-    scan(Rest, Line, [{integer, Line, N} | Acc]).
+    scan(Rest, Line, [{integer, Line, N} | Acc], AtomMode).
 
-scan_atom([C | Rest], Line, Buf, Acc) when C >= $a, C =< $z;
-                                            C >= $A, C =< $Z;
-                                            C >= $0, C =< $9;
-                                            C =:= $_; C =:= $-; C =:= $!;
-                                            C =:= $?; C =:= $+; C =:= $*;
-                                            C =:= $/; C =:= $=; C =:= $<;
-                                            C =:= $>; C =:= $&; C =:= $^;
-                                            C =:= $~; C =:= $@; C =:= $# ->
-    scan_atom(Rest, Line, [C | Buf], Acc);
-scan_atom(Rest, Line, Buf, Acc) ->
+scan_atom([C | Rest], Line, Buf, Acc, AtomMode)
+  when C >= $a, C =< $z;
+       C >= $A, C =< $Z;
+       C >= $0, C =< $9;
+       C =:= $_; C =:= $-; C =:= $!;
+       C =:= $?; C =:= $+; C =:= $*;
+       C =:= $/; C =:= $=; C =:= $<;
+       C =:= $>; C =:= $&; C =:= $^;
+       C =:= $~; C =:= $@; C =:= $# ->
+    scan_atom(Rest, Line, [C | Buf], Acc, AtomMode);
+scan_atom(Rest, Line, Buf, Acc, AtomMode) ->
     Name = lists:reverse(Buf),
     case length(Name) > 255 of
         true ->
             {error, [#{message => <<"atom name exceeds maximum length of 255 characters">>,
                        line => Line}]};
         false ->
-            Atom = list_to_atom(Name),
-            scan(Rest, Line, [{atom, Line, Atom} | Acc])
+            case decode_atom(Name, AtomMode) of
+                {ok, Atom} ->
+                    scan(
+                      Rest, Line,
+                      [{atom, Line, Atom} | Acc], AtomMode);
+                error ->
+                    {error,
+                     [#{message => <<"symbol is not in the existing vocabulary">>,
+                        line => Line}]}
+            end
+    end.
+
+decode_atom(Name, create_atoms) ->
+    {ok, list_to_atom(Name)};
+decode_atom(Name, existing_atoms_only) ->
+    try list_to_existing_atom(Name) of
+        Atom -> {ok, Atom}
+    catch
+        error:badarg ->
+            %% Keep the spelling as bounded data so the parser can reject it
+            %% in context (for example as unknown_field) without interning it.
+            {ok, {external_symbol, list_to_binary(Name)}}
     end.
 
 %%% --- Form parser ---

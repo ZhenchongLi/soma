@@ -94,7 +94,7 @@ handle_request(<<>>) ->
     soma_lisp:render(service_error(malformed_request));
 handle_request(Source) ->
     Response =
-        case soma_lfe:compile(Source, #{}) of
+        case soma_lfe:compile(Source, #{existing_atoms_only => true}) of
             {ok, Request} ->
                 dispatch(Request);
             {error, Diagnostics} ->
@@ -145,6 +145,8 @@ public_diagnostic_code(scope_entry_too_large) -> scope_entry_too_large;
 public_diagnostic_code(invalid_artifacts) -> invalid_artifacts;
 public_diagnostic_code(invalid_correlation_id) -> invalid_correlation_id;
 public_diagnostic_code(invalid_watch) -> invalid_watch;
+public_diagnostic_code(malformed_form) -> malformed_request;
+public_diagnostic_code(invalid_top_level_form) -> malformed_request;
 public_diagnostic_code(_Unknown) -> internal_error.
 
 public_service_error_code(request_id_conflict) -> request_id_conflict;
