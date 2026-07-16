@@ -43,6 +43,7 @@ init(#{request := Request = #{request_id := RequestId,
              mutation_ledger => [],
              unknown_outcome_ledger => [],
              recent_round_data => undefined,
+             recent_rounds => [],
              scoped_leases =>
                  #{requests =>
                        maps:get(lease_requests, RuntimeOptions, []),
@@ -387,13 +388,16 @@ clear_committed_round(
            RoundId, EventOutcome, ClearedData),
     ClearedData.
 
-commit_round_deltas(Result, Data) ->
+commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
+    RoundId = maps:get(round_id, ActiveRound),
+    ObservationData =
+        commit_action_observation(Result, RoundId, Data),
     CheckpointData =
         case maps:find(checkpoint, Result) of
             {ok, Checkpoint} ->
-                Data#{context_checkpoint := Checkpoint};
+                ObservationData#{context_checkpoint := Checkpoint};
             error ->
-                Data
+                ObservationData
         end,
     UsageData =
         case maps:find(usage, Result) of
@@ -428,6 +432,20 @@ commit_round_deltas(Result, Data) ->
         error ->
             UnknownOutcomeData
     end.
+
+commit_action_observation(
+  #{status := succeeded,
+    phase := action,
+    terminal_result := Observation},
+  RoundId,
+  Data = #{recent_rounds := RecentRounds}) ->
+    RecentRound = #{round => RoundId,
+                    status => succeeded,
+                    observation => Observation},
+    Data#{recent_round_data := RecentRound,
+          recent_rounds := RecentRounds ++ [RecentRound]};
+commit_action_observation(_Result, _RoundId, Data) ->
+    Data.
 
 advance_after_round(
   #{status := succeeded, decision := continue}, _RoundId,
@@ -657,6 +675,14 @@ valid_optional_result_term(Key, Result) ->
             true
     end.
 
+round_projection(
+  #{status := succeeded,
+    decision := terminal,
+    terminal_result := TerminalResult},
+  RoundId) ->
+    maps:merge(
+      #{status => succeeded, round => RoundId},
+      maps:with([result], TerminalResult));
 round_projection(#{status := succeeded}, RoundId) ->
     #{status => succeeded, round => RoundId};
 round_projection(#{status := Status} = Result, RoundId) ->
