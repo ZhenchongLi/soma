@@ -33,6 +33,10 @@ init(Opts = #{coordinator_pid := CoordinatorPid,
              round_id => RoundId,
              worker_identity => WorkerIdentity,
              result_capability => ResultCapability,
+             tool_policy =>
+                 maps:get(tool_policy, Opts, #{allowed_tools => []}),
+             capability_scope =>
+                 maps:get(capability_scope, Opts, #{tools => []}),
              snapshot => maps:get(snapshot, Opts, #{}),
              work => Work,
              active_llm => undefined,
@@ -88,7 +92,7 @@ handle_event(info,
   when Status =:= cancelled; Status =:= timeout ->
     request_run_cancel(Status, ActiveRun, Data);
 handle_event(info,
-             {llm_result, LlmCallId, LlmPid, {ok, _FixedResult}},
+             {llm_result, LlmCallId, LlmPid, {ok, ModelResult}},
              waiting_llm,
              Data = #{active_llm :=
                           ActiveLlm =
@@ -97,7 +101,8 @@ handle_event(info,
                                 mref := LlmMRef}}) ->
     cancel_child_timer(ActiveLlm),
     release_child_monitor(LlmPid, LlmMRef),
-    start_action(Data#{active_llm := undefined});
+    handle_successful_model_result(
+      ModelResult, Data#{active_llm := undefined});
 handle_event(info,
              {llm_result, LlmCallId, LlmPid, {error, Reason}},
              waiting_llm,
@@ -279,6 +284,122 @@ start_action(Data = #{work := Work}) ->
                 phase => action,
                 reason => invalid_action_steps})
     end.
+
+handle_successful_model_result(ModelResult, Data = #{work := Work}) ->
+    case maps:is_key(action_steps, Work) orelse
+         not model_selects_proposal(Work) of
+        true ->
+            start_action(Data);
+        false ->
+            admit_model_result(ModelResult, Data)
+    end.
+
+model_selects_proposal(#{llm := #{provider := openai_compat}}) ->
+    true;
+model_selects_proposal(#{llm := #{directive := proposal}}) ->
+    true;
+model_selects_proposal(_LegacyRoundWork) ->
+    false.
+
+admit_model_result(ModelResult, Data) ->
+    case decode_model_result(ModelResult, Data) of
+        {ok, RawProposal} ->
+            admit_raw_proposal(RawProposal, Data);
+        {error, Reason} ->
+            report_round_result(
+              Data,
+              #{status => failed,
+                phase => decision,
+                reason => Reason})
+    end.
+
+admit_raw_proposal(RawProposal,
+                   Data = #{tool_policy := ToolPolicy,
+                            capability_scope := CapabilityScope}) ->
+    case soma_proposal:normalize(RawProposal) of
+        {ok, Proposal} ->
+            case soma_policy:check(Proposal, ToolPolicy) of
+                allow ->
+                    case soma_delegate_capability:check(
+                           Proposal, CapabilityScope) of
+                        allow ->
+                            execute_admitted_proposal(Proposal, Data);
+                        {reject, Reason} ->
+                            report_admission_rejection(
+                              task_capability, Reason, Data)
+                    end;
+                {reject, Reason} ->
+                    report_admission_rejection(
+                      global_policy, Reason, Data)
+            end;
+        {error, Diagnostics} ->
+            report_round_result(
+              Data,
+              #{status => failed,
+                phase => decision,
+                reason => {invalid_proposal, Diagnostics}})
+    end.
+
+execute_admitted_proposal(#{kind := run_steps, steps := Steps}, Data) ->
+    start_run(Steps, Data);
+execute_admitted_proposal(#{kind := reply, text := Text}, Data) ->
+    report_round_result(
+      Data,
+      #{status => succeeded,
+        phase => decision,
+        decision => terminal,
+        terminal_result => #{status => succeeded, result => Text}});
+execute_admitted_proposal(#{kind := reject, reason := Reason}, Data) ->
+    report_round_result(
+      Data,
+      #{status => failed,
+        phase => decision,
+        reason => {model_rejected, Reason}}).
+
+report_admission_rejection(Gate, Reason, Data) ->
+    report_round_result(
+      Data,
+      #{status => failed,
+        phase => decision,
+        reason => {admission_rejected, Gate, Reason}}).
+
+decode_model_result(
+  #{kind := reply, text := Content} = ProviderReply,
+  #{work := #{llm := #{provider := openai_compat}}}) ->
+    case starts_lisp_form(Content) of
+        true -> compile_proposal(Content);
+        false -> {ok, ProviderReply}
+    end;
+decode_model_result(RawProposal, _Data) when is_map(RawProposal) ->
+    {ok, RawProposal};
+decode_model_result(Source, _Data)
+  when is_binary(Source); is_list(Source) ->
+    compile_proposal(Source);
+decode_model_result(_InvalidModelResult, _Data) ->
+    {error, invalid_model_result}.
+
+compile_proposal(Source) ->
+    case soma_lfe:compile(Source, #{existing_atoms_only => true}) of
+        {ok, ProposalMap} ->
+            {ok, ProposalMap};
+        {error, Diagnostics} ->
+            {error, {invalid_proposal_source, Diagnostics}}
+    end.
+
+starts_lisp_form(Content) when is_binary(Content) ->
+    case string:trim(Content, leading) of
+        <<$(, _/binary>> -> true;
+        _PlainText -> false
+    end;
+starts_lisp_form(Content) when is_list(Content) ->
+    try unicode:characters_to_binary(Content) of
+        Binary when is_binary(Binary) -> starts_lisp_form(Binary);
+        _InvalidText -> false
+    catch
+        error:badarg -> false
+    end;
+starts_lisp_form(_OtherContent) ->
+    false.
 
 start_run(Steps,
           Data = #{task_id := TaskId,
