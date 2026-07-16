@@ -6,10 +6,13 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs/1]).
 -export([test_prompt_projection_uses_exact_task_local_fields/1]).
+-export([test_model_action_admission_order_and_state_spine/1]).
+-export([invoke/2]).
 
 all() ->
     [test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs,
-     test_prompt_projection_uses_exact_task_local_fields].
+     test_prompt_projection_uses_exact_task_local_fields,
+     test_model_action_admission_order_and_state_spine].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -140,6 +143,144 @@ test_prompt_projection_uses_exact_task_local_fields(_Config) ->
                 unknown_outcome_ledger => [],
                 idempotency_state => #{}}},
     ?assertEqual(Expected, Actual).
+
+test_model_action_admission_order_and_state_spine(_Config) ->
+    ToolName = delegate_state_probe,
+    ToolManifest =
+        #{name => ToolName,
+          effect => state,
+          idempotent => false,
+          timeout_ms => 1000,
+          adapter => erlang_module,
+          module => ?MODULE,
+          description => <<"Records one local state transition.">>},
+    ok = soma_tool_registry:register_tool(ToolManifest),
+    {ok, #{effect := state}} =
+        soma_tool_registry:resolve_descriptor(ToolName),
+    ActionSource =
+        <<"(run-steps (step (id state_action) "
+          "(tool delegate_state_probe) "
+          "(args (value \"committed\"))))">>,
+    Responder = fun(_CallOpts) -> terminal_response(ActionSource) end,
+    RuntimeOptions =
+        #{tool_policy => #{allowed_tools => [ToolName]},
+          round_sequence =>
+              [#{llm =>
+                     #{provider => openai_compat,
+                       base_url => <<"api.example.test/v1">>,
+                       api_key => <<"test-only-key">>,
+                       model => <<"test-model">>,
+                       response => Responder},
+                 decision => terminal}]},
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options, RuntimeOptions),
+    Request =
+        #{request_id => <<"delegate-admission-state-spine">>,
+          correlation_id => <<"delegate-admission-state-spine-correlation">>,
+          objective => #{goal => <<"perform the admitted state action">>},
+          output_contract => #{format => <<"state-result">>},
+          capability_scope => #{tools => [atom_to_binary(ToolName, utf8)]},
+          artifacts => []},
+
+    ok = start_admission_spine_trace(),
+    Trace =
+        try
+            {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+            #{status := succeeded} =
+                wait_for_terminal_projection(TaskId, 100),
+            collect_admission_spine_trace([])
+        after
+            clear_admission_spine_trace()
+        end,
+
+    AdmissionOrder =
+        [Marker || {Marker, _Pid, _Args} <- Trace,
+                   lists:member(
+                     Marker, [proposal_normalize, global_policy,
+                              task_capability])],
+    ?assertEqual(
+       [proposal_normalize, global_policy, task_capability],
+       AdmissionOrder),
+    AdmissionPids =
+        lists:usort(
+          [Pid || {Marker, Pid, _Args} <- Trace,
+                  lists:member(
+                    Marker, [proposal_normalize, global_policy,
+                             task_capability, run_start])]),
+    [RoundWorkerPid] = AdmissionPids,
+    [{run_start, RoundWorkerPid, [RunOpts]}] =
+        [Call || {run_start, _, _} = Call <- Trace],
+    ?assertEqual(
+       [#{id => state_action,
+          tool => ToolName,
+          args => #{value => <<"committed">>}}],
+       maps:get(steps, RunOpts)),
+    [{tool_start, RunPid, [ToolOpts]}] =
+        [Call || {tool_start, _, _} = Call <- Trace],
+    ?assertEqual(?MODULE, maps:get(module, ToolOpts)),
+    [{state_invoke, ToolCallPid,
+      [#{value := <<"committed">>}, _Ctx]}] =
+        [Call || {state_invoke, _, _} = Call <- Trace],
+    ?assert(RoundWorkerPid =/= RunPid),
+    ?assert(RunPid =/= ToolCallPid),
+    ?assert(RoundWorkerPid =/= ToolCallPid).
+
+invoke(Input, _Ctx) ->
+    {ok, Input}.
+
+start_admission_spine_trace() ->
+    Modules =
+        [soma_proposal, soma_policy, soma_delegate_capability,
+         soma_run_sup, soma_tool_call, ?MODULE],
+    _ = [code:ensure_loaded(Module) || Module <- Modules],
+    Patterns =
+        [{soma_proposal, normalize, 1},
+         {soma_policy, check, 2},
+         {soma_delegate_capability, check, 2},
+         {soma_run_sup, start_run, 1},
+         {soma_tool_call, start, 1},
+         {?MODULE, invoke, 2}],
+    _ = [erlang:trace_pattern(Pattern, true, [local])
+         || Pattern <- Patterns],
+    _ = erlang:trace(new, true, [call, {tracer, self()}]),
+    ok.
+
+collect_admission_spine_trace(Acc) ->
+    receive
+        {trace, Pid, call, {soma_proposal, normalize, Args}} ->
+            collect_admission_spine_trace(
+              [{proposal_normalize, Pid, Args} | Acc]);
+        {trace, Pid, call, {soma_policy, check, Args}} ->
+            collect_admission_spine_trace(
+              [{global_policy, Pid, Args} | Acc]);
+        {trace, Pid, call, {soma_delegate_capability, check, Args}} ->
+            collect_admission_spine_trace(
+              [{task_capability, Pid, Args} | Acc]);
+        {trace, Pid, call, {soma_run_sup, start_run, Args}} ->
+            collect_admission_spine_trace(
+              [{run_start, Pid, Args} | Acc]);
+        {trace, Pid, call, {soma_tool_call, start, Args}} ->
+            collect_admission_spine_trace(
+              [{tool_start, Pid, Args} | Acc]);
+        {trace, Pid, call, {?MODULE, invoke, Args}} ->
+            collect_admission_spine_trace(
+              [{state_invoke, Pid, Args} | Acc])
+    after 100 ->
+        lists:reverse(Acc)
+    end.
+
+clear_admission_spine_trace() ->
+    _ = erlang:trace(new, false, [call]),
+    Patterns =
+        [{soma_proposal, normalize, 1},
+         {soma_policy, check, 2},
+         {soma_delegate_capability, check, 2},
+         {soma_run_sup, start_run, 1},
+         {soma_tool_call, start, 1},
+         {?MODULE, invoke, 2}],
+    _ = [erlang:trace_pattern(Pattern, false, [local])
+         || Pattern <- Patterns],
+    ok.
 
 receive_prompt_projection() ->
     receive
