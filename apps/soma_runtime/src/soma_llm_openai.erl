@@ -9,6 +9,7 @@
 -export([build_request/1, request_http_options/1, parse_response/1, chat/1]).
 
 -define(DEFAULT_OPENAI_REQUEST_TIMEOUT_MS, 60000).
+-define(MAX_REPORTED_PROMPT_TOKENS, 16#ffffffff).
 
 %% Build the pieces of the chat-completions POST from a config map. Pure: it
 %% opens no socket. The url is the configured `base_url' with `/chat/completions'
@@ -74,7 +75,8 @@ parse_response_with_usage({Status, _Body}) ->
 maybe_attach_prompt_usage(
   Reply,
   #{<<"usage">> := #{<<"prompt_tokens">> := PromptTokens}})
-  when is_integer(PromptTokens), PromptTokens >= 0 ->
+  when is_integer(PromptTokens), PromptTokens >= 0,
+       PromptTokens =< ?MAX_REPORTED_PROMPT_TOKENS ->
     Reply#{usage => #{prompt_tokens => PromptTokens}};
 maybe_attach_prompt_usage(Reply, _MissingOrInvalidUsage) ->
     Reply.

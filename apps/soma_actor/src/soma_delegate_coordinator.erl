@@ -27,12 +27,13 @@ init(#{request := Request = #{request_id := RequestId,
                              correlation_id := CorrelationId},
        task_id := TaskId,
        ingress_pid := IngressPid,
+       budget_limits := BudgetLimits,
        runtime_options := RuntimeOptions})
   when is_binary(RequestId), is_binary(TaskId), is_binary(CorrelationId),
-       is_pid(IngressPid), is_map(RuntimeOptions) ->
+       is_pid(IngressPid), is_map(BudgetLimits), is_map(RuntimeOptions) ->
     Budgets = maps:get(budgets, Request, #{}),
     RoundSequence = maps:get(round_sequence, RuntimeOptions, []),
-    TaskDeadlineTimer = arm_task_deadline(Budgets, TaskId),
+    TaskDeadlineTimer = arm_task_deadline(BudgetLimits, TaskId),
     Data = #{request_id => RequestId,
              task_id => TaskId,
              correlation_id => CorrelationId,
@@ -44,6 +45,7 @@ init(#{request := Request = #{request_id := RequestId,
              output_contract => maps:get(output_contract, Request, undefined),
              context_checkpoint => initial_checkpoint(RuntimeOptions),
              budgets => Budgets,
+             budget_limits => BudgetLimits,
              usage => #{},
              counters => initial_counters(),
              mutation_ledger => [],
@@ -78,6 +80,7 @@ handle_event(info, {delegate_begin, TaskId}, awaiting_start,
     RunningData = Data#{status := running},
     ok = emit_delegate_event(
            <<"delegate.task.running">>, 0, RunningData, RunningData),
+    checkpoint_ingress(RunningData),
     begin_task(RunningData);
 handle_event({call, From}, status, _StateName, Data) ->
     {keep_state, Data,
@@ -103,6 +106,7 @@ handle_event(
             {error, Limit} ->
                 {{error, {budget_exceeded, Limit}}, Data}
         end,
+    checkpoint_ingress(UpdatedData),
     WorkerPid !
         {delegate_budget_reserved,
          TaskId, RoundId, WorkerIdentity, ResultCapability,
@@ -155,7 +159,7 @@ handle_event(info, {delegate_terminal_stored, TaskId},
 handle_event(info,
              {delegate_unsafe_action_dispatched,
               TaskId, RoundId, WorkerPid, WorkerIdentity,
-              ResultCapability, InvocationIdentity},
+              ResultCapability, UnsafeInvocationData},
              running,
              Data = #{task_id := TaskId,
                       active_round :=
@@ -165,11 +169,24 @@ handle_event(info,
                                 worker_identity := WorkerIdentity,
                                 result_capability := ResultCapability,
                                 unsafe_action_dispatched := false}})
-  when is_map(InvocationIdentity) ->
-    MarkedRound =
-        ActiveRound#{unsafe_action_dispatched := true,
-                     unsafe_invocation := InvocationIdentity},
-    {keep_state, Data#{active_round := MarkedRound}};
+  when is_map(UnsafeInvocationData); is_list(UnsafeInvocationData) ->
+    case normalize_unsafe_invocations(UnsafeInvocationData) of
+        [] ->
+            {keep_state, Data};
+        UnsafeInvocations ->
+            MarkedRound =
+                ActiveRound#{unsafe_action_dispatched := true,
+                             unsafe_invocations := UnsafeInvocations,
+                             unsafe_invocation :=
+                                 hd(UnsafeInvocations)},
+            MarkedData = Data#{active_round := MarkedRound},
+            checkpoint_ingress(MarkedData),
+            WorkerPid !
+                {delegate_unsafe_action_recorded,
+                 TaskId, RoundId, WorkerIdentity, ResultCapability,
+                 UnsafeInvocations},
+            {keep_state, MarkedData}
+    end;
 handle_event(info,
              {delegate_round_result, TaskId, RoundId, WorkerPid,
               WorkerIdentity, ResultCapability, Result},
@@ -313,7 +330,7 @@ prepare_and_start_round(
             PromptProjection =
                 soma_delegate_prompt:project(
                   Snapshot, prompt_data(AdaptiveData)),
-            Budgets = maps:get(budgets, AdaptiveData),
+            Budgets = maps:get(budget_limits, AdaptiveData),
             CommittedPromptTokens =
                 maps:get(
                   prompt_tokens, maps:get(counters, AdaptiveData), 0),
@@ -397,7 +414,8 @@ start_round_worker(
                                 maps:get(prompt_tokens_estimate, Work, 0),
                             prompt_tokens_reserved => 0,
                             unsafe_action_dispatched => false,
-                            unsafe_invocation => undefined},
+                            unsafe_invocation => undefined,
+                            unsafe_invocations => []},
             CountedData = consume_counter(rounds, 1, Data),
             StartedData = CountedData#{round_sequence := Remaining,
                                        next_round_id := RoundId + 1,
@@ -405,6 +423,7 @@ start_round_worker(
             ok = emit_delegate_event(
                    <<"delegate.round.started">>, RoundId,
                    StartedData, StartedData),
+            checkpoint_ingress(StartedData),
             WorkerPid !
                 {delegate_round_begin, TaskId, RoundId, WorkerIdentity,
                  ResultCapability},
@@ -456,19 +475,12 @@ commit_finished_round(
     %% non-idempotent work can no longer succeed: the mutation happened,
     %% so the honest terminal is in_doubt with the invocation on the
     %% ledgers — never a post-deadline success.
-    InvocationIdentity = maps:get(unsafe_invocation, ActiveRound),
-    Mutation = InvocationIdentity#{round => RoundId},
-    UnknownOutcome =
-        #{round => RoundId,
-          invocation => InvocationIdentity,
-          outcome => unknown},
     Projection = #{status => in_doubt,
                    reason => deadline_after_unsafe_dispatch,
                    round => RoundId},
     LedgeredData =
-        commit_unknown_outcome(
-          UnknownOutcome,
-          commit_mutation(Mutation, Data)),
+        commit_lost_unsafe_invocations(
+          active_unsafe_invocations(ActiveRound), RoundId, Data),
     ClearedData =
         clear_committed_round(
           Projection, RoundId, ActiveRound,
@@ -502,6 +514,7 @@ clear_committed_round(
     ClearedData = CommittedData#{active_round := undefined},
     ok = emit_round_completed(
            RoundId, EventOutcome, ClearedData),
+    checkpoint_ingress(ClearedData),
     ClearedData.
 
 commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
@@ -523,11 +536,16 @@ commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
                 CheckpointData
         end,
     MutationData =
-        case maps:find(mutation, Result) of
-            {ok, Mutation} ->
-                commit_mutation(Mutation, UsageData);
-            error ->
-                UsageData
+        case maps:find(mutations, Result) of
+            {ok, Mutations} when is_list(Mutations) ->
+                commit_mutations(Mutations, UsageData);
+            _MissingOrInvalidMutations ->
+                case maps:find(mutation, Result) of
+                    {ok, Mutation} ->
+                        commit_mutation(Mutation, UsageData);
+                    error ->
+                        UsageData
+                end
         end,
     UnknownOutcomeData =
         case maps:find(unknown_outcome, Result) of
@@ -554,6 +572,11 @@ commit_mutation(Mutation,
     update_idempotency_state(
       Mutation,
       Data#{mutation_ledger := MutationLedger ++ [Mutation]}).
+
+commit_mutations(Mutations, Data) ->
+    lists:foldl(
+      fun(Mutation, Acc) -> commit_mutation(Mutation, Acc) end,
+      Data, Mutations).
 
 commit_unknown_outcome(
   UnknownOutcome,
@@ -584,10 +607,10 @@ update_idempotency_state(
             Data
     end.
 
-invocation_key(#{run_id := RunId}) ->
-    {ok, RunId};
 invocation_key(#{invocation_id := InvocationId}) ->
     {ok, InvocationId};
+invocation_key(#{run_id := RunId}) ->
+    {ok, RunId};
 invocation_key(_UnidentifiedDelta) ->
     error.
 
@@ -624,7 +647,7 @@ commit_action_observation(
   RoundId,
   Data = #{recent_rounds := RecentRounds,
            task_summary := TaskSummary,
-           budgets := Budgets}) ->
+           budget_limits := Budgets}) ->
     ArtifactData = commit_action_artifact(Result, Data),
     ObservationRef = action_observation_ref(Observation),
     RunId = maps:get(run_id, Result, undefined),
@@ -800,22 +823,45 @@ handle_round_worker_down(ActiveRound, RoundId, Data) ->
     end.
 
 finish_lost_unsafe_result(ActiveRound, RoundId, Data) ->
-    InvocationIdentity = maps:get(unsafe_invocation, ActiveRound),
-    Mutation = InvocationIdentity#{round => RoundId},
-    UnknownOutcome =
-        #{round => RoundId,
-          invocation => InvocationIdentity,
-          outcome => unknown},
     Projection = #{status => in_doubt,
                    reason => unsafe_result_lost,
                    round => RoundId},
     ok = emit_round_completed(RoundId, Projection, Data),
     finish_worker_down(
       Projection,
-      (commit_unknown_outcome(
-         UnknownOutcome,
-         commit_mutation(Mutation, Data)))#{
+      (commit_lost_unsafe_invocations(
+         active_unsafe_invocations(ActiveRound), RoundId, Data))#{
            recent_round_data := Projection}).
+
+commit_lost_unsafe_invocations(UnsafeInvocations, RoundId, Data) ->
+    lists:foldl(
+      fun(InvocationIdentity, Acc) ->
+              Mutation = InvocationIdentity#{round => RoundId,
+                                               outcome => unknown},
+              UnknownOutcome =
+                  #{round => RoundId,
+                    invocation => InvocationIdentity,
+                    outcome => unknown},
+              commit_unknown_outcome(
+                UnknownOutcome, commit_mutation(Mutation, Acc))
+      end,
+      Data, UnsafeInvocations).
+
+active_unsafe_invocations(ActiveRound) ->
+    case maps:get(unsafe_invocations, ActiveRound, []) of
+        [_Unsafe | _] = UnsafeInvocations ->
+            UnsafeInvocations;
+        [] ->
+            normalize_unsafe_invocations(
+              maps:get(unsafe_invocation, ActiveRound, undefined))
+    end.
+
+normalize_unsafe_invocations(Invocation) when is_map(Invocation) ->
+    [Invocation];
+normalize_unsafe_invocations(Invocations) when is_list(Invocations) ->
+    [Invocation || Invocation <- Invocations, is_map(Invocation)];
+normalize_unsafe_invocations(_InvalidInvocationData) ->
+    [].
 
 finish_worker_down(Projection, Data) ->
     start_cleanup(Projection, Data#{active_round := undefined}).
@@ -836,6 +882,7 @@ start_cleanup(Projection0, Data = #{cleanup_started := false}) ->
                                         cleanup_started := true,
                                         terminal_result := Projection},
     CleanupData = terminal_event_data(Projection0, CleanupData0),
+    checkpoint_ingress(CleanupData),
     ok = emit_delegate_event(
            <<"delegate.task.cleanup">>, 0,
            CleanupData, CleanupData),
@@ -964,6 +1011,7 @@ valid_round_result(Result) when is_map(Result) ->
         valid_optional_result_term(checkpoint, Result) andalso
         valid_optional_result_map(usage, Result) andalso
         valid_optional_result_map(mutation, Result) andalso
+        valid_optional_result_list(mutations, Result) andalso
         valid_optional_result_map(unknown_outcome, Result) andalso
         valid_optional_result_map(artifact, Result) andalso
         valid_optional_result_map(artifact_excerpt, Result) andalso
@@ -974,7 +1022,7 @@ valid_round_result(_Result) ->
 valid_round_result_keys(Result) ->
     Allowed =
         [status, phase, decision, reason, checkpoint, usage,
-         mutation, unknown_outcome, artifact, artifact_excerpt,
+         mutation, mutations, unknown_outcome, artifact, artifact_excerpt,
          terminal_result, adaptive_event, run_id],
     lists:all(
       fun(Key) -> lists:member(Key, Allowed) end,
@@ -994,6 +1042,16 @@ valid_optional_enum(Key, Result, Allowed) ->
 valid_optional_result_map(Key, Result) ->
     case maps:find(Key, Result) of
         {ok, Value} when is_map(Value) ->
+            soma_delegate_task_data:safe_term(Value);
+        {ok, _InvalidValue} ->
+            false;
+        error ->
+            true
+    end.
+
+valid_optional_result_list(Key, Result) ->
+    case maps:find(Key, Result) of
+        {ok, Value} when is_list(Value) ->
             soma_delegate_task_data:safe_term(Value);
         {ok, _InvalidValue} ->
             false;
@@ -1177,6 +1235,33 @@ emit_round_completed(RoundId, Outcome, Data) ->
     emit_delegate_event(
       <<"delegate.round.completed">>, RoundId, Outcome, Data).
 
+checkpoint_ingress(
+  Data = #{ingress_pid := IngressPid,
+           task_id := TaskId,
+           counters := Usage,
+           mutation_ledger := Mutations,
+           unknown_outcome_ledger := UnknownOutcomes,
+           task_artifacts := Artifacts}) ->
+    ActiveRound = maps:get(active_round, Data, undefined),
+    {Round, UnsafeInvocations} =
+        case ActiveRound of
+            RoundData when is_map(RoundData) ->
+                {maps:get(round_id, RoundData, 0),
+                 active_unsafe_invocations(RoundData)};
+            undefined ->
+                {0, []}
+        end,
+    Checkpoint =
+        #{adaptive_events => maps:get(adaptive_events, Data, false),
+          usage => Usage,
+          mutation_ledger => Mutations,
+          unknown_outcome_ledger => UnknownOutcomes,
+          artifacts => Artifacts,
+          round => Round,
+          unsafe_invocations => UnsafeInvocations},
+    IngressPid ! {delegate_checkpoint, TaskId, self(), Checkpoint},
+    ok.
+
 action_tool_call_ids(undefined) ->
     [];
 action_tool_call_ids(RunId) when is_binary(RunId) ->
@@ -1240,7 +1325,7 @@ reserve_counter(Counter, Units, Data) ->
     end.
 
 counter_available(Counter, Units,
-                  #{budgets := Budgets, counters := Counters}) ->
+                  #{budget_limits := Budgets, counters := Counters}) ->
     Limit = counter_limit(Counter),
     Current = maps:get(Counter, Counters, 0),
     case maps:get(Limit, Budgets, undefined) of

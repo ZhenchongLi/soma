@@ -10,7 +10,7 @@
 -type proposal() :: map().
 -type diagnostic() :: map().
 
--spec normalize(map()) -> {ok, proposal()} | {error, [diagnostic()]}.
+-spec normalize(term()) -> {ok, proposal()} | {error, [diagnostic()]}.
 normalize(#{kind := reply, text := Text}) when is_binary(Text) ->
     {ok, #{kind => reply, text => Text}};
 normalize(#{kind := run_steps, steps := Steps}) when is_list(Steps) ->
@@ -58,7 +58,14 @@ normalize(#{kind := actor_message} = Raw) when not is_map_key(payload, Raw) ->
 normalize(#{kind := Kind}) ->
     {error, [#{code => unknown_kind,
                message => <<"unknown proposal kind">>,
-               kind => Kind}]}.
+               kind => Kind}]};
+normalize(Raw) when is_map(Raw) ->
+    {error, [#{code => missing_required_field,
+               message => <<"proposal requires a kind field">>,
+               field => kind}]};
+normalize(_Raw) ->
+    {error, [#{code => invalid_proposal,
+               message => <<"proposal must be a map">>}]}.
 
 valid_step(Step) when is_map(Step) ->
     maps:is_key(id, Step) andalso maps:is_key(tool, Step);
