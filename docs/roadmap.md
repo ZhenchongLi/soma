@@ -39,6 +39,10 @@ node B  real LLM provider behind the perform_call seam   [done — provider + ac
 CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
 tools   tool abstraction (docs/tool-abstraction.md)       [T.1 catalog + T.2 config tools + planning prompt + T.4 ask_actor done; T.3 memory deferred; T.5 MCP later]
+shell   agent-shell exploration (#225, AS.1-AS.4)          [done — text tools, (explore ...) form, bounded reader-only loop, config/CLI surface]
+service versioned soma.run runtime service (#236, RS.1a-d) [done — invoke/status/result/watch/cancel over service.sock, docs/service-contract.md]
+delegate soma.delegate agent-as-tool (#234 AS.5a + #233 AS.5) [done — per-task coordinator, round workers, leases, adaptive decision loop]
+hardening parser atom hygiene (#235)                       [done — safe reader default, binary config-tool identities, fixed diagnostics]
 ```
 
 ## v0.4 — soma_actor skeleton [done]

@@ -9,7 +9,7 @@ are built. `README.md` remains the authoritative high-level spec; read it before
 changing runtime behaviour. The docs under `docs/contracts/` map behavioural
 guarantees to the tests that prove them.
 
-Current local gate observed in this checkout: EUnit 387 and Common Test 425
+Current local gate observed in this checkout: EUnit 431 and Common Test 559
 green on Erlang/OTP 29. A self-contained macOS arm64 release is built and
 verified. Linux x86_64 and Linux arm64 release artifacts remain packaging/CI
 work, not runtime logic.
@@ -68,6 +68,29 @@ Layer status:
   with `(task ...)` task sources, `(msg ...)` envelopes, actor-to-actor
   Lisp bodies, Lisp proposals, Lisp audit/trace rendering, and bounded
   self-repair that re-enters the normal normalize/policy/budget path.
+- agent-shell exploration (AS.1-AS.4, #225) is built: `text_grep`/`text_head`
+  reader tools, the compile-only `(explore ...)` edge form, an optional bounded
+  reader-only exploration loop in `soma_actor` (`explore => true`, round
+  budgets, bounded observations, `explore.round.*` events), and `[llm]`
+  config keys that drive `soma ask` into explore mode, with fine-grained
+  docmod example manifests under `examples/docmod-tools/`.
+- the runtime service RS.1 (#236) is built: a versioned `(invoke ...)`
+  envelope with pure fail-closed normalization, a supervised `soma_service`
+  (durable request-id dedupe rebuilt from the event trail, capability-scope
+  admission, `in_doubt` classification, deadlines), artifact-backed results,
+  `event_id`-cursor `watch` pages, idempotent cancel, and a config-gated
+  Unix-socket ingress (`service.sock`) whose compatibility matrix lives in
+  `docs/service-contract.md`. Wire identifiers are history-free: caller step
+  ids and `from_step` references arrive as binaries and intern no atoms.
+- soma.delegate (AS.5a #234 + AS.5 #233) is built: per-task coordinators with
+  disposable round workers, snapshot hygiene, task-scoped leases, sticky
+  deadlines, the normalize -> policy -> capability admission chain, bounded
+  observations with artifact overflow, count/token budgets with
+  provider-usage accounting, scrubbed adaptive events, and structured
+  terminal projections — a bounded agent-as-tool beneath an upstream agent.
+- parser hardening (#235) is built: the safe reader default interns no atoms
+  from external Lisp or config input, config tools register under binary
+  identities, and unknown grammar symbols answer with fixed named diagnostics.
 - Local CLI/daemon product surface is built: `soma_cli_server`, `soma_cli`,
   `soma_cli_task_registry`, `soma_cli_main`, and the overlaid `scripts/soma`
   wrapper support `soma run` / `ask` / `status` / `trace` / `cancel` / `stop` /
@@ -75,10 +98,12 @@ Layer status:
   on disconnect, daemon auto-start, and the release's node-control script renamed
   to `bin/somad`.
 
-Latest runtime layer: **v0.7 persistent resume** is in through v0.7.5 (#198).
-The resume layer now includes event-store interrupted-run discovery and
-auto-resume on boot. Other open tracks: effect-aware policy, log/index
-compaction, and Linux release artifacts.
+Latest layers: **the agent-shell exploration track (#225)**, **the versioned
+runtime service RS.1 (#236)**, **the soma.delegate track (#233/#234)**, and
+**parser atom hardening (#235)** are all built and merged on top of v0.7
+persistent resume. Remaining open tracks: effect-aware policy, log/index
+compaction, and Linux release artifacts; #175's crash/resume validation demo
+is the remaining docmod work.
 
 ## What Soma Is
 
