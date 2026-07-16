@@ -21,6 +21,7 @@
 -export([test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded/1]).
 -export([test_terminal_projection_has_exact_public_contract/1]).
 -export([test_review_regressions_are_bounded_and_safety_preserving/1]).
+-export([test_review_namespaces_step_canon_serializer_and_usage_ownership/1]).
 -export([test_review_actual_dispatch_usage_and_observation_regressions/1]).
 -export([test_review_admission_artifact_window_and_idempotent_state_regressions/1]).
 -export([invoke/2]).
@@ -44,7 +45,8 @@ all() ->
      test_terminal_projection_has_exact_public_contract,
      test_review_regressions_are_bounded_and_safety_preserving,
      test_review_actual_dispatch_usage_and_observation_regressions,
-     test_review_admission_artifact_window_and_idempotent_state_regressions].
+     test_review_admission_artifact_window_and_idempotent_state_regressions,
+     test_review_namespaces_step_canon_serializer_and_usage_ownership].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -2341,6 +2343,14 @@ adaptive_term_contains(_Term, _Needle) ->
 
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
+invoke(#{mode := <<"unsafe_error">>}, _Ctx) ->
+    %% An arbitrary tool error term: the integer map key is valid Erlang
+    %% but outside soma_lisp's renderable key set.
+    {error, #{1 => <<"integer keyed detail">>,
+              reason => <<"unsafe error shape">>}};
+invoke(#{mode := <<"hang">>}, _Ctx) ->
+    timer:sleep(60000),
+    {ok, unreachable};
 invoke(#{mode := <<"timeout">>}, _Ctx) ->
     timer:sleep(5000),
     {ok, unreachable};
@@ -3048,6 +3058,229 @@ wait_for_running_projection(TaskId, Attempts) ->
         {ok, #{status := accepted}} ->
             timer:sleep(10),
             wait_for_running_projection(TaskId, Attempts - 1)
+    end.
+
+%% Fourth-round review findings (#233): namespace-based request boundary,
+%% canonical whole-list step validation, a total observation serializer,
+%% and task-owned usage commits.
+test_review_namespaces_step_canon_serializer_and_usage_ownership(_Config) ->
+    ok = phase_forbidden_namespaces(),
+    ok = phase_canonical_step_lists(),
+    ok = phase_total_observation_serializer(),
+    ok = phase_task_owned_usage(),
+    ok.
+
+phase_forbidden_namespaces() ->
+    Valid =
+        #{request_id => <<"delegate-review-ns-valid">>,
+          correlation_id => <<"delegate-review-ns-correlation">>,
+          objective => #{goal => <<"return a bounded result">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => [<<"echo">>]},
+          artifacts => []},
+    Rows =
+        [{credential_namespace,
+          #{objective => #{access_token => <<"secret-token">>}}},
+         {conversation_namespace,
+          #{output_contract =>
+                #{chat_history => [#{text => <<"private turn">>}]}}},
+         {lease_namespace,
+          #{objective => #{lease => <<"raw-lease-name">>}}}],
+    Actual =
+        [observe_boundary_case(
+           {forbidden, Class,
+            maps:merge(
+              Valid#{request_id =>
+                         <<"delegate-review-ns-",
+                           (atom_to_binary(Class, utf8))/binary>>},
+              Extra)})
+         || {Class, Extra} <- Rows],
+    Expected =
+        [#{case_name => Class,
+           reply => {error, invalid_delegate_request},
+           coordinator_count => 0}
+         || {Class, _Extra} <- Rows],
+    ?assertEqual(Expected, Actual),
+    ok.
+
+phase_canonical_step_lists() ->
+    Rows =
+        [{duplicate_ids,
+          <<"(run-steps "
+            "(step (id dup_step) (tool echo) (args (value \"a\"))) "
+            "(step (id dup_step) (tool echo) (args (value \"b\"))))">>},
+         {missing_dependency,
+          <<"(run-steps "
+            "(step (id needs_ghost) (tool echo) "
+            "(args (text (from_step ghost)))))">>}],
+    lists:foreach(
+      fun({Row, ActionSource}) ->
+              RowBin = atom_to_binary(Row, utf8),
+              CorrelationId =
+                  <<"delegate-review-canon-", RowBin/binary>>,
+              Responder =
+                  fun(_CallOpts) -> terminal_response(ActionSource) end,
+              RuntimeOptions =
+                  #{tool_policy => #{allowed_tools => [echo]},
+                    round_sequence =>
+                        [#{llm =>
+                               #{provider => openai_compat,
+                                 base_url => <<"api.example.test/v1">>,
+                                 api_key => <<"test-only-key">>,
+                                 model => <<"test-model">>,
+                                 response => Responder},
+                           decision => terminal}]},
+              ok = application:set_env(
+                     soma_actor, delegate_runtime_options,
+                     RuntimeOptions),
+              Request =
+                  #{request_id =>
+                        <<"delegate-review-canon-", RowBin/binary>>,
+                    correlation_id => CorrelationId,
+                    objective => #{goal => <<"canonical steps only">>},
+                    output_contract => #{format => <<"text">>},
+                    capability_scope => #{tools => [<<"echo">>]},
+                    artifacts => []},
+              {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+              Terminal = wait_for_terminal_projection(TaskId, 100),
+              ?assertEqual(failed, maps:get(status, Terminal)),
+              RunStarted =
+                  [Event ||
+                      #{event_type := <<"run.started">>} = Event <-
+                          soma_event_store:by_correlation(
+                            event_store_pid(), CorrelationId)],
+              ?assertEqual({Row, []}, {Row, RunStarted})
+      end,
+      Rows),
+    ok.
+
+phase_total_observation_serializer() ->
+    ToolName = delegate_review_unsafe_error_tool,
+    ok = soma_tool_registry:register_tool(
+           #{name => ToolName,
+             effect => state,
+             idempotent => false,
+             timeout_ms => 1000,
+             adapter => erlang_module,
+             module => ?MODULE,
+             description => <<"Returns an arbitrary error term.">>}),
+    TestPid = self(),
+    ActionSource =
+        <<"(run-steps (step (id unsafe_error_action) "
+          "(tool delegate_review_unsafe_error_tool) "
+          "(args (mode \"unsafe_error\"))))">>,
+    FirstResponder =
+        fun(_CallOpts) -> terminal_response(ActionSource) end,
+    SecondResponder =
+        fun(CallOpts) ->
+                TestPid !
+                    {delegate_review_serializer_prompt,
+                     maps:get(prompt_projection, CallOpts, missing)},
+                terminal_response(<<"survived unsafe error">>)
+        end,
+    RuntimeOptions =
+        #{tool_policy => #{allowed_tools => [ToolName]},
+          round_sequence =>
+              [#{llm =>
+                     #{provider => openai_compat,
+                       base_url => <<"api.example.test/v1">>,
+                       api_key => <<"test-only-key">>,
+                       model => <<"test-model">>,
+                       response => FirstResponder},
+                 decision => continue},
+               #{llm =>
+                     #{provider => openai_compat,
+                       base_url => <<"api.example.test/v1">>,
+                       api_key => <<"test-only-key">>,
+                       model => <<"test-model">>,
+                       response => SecondResponder},
+                 decision => terminal}]},
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options, RuntimeOptions),
+    Request =
+        #{request_id => <<"delegate-review-serializer">>,
+          correlation_id => <<"delegate-review-serializer-correlation">>,
+          objective => #{goal => <<"observe an unsafe error term">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope =>
+              #{tools => [<<"delegate_review_unsafe_error_tool">>]},
+          artifacts => []},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Terminal = wait_for_terminal_projection(TaskId, 200),
+    ?assertEqual(succeeded, maps:get(status, Terminal)),
+    SecondPrompt =
+        receive
+            {delegate_review_serializer_prompt, Prompt} -> Prompt
+        after 2000 ->
+                ct:fail(no_second_prompt_after_unsafe_error)
+        end,
+    RecentRounds = maps:get(recent_rounds, SecondPrompt, missing),
+    ?assertMatch([_AtLeastOneRound | _], RecentRounds),
+    ok.
+
+phase_task_owned_usage() ->
+    ToolName = delegate_review_usage_probe,
+    ok = soma_tool_registry:register_tool(
+           #{name => ToolName,
+             effect => state,
+             idempotent => false,
+             timeout_ms => 60000,
+             adapter => erlang_module,
+             module => ?MODULE,
+             description => <<"Hangs so the worker can be killed.">>}),
+    ActionSource =
+        <<"(run-steps (step (id usage_probe_action) "
+          "(tool delegate_review_usage_probe) "
+          "(args (mode \"hang\")) (timeout_ms 60000)))">>,
+    Responder =
+        fun(_CallOpts) -> terminal_response(ActionSource, 7) end,
+    CorrelationId = <<"delegate-review-usage-correlation">>,
+    RuntimeOptions =
+        #{tool_policy => #{allowed_tools => [ToolName]},
+          round_sequence =>
+              [#{llm =>
+                     #{provider => openai_compat,
+                       base_url => <<"api.example.test/v1">>,
+                       api_key => <<"test-only-key">>,
+                       model => <<"test-model">>,
+                       response => Responder},
+                 decision => terminal}]},
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options, RuntimeOptions),
+    Request =
+        #{request_id => <<"delegate-review-usage">>,
+          correlation_id => CorrelationId,
+          objective => #{goal => <<"commit usage before losing worker">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope =>
+              #{tools => [<<"delegate_review_usage_probe">>]},
+          artifacts => []},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    ok = wait_for_review_tool_started(CorrelationId, 200),
+    [WorkerPid | _] =
+        [Pid || {_Id, Pid, worker, _Modules} <-
+                    supervisor:which_children(soma_delegate_round_sup),
+                is_pid(Pid)],
+    exit(WorkerPid, kill),
+    Terminal = wait_for_terminal_projection(TaskId, 200),
+    Usage = maps:get(usage, Terminal),
+    ?assertEqual(7, maps:get(prompt_tokens, Usage)),
+    ok.
+
+wait_for_review_tool_started(_CorrelationId, 0) ->
+    ct:fail(review_tool_never_started);
+wait_for_review_tool_started(CorrelationId, Attempts) ->
+    Started =
+        [Event ||
+            #{event_type := <<"tool.started">>} = Event <-
+                soma_event_store:by_correlation(
+                  event_store_pid(), CorrelationId)],
+    case Started of
+        [_AtLeastOne | _] ->
+            ok;
+        [] ->
+            timer:sleep(10),
+            wait_for_review_tool_started(CorrelationId, Attempts - 1)
     end.
 
 wait_for_terminal_projection(_TaskId, 0) ->
