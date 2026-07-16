@@ -1,6 +1,9 @@
 # Soma Agent Shell 设计草案
 
-> 状态：设计草案，对应 GitHub issue #225。
+> 状态：已实现(2026-07-16)。对应 GitHub issue #225(伞形,AS.1–AS.4 探索层),
+> 及其后续 #236(RS.1 运行时服务)与 #233/#234(soma.delegate)。
+> 各切片的行为保证见 `docs/contracts/` 下的 AS.*、RS.1* 契约文档;
+> 服务面兼容性契约见 `docs/service-contract.md`。以下为原设计草案。
 > 本文描述一个用户态 agent shell 层：外部 agent 只知道 `soma` 一个工具，
 > 在 Soma 内部探索工具、阅读 help、过滤信息、试跑、生成 Soma Lisp、编译、
 > 执行和监控。
