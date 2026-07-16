@@ -2157,6 +2157,10 @@ test_completed_delegate_preserves_existing_result_contracts(_Config) ->
                  decision => terminal}]},
     {ok, #{task_id := DelegateTaskId}} =
         submit_through_production_ingress(DelegateSpec),
+    {ok, DelegateProjection =
+             #{usage := #{prompt_tokens := PromptTokens}}} =
+        wait_for_task_status(DelegateTaskId, succeeded, 200),
+    ?assert(PromptTokens > 0),
     ?assertEqual(
        {ok, #{request_id => DelegateRequestId,
               task_id => DelegateTaskId,
@@ -2169,9 +2173,9 @@ test_completed_delegate_preserves_existing_result_contracts(_Config) ->
               usage => #{rounds => 1,
                          llm_calls => 1,
                          tool_calls => 1,
-                         prompt_tokens => 0},
+                         prompt_tokens => PromptTokens},
               trace_ref => DelegateCorrelationId}},
-       wait_for_task_status(DelegateTaskId, succeeded, 200)),
+       {ok, DelegateProjection}),
 
     ActualContracts =
         #{service => compatibility_service_result_shape(),

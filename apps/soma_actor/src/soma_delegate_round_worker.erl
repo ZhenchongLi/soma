@@ -471,7 +471,7 @@ execute_admitted_proposal(#{kind := reply, text := Text}, Data) ->
 execute_admitted_proposal(#{kind := reject, reason := Reason}, Data) ->
     report_round_result(
       Data,
-      #{status => failed,
+      #{status => rejected,
         phase => decision,
         reason => {model_rejected, Reason}}).
 

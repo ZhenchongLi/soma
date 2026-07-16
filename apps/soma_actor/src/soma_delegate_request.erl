@@ -12,6 +12,7 @@ normalize(Request) when is_map(Request) ->
     case valid_top_level_keys(Request) andalso
          valid_request_id(Request) andalso
          valid_correlation_id(Request) andalso
+         valid_field_shapes(Request) andalso
          safe_term(Request) andalso
          encoded_bytes(Request) =< ?MAX_REQUEST_BYTES of
         true ->
@@ -47,6 +48,97 @@ valid_id(Id) when is_binary(Id),
     true;
 valid_id(_Id) ->
     false.
+
+valid_field_shapes(Request) ->
+    valid_optional_map(budgets, Request) andalso
+        valid_capability_scope(
+          maps:get(capability_scope, Request, #{})) andalso
+        valid_resource_handles(
+          maps:get(resource_handles, Request, #{})) andalso
+        valid_artifacts(maps:get(artifacts, Request, [])).
+
+valid_optional_map(Key, Request) ->
+    case maps:find(Key, Request) of
+        {ok, Value} -> is_map(Value);
+        error -> true
+    end.
+
+valid_capability_scope(Scope) when is_map(Scope) ->
+    valid_capability_tools(maps:get(tools, Scope, []));
+valid_capability_scope(_InvalidScope) ->
+    false.
+
+valid_capability_tools(all) ->
+    true;
+valid_capability_tools(Tools) when is_list(Tools) ->
+    lists:all(fun valid_external_name/1, Tools);
+valid_capability_tools(_InvalidTools) ->
+    false.
+
+valid_external_name(Name) when is_atom(Name) ->
+    true;
+valid_external_name(Name) when is_binary(Name) ->
+    byte_size(Name) > 0;
+valid_external_name(Name) when is_list(Name), Name =/= [] ->
+    try unicode:characters_to_binary(Name) of
+        Binary when is_binary(Binary) -> byte_size(Binary) > 0;
+        _InvalidText -> false
+    catch
+        error:badarg -> false
+    end;
+valid_external_name(_InvalidName) ->
+    false.
+
+valid_resource_handles(Handles) when is_map(Handles) ->
+    maps:fold(
+      fun(Name, Handle, Valid) ->
+              Valid andalso valid_external_name(Name) andalso
+                  valid_handle(Handle)
+      end,
+      true, Handles);
+valid_resource_handles(_InvalidHandles) ->
+    false.
+
+valid_artifacts(Artifacts) when is_list(Artifacts) ->
+    lists:all(fun valid_artifact/1, Artifacts);
+valid_artifacts(_InvalidArtifacts) ->
+    false.
+
+valid_artifact(Artifact = #{handle := Handle}) when is_map(Artifact) ->
+    lists:all(
+      fun(Key) ->
+              lists:member(Key, [handle, bytes, excerpt, truncated])
+      end,
+      maps:keys(Artifact)) andalso
+        valid_handle(Handle) andalso
+        valid_optional_non_neg_integer(bytes, Artifact) andalso
+        valid_optional_binary(excerpt, Artifact) andalso
+        valid_optional_boolean(truncated, Artifact);
+valid_artifact(_InvalidArtifact) ->
+    false.
+
+valid_handle(Handle) when is_binary(Handle) ->
+    byte_size(Handle) > 0;
+valid_handle(_InvalidHandle) ->
+    false.
+
+valid_optional_non_neg_integer(Key, Map) ->
+    case maps:find(Key, Map) of
+        {ok, Value} -> is_integer(Value) andalso Value >= 0;
+        error -> true
+    end.
+
+valid_optional_binary(Key, Map) ->
+    case maps:find(Key, Map) of
+        {ok, Value} -> is_binary(Value);
+        error -> true
+    end.
+
+valid_optional_boolean(Key, Map) ->
+    case maps:find(Key, Map) of
+        {ok, Value} -> is_boolean(Value);
+        error -> true
+    end.
 
 safe_term(Term) ->
     safe_term(Term, ?MAX_DEPTH).
