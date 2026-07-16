@@ -7,12 +7,14 @@
 -export([test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs/1]).
 -export([test_prompt_projection_uses_exact_task_local_fields/1]).
 -export([test_model_action_admission_order_and_state_spine/1]).
+-export([test_denied_and_malformed_actions_stop_before_run/1]).
 -export([invoke/2]).
 
 all() ->
     [test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs,
      test_prompt_projection_uses_exact_task_local_fields,
-     test_model_action_admission_order_and_state_spine].
+     test_model_action_admission_order_and_state_spine,
+     test_denied_and_malformed_actions_stop_before_run].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -225,6 +227,40 @@ test_model_action_admission_order_and_state_spine(_Config) ->
     ?assert(RunPid =/= ToolCallPid),
     ?assert(RoundWorkerPid =/= ToolCallPid).
 
+test_denied_and_malformed_actions_stop_before_run(_Config) ->
+    Action =
+        #{kind => run_steps,
+          steps =>
+              [#{id => denied_action,
+                 tool => echo,
+                 args => #{value => <<"must not run">>}}]},
+    MalformedAction =
+        #{kind => run_steps,
+          steps => [#{id => malformed_action, args => #{}}]},
+    Cases =
+        [{global_policy_denied,
+          #{allowed_tools => []},
+          #{tools => [<<"echo">>]},
+          Action,
+          rejected},
+         {task_capability_denied,
+          #{allowed_tools => [echo]},
+          #{tools => []},
+          Action,
+          rejected},
+         {malformed_action,
+          #{allowed_tools => [echo]},
+          #{tools => [<<"echo">>]},
+          MalformedAction,
+          failed}],
+    Actual = [observe_denied_action_case(Case) || Case <- Cases],
+    Expected =
+        [#{case_name => CaseName,
+           status => ExpectedStatus,
+           run_started => false}
+         || {CaseName, _Policy, _Scope, _Proposal, ExpectedStatus} <- Cases],
+    ?assertEqual(Expected, Actual).
+
 invoke(Input, _Ctx) ->
     {ok, Input}.
 
@@ -298,12 +334,45 @@ terminal_response(Text) ->
                   [#{<<"message">> => #{<<"content">> => Text}}]})),
     {200, Body}.
 
+observe_denied_action_case(
+  {CaseName, ToolPolicy, CapabilityScope, Proposal, _ExpectedStatus}) ->
+    Suffix = atom_to_binary(CaseName, utf8),
+    CorrelationId = <<"delegate-denial-", Suffix/binary, "-correlation">>,
+    RuntimeOptions =
+        #{tool_policy => ToolPolicy,
+          round_sequence =>
+              [#{llm => #{directive => proposal, output => Proposal},
+                 decision => terminal}]},
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options, RuntimeOptions),
+    Request =
+        #{request_id => <<"delegate-denial-", Suffix/binary>>,
+          correlation_id => CorrelationId,
+          objective => #{goal => <<"exercise action admission">>},
+          output_contract => #{format => <<"task-data">>},
+          capability_scope => CapabilityScope,
+          artifacts => []},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    #{status := Status} = wait_for_terminal_projection(TaskId, 100),
+    Events =
+        soma_event_store:by_correlation(
+          event_store_pid(), CorrelationId),
+    #{case_name => CaseName,
+      status => Status,
+      run_started =>
+          lists:any(
+            fun(#{event_type := <<"run.started">>}) -> true;
+               (_) -> false
+            end,
+            Events)}.
+
 wait_for_terminal_projection(_TaskId, 0) ->
     ct:fail(delegate_task_did_not_finish);
 wait_for_terminal_projection(TaskId, Attempts) ->
     case soma_delegate:status(TaskId) of
         {ok, #{status := Status} = Projection}
           when Status =:= succeeded; Status =:= failed;
+               Status =:= rejected;
                Status =:= timeout; Status =:= cancelled;
                Status =:= in_doubt ->
             Projection;
@@ -311,6 +380,12 @@ wait_for_terminal_projection(TaskId, Attempts) ->
             timer:sleep(10),
             wait_for_terminal_projection(TaskId, Attempts - 1)
     end.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Modules} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
 
 observe_boundary_case({accepted, Request}) ->
     Reply = soma_delegate:submit(Request),
