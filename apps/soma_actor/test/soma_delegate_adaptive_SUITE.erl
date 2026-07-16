@@ -11,6 +11,7 @@
 -export([test_reader_state_terminal_sequence_threads_observations/1]).
 -export([test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations/1]).
 -export([test_prompt_schemas_equal_policy_capability_intersection/1]).
+-export([test_round_llm_and_tool_budgets_stop_before_child_start_and_reset/1]).
 -export([invoke/2]).
 
 all() ->
@@ -20,7 +21,8 @@ all() ->
      test_denied_and_malformed_actions_stop_before_run,
      test_reader_state_terminal_sequence_threads_observations,
      test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations,
-     test_prompt_schemas_equal_policy_capability_intersection].
+     test_prompt_schemas_equal_policy_capability_intersection,
+     test_round_llm_and_tool_budgets_stop_before_child_start_and_reset].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -487,6 +489,55 @@ test_prompt_schemas_equal_policy_capability_intersection(_Config) ->
     Expected = [Schema || Schema = #{name := echo} <- Catalog],
     ?assertEqual(Expected, maps:get(tool_schemas, Projection, missing)).
 
+test_round_llm_and_tool_budgets_stop_before_child_start_and_reset(
+  _Config) ->
+    Cases =
+        [{max_rounds,
+          #{max_rounds => 1,
+            max_llm_calls => 10,
+            max_tool_calls => 10},
+          terminal,
+          #{rounds => 1, llm_calls => 1,
+            tool_calls => 1, prompt_tokens => 0},
+          #{round_workers => 1, llm_workers => 1, runs => 1}},
+         {max_llm_calls,
+          #{max_rounds => 10,
+            max_llm_calls => 1,
+            max_tool_calls => 10},
+          terminal,
+          #{rounds => 2, llm_calls => 1,
+            tool_calls => 1, prompt_tokens => 0},
+          #{round_workers => 2, llm_workers => 1, runs => 1}},
+         {max_tool_calls,
+          #{max_rounds => 10,
+            max_llm_calls => 10,
+            max_tool_calls => 1},
+          action,
+          #{rounds => 2, llm_calls => 2,
+            tool_calls => 1, prompt_tokens => 0},
+          #{round_workers => 2, llm_workers => 2, runs => 1}}],
+    ActualCases = [observe_budget_case(Case) || Case <- Cases],
+    ExpectedCases =
+        [#{limit => Limit,
+           status => failed,
+           budget_data => {budget_exceeded, Limit},
+           usage => ExpectedUsage,
+           started_children => ExpectedStarts,
+           llm_workers_dead => true,
+           live_round_workers => 0,
+           live_runs => 0}
+         || {Limit, _Budgets, _SecondDecision,
+             ExpectedUsage, ExpectedStarts} <- Cases],
+    Actual =
+        #{budget_cases => ActualCases,
+          fresh_usage => observe_fresh_usage()},
+    Expected =
+        #{budget_cases => ExpectedCases,
+          fresh_usage =>
+              #{rounds => 0, llm_calls => 0,
+                tool_calls => 0, prompt_tokens => 0}},
+    ?assertEqual(Expected, Actual).
+
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
 invoke(#{mode := <<"timeout">>}, _Ctx) ->
@@ -667,6 +718,122 @@ observe_denied_action_case(
             end,
             Events)}.
 
+observe_budget_case(
+  {Limit, Budgets, SecondDecision, _ExpectedUsage, _ExpectedStarts}) ->
+    TestPid = self(),
+    Suffix = atom_to_binary(Limit, utf8),
+    Responses =
+        [budget_action_response(1),
+         budget_second_response(SecondDecision)],
+    RoundSequence =
+        [#{llm =>
+               #{provider => openai_compat,
+                 base_url => <<"api.example.test/v1">>,
+                 api_key => <<"test-only-key">>,
+                 model => <<"test-model">>,
+                 response =>
+                     fun(_CallOpts) ->
+                             TestPid !
+                                 {delegate_budget_llm_started,
+                                  Limit, Round, self()},
+                             terminal_response(Response)
+                     end}}
+         || {Round, Response} <- lists:enumerate(Responses)],
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [echo]},
+             round_sequence => RoundSequence}),
+    CorrelationId =
+        <<"delegate-budget-", Suffix/binary, "-correlation">>,
+    Request =
+        #{request_id => <<"delegate-budget-", Suffix/binary>>,
+          correlation_id => CorrelationId,
+          objective => #{goal => <<"stop before the prohibited child">>},
+          output_contract => #{format => <<"task-data">>},
+          capability_scope => #{tools => [<<"echo">>]},
+          artifacts => [],
+          budgets => Budgets},
+
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Terminal = wait_for_terminal_projection(TaskId, 100),
+    wait_for_no_coordinators(100),
+    LlmWorkers = collect_budget_llm_workers(Limit, []),
+    Events =
+        soma_event_store:by_correlation(
+          event_store_pid(), CorrelationId),
+    wait_for_no_budget_children(100),
+    #{limit => Limit,
+      status => maps:get(status, Terminal),
+      budget_data => maps:get(result, Terminal, missing),
+      usage => maps:get(usage, Terminal, missing),
+      started_children =>
+          #{round_workers =>
+                event_type_count(
+                  <<"delegate.round.started">>, Events),
+            llm_workers => length(LlmWorkers),
+            runs => event_type_count(<<"run.started">>, Events)},
+      llm_workers_dead =>
+          lists:all(
+            fun(Pid) -> not is_process_alive(Pid) end,
+            LlmWorkers),
+      live_round_workers => length(live_round_workers()),
+      live_runs => length(live_runs())}.
+
+budget_action_response(1) ->
+    <<"(run-steps (step (id budget_action_one) (tool echo) "
+      "(args (value \"one\"))))">>.
+
+budget_second_response(terminal) ->
+    <<"(reply (text \"the budget gate should stop before this reply\"))">>;
+budget_second_response(action) ->
+    <<"(run-steps (step (id budget_action_two) (tool echo) "
+      "(args (value \"two\"))))">>.
+
+collect_budget_llm_workers(Limit, Acc) ->
+    receive
+        {delegate_budget_llm_started, Limit, Round, WorkerPid} ->
+            collect_budget_llm_workers(
+              Limit, [{Round, WorkerPid} | Acc])
+    after 100 ->
+        [WorkerPid || {_Round, WorkerPid} <- lists:keysort(1, Acc)]
+    end.
+
+event_type_count(EventType, Events) ->
+    length(
+      [Event || #{event_type := ActualType} = Event <- Events,
+                ActualType =:= EventType]).
+
+observe_fresh_usage() ->
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{round_sequence => []}),
+    Request =
+        #{request_id => <<"delegate-budget-fresh-request">>,
+          correlation_id => <<"delegate-budget-fresh-correlation">>,
+          objective => #{goal => <<"expose fresh counters">>},
+          output_contract => #{format => <<"task-data">>},
+          capability_scope => #{tools => []},
+          artifacts => []},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    _Projection = wait_for_running_projection(TaskId, 100),
+    [CoordinatorPid] = live_coordinators(),
+    {running, CoordinatorData} = sys:get_state(CoordinatorPid),
+    Usage = maps:get(counters, CoordinatorData, missing),
+    {ok, #{status := cancelled}} = soma_delegate:cancel(TaskId),
+    wait_for_no_coordinators(100),
+    Usage.
+
+wait_for_running_projection(_TaskId, 0) ->
+    ct:fail(delegate_task_did_not_start);
+wait_for_running_projection(TaskId, Attempts) ->
+    case soma_delegate:status(TaskId) of
+        {ok, #{status := running} = Projection} ->
+            Projection;
+        {ok, #{status := accepted}} ->
+            timer:sleep(10),
+            wait_for_running_projection(TaskId, Attempts - 1)
+    end.
+
 wait_for_terminal_projection(_TaskId, 0) ->
     ct:fail(delegate_task_did_not_finish);
 wait_for_terminal_projection(TaskId, Attempts) ->
@@ -749,3 +916,27 @@ live_coordinators() ->
                   soma_delegate_coordinator_sup),
             is_pid(Pid),
             is_process_alive(Pid)].
+
+live_round_workers() ->
+    [Pid || {_Id, Pid, worker, _Modules} <-
+                supervisor:which_children(soma_delegate_round_sup),
+            is_pid(Pid),
+            is_process_alive(Pid)].
+
+live_runs() ->
+    [Pid || {_Id, Pid, worker, _Modules} <-
+                supervisor:which_children(soma_run_sup),
+            is_pid(Pid),
+            is_process_alive(Pid)].
+
+wait_for_no_budget_children(0) ->
+    ?assertEqual(
+       {[], []}, {live_round_workers(), live_runs()});
+wait_for_no_budget_children(Attempts) ->
+    case {live_round_workers(), live_runs()} of
+        {[], []} ->
+            ok;
+        _ChildrenStillRunning ->
+            timer:sleep(10),
+            wait_for_no_budget_children(Attempts - 1)
+    end.
