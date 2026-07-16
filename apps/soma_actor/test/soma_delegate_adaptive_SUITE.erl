@@ -15,6 +15,7 @@
 -export([test_task_deadline_tears_down_all_owned_execution_children/1]).
 -export([test_context_preflight_and_provider_usage_accounting/1]).
 -export([test_oversized_observation_uses_stable_task_artifact_and_bounded_slice/1]).
+-export([test_recent_round_window_replaces_old_observations_with_one_summary/1]).
 -export([invoke/2]).
 
 all() ->
@@ -28,7 +29,8 @@ all() ->
      test_round_llm_and_tool_budgets_stop_before_child_start_and_reset,
      test_task_deadline_tears_down_all_owned_execution_children,
      test_context_preflight_and_provider_usage_accounting,
-     test_oversized_observation_uses_stable_task_artifact_and_bounded_slice].
+     test_oversized_observation_uses_stable_task_artifact_and_bounded_slice,
+     test_recent_round_window_replaces_old_observations_with_one_summary].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -742,6 +744,97 @@ test_oversized_observation_uses_stable_task_artifact_and_bounded_slice(
         ok = soma_tool_registry:unregister_tool(ToolName)
     end.
 
+test_recent_round_window_replaces_old_observations_with_one_summary(
+  _Config) ->
+    RecentRoundWindow = 2,
+    SummaryByteLimit = 512,
+    OldSentinels =
+        [<<"evicted-raw-observation-one">>,
+         <<"evicted-raw-observation-two">>],
+    RecentSentinels =
+        [<<"recent-raw-observation-three">>,
+         <<"recent-raw-observation-four">>],
+    Sentinels = OldSentinels ++ RecentSentinels,
+    StepIds =
+        [window_action_one, window_action_two,
+         window_action_three, window_action_four],
+    Actions =
+        [#{kind => run_steps,
+           steps =>
+               [#{id => StepId,
+                  tool => text_head,
+                  args => #{text => Sentinel, lines => 1}}]}
+         || {StepId, Sentinel} <- lists:zip(StepIds, Sentinels)],
+    TestPid = self(),
+    FinalResponder =
+        fun(CallOpts) ->
+                TestPid !
+                    {delegate_recent_window_prompt,
+                     maps:get(prompt_projection, CallOpts)},
+                terminal_response(<<"recent window observed">>)
+        end,
+    RoundSequence =
+        [#{llm => #{directive => proposal, output => Action}}
+         || Action <- Actions] ++
+        [#{llm =>
+               #{provider => openai_compat,
+                 base_url => <<"api.example.test/v1">>,
+                 api_key => <<"test-only-key">>,
+                 model => <<"test-model">>,
+                 response => FinalResponder}}],
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [text_head]},
+             round_sequence => RoundSequence}),
+    Request =
+        #{request_id => <<"delegate-recent-round-window">>,
+          correlation_id =>
+              <<"delegate-recent-round-window-correlation">>,
+          objective => #{goal => <<"summarize evicted observations">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => [<<"text_head">>]},
+          artifacts => [],
+          budgets => #{recent_round_window => RecentRoundWindow}},
+
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Prompt = receive_recent_window_prompt(),
+    #{status := succeeded} = wait_for_terminal_projection(TaskId, 100),
+    PromptBytes = term_to_binary(Prompt, [deterministic]),
+    RecentRounds = maps:get(recent_rounds, Prompt, missing),
+    Summary = maps:get(task_summary, Prompt, missing),
+    Actual =
+        #{recent_round_numbers =>
+              [Round || #{round := Round} <- RecentRounds],
+          recent_raw_observations_retained =>
+              lists:all(
+                fun(Sentinel) ->
+                        binary:match(PromptBytes, Sentinel) =/= nomatch
+                end,
+                RecentSentinels),
+          old_raw_observations_removed =>
+              lists:all(
+                fun(Sentinel) ->
+                        binary:match(PromptBytes, Sentinel) =:= nomatch
+                end,
+                OldSentinels),
+          summary => Summary,
+          summary_bounded =>
+              byte_size(term_to_binary(Summary, [deterministic])) =<
+                  SummaryByteLimit},
+    Expected =
+        #{recent_round_numbers => [3, 4],
+          recent_raw_observations_retained => true,
+          old_raw_observations_removed => true,
+          summary =>
+              #{action => tool_observation,
+                status => succeeded,
+                counts => #{rounds => 2, succeeded => 2},
+                first_round => 1,
+                last_round => 2,
+                observation_ref => #{inline => true}},
+          summary_bounded => true},
+    ?assertEqual(Expected, Actual).
+
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
 invoke(#{mode := <<"timeout">>}, _Ctx) ->
@@ -831,6 +924,14 @@ receive_artifact_prompt() ->
             Projection
     after 2000 ->
         ct:fail(delegate_artifact_prompt_not_observed)
+    end.
+
+receive_recent_window_prompt() ->
+    receive
+        {delegate_recent_window_prompt, Projection} ->
+            Projection
+    after 2000 ->
+        ct:fail(delegate_recent_window_prompt_not_observed)
     end.
 
 terminal_response(Text) ->
