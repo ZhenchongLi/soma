@@ -6,6 +6,7 @@
 
 -define(DEFAULT_ROUND_TIMEOUT_MS, 120000).
 -define(ROUND_FORCED_STOP_MS, 1000).
+-define(MAX_TIMER_MS, 16#ffffffff).
 -define(MAX_ROUND_SNAPSHOT_BYTES, 65536).
 -define(MAX_ROUND_RESULT_BYTES, 16384).
 
@@ -28,6 +29,8 @@ init(#{request := Request = #{request_id := RequestId,
        runtime_options := RuntimeOptions})
   when is_binary(RequestId), is_binary(TaskId), is_binary(CorrelationId),
        is_pid(IngressPid), is_map(RuntimeOptions) ->
+    Budgets = maps:get(budgets, Request, #{}),
+    TaskDeadlineTimer = arm_task_deadline(Budgets, TaskId),
     Data = #{request_id => RequestId,
              task_id => TaskId,
              correlation_id => CorrelationId,
@@ -38,7 +41,7 @@ init(#{request := Request = #{request_id := RequestId,
              objective => maps:get(objective, Request, undefined),
              output_contract => maps:get(output_contract, Request, undefined),
              context_checkpoint => initial_checkpoint(RuntimeOptions),
-             budgets => maps:get(budgets, Request, #{}),
+             budgets => Budgets,
              usage => #{},
              counters => initial_counters(),
              mutation_ledger => [],
@@ -52,6 +55,8 @@ init(#{request := Request = #{request_id := RequestId,
                    guard => undefined},
              next_round_id => 1,
              active_round => undefined,
+             task_deadline_timer => TaskDeadlineTimer,
+             task_deadline_expired => false,
              cleanup_started => false,
              terminal_result => undefined,
              round_sequence =>
@@ -105,6 +110,14 @@ handle_event(info,
         {delegate_status_reply, TaskId, self(), StatusRef,
          {ok, public_projection(Data)}},
     {keep_state, Data};
+handle_event(info,
+             {timeout, TaskDeadlineTimer,
+              {delegate_task_deadline, TaskId}},
+             StateName,
+             Data = #{task_id := TaskId,
+                      task_deadline_timer := TaskDeadlineTimer})
+  when StateName =:= awaiting_start; StateName =:= running ->
+    expire_task_deadline(Data);
 handle_event(cast, {cancel, TaskId}, running,
              Data = #{task_id := TaskId,
                       active_round := ActiveRound})
@@ -367,6 +380,16 @@ commit_round_result(Result, RoundId, Data) ->
 
 commit_finished_round(
   _Result, RoundId,
+  ActiveRound = #{cancel_status := timeout,
+                  unsafe_action_dispatched := false},
+  Data = #{task_deadline_expired := true}) ->
+    Projection = task_deadline_projection(RoundId),
+    ClearedData =
+        clear_committed_round(
+          Projection, RoundId, ActiveRound, Data),
+    start_cleanup(Projection, ClearedData);
+commit_finished_round(
+  _Result, RoundId,
   #{cancel_status := timeout,
     unsafe_action_dispatched := false},
   Data) ->
@@ -530,6 +553,17 @@ cancel_active_round(
                                 cancel_status := Status},
     {keep_state, Data#{active_round := UpdatedRound}}.
 
+handle_round_worker_down(
+  ActiveRound, RoundId,
+  Data = #{task_deadline_expired := true}) ->
+    case maps:get(unsafe_action_dispatched, ActiveRound, false) of
+        true ->
+            finish_lost_unsafe_result(ActiveRound, RoundId, Data);
+        false ->
+            Projection = task_deadline_projection(RoundId),
+            ok = emit_round_completed(RoundId, Projection, Data),
+            finish_worker_down(Projection, Data)
+    end;
 handle_round_worker_down(ActiveRound, RoundId, Data) ->
     case {maps:get(unsafe_action_dispatched, ActiveRound, false),
           maps:get(cancel_status, ActiveRound, undefined)} of
@@ -593,9 +627,10 @@ continue_after_pre_stateful_failure(Failure, Data) ->
 start_cleanup(Projection0, Data = #{cleanup_started := false}) ->
     Projection = maybe_attach_budget_usage(Projection0, Data),
     Status = maps:get(status, Projection),
-    CleanupData = Data#{status := Status,
-                        cleanup_started := true,
-                        terminal_result := Projection},
+    DeadlineClearedData = cancel_task_deadline(Data),
+    CleanupData = DeadlineClearedData#{status := Status,
+                                       cleanup_started := true,
+                                       terminal_result := Projection},
     ok = emit_delegate_event(
            <<"delegate.task.cleanup">>, 0,
            CleanupData, CleanupData),
@@ -614,6 +649,9 @@ round_timeout_failure(RoundId) ->
     #{status => timeout,
       reason => round_timeout,
       round => RoundId}.
+
+task_deadline_projection(RoundId) ->
+    #{status => timeout, round => RoundId}.
 
 worker_down_projection(ActiveRound, RoundId) ->
     case maps:get(cancel_status, ActiveRound, undefined) of
@@ -636,6 +674,37 @@ arm_round_timer(Work, TaskId, RoundId, WorkerPid,
       TimeoutMs, self(),
       {delegate_round_timeout, TaskId, RoundId, WorkerPid,
        WorkerIdentity, ResultCapability}).
+
+arm_task_deadline(Budgets, TaskId) when is_map(Budgets) ->
+    case maps:get(deadline_ms, Budgets, undefined) of
+        DeadlineMs when is_integer(DeadlineMs),
+                        DeadlineMs > 0,
+                        DeadlineMs =< ?MAX_TIMER_MS ->
+            erlang:start_timer(
+              DeadlineMs, self(),
+              {delegate_task_deadline, TaskId});
+        _MissingOrInvalidDeadline ->
+            undefined
+    end;
+arm_task_deadline(_InvalidBudgets, _TaskId) ->
+    undefined.
+
+expire_task_deadline(Data = #{active_round := ActiveRound})
+  when is_map(ActiveRound) ->
+    DeadlineData =
+        Data#{task_deadline_timer := undefined,
+              task_deadline_expired := true},
+    cancel_active_round(timeout, DeadlineData);
+expire_task_deadline(Data) ->
+    DeadlineData =
+        Data#{task_deadline_timer := undefined,
+              task_deadline_expired := true},
+    start_cleanup(#{status => timeout}, DeadlineData).
+
+cancel_task_deadline(
+  Data = #{task_deadline_timer := TaskDeadlineTimer}) ->
+    cancel_timer(TaskDeadlineTimer),
+    Data#{task_deadline_timer := undefined}.
 
 arm_forced_stop_timer(
   Status, TaskId, RoundId, WorkerPid,
