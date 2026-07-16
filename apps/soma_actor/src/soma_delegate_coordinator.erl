@@ -444,33 +444,37 @@ commit_round_result(Result, RoundId, Data) ->
             {keep_state, Data}
     end.
 
+commit_finished_round(Result, RoundId, ActiveRound, Data) ->
+    SafetyFacts = active_safety_facts(ActiveRound, RoundId, Data),
+    UnsafeUnresolved =
+        maps:get(unknown_outcomes, SafetyFacts, []) =/= [],
+    commit_finished_round(
+      Result, RoundId, ActiveRound, UnsafeUnresolved,
+      SafetyFacts, Data).
+
 commit_finished_round(
   _Result, RoundId,
-  ActiveRound = #{cancel_status := timeout,
-                  unsafe_action_dispatched := false},
+  ActiveRound = #{cancel_status := timeout}, false, SafetyFacts,
   Data = #{task_deadline_expired := true}) ->
     Projection = task_deadline_projection(RoundId),
+    LedgeredData = commit_safety_facts(SafetyFacts, Data),
     ClearedData =
         clear_committed_round(
-          Projection, RoundId, ActiveRound, Data),
+          Projection, RoundId, ActiveRound, LedgeredData),
     start_cleanup(Projection, ClearedData);
 commit_finished_round(
   _Result, RoundId,
-  #{cancel_status := timeout,
-    unsafe_action_dispatched := false},
-  Data) ->
-    ActiveRound = maps:get(active_round, Data),
+  ActiveRound = #{cancel_status := timeout}, false, SafetyFacts, Data) ->
     Failure = round_timeout_failure(RoundId),
+    LedgeredData = commit_safety_facts(SafetyFacts, Data),
     ClearedData =
         clear_committed_round(
-          Failure, RoundId, ActiveRound, Data),
+          Failure, RoundId, ActiveRound, LedgeredData),
     continue_after_pre_stateful_failure(
       Failure, ClearedData);
 commit_finished_round(
   _Result, RoundId,
-  ActiveRound = #{cancel_status := timeout,
-                  unsafe_action_dispatched := true},
-  Data) ->
+  ActiveRound = #{cancel_status := timeout}, true, SafetyFacts, Data) ->
     %% The deadline decision is sticky. A late result from dispatched
     %% non-idempotent work can no longer succeed: the mutation happened,
     %% so the honest terminal is in_doubt with the invocation on the
@@ -478,9 +482,7 @@ commit_finished_round(
     Projection = #{status => in_doubt,
                    reason => deadline_after_unsafe_dispatch,
                    round => RoundId},
-    LedgeredData =
-        commit_lost_unsafe_invocations(
-          active_unsafe_invocations(ActiveRound), RoundId, Data),
+    LedgeredData = commit_safety_facts(SafetyFacts, Data),
     ClearedData =
         clear_committed_round(
           Projection, RoundId, ActiveRound,
@@ -488,14 +490,18 @@ commit_finished_round(
     start_cleanup(Projection, ClearedData);
 commit_finished_round(
   Result, RoundId,
-  ActiveRound = #{cancel_status := cancelled}, Data) ->
+  ActiveRound = #{cancel_status := cancelled},
+  _UnsafeDispatched, _SafetyFacts, Data) ->
     CommittedData = commit_round_deltas(Result, Data),
-    Projection = #{status => cancelled, round => RoundId},
+    Status = cancelled_round_status(Result),
+    Projection = #{status => Status, round => RoundId},
     ClearedData =
         clear_committed_round(
           Projection, RoundId, ActiveRound, CommittedData),
     start_cleanup(Projection, ClearedData);
-commit_finished_round(Result, RoundId, ActiveRound, Data) ->
+commit_finished_round(
+  Result, RoundId, ActiveRound,
+  _UnsafeDispatched, _SafetyFacts, Data) ->
     CommittedData = commit_round_deltas(Result, Data),
     ClearedData =
         clear_committed_round(
@@ -548,12 +554,18 @@ commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
                 end
         end,
     UnknownOutcomeData =
-        case maps:find(unknown_outcome, Result) of
-            {ok, UnknownOutcome} ->
-                commit_unknown_outcome(
-                  UnknownOutcome, MutationData);
-            error ->
-                MutationData
+        case maps:find(unknown_outcomes, Result) of
+            {ok, UnknownOutcomes} when is_list(UnknownOutcomes) ->
+                commit_unknown_outcomes(
+                  UnknownOutcomes, MutationData);
+            _MissingOrInvalidUnknownOutcomes ->
+                case maps:find(unknown_outcome, Result) of
+                    {ok, UnknownOutcome} ->
+                        commit_unknown_outcome(
+                          UnknownOutcome, MutationData);
+                    error ->
+                        MutationData
+                end
         end,
     TerminalData =
         case maps:find(terminal_result, Result) of
@@ -593,6 +605,13 @@ commit_unknown_outcome(
       IdempotencyDelta,
       Data#{unknown_outcome_ledger :=
                 UnknownOutcomeLedger ++ [UnknownOutcome]}).
+
+commit_unknown_outcomes(UnknownOutcomes, Data) ->
+    lists:foldl(
+      fun(UnknownOutcome, Acc) ->
+              commit_unknown_outcome(UnknownOutcome, Acc)
+      end,
+      Data, UnknownOutcomes).
 
 update_idempotency_state(
   Delta, Data = #{idempotency_state := IdempotencyState}) ->
@@ -785,67 +804,77 @@ cancel_active_round(
 handle_round_worker_down(
   ActiveRound, RoundId,
   Data = #{task_deadline_expired := true}) ->
-    case maps:get(unsafe_action_dispatched, ActiveRound, false) of
-        true ->
-            finish_lost_unsafe_result(ActiveRound, RoundId, Data);
-        false ->
+    SafetyFacts = active_safety_facts(ActiveRound, RoundId, Data),
+    case maps:get(unknown_outcomes, SafetyFacts, []) of
+        [_Unknown | _] ->
+            finish_lost_unsafe_result(
+              SafetyFacts, RoundId, Data);
+        [] ->
             Projection = task_deadline_projection(RoundId),
             ok = emit_round_completed(RoundId, Projection, Data),
-            finish_worker_down(Projection, Data)
+            finish_worker_down(
+              Projection, commit_safety_facts(SafetyFacts, Data))
     end;
 handle_round_worker_down(ActiveRound, RoundId, Data) ->
-    case {maps:get(unsafe_action_dispatched, ActiveRound, false),
-          maps:get(cancel_status, ActiveRound, undefined)} of
-        {true, _CancelStatus} ->
-            finish_lost_unsafe_result(ActiveRound, RoundId, Data);
-        {false, cancelled} ->
+    SafetyFacts = active_safety_facts(ActiveRound, RoundId, Data),
+    case maps:get(unknown_outcomes, SafetyFacts, []) of
+        [_Unknown | _] ->
+            finish_lost_unsafe_result(
+              SafetyFacts, RoundId, Data);
+        [] ->
+            handle_resolved_round_worker_down(
+              ActiveRound, RoundId,
+              commit_safety_facts(SafetyFacts, Data))
+    end.
+
+handle_resolved_round_worker_down(ActiveRound, RoundId, Data) ->
+    case maps:get(cancel_status, ActiveRound, undefined) of
+        cancelled ->
             Projection = worker_down_projection(ActiveRound, RoundId),
             ok = emit_round_completed(RoundId, Projection, Data),
-            finish_worker_down(
-              Projection, Data);
-        {false, undefined} ->
+            finish_worker_down(Projection, Data);
+        undefined ->
             Failure = round_worker_crash_failure(RoundId),
             ok = emit_round_completed(RoundId, Failure, Data),
             continue_after_pre_stateful_failure(
-              Failure,
-              Data#{active_round := undefined});
-        {false, timeout} ->
+              Failure, Data#{active_round := undefined});
+        timeout ->
             Failure = round_timeout_failure(RoundId),
             ok = emit_round_completed(RoundId, Failure, Data),
             continue_after_pre_stateful_failure(
-              Failure,
-              Data#{active_round := undefined});
+              Failure, Data#{active_round := undefined});
         _OtherWorkerLoss ->
             Projection = worker_down_projection(ActiveRound, RoundId),
             ok = emit_round_completed(RoundId, Projection, Data),
-            finish_worker_down(
-              Projection, Data)
+            finish_worker_down(Projection, Data)
     end.
 
-finish_lost_unsafe_result(ActiveRound, RoundId, Data) ->
+finish_lost_unsafe_result(SafetyFacts, RoundId, Data) ->
     Projection = #{status => in_doubt,
                    reason => unsafe_result_lost,
                    round => RoundId},
     ok = emit_round_completed(RoundId, Projection, Data),
     finish_worker_down(
       Projection,
-      (commit_lost_unsafe_invocations(
-         active_unsafe_invocations(ActiveRound), RoundId, Data))#{
+      (commit_safety_facts(SafetyFacts, Data))#{
            recent_round_data := Projection}).
 
-commit_lost_unsafe_invocations(UnsafeInvocations, RoundId, Data) ->
-    lists:foldl(
-      fun(InvocationIdentity, Acc) ->
-              Mutation = InvocationIdentity#{round => RoundId,
-                                               outcome => unknown},
-              UnknownOutcome =
-                  #{round => RoundId,
-                    invocation => InvocationIdentity,
-                    outcome => unknown},
-              commit_unknown_outcome(
-                UnknownOutcome, commit_mutation(Mutation, Acc))
-      end,
-      Data, UnsafeInvocations).
+commit_safety_facts(
+  #{mutations := Mutations, unknown_outcomes := UnknownOutcomes},
+  Data) ->
+    commit_unknown_outcomes(
+      UnknownOutcomes, commit_mutations(Mutations, Data)).
+
+active_safety_facts(ActiveRound, RoundId, Data) ->
+    UnsafeInvocations = active_unsafe_invocations(ActiveRound),
+    case maps:get(adaptive_events, Data, false) of
+        true ->
+            soma_delegate_safety:facts(
+              UnsafeInvocations, RoundId, event_store_pid());
+        false ->
+            soma_delegate_safety:unknown_facts(
+              UnsafeInvocations, RoundId)
+    end.
 
 active_unsafe_invocations(ActiveRound) ->
     case maps:get(unsafe_invocations, ActiveRound, []) of
@@ -1013,6 +1042,7 @@ valid_round_result(Result) when is_map(Result) ->
         valid_optional_result_map(mutation, Result) andalso
         valid_optional_result_list(mutations, Result) andalso
         valid_optional_result_map(unknown_outcome, Result) andalso
+        valid_optional_result_list(unknown_outcomes, Result) andalso
         valid_optional_result_map(artifact, Result) andalso
         valid_optional_result_map(artifact_excerpt, Result) andalso
         valid_optional_result_map(terminal_result, Result);
@@ -1022,7 +1052,8 @@ valid_round_result(_Result) ->
 valid_round_result_keys(Result) ->
     Allowed =
         [status, phase, decision, reason, checkpoint, usage,
-         mutation, mutations, unknown_outcome, artifact, artifact_excerpt,
+         mutation, mutations, unknown_outcome, unknown_outcomes,
+         artifact, artifact_excerpt,
          terminal_result, adaptive_event, run_id],
     lists:all(
       fun(Key) -> lists:member(Key, Allowed) end,
@@ -1081,6 +1112,16 @@ valid_optional_binary(Key, Result) ->
         error -> true
     end.
 
+cancelled_round_status(#{unknown_outcomes := [_Unknown | _]}) ->
+    in_doubt;
+cancelled_round_status(_Result) ->
+    cancelled.
+
+round_projection(
+  #{unknown_outcomes := [_Unknown | _]}, RoundId) ->
+    #{status => in_doubt,
+      reason => unsafe_result_lost,
+      round => RoundId};
 round_projection(
   #{status := succeeded,
     decision := terminal,
