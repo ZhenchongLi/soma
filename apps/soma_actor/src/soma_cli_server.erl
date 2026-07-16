@@ -166,16 +166,17 @@ tool_management_form(Bytes) ->
 handle_tool_register(ToolForm, ToolsDir) ->
     case soma_tool_config:compile_form(ToolForm) of
         {ok, #{name := Name} = Manifest} ->
-            case lists:member(Name, soma_tool_registry:builtin_names()) of
-                true ->
+            case matching_tool_name(Name,
+                                    soma_tool_registry:builtin_names()) of
+                {ok, BuiltinName} ->
                     soma_lisp:render(#{status => error,
-                                       error => {reserved_name, Name}});
-                false ->
+                                       error => {reserved_name, BuiltinName}});
+                error ->
                     case soma_tool_registry:resolve_descriptor(Name) of
-                        {ok, _Existing} ->
+                        {ok, #{name := ExistingName}} ->
                             soma_lisp:render(#{status => error,
                                                error => {already_registered,
-                                                         Name}});
+                                                         ExistingName}});
                         {error, not_found} ->
                             case soma_tool_manifest:normalize(Manifest) of
                                 {ok, _Descriptor} ->
@@ -214,7 +215,8 @@ register_normalized_tool(Name, Manifest, ToolsDir) ->
                 ok ->
                     ok = append_tool_registered_event(Name, Manifest),
                     ["(result (status registered) (tool-name ",
-                     soma_lisp:render(atom_to_binary(Name, utf8)), "))"];
+                     soma_lisp:render(
+                       soma_tool_registry:name_binary(Name)), "))"];
                 {error, Reason} ->
                     _ = delete_manifest_file(ToolsDir, Name),
                     soma_lisp:render(#{status => error, error => Reason})
@@ -243,7 +245,7 @@ append_tool_registered_event(Name, #{effect := Effect,
 %% always the configured tools dir plus the tool name as a basename -- never a
 %% caller-supplied path.
 write_manifest_file(ToolsDir, Name, Manifest) ->
-    Path = filename:join(ToolsDir, atom_to_list(Name) ++ ".lisp"),
+    Path = manifest_path(ToolsDir, Name),
     case filelib:ensure_dir(Path) of
         ok -> file:write_file(Path, render_tool_manifest(Manifest));
         {error, _} = Error -> Error
@@ -262,7 +264,7 @@ render_tool_manifest(#{name := Name, effect := Effect,
                        adapter := cli, executable := Executable,
                        argv := Argv} = Manifest) ->
     Fields =
-        [render_string_field(name, atom_to_binary(Name, utf8))]
+        [render_string_field(name, soma_tool_registry:name_binary(Name))]
         ++ render_optional_description(Manifest)
         ++ [render_atom_field(effect, Effect),
             render_atom_field(idempotent, Idempotent),
@@ -321,7 +323,7 @@ handle_tool_list() ->
 render_tool_summary(#{name := Name, effect := Effect,
                       idempotent := Idempotent, adapter := Adapter} = Entry) ->
     Fields =
-        [render_string_field(name, atom_to_binary(Name, utf8)),
+        [render_string_field(name, soma_tool_registry:name_binary(Name)),
          render_atom_field(effect, Effect),
          render_atom_field(idempotent, Idempotent),
          render_atom_field(adapter, Adapter)]
@@ -331,7 +333,7 @@ render_tool_summary(#{name := Name, effect := Effect,
 
 %% Remove a config tool from the running registry so its name no longer
 %% resolves on this daemon, and delete its persisted manifest file. The wire
-%% carries the name as a binary; it is mapped to an *existing* registry atom
+%% carries the name as a binary; it is mapped to the existing registry identity
 %% (never minted), and only a live non-built-in tool -- the definition of a
 %% config tool -- is removable. Any other name (built-in, unknown, or
 %% traversal-shaped) is rejected with `{not_config_tool, Name}' before
@@ -373,7 +375,8 @@ handle_tool_remove(NameBin, ToolsDir) ->
 known_tool_name(NameBin) ->
     Known = soma_tool_registry:builtin_names()
         ++ [maps:get(name, Entry) || Entry <- soma_tool_registry:list_tools()],
-    case [Name || Name <- Known, atom_to_binary(Name, utf8) =:= NameBin] of
+    case [Name || Name <- Known,
+                  soma_tool_registry:name_binary(Name) =:= NameBin] of
         [Name | _] -> Name;
         [] -> NameBin
     end.
@@ -395,9 +398,9 @@ append_tool_removed_event(Name) ->
 %% `{error, enoent}'): every config tool has a backing file today, but the
 %% remove must not fail if one does not.
 delete_manifest_file(ToolsDir, Name) ->
-    file:delete(filename:join(ToolsDir, atom_to_list(Name) ++ ".lisp")).
+    file:delete(manifest_path(ToolsDir, Name)).
 
-%% Map a wire name (binary) to the atom of a live config tool: a name that
+%% Map a wire name (binary) to the identity of a live config tool: a name that
 %% resolves in the running registry and is not a built-in. Matching against the
 %% live registry's own names -- rather than `binary_to_atom/2' -- means no new
 %% atom is ever minted from external input, and a bogus name simply fails to
@@ -406,11 +409,24 @@ config_tool_name(NameBin) ->
     Builtins = soma_tool_registry:builtin_names(),
     Live = [maps:get(name, Entry) || Entry <- soma_tool_registry:list_tools()],
     case [Name || Name <- Live,
-                  not lists:member(Name, Builtins),
-                  atom_to_binary(Name, utf8) =:= NameBin] of
+                  matching_tool_name(Name, Builtins) =:= error,
+                  soma_tool_registry:name_binary(Name) =:= NameBin] of
         [Name] -> {ok, Name};
         [] -> error
     end.
+
+matching_tool_name(Name, Names) ->
+    Spelling = soma_tool_registry:name_binary(Name),
+    case [KnownName || KnownName <- Names,
+                       soma_tool_registry:name_binary(KnownName) =:= Spelling] of
+        [KnownName | _] -> {ok, KnownName};
+        [] -> error
+    end.
+
+manifest_path(ToolsDir, Name) ->
+    NameChars = unicode:characters_to_list(
+                  soma_tool_registry:name_binary(Name), utf8),
+    filename:join(ToolsDir, NameChars ++ ".lisp").
 
 handle_lfe_request(Bytes, Socket, ModelConfig, Listener) ->
     Compiled = try soma_lfe:compile(Bytes, #{})

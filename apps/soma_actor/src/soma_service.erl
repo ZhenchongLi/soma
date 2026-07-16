@@ -329,7 +329,7 @@ canonicalize_step(#{tool := Tool0, args := Args0} = Step0) ->
 identifier_binary(Id) when is_atom(Id) -> atom_to_binary(Id, utf8);
 identifier_binary(Id) when is_binary(Id) -> Id.
 
-%% A binary tool spelling resolves to its registered atom when the live
+%% A binary tool spelling resolves to its registered identity when the live
 %% registry knows the name; an unknown spelling stays binary and is rejected
 %% downstream (policy or unregistered-tool handling) without interning.
 canonical_tool(Tool) when is_atom(Tool) ->
@@ -338,8 +338,7 @@ canonical_tool(Tool) when is_binary(Tool) ->
     Summaries = try soma_tool_registry:list_tools() catch _:_ -> [] end,
     Names = [maps:get(name, Summary) || Summary <- Summaries],
     case [Name || Name <- Names,
-                  is_atom(Name),
-                  atom_to_binary(Name, utf8) =:= Tool] of
+                  soma_tool_registry:name_binary(Name) =:= Tool] of
         [Registered | _] -> Registered;
         [] -> Tool
     end.
@@ -366,7 +365,8 @@ canonical_arg_value(Value) ->
 %% atom, in which case the binary key stays (the cli adapter reads declared
 %% names as binaries). Keys outside the declared vocabulary stay binary and
 %% fail admission with a typed rejection.
-canonical_arg_key(Tool, Key) when is_binary(Key), is_atom(Tool) ->
+canonical_arg_key(Tool, Key)
+  when is_binary(Key), (is_atom(Tool) orelse is_binary(Tool)) ->
     case declared_param_names(Tool) of
         {ok, Names} ->
             case lists:member(Key, Names) of
@@ -434,7 +434,7 @@ invocation_policy(_Envelope, ConfiguredPolicy) ->
 
 projected_scope_tools(Scope) ->
     [Name || #{name := Name} <- soma_tool_registry:list_tools(),
-             lists:member(atom_to_binary(Name, utf8), Scope)].
+             lists:member(soma_tool_registry:name_binary(Name), Scope)].
 
 finish_run(RunId, Terminal,
            State = #state{tasks = Tasks,

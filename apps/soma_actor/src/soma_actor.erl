@@ -1089,7 +1089,7 @@ append_explore_transcript(Transcript, Opts) when is_list(Transcript) ->
 %% catalog is the offer, so every catalog entry renders as a block. Pure --
 %% the caller fetches the catalog; no call, no event here.
 planning_system_prompt(AllowedTools, Catalog) when is_list(AllowedTools) ->
-    Names = [atom_to_binary(T, utf8) || T <- AllowedTools],
+    Names = [soma_tool_registry:name_binary(T) || T <- AllowedTools],
     Joined = iolist_to_binary(lists:join(<<", ">>, Names)),
     iolist_to_binary(
       [<<"Answer with a Lisp plan of the form (run-steps ...) using only ">>,
@@ -1120,15 +1120,23 @@ explore_system_prompt(Round, RemainingRounds, Catalog) ->
 %% and drops entries whose names are outside the policy.
 policy_filtered_catalog(AllowedTools, Catalog) when is_list(AllowedTools) ->
     [Entry || Entry = #{name := Name} <- Catalog,
-              lists:member(Name, AllowedTools)];
+              tool_name_member(Name, AllowedTools)];
 policy_filtered_catalog(_All, Catalog) ->
     Catalog.
 
+tool_name_member(Name, Names) ->
+    Spelling = soma_tool_registry:name_binary(Name),
+    lists:any(fun(KnownName) ->
+                      soma_tool_registry:name_binary(KnownName) =:= Spelling
+              end,
+              Names).
+
 %% Render catalog entries as newline-separated Lisp `(tool ...)' blocks,
 %% mirroring the `(tool ...)' config form from docs/tool-abstraction.md section 5.
-%% Tool names keep their registry spelling (atom_to_binary, underscores) -- never
-%% pushed through soma_lisp:render/1, whose symbol rendering maps `_' to `-' and
-%% would print a name the registry cannot resolve. String values (description,
+%% Tool names keep their registry spelling (atoms and binaries both normalize
+%% through `name_binary/1', with underscores) -- never pushed through
+%% soma_lisp:render/1, whose symbol rendering maps `_' to `-' and would print a
+%% name the registry cannot resolve. String values (description,
 %% param names, param docs) do go through soma_lisp:render/1 for its exact
 %% quoting/escaping. Built from catalog/0 entries only, so runtime descriptor
 %% fields (module/executable/argv/effect/idempotent/timeout_ms) cannot appear.
@@ -1136,7 +1144,7 @@ catalog_blocks(Entries) ->
     [[<<"\n">>, tool_block(Entry)] || Entry <- Entries].
 
 tool_block(#{name := Name, description := Description, params := Params}) ->
-    [<<"(tool (name ">>, atom_to_binary(Name, utf8), <<")">>,
+    [<<"(tool (name ">>, soma_tool_registry:name_binary(Name), <<")">>,
      <<" (description ">>, soma_lisp:render(Description), <<")">>,
      params_form(Params), <<")">>].
 

@@ -193,9 +193,9 @@ test_config_tool_description_in_catalog(Config) ->
              "  (description \"Uppercase the final argv argument.\")\n"
              "  (executable \"/bin/echo\")\n"
              "  (argv))\n">>),
-    #{registered := [cfg_described], skipped := []} =
+    #{registered := [<<"cfg_described">>], skipped := []} =
         soma_tool_config:load_dir(ToolsDir),
-    [Entry] = [E || #{name := cfg_described} = E
+    [Entry] = [E || #{name := <<"cfg_described">>} = E
                         <- soma_tool_registry:catalog()],
     #{description := <<"Uppercase the final argv argument.">>} = Entry,
     ok.
@@ -220,7 +220,7 @@ test_load_dir_registers_cli_tool_with_argv_placeholders(Config) ->
              "  (argv \"edit\" \"{doc}\" \"{changes}\")\n"
              "  (params ((\"doc\" string required \"Document path\")\n"
              "           (\"changes\" string required \"Requested edits\"))))\n">>),
-    #{registered := [cfg_doc_edit], skipped := []} =
+    #{registered := [<<"cfg_doc_edit">>], skipped := []} =
         soma_tool_config:load_dir(ToolsDir),
     {ok, Descriptor} = soma_tool_registry:resolve_descriptor(cfg_doc_edit),
     #{adapter := cli, argv := Argv, params := Params} = Descriptor,
@@ -306,7 +306,8 @@ test_safety_defaults_and_declared_values(Config) ->
              "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
              "  (executable \"/bin/echo\")\n"
              "  (argv))\n">>),
-    #{registered := [cfg_declared, cfg_defaulted], skipped := []} =
+    #{registered := [<<"cfg_declared">>, <<"cfg_defaulted">>],
+      skipped := []} =
         soma_tool_config:load_dir(ToolsDir),
     {ok, Defaulted} = soma_tool_registry:resolve_descriptor(cfg_defaulted),
     #{effect := state, idempotent := false, timeout_ms := 30000} = Defaulted,
@@ -422,11 +423,12 @@ test_non_ascii_and_invalid_utf8_files(Config) ->
     ok = file:write_file(
            filename:join(ToolsDir, "cfg_latin1.lisp"),
            <<"(tool (name \"cfg_latin1", 16#ff, 16#fe, "\"))">>),
-    #{registered := [cfg_unicode], skipped := [SkipEntry]} =
+    #{registered := [<<"cfg_unicode">>], skipped := [SkipEntry]} =
         soma_tool_config:load_dir(ToolsDir),
     %% The non-ASCII description survived the whole chain into the catalog.
     [#{description := <<"Résumé formatter — 大写"/utf8>>}] =
-        [E || #{name := cfg_unicode} = E <- soma_tool_registry:catalog()],
+        [E || #{name := <<"cfg_unicode">>} = E
+                  <- soma_tool_registry:catalog()],
     %% The invalid-UTF-8 file skipped with the reader's named diagnostic.
     #{file := "cfg_latin1.lisp",
       reason := {parse_error,
@@ -505,7 +507,7 @@ test_config_tool_runs_end_to_end(Config) ->
                    "  (argv))\n", [Helper]),
     ok = file:write_file(filename:join(ToolsDir, "cfg_e2e_upper.lisp"),
                          unicode:characters_to_binary(ToolSource)),
-    #{registered := [cfg_e2e_upper], skipped := []} =
+    #{registered := [<<"cfg_e2e_upper">>], skipped := []} =
         soma_tool_config:load_dir(ToolsDir),
     StorePid = event_store_pid(),
     {ok, SessionPid} = soma_agent_session:start_link(#{}),
@@ -558,7 +560,7 @@ test_reserved_name_skipped_builtin_and_neighbour_intact(Config) ->
              "  (name \"cfg_neighbour\")\n"
              "  (executable \"/bin/echo\")\n"
              "  (argv))\n">>),
-    #{registered := [cfg_neighbour], skipped := [SkipEntry]} =
+    #{registered := [<<"cfg_neighbour">>], skipped := [SkipEntry]} =
         soma_tool_config:load_dir(ToolsDir),
     %% The shadow file skipped with the named reserved-name reason.
     #{file := "cfg_shadow_file_write.lisp",
@@ -624,11 +626,11 @@ test_duplicate_name_first_sorted_file_wins(Config) ->
              "  (name \"cfg_dup\")\n"
              "  (executable \"/bin/cat\")\n"
              "  (argv))\n">>),
-    #{registered := [cfg_dup], skipped := [SkipEntry]} =
+    #{registered := [<<"cfg_dup">>], skipped := [SkipEntry]} =
         soma_tool_config:load_dir(ToolsDir),
     %% The later file skipped with the named duplicate reason.
     #{file := "b_second.lisp",
-      reason := {duplicate_name, cfg_dup}} = SkipEntry,
+      reason := {duplicate_name, <<"cfg_dup">>}} = SkipEntry,
     %% The resolved descriptor carries the first file's executable — the
     %% second file never reached the registry.
     {ok, #{executable := Executable}} =
@@ -644,7 +646,9 @@ test_duplicate_name_first_sorted_file_wins(Config) ->
 test_docmod_example_manifests_normalize_with_expected_metadata(_Config) ->
     {ok, _} = application:ensure_all_started(soma_runtime),
     ToolsDir = filename:join([project_root(), "examples", "docmod-tools"]),
-    #{registered := [docmod_edit, docmod_help, docmod_read], skipped := []} =
+    #{registered := [<<"docmod_edit">>, <<"docmod_help">>,
+                     <<"docmod_read">>],
+      skipped := []} =
         soma_tool_config:load_dir(ToolsDir),
     {ok, Help} = soma_tool_registry:resolve_descriptor(docmod_help),
     #{adapter := cli, effect := reader, idempotent := true,
@@ -680,7 +684,7 @@ test_docmod_help_stub_receives_help_then_substituted_topic(Config) ->
                              unicode:characters_to_binary(Stub)),
     ok = file:write_file(filename:join(ToolsDir, "docmod_help.lisp"),
                          Patched),
-    #{registered := [docmod_help], skipped := []} =
+    #{registered := [<<"docmod_help">>], skipped := []} =
         soma_tool_config:load_dir(ToolsDir),
     StorePid = event_store_pid(),
     {ok, SessionPid} = soma_agent_session:start_link(#{}),

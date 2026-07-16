@@ -189,7 +189,7 @@ test_register_writes_normalized_manifest_file(Config) ->
     %% compiles back to a manifest for the declared name.
     {ok, Written} = file:read_file(ExpectedFile),
     {ok, [ToolForm]} = soma_lfe_reader:read_forms(Written),
-    {ok, #{name := mgmt_writer, adapter := cli}} =
+    {ok, #{name := <<"mgmt_writer">>, adapter := cli}} =
         soma_tool_config:compile_form(ToolForm),
     ok.
 
@@ -448,7 +448,7 @@ test_register_builtin_name_reserved(Config) ->
 %% per-load `{duplicate_name, Name}'. The daemon boots with an empty tools dir;
 %% the first register for `mgmt_dup' succeeds and the name resolves live; a
 %% second register for the same name is a failed result whose reason is the
-%% exact rendering of `{already_registered, mgmt_dup}'.
+%% exact rendering of `{already_registered, <<"mgmt_dup">>}'.
 test_register_existing_config_tool_already_registered(Config) ->
     _ = application:stop(soma_runtime),
     SocketPath = ?config(socket_path, Config),
@@ -473,7 +473,9 @@ test_register_existing_config_tool_already_registered(Config) ->
 
     %% A second register for the same name is rejected with the live-duplicate
     %% reason carried verbatim on the wire.
-    Expected = iolist_to_binary(soma_lisp:render({already_registered, mgmt_dup})),
+    Expected = iolist_to_binary(
+                 soma_lisp:render(
+                   {already_registered, <<"mgmt_dup">>})),
     Reply = register_over_socket(SocketPath, Manifest),
     match = re:run(Reply, "\\(status error\\)", [{capture, none}]),
     {_, _} = binary:match(Reply, Expected),
@@ -870,7 +872,7 @@ test_register_appends_bounded_event(Config) ->
       payload := Payload} = Event,
     %% ...and a bounded payload: the tool name plus the safe metadata, and
     %% nothing else.
-    #{tool_name := mgmt_event, effect := reader, idempotent := true,
+    #{tool_name := <<"mgmt_event">>, effect := reader, idempotent := true,
       adapter := cli} = Payload,
     [adapter, effect, idempotent, tool_name] = lists:sort(maps:keys(Payload)),
     ok.
@@ -919,7 +921,7 @@ test_remove_appends_bounded_event(Config) ->
     #{run_id := undefined, session_id := undefined, step_id := undefined,
       payload := Payload} = Event,
     %% ...and a bounded payload: the removed tool's name, and nothing else.
-    #{tool_name := mgmt_rm_event} = Payload,
+    #{tool_name := <<"mgmt_rm_event">>} = Payload,
     [tool_name] = lists:sort(maps:keys(Payload)),
     ok.
 

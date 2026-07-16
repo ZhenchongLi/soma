@@ -11,7 +11,7 @@
 normalize(Manifest) when is_map(Manifest) ->
     case missing_shared_field(Manifest) of
         {missing, Key} -> {error, {missing_field, Key}};
-        none -> check_effect(Manifest)
+        none -> check_name(Manifest)
     end.
 
 missing_shared_field(Manifest) ->
@@ -19,6 +19,27 @@ missing_shared_field(Manifest) ->
         [Key | _] -> {missing, Key};
         [] -> none
     end.
+
+%% Tool names are either the literal atoms declared by built-in modules or
+%% UTF-8 binaries admitted from config. Keep external names bounded without
+%% copying their spelling into an error term. The limit is Unicode codepoints,
+%% not encoded bytes.
+check_name(#{name := Name} = Manifest) when is_atom(Name) ->
+    check_effect(Manifest);
+check_name(#{name := Name} = Manifest) when is_binary(Name) ->
+    try unicode:characters_to_list(Name, utf8) of
+        Characters when is_list(Characters) ->
+            case length(Characters) =< 255 of
+                true -> check_effect(Manifest);
+                false -> {error, {invalid_tool_name, too_long}}
+            end;
+        _InvalidUnicode ->
+            {error, {invalid_tool_name, invalid_utf8}}
+    catch
+        error:badarg -> {error, {invalid_tool_name, invalid_utf8}}
+    end;
+check_name(_Manifest) ->
+    {error, {invalid_tool_name, invalid_type}}.
 
 check_effect(#{effect := Effect} = Manifest) ->
     case lists:member(Effect, ?EFFECTS) of
