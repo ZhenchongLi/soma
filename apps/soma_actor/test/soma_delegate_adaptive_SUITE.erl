@@ -13,6 +13,7 @@
 -export([test_prompt_schemas_equal_policy_capability_intersection/1]).
 -export([test_round_llm_and_tool_budgets_stop_before_child_start_and_reset/1]).
 -export([test_task_deadline_tears_down_all_owned_execution_children/1]).
+-export([test_context_preflight_and_provider_usage_accounting/1]).
 -export([invoke/2]).
 
 all() ->
@@ -24,7 +25,8 @@ all() ->
      test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations,
      test_prompt_schemas_equal_policy_capability_intersection,
      test_round_llm_and_tool_budgets_stop_before_child_start_and_reset,
-     test_task_deadline_tears_down_all_owned_execution_children].
+     test_task_deadline_tears_down_all_owned_execution_children,
+     test_context_preflight_and_provider_usage_accounting].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -559,6 +561,53 @@ test_task_deadline_tears_down_all_owned_execution_children(Config) ->
            live_runs => 0}],
     ?assertEqual(Expected, [LlmResult, CliResult]).
 
+test_context_preflight_and_provider_usage_accounting(_Config) ->
+    Rows =
+        [{per_call,
+          #{max_context_tokens => 1,
+            reserved_completion_tokens => 1,
+            max_total_prompt_tokens => 100000},
+          undefined},
+         {total,
+          #{max_context_tokens => 100000,
+            reserved_completion_tokens => 1000,
+            max_total_prompt_tokens => 1},
+          undefined},
+         {provider_usage,
+          #{max_context_tokens => 100000,
+            reserved_completion_tokens => 1000,
+            max_total_prompt_tokens => 100000},
+          7}],
+    Actual = [observe_context_budget_row(Row) || Row <- Rows],
+    EmptyUsage =
+        #{rounds => 0, llm_calls => 0,
+          tool_calls => 0, prompt_tokens => 0},
+    Expected =
+        [#{case_name => per_call,
+           status => failed,
+           result => context_budget_exceeded,
+           usage => EmptyUsage,
+           llm_worker_count => 0,
+           llm_workers_dead => true,
+           provider_usage_replaced_estimate => not_applicable},
+         #{case_name => total,
+           status => failed,
+           result => context_budget_exceeded,
+           usage => EmptyUsage,
+           llm_worker_count => 0,
+           llm_workers_dead => true,
+           provider_usage_replaced_estimate => not_applicable},
+         #{case_name => provider_usage,
+           status => succeeded,
+           result => <<"provider usage committed">>,
+           usage =>
+               #{rounds => 1, llm_calls => 1,
+                 tool_calls => 0, prompt_tokens => 7},
+           llm_worker_count => 1,
+           llm_workers_dead => true,
+           provider_usage_replaced_estimate => true}],
+    ?assertEqual(Expected, Actual).
+
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
 invoke(#{mode := <<"timeout">>}, _Ctx) ->
@@ -648,6 +697,15 @@ terminal_response(Text) ->
           json:encode(
             #{<<"choices">> =>
                   [#{<<"message">> => #{<<"content">> => Text}}]})),
+    {200, Body}.
+
+terminal_response(Text, PromptTokens) ->
+    Body =
+        iolist_to_binary(
+          json:encode(
+            #{<<"choices">> =>
+                  [#{<<"message">> => #{<<"content">> => Text}}],
+              <<"usage">> => #{<<"prompt_tokens">> => PromptTokens}})),
     {200, Body}.
 
 collect_sequence_prompts(Acc) ->
@@ -799,6 +857,84 @@ observe_budget_case(
             LlmWorkers),
       live_round_workers => length(live_round_workers()),
       live_runs => length(live_runs())}.
+
+observe_context_budget_row({CaseName, Budgets, ReportedPromptTokens}) ->
+    TestPid = self(),
+    ResponseText = <<"provider usage committed">>,
+    Responder =
+        fun(CallOpts) ->
+                EstimatedPromptTokens =
+                    lists:sum(
+                      [byte_size(Content)
+                       || #{content := Content} <-
+                              maps:get(messages, CallOpts, []),
+                          is_binary(Content)]),
+                TestPid !
+                    {delegate_context_llm_started,
+                     CaseName, self(), EstimatedPromptTokens},
+                case ReportedPromptTokens of
+                    undefined ->
+                        terminal_response(ResponseText);
+                    PromptTokens ->
+                        terminal_response(ResponseText, PromptTokens)
+                end
+        end,
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{round_sequence =>
+                 [#{llm =>
+                        #{provider => openai_compat,
+                          base_url => <<"api.example.test/v1">>,
+                          api_key => <<"test-only-key">>,
+                          model => <<"test-model">>,
+                          response => Responder},
+                    decision => terminal}]}),
+    Suffix = atom_to_binary(CaseName, utf8),
+    Request =
+        #{request_id => <<"delegate-context-", Suffix/binary>>,
+          correlation_id =>
+              <<"delegate-context-", Suffix/binary, "-correlation">>,
+          objective => #{goal => <<"enforce the context allowance">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => []},
+          artifacts => [],
+          budgets => Budgets},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Terminal = wait_for_terminal_projection(TaskId, 100),
+    wait_for_no_coordinators(100),
+    Starts = collect_context_llm_starts(CaseName, []),
+    Estimates = [Estimate || {_Pid, Estimate} <- Starts],
+    #{case_name => CaseName,
+      status => maps:get(status, Terminal),
+      result => maps:get(result, Terminal, missing),
+      usage => maps:get(usage, Terminal, missing),
+      llm_worker_count => length(Starts),
+      llm_workers_dead =>
+          lists:all(
+            fun({WorkerPid, _Estimate}) ->
+                    not is_process_alive(WorkerPid)
+            end,
+            Starts),
+      provider_usage_replaced_estimate =>
+          case ReportedPromptTokens of
+              undefined ->
+                  not_applicable;
+              PromptTokens ->
+                  Estimates =/= [] andalso
+                      lists:all(
+                        fun(Estimate) -> Estimate =/= PromptTokens end,
+                        Estimates)
+          end}.
+
+collect_context_llm_starts(CaseName, Acc) ->
+    receive
+        {delegate_context_llm_started,
+         CaseName, WorkerPid, EstimatedPromptTokens} ->
+            collect_context_llm_starts(
+              CaseName, [{WorkerPid, EstimatedPromptTokens} | Acc])
+    after 100 ->
+        lists:reverse(Acc)
+    end.
 
 observe_blocked_llm_deadline(DeadlineMs) ->
     ok = application:set_env(
