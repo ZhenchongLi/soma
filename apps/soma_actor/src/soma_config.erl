@@ -173,8 +173,11 @@ build_model_config(Llm) ->
     },
     Base = carry_api_key(Base0),
     WithExistingOptions =
-        lists:foldl(fun(Key, Acc) -> carry_optional(Key, Llm, Acc) end,
-                    Base, ["enable_thinking", "max_tokens", "plan"]),
+        lists:foldl(fun(Option, Acc) -> carry_optional(Option, Llm, Acc) end,
+                    Base,
+                    [{"enable_thinking", enable_thinking},
+                     {"max_tokens", max_tokens},
+                     {"plan", plan}]),
     carry_explore_settings(Llm, WithExistingOptions).
 
 require(Key, Llm, ErrorName) ->
@@ -190,9 +193,9 @@ carry_api_key(Acc) ->
         Value -> Acc#{api_key => list_to_binary(Value)}
     end.
 
-carry_optional(Key, Llm, Acc) ->
-    case maps:find(Key, Llm) of
-        {ok, Value} -> Acc#{list_to_atom(Key) => Value};
+carry_optional({TextKey, Key}, Llm, Acc) ->
+    case maps:find(TextKey, Llm) of
+        {ok, Value} -> Acc#{Key => Value};
         error -> Acc
     end.
 
