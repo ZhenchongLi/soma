@@ -197,6 +197,7 @@ handle_event(info,
     release_child_monitor(LlmPid, LlmMRef),
     {ProposalResult, ProviderUsage} =
         take_provider_usage(ModelResult, Data),
+    ok = commit_provider_usage(ProviderUsage, Data),
     handle_successful_model_result(
       ProposalResult,
       Data#{active_llm := undefined,
@@ -823,7 +824,25 @@ completed_action_observation(Outputs, Data) ->
     Observation = #{status => succeeded, outputs => Outputs},
     action_observation(Observation, Data).
 
-action_observation(Observation, Data = #{task_id := TaskId}) ->
+%% Provider-authenticated usage becomes task-owned at LLM completion:
+%% the coordinator commits it immediately, so losing this worker during
+%% the action phase cannot lose the authenticated totals.
+commit_provider_usage(undefined, _Data) ->
+    ok;
+commit_provider_usage(ProviderUsage,
+                      #{coordinator_pid := CoordinatorPid,
+                        task_id := TaskId,
+                        round_id := RoundId,
+                        worker_identity := WorkerIdentity,
+                        result_capability := ResultCapability}) ->
+    CoordinatorPid !
+        {delegate_provider_usage,
+         TaskId, RoundId, self(), WorkerIdentity,
+         ResultCapability, ProviderUsage},
+    ok.
+
+action_observation(Observation0, Data = #{task_id := TaskId}) ->
+    Observation = renderable_term(Observation0),
     CompleteBytes =
         iolist_to_binary(soma_lisp:render(Observation)),
     MaxBytes = observation_envelope_bytes(Data),
@@ -843,6 +862,40 @@ action_observation(Observation, Data = #{task_id := TaskId}) ->
             end;
         false ->
             {ok, #{terminal_result => Observation}}
+    end.
+
+%% Tool outcomes are arbitrary terms, but soma_lisp renders only atom and
+%% binary map keys. Rewrite everything outside the renderable set into
+%% bounded binaries so an unusual error shape can never crash the worker
+%% and silently drop a completed action's observation.
+renderable_term(Map) when is_map(Map) ->
+    maps:fold(
+      fun(Key, Value, Acc) ->
+              maps:put(renderable_key(Key), renderable_term(Value), Acc)
+      end,
+      #{}, Map);
+renderable_term(List) when is_list(List) ->
+    [renderable_term(Item) || Item <- List];
+renderable_term(Tuple) when is_tuple(Tuple) ->
+    list_to_tuple([renderable_term(Item) || Item <- tuple_to_list(Tuple)]);
+renderable_term(Term)
+  when is_atom(Term); is_binary(Term); is_integer(Term); is_float(Term) ->
+    Term;
+renderable_term(Other) ->
+    opaque_render_binary(Other).
+
+renderable_key(Key) when is_atom(Key); is_binary(Key) ->
+    Key;
+renderable_key(Key) when is_integer(Key) ->
+    integer_to_binary(Key);
+renderable_key(Key) ->
+    opaque_render_binary(Key).
+
+opaque_render_binary(Term) ->
+    Formatted = iolist_to_binary(io_lib:format("~0p", [Term])),
+    case byte_size(Formatted) > 256 of
+        true -> binary:part(Formatted, 0, 256);
+        false -> Formatted
     end.
 
 observation_envelope_bytes(Data) ->

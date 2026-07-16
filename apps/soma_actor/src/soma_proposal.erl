@@ -14,7 +14,7 @@
 normalize(#{kind := reply, text := Text}) when is_binary(Text) ->
     {ok, #{kind => reply, text => Text}};
 normalize(#{kind := run_steps, steps := Steps}) when is_list(Steps) ->
-    case lists:all(fun valid_step/1, Steps) of
+    case valid_step_list(Steps) of
         true ->
             {ok, #{kind => run_steps, steps => Steps}};
         false ->
@@ -66,6 +66,41 @@ normalize(Raw) when is_map(Raw) ->
 normalize(_Raw) ->
     {error, [#{code => invalid_proposal,
                message => <<"proposal must be a map">>}]}.
+
+%% A canonical step list is validated as a whole, not just per step:
+%% duplicate step ids would alias downstream event correlation (two
+%% tool calls sharing one identity), and a from_step reference must
+%% point to an earlier step or the runtime crashes resolving it after
+%% run.started. Ids compare by spelling so atom and binary forms of
+%% the same name cannot smuggle a duplicate past the check.
+valid_step_list(Steps) ->
+    lists:all(fun valid_step/1, Steps) andalso
+        ordered_canonical_steps(Steps, sets:new()).
+
+ordered_canonical_steps([], _SeenIds) ->
+    true;
+ordered_canonical_steps([#{id := Id} = Step | Rest], SeenIds) ->
+    Spelling = id_spelling(Id),
+    (not sets:is_element(Spelling, SeenIds)) andalso
+        valid_step_references(maps:get(args, Step, #{}), SeenIds) andalso
+        ordered_canonical_steps(
+          Rest, sets:add_element(Spelling, SeenIds)).
+
+valid_step_references(#{from_step := Reference} = Args, SeenIds)
+  when map_size(Args) =:= 1 ->
+    sets:is_element(id_spelling(Reference), SeenIds);
+valid_step_references(Args, SeenIds) when is_map(Args) ->
+    lists:all(
+      fun({_Key, {from_step, Reference}}) ->
+              sets:is_element(id_spelling(Reference), SeenIds);
+         ({_Key, _Value}) ->
+              true
+      end,
+      maps:to_list(Args)).
+
+id_spelling(Id) when is_atom(Id) -> atom_to_binary(Id, utf8);
+id_spelling(Id) when is_binary(Id) -> Id;
+id_spelling(Id) -> Id.
 
 valid_step(#{id := _StepId, tool := _ToolName} = Step) ->
     is_map(maps:get(args, Step, #{})) andalso

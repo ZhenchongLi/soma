@@ -156,6 +156,25 @@ handle_event(info, {delegate_terminal_stored, TaskId},
              Data = #{task_id := TaskId}) ->
     {stop, normal, Data};
 handle_event(info,
+             {delegate_provider_usage,
+              TaskId, RoundId, WorkerPid, WorkerIdentity,
+              ResultCapability, Usage},
+             running,
+             Data = #{task_id := TaskId,
+                      active_round :=
+                          ActiveRound =
+                              #{round_id := RoundId,
+                                worker_pid := WorkerPid,
+                                worker_identity := WorkerIdentity,
+                                result_capability := ResultCapability}})
+  when is_map(Usage) ->
+    %% Provider-authenticated usage becomes task-owned the moment the
+    %% LLM call completes: losing the round worker during the action
+    %% phase can no longer revert task totals to the estimate.
+    CommittedData = commit_usage(Usage, Data),
+    UpdatedRound = ActiveRound#{usage_committed => true},
+    {keep_state, CommittedData#{active_round := UpdatedRound}};
+handle_event(info,
              {delegate_state_action_dispatched,
               TaskId, RoundId, WorkerPid, WorkerIdentity,
               ResultCapability, StateInvocationData,
@@ -575,10 +594,13 @@ commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
                 ObservationData
         end,
     UsageData =
-        case maps:find(usage, Result) of
-            {ok, Usage} when is_map(Usage) ->
+        case {maps:find(usage, Result), round_usage_committed(Data)} of
+            {{ok, Usage}, false} when is_map(Usage) ->
                 commit_usage(Usage, CheckpointData);
-            _MissingOrInvalidUsage ->
+            _CommittedOrMissing ->
+                %% Usage was already committed at LLM completion (or the
+                %% result carries none); committing again would double
+                %% count the round.
                 CheckpointData
         end,
     MutationData =
@@ -672,6 +694,11 @@ invocation_key(#{run_id := RunId}) ->
     {ok, RunId};
 invocation_key(_UnidentifiedDelta) ->
     error.
+
+round_usage_committed(#{active_round := #{usage_committed := true}}) ->
+    true;
+round_usage_committed(_Data) ->
+    false.
 
 commit_usage(Usage, Data) ->
     UsageData = Data#{usage := Usage},
