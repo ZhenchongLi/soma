@@ -496,13 +496,23 @@ bounded_terminal_projection(Projection) ->
             _NoBoundedRound ->
                 Base
         end,
+    WithResult =
+        case maps:find(result, Projection) of
+            {ok, Result} ->
+                case soma_delegate_task_data:safe_term(Result) of
+                    true -> WithRound#{result => Result};
+                    false -> WithRound
+                end;
+            error ->
+                WithRound
+        end,
     Candidate =
         case maps:get(reason, Projection, undefined) of
             undefined ->
-                WithRound;
+                WithResult;
             Reason ->
-                WithRound#{reason =>
-                               soma_delegate_event:reason_class(Reason)}
+                WithResult#{reason =>
+                                soma_delegate_event:reason_class(Reason)}
         end,
     case encoded_bytes(Candidate) =<
              ?MAX_TERMINAL_PROJECTION_BYTES of

@@ -340,8 +340,13 @@ admit_raw_proposal(RawProposal,
                 reason => {invalid_proposal, Diagnostics}})
     end.
 
-execute_admitted_proposal(#{kind := run_steps, steps := Steps}, Data) ->
-    start_run(Steps, Data);
+execute_admitted_proposal(
+  #{kind := run_steps, steps := Steps},
+  Data = #{work := Work}) ->
+    %% In delegate mode an admitted action is an observation-producing turn,
+    %% never the terminal answer. The coordinator decides whether another
+    %% configured model round remains after it commits the run result.
+    start_run(Steps, Data#{work := Work#{decision => continue}});
 execute_admitted_proposal(#{kind := reply, text := Text}, Data) ->
     report_round_result(
       Data,
