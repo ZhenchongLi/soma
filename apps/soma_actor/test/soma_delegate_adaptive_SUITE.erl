@@ -8,13 +8,15 @@
 -export([test_prompt_projection_uses_exact_task_local_fields/1]).
 -export([test_model_action_admission_order_and_state_spine/1]).
 -export([test_denied_and_malformed_actions_stop_before_run/1]).
+-export([test_reader_state_terminal_sequence_threads_observations/1]).
 -export([invoke/2]).
 
 all() ->
     [test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs,
      test_prompt_projection_uses_exact_task_local_fields,
      test_model_action_admission_order_and_state_spine,
-     test_denied_and_malformed_actions_stop_before_run].
+     test_denied_and_malformed_actions_stop_before_run,
+     test_reader_state_terminal_sequence_threads_observations].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -261,6 +263,88 @@ test_denied_and_malformed_actions_stop_before_run(_Config) ->
          || {CaseName, _Policy, _Scope, _Proposal, ExpectedStatus} <- Cases],
     ?assertEqual(Expected, Actual).
 
+test_reader_state_terminal_sequence_threads_observations(_Config) ->
+    ToolName = delegate_state_probe,
+    ToolManifest =
+        #{name => ToolName,
+          effect => state,
+          idempotent => false,
+          timeout_ms => 1000,
+          adapter => erlang_module,
+          module => ?MODULE,
+          description => <<"Records one local state transition.">>},
+    ok = soma_tool_registry:register_tool(ToolManifest),
+    ReaderObservation = <<"reader observation committed">>,
+    StateObservation = <<"state observation committed">>,
+    FinalResult = <<"reader and state complete">>,
+    Responses =
+        [<<"(run-steps (step (id reader_action) (tool text_head) "
+           "(args (text \"reader observation committed\") (lines 1))))">>,
+         <<"(run-steps (step (id state_action) "
+           "(tool delegate_state_probe) "
+           "(args (value \"state observation committed\"))))">>,
+         <<"(reply (text \"reader and state complete\"))">>],
+    TestPid = self(),
+    RoundSequence =
+        [#{llm =>
+               #{provider => openai_compat,
+                 base_url => <<"api.example.test/v1">>,
+                 api_key => <<"test-only-key">>,
+                 model => <<"test-model">>,
+                 response =>
+                     fun(CallOpts) ->
+                             TestPid !
+                                 {delegate_sequence_prompt,
+                                  Round, CallOpts},
+                             terminal_response(Response)
+                     end}}
+         || {Round, Response} <- lists:enumerate(Responses)],
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [text_head, ToolName]},
+             round_sequence => RoundSequence}),
+    CorrelationId = <<"delegate-reader-state-terminal-correlation">>,
+    Request =
+        #{request_id => <<"delegate-reader-state-terminal">>,
+          correlation_id => CorrelationId,
+          objective => #{goal => <<"read, update state, then reply">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope =>
+              #{tools => [<<"text_head">>,
+                           atom_to_binary(ToolName, utf8)]},
+          artifacts => []},
+
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Terminal = wait_for_terminal_projection(TaskId, 100),
+    Prompts = collect_sequence_prompts([]),
+    Events =
+        soma_event_store:by_correlation(
+          event_store_pid(), CorrelationId),
+    StartedSteps =
+        [StepId || #{event_type := <<"tool.started">>,
+                     step_id := StepId} <- Events],
+    StateStartedCount =
+        length([state_action || state_action <- StartedSteps]),
+    Actual =
+        #{terminal =>
+              #{status => maps:get(status, Terminal),
+                result => maps:get(result, Terminal, missing)},
+          prompt_rounds => [Round || {Round, _CallOpts} <- Prompts],
+          reader_observation_in_next_prompt =>
+              next_prompt_contains(1, ReaderObservation, Prompts),
+          state_observation_in_next_prompt =>
+              next_prompt_contains(2, StateObservation, Prompts),
+          started_steps => StartedSteps,
+          state_tool_started_count => StateStartedCount},
+    Expected =
+        #{terminal => #{status => succeeded, result => FinalResult},
+          prompt_rounds => [1, 2, 3],
+          reader_observation_in_next_prompt => true,
+          state_observation_in_next_prompt => true,
+          started_steps => [reader_action, state_action],
+          state_tool_started_count => 1},
+    ?assertEqual(Expected, Actual).
+
 invoke(Input, _Ctx) ->
     {ok, Input}.
 
@@ -333,6 +417,32 @@ terminal_response(Text) ->
             #{<<"choices">> =>
                   [#{<<"message">> => #{<<"content">> => Text}}]})),
     {200, Body}.
+
+collect_sequence_prompts(Acc) ->
+    receive
+        {delegate_sequence_prompt, Round, CallOpts} ->
+            collect_sequence_prompts([{Round, CallOpts} | Acc])
+    after 100 ->
+        lists:keysort(1, Acc)
+    end.
+
+next_prompt_contains(ActionRound, Observation, Prompts) ->
+    case lists:keyfind(ActionRound + 1, 1, Prompts) of
+        {_NextRound, CallOpts} ->
+            messages_contain(
+              maps:get(messages, CallOpts, []), Observation);
+        false ->
+            false
+    end.
+
+messages_contain(Messages, Observation) ->
+    lists:any(
+      fun(#{content := Content}) when is_binary(Content) ->
+              binary:match(Content, Observation) =/= nomatch;
+         (_OtherMessage) ->
+              false
+      end,
+      Messages).
 
 observe_denied_action_case(
   {CaseName, ToolPolicy, CapabilityScope, Proposal, _ExpectedStatus}) ->
