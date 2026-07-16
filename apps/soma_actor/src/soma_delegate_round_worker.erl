@@ -41,6 +41,7 @@ init(Opts = #{coordinator_pid := CoordinatorPid,
              snapshot => maps:get(snapshot, Opts, #{}),
              work => Work,
              pending_budget => undefined,
+             provider_usage => undefined,
              active_llm => undefined,
              active_run => undefined},
     {ok, awaiting_start, Data}.
@@ -172,8 +173,12 @@ handle_event(info,
                                 mref := LlmMRef}}) ->
     cancel_child_timer(ActiveLlm),
     release_child_monitor(LlmPid, LlmMRef),
+    {ProposalResult, ProviderUsage} =
+        take_provider_usage(ModelResult, Data),
     handle_successful_model_result(
-      ModelResult, Data#{active_llm := undefined});
+      ProposalResult,
+      Data#{active_llm := undefined,
+            provider_usage := ProviderUsage});
 handle_event(info,
              {llm_result, LlmCallId, LlmPid, {error, Reason}},
              waiting_llm,
@@ -542,10 +547,27 @@ report_round_result(
            worker_identity := WorkerIdentity,
            result_capability := ResultCapability},
   Result) ->
+    ReportedResult = maybe_attach_provider_usage(Result, Data),
     CoordinatorPid !
         {delegate_round_result, TaskId, RoundId, self(), WorkerIdentity,
-         ResultCapability, Result},
+         ResultCapability, ReportedResult},
     {stop, normal, Data}.
+
+take_provider_usage(
+  ModelResult = #{usage := Usage = #{prompt_tokens := PromptTokens}},
+  #{work := #{llm := #{provider := openai_compat,
+                        retain_usage := true}}})
+  when is_integer(PromptTokens), PromptTokens >= 0 ->
+    {maps:remove(usage, ModelResult),
+     maps:with([prompt_tokens], Usage)};
+take_provider_usage(ModelResult, _Data) ->
+    {ModelResult, undefined}.
+
+maybe_attach_provider_usage(
+  Result, #{provider_usage := Usage}) when is_map(Usage) ->
+    Result#{usage => Usage};
+maybe_attach_provider_usage(Result, _Data) ->
+    Result.
 
 request_budget(
   Counter, Units, Operation, WaitingState,
