@@ -63,6 +63,7 @@ outcome_status(Outcome) ->
 normalize_status(Status)
   when Status =:= accepted; Status =:= running;
        Status =:= succeeded; Status =:= failed;
+       Status =:= rejected;
        Status =:= timeout; Status =:= cancelled;
        Status =:= in_doubt ->
     Status;
