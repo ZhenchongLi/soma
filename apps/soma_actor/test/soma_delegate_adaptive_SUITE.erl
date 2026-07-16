@@ -9,6 +9,7 @@
 -export([test_model_action_admission_order_and_state_spine/1]).
 -export([test_denied_and_malformed_actions_stop_before_run/1]).
 -export([test_reader_state_terminal_sequence_threads_observations/1]).
+-export([test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations/1]).
 -export([invoke/2]).
 
 all() ->
@@ -16,7 +17,8 @@ all() ->
      test_prompt_projection_uses_exact_task_local_fields,
      test_model_action_admission_order_and_state_spine,
      test_denied_and_malformed_actions_stop_before_run,
-     test_reader_state_terminal_sequence_threads_observations].
+     test_reader_state_terminal_sequence_threads_observations,
+     test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -345,8 +347,127 @@ test_reader_state_terminal_sequence_threads_observations(_Config) ->
           state_tool_started_count => 1},
     ?assertEqual(Expected, Actual).
 
+test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations(
+  _Config) ->
+    ToolName = delegate_state_probe,
+    ToolManifest =
+        #{name => ToolName,
+          effect => state,
+          idempotent => false,
+          timeout_ms => 1000,
+          adapter => erlang_module,
+          module => ?MODULE,
+          description =>
+              <<"Fails, times out, or records one local state transition.">>},
+    ok = soma_tool_registry:register_tool(ToolManifest),
+    ObservationCap = 64,
+    FailureReason = known_state_failure_reason(),
+    ExpectedFailureObservation =
+        bounded_failure_observation(FailureReason, ObservationCap),
+    Responses =
+        [<<"(run-steps (step (id state_action) "
+           "(tool delegate_state_probe) (args (mode \"error\"))))">>,
+         <<"(run-steps (step (id state_action) "
+           "(tool delegate_state_probe) (args (mode \"timeout\")) "
+           "(timeout_ms 20)))">>,
+         <<"(run-steps (step (id state_action) "
+           "(tool delegate_state_probe) (args (mode \"success\"))))">>,
+         <<"(reply (text \"known failures observed and retry complete\"))">>],
+    TestPid = self(),
+    RoundSequence =
+        [#{llm =>
+               #{provider => openai_compat,
+                 base_url => <<"api.example.test/v1">>,
+                 api_key => <<"test-only-key">>,
+                 model => <<"test-model">>,
+                 response =>
+                     fun(CallOpts) ->
+                             TestPid !
+                                 {delegate_failure_prompt,
+                                  Round,
+                                  maps:get(prompt_projection, CallOpts)},
+                             terminal_response(Response)
+                     end}}
+         || {Round, Response} <- lists:enumerate(Responses)],
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [ToolName]},
+             round_sequence => RoundSequence}),
+    CorrelationId = <<"delegate-known-action-failures-correlation">>,
+    Request =
+        #{request_id => <<"delegate-known-action-failures">>,
+          correlation_id => CorrelationId,
+          objective => #{goal => <<"observe known failures, then retry">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope =>
+              #{tools => [atom_to_binary(ToolName, utf8)]},
+          artifacts => [],
+          budgets => #{max_observation_bytes => ObservationCap}},
+
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Terminal = wait_for_terminal_projection(TaskId, 200),
+    Prompts = collect_failure_prompts([]),
+    FailureObservation = next_round_observation(1, Prompts),
+    TimeoutObservation = next_round_observation(2, Prompts),
+    FinalMutations = prompt_mutation_ledger(4, Prompts),
+    Events =
+        soma_event_store:by_correlation(
+          event_store_pid(), CorrelationId),
+    Invocations =
+        [maps:with([run_id, step_id, tool_call_id], Event)
+         || #{event_type := <<"tool.started">>,
+              step_id := state_action} = Event <- Events],
+    RunIds = [maps:get(run_id, Invocation) || Invocation <- Invocations],
+    ToolCallIds =
+        [maps:get(tool_call_id, Invocation) || Invocation <- Invocations],
+    MutationRunIds =
+        [maps:get(run_id, Mutation, missing) || Mutation <- FinalMutations],
+    MutationOutcomes =
+        [maps:get(outcome, Mutation, missing) || Mutation <- FinalMutations],
+    Actual =
+        #{terminal_status => maps:get(status, Terminal),
+          prompt_rounds => [Round || {Round, _Projection} <- Prompts],
+          failure_observation => FailureObservation,
+          timeout_observation => TimeoutObservation,
+          state_invocation_count => length(Invocations),
+          fresh_run_ids => length(lists:usort(RunIds)) =:= 3,
+          fresh_tool_call_ids =>
+              length(lists:usort(ToolCallIds)) =:= 3,
+          mutation_runs_match_correlation_trail =>
+              MutationRunIds =:= RunIds,
+          mutation_outcomes => MutationOutcomes},
+    Expected =
+        #{terminal_status => succeeded,
+          prompt_rounds => [1, 2, 3, 4],
+          failure_observation => ExpectedFailureObservation,
+          timeout_observation => #{status => timeout},
+          state_invocation_count => 3,
+          fresh_run_ids => true,
+          fresh_tool_call_ids => true,
+          mutation_runs_match_correlation_trail => true,
+          mutation_outcomes => [failed, timeout, succeeded]},
+    ?assertEqual(Expected, Actual).
+
+invoke(#{mode := <<"error">>}, _Ctx) ->
+    {error, known_state_failure_reason()};
+invoke(#{mode := <<"timeout">>}, _Ctx) ->
+    timer:sleep(5000),
+    {ok, unreachable};
 invoke(Input, _Ctx) ->
     {ok, Input}.
+
+known_state_failure_reason() ->
+    {known_delegate_state_error, binary:copy(<<"e">>, 256)}.
+
+bounded_failure_observation(Reason, MaxBytes) ->
+    Serialized = iolist_to_binary(soma_lisp:render(Reason)),
+    RetainedBytes = min(byte_size(Serialized), MaxBytes),
+    Retained = binary:part(Serialized, 0, RetainedBytes),
+    Base = #{status => failed, reason => Retained},
+    case byte_size(Serialized) > MaxBytes of
+        true -> Base#{truncated => true};
+        false -> Base
+    end.
 
 start_admission_spine_trace() ->
     Modules =
@@ -424,6 +545,37 @@ collect_sequence_prompts(Acc) ->
             collect_sequence_prompts([{Round, CallOpts} | Acc])
     after 100 ->
         lists:keysort(1, Acc)
+    end.
+
+collect_failure_prompts(Acc) ->
+    receive
+        {delegate_failure_prompt, Round, Projection} ->
+            collect_failure_prompts([{Round, Projection} | Acc])
+    after 100 ->
+        lists:keysort(1, Acc)
+    end.
+
+next_round_observation(ActionRound, Prompts) ->
+    case lists:keyfind(ActionRound + 1, 1, Prompts) of
+        {_NextRound, Projection} ->
+            RecentRounds = maps:get(recent_rounds, Projection, []),
+            case [maps:get(observation, RecentRound, missing)
+                  || #{round := Round} = RecentRound <- RecentRounds,
+                     Round =:= ActionRound] of
+                [Observation] -> Observation;
+                _MissingOrDuplicate -> missing
+            end;
+        false ->
+            missing
+    end.
+
+prompt_mutation_ledger(Round, Prompts) ->
+    case lists:keyfind(Round, 1, Prompts) of
+        {_Round, Projection} ->
+            SafetyState = maps:get(pinned_safety_state, Projection, #{}),
+            maps:get(mutation_ledger, SafetyState, []);
+        false ->
+            []
     end.
 
 next_prompt_contains(ActionRound, Observation, Prompts) ->
