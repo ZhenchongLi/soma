@@ -9,6 +9,7 @@
 -define(MAX_TIMER_MS, 16#ffffffff).
 -define(MAX_ROUND_SNAPSHOT_BYTES, 65536).
 -define(MAX_ROUND_RESULT_BYTES, 16384).
+-define(DEFAULT_RECENT_ROUND_WINDOW, 4).
 
 -export([start_link/1, status/1, cancel/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
@@ -47,6 +48,7 @@ init(#{request := Request = #{request_id := RequestId,
              mutation_ledger => [],
              unknown_outcome_ledger => [],
              recent_round_data => undefined,
+             task_summary => #{},
              recent_rounds => [],
              artifact_excerpts => maps:get(artifacts, Request, []),
              task_artifacts => [],
@@ -557,15 +559,24 @@ commit_action_observation(
     decision := continue,
     terminal_result := Observation},
   RoundId,
-  Data = #{recent_rounds := RecentRounds}) ->
+  Data = #{recent_rounds := RecentRounds,
+           task_summary := TaskSummary,
+           budgets := Budgets}) ->
     ArtifactData = commit_action_artifact(Result, Data),
     ObservationRef = action_observation_ref(Observation),
     RecentRound = #{round => RoundId,
                     status => Status,
                     observation => Observation},
+    {EvictedRounds, RetainedRounds} =
+        retain_recent_rounds(
+          RecentRounds ++ [RecentRound],
+          recent_round_window(Budgets)),
+    UpdatedSummary =
+        merge_evicted_rounds(EvictedRounds, TaskSummary),
     CommittedData =
         ArtifactData#{recent_round_data := RecentRound,
-                      recent_rounds := RecentRounds ++ [RecentRound]},
+                      task_summary := UpdatedSummary,
+                      recent_rounds := RetainedRounds},
     ok = emit_delegate_event(
            <<"delegate.action.completed">>, RoundId,
            #{status => Status, observation_ref => ObservationRef},
@@ -588,6 +599,58 @@ action_observation_ref(#{handle := Handle}) when is_binary(Handle) ->
     #{handle => Handle};
 action_observation_ref(_InlineObservation) ->
     #{inline => true}.
+
+recent_round_window(Budgets) ->
+    case maps:get(
+           recent_round_window, Budgets,
+           ?DEFAULT_RECENT_ROUND_WINDOW) of
+        Window when is_integer(Window), Window >= 0 ->
+            Window;
+        _InvalidWindow ->
+            ?DEFAULT_RECENT_ROUND_WINDOW
+    end.
+
+retain_recent_rounds(Rounds, Window) ->
+    EvictedCount = max(length(Rounds) - Window, 0),
+    lists:split(EvictedCount, Rounds).
+
+merge_evicted_rounds([], Summary) ->
+    Summary;
+merge_evicted_rounds(
+  [#{round := Round,
+     status := Status,
+     observation := Observation} | Remaining],
+  EmptySummary)
+  when map_size(EmptySummary) =:= 0 ->
+    Summary =
+        #{action => tool_observation,
+          status => Status,
+          counts => #{rounds => 1, Status => 1},
+          first_round => Round,
+          last_round => Round,
+          observation_ref => action_observation_ref(Observation)},
+    merge_evicted_rounds(Remaining, Summary);
+merge_evicted_rounds(
+  [#{round := Round,
+     status := Status,
+     observation := Observation} | Remaining],
+  Summary = #{status := PreviousStatus,
+              counts := Counts}) ->
+    UpdatedCounts =
+        Counts#{rounds := maps:get(rounds, Counts) + 1,
+                Status => maps:get(Status, Counts, 0) + 1},
+    UpdatedSummary =
+        Summary#{status := merged_summary_status(PreviousStatus, Status),
+                 counts := UpdatedCounts,
+                 last_round := Round,
+                 observation_ref :=
+                     action_observation_ref(Observation)},
+    merge_evicted_rounds(Remaining, UpdatedSummary).
+
+merged_summary_status(Status, Status) ->
+    Status;
+merged_summary_status(_PreviousStatus, _Status) ->
+    mixed.
 
 advance_after_round(
   #{status := succeeded, decision := continue}, _RoundId,
