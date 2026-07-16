@@ -48,6 +48,8 @@ init(#{request := Request = #{request_id := RequestId,
              unknown_outcome_ledger => [],
              recent_round_data => undefined,
              recent_rounds => [],
+             artifact_excerpts => maps:get(artifacts, Request, []),
+             task_artifacts => [],
              scoped_leases =>
                  #{requests =>
                        maps:get(lease_requests, RuntimeOptions, []),
@@ -550,19 +552,42 @@ replace_prompt_estimate(
     Data#{counters := CorrectedCounters}.
 
 commit_action_observation(
-  #{status := Status,
+  Result = #{status := Status,
     phase := action,
     decision := continue,
     terminal_result := Observation},
   RoundId,
   Data = #{recent_rounds := RecentRounds}) ->
+    ArtifactData = commit_action_artifact(Result, Data),
+    ObservationRef = action_observation_ref(Observation),
     RecentRound = #{round => RoundId,
                     status => Status,
                     observation => Observation},
-    Data#{recent_round_data := RecentRound,
-          recent_rounds := RecentRounds ++ [RecentRound]};
+    CommittedData =
+        ArtifactData#{recent_round_data := RecentRound,
+                      recent_rounds := RecentRounds ++ [RecentRound]},
+    ok = emit_delegate_event(
+           <<"delegate.action.completed">>, RoundId,
+           #{status => Status, observation_ref => ObservationRef},
+           CommittedData),
+    CommittedData;
 commit_action_observation(_Result, _RoundId, Data) ->
     Data.
+
+commit_action_artifact(
+  #{artifact := Artifact, artifact_excerpt := ArtifactExcerpt},
+  Data = #{task_artifacts := TaskArtifacts,
+           artifact_excerpts := ArtifactExcerpts})
+  when is_map(Artifact), is_map(ArtifactExcerpt) ->
+    Data#{task_artifacts := TaskArtifacts ++ [Artifact],
+          artifact_excerpts := ArtifactExcerpts ++ [ArtifactExcerpt]};
+commit_action_artifact(_Result, Data) ->
+    Data.
+
+action_observation_ref(#{handle := Handle}) when is_binary(Handle) ->
+    #{handle => Handle};
+action_observation_ref(_InlineObservation) ->
+    #{inline => true}.
 
 advance_after_round(
   #{status := succeeded, decision := continue}, _RoundId,
@@ -670,7 +695,8 @@ continue_after_pre_stateful_failure(Failure, Data) ->
     start_cleanup(Failure, Data#{recent_round_data := Failure}).
 
 start_cleanup(Projection0, Data = #{cleanup_started := false}) ->
-    Projection = maybe_attach_budget_usage(Projection0, Data),
+    Projection1 = maybe_attach_task_artifacts(Projection0, Data),
+    Projection = maybe_attach_budget_usage(Projection1, Data),
     Status = maps:get(status, Projection),
     DeadlineClearedData = cancel_task_deadline(Data),
     CleanupData = DeadlineClearedData#{status := Status,
@@ -803,6 +829,8 @@ valid_round_result(Result) when is_map(Result) ->
         valid_optional_result_map(usage, Result) andalso
         valid_optional_result_map(mutation, Result) andalso
         valid_optional_result_map(unknown_outcome, Result) andalso
+        valid_optional_result_map(artifact, Result) andalso
+        valid_optional_result_map(artifact_excerpt, Result) andalso
         valid_optional_result_map(terminal_result, Result);
 valid_round_result(_Result) ->
     false.
@@ -810,7 +838,8 @@ valid_round_result(_Result) ->
 valid_round_result_keys(Result) ->
     Allowed =
         [status, phase, decision, reason, checkpoint, usage,
-         mutation, unknown_outcome, terminal_result],
+         mutation, unknown_outcome, artifact, artifact_excerpt,
+         terminal_result],
     lists:all(
       fun(Key) -> lists:member(Key, Allowed) end,
       maps:keys(Result)).
@@ -1053,6 +1082,12 @@ accounted_prompt_tokens(EstimatedPromptTokens, Budgets) ->
         true -> EstimatedPromptTokens;
         false -> 0
     end.
+
+maybe_attach_task_artifacts(
+  Projection, #{task_artifacts := [_Artifact | _] = Artifacts}) ->
+    Projection#{artifacts => Artifacts};
+maybe_attach_task_artifacts(Projection, _Data) ->
+    Projection.
 
 maybe_attach_budget_usage(
   Projection = #{result := {budget_exceeded, _Limit}},

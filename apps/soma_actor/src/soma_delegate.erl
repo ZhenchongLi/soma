@@ -7,7 +7,7 @@
 -define(MAX_TERMINAL_PROJECTION_BYTES, 512).
 -define(FORWARDED_REQUEST_TIMEOUT_MS, 2500).
 
--export([start_link/0, submit/1, status/1, cancel/1]).
+-export([start_link/0, submit/1, status/1, cancel/1, artifact_slice/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 start_link() ->
@@ -21,6 +21,11 @@ status(TaskId) ->
 
 cancel(TaskId) ->
     gen_server:call(?MODULE, {cancel, TaskId}).
+
+artifact_slice(TaskId, Handle, Offset, RequestedBytes) ->
+    gen_server:call(
+      ?MODULE,
+      {artifact_slice, TaskId, Handle, Offset, RequestedBytes}).
 
 init([]) ->
     {ok, #{requests => #{},
@@ -39,6 +44,13 @@ handle_call({status, TaskId}, From, State) ->
     status_task(TaskId, From, State);
 handle_call({cancel, TaskId}, From, State) ->
     cancel_task(TaskId, From, State);
+handle_call(
+  {artifact_slice, TaskId, Handle, Offset, RequestedBytes},
+  _From, State) ->
+    {reply,
+     soma_delegate_artifact_store:slice(
+       TaskId, Handle, Offset, RequestedBytes),
+     State};
 handle_call(_Request, _From, State) ->
     {reply, {error, bad_request}, State}.
 
@@ -516,13 +528,23 @@ bounded_terminal_projection(Projection) ->
             error ->
                 WithResult
         end,
+    WithArtifacts =
+        case maps:find(artifacts, Projection) of
+            {ok, Artifacts} ->
+                case valid_terminal_artifacts(Artifacts) of
+                    true -> WithUsage#{artifacts => Artifacts};
+                    false -> WithUsage
+                end;
+            error ->
+                WithUsage
+        end,
     Candidate =
         case maps:get(reason, Projection, undefined) of
             undefined ->
-                WithUsage;
+                WithArtifacts;
             Reason ->
-                WithUsage#{reason =>
-                               soma_delegate_event:reason_class(Reason)}
+                WithArtifacts#{reason =>
+                                   soma_delegate_event:reason_class(Reason)}
         end,
     case encoded_bytes(Candidate) =<
              ?MAX_TERMINAL_PROJECTION_BYTES of
@@ -551,4 +573,17 @@ valid_terminal_usage(Usage) when is_map(Usage) ->
           fun(Value) -> is_integer(Value) andalso Value >= 0 end,
           maps:values(Usage));
 valid_terminal_usage(_Usage) ->
+    false.
+
+valid_terminal_artifacts(Artifacts) when is_list(Artifacts) ->
+    lists:all(fun valid_terminal_artifact/1, Artifacts);
+valid_terminal_artifacts(_Artifacts) ->
+    false.
+
+valid_terminal_artifact(
+  #{handle := Handle, bytes := Bytes} = Artifact) ->
+    lists:sort(maps:keys(Artifact)) =:= [bytes, handle] andalso
+        is_binary(Handle) andalso byte_size(Handle) > 0 andalso
+        is_integer(Bytes) andalso Bytes >= 0;
+valid_terminal_artifact(_Artifact) ->
     false.

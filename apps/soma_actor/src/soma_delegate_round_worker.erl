@@ -226,16 +226,26 @@ handle_event(info,
     case maps:get(cancel_status, ActiveRun, undefined) of
         undefined ->
             finish_run_child(ActiveRun),
-            Result0 =
-                #{status => succeeded,
-                  phase => action,
-                  decision => maps:get(decision, Work, terminal),
-                  terminal_result =>
-                      #{status => succeeded, outputs => Outputs}},
-            report_round_result(
-              Data#{active_run := undefined},
-              maybe_add_adaptive_mutation(
-                succeeded, ActiveRun, Data, Result0));
+            case completed_action_observation(Outputs, Data) of
+                {ok, ObservationFields} ->
+                    Result0 =
+                        maps:merge(
+                          #{status => succeeded,
+                            phase => action,
+                            decision =>
+                                maps:get(decision, Work, terminal)},
+                          ObservationFields),
+                    report_round_result(
+                      Data#{active_run := undefined},
+                      maybe_add_adaptive_mutation(
+                        succeeded, ActiveRun, Data, Result0));
+                {error, Reason} ->
+                    report_round_result(
+                      Data#{active_run := undefined},
+                      #{status => failed,
+                        phase => action,
+                        reason => Reason})
+            end;
         PendingStatus ->
             finish_run_child(ActiveRun),
             report_round_result(
@@ -663,6 +673,29 @@ maybe_add_adaptive_mutation(_Outcome, _ActiveRun, _Data, Result) ->
 
 adaptive_action(#{work := Work}) ->
     maps:get(adaptive_action, Work, false).
+
+completed_action_observation(Outputs, Data = #{task_id := TaskId}) ->
+    Observation = #{status => succeeded, outputs => Outputs},
+    CompleteBytes =
+        iolist_to_binary(soma_lisp:render(Observation)),
+    MaxBytes = max_observation_bytes(Data),
+    case adaptive_action(Data) andalso
+         byte_size(CompleteBytes) > MaxBytes of
+        true ->
+            case soma_delegate_artifact_store:put(TaskId, CompleteBytes) of
+                {ok, Artifact = #{handle := Handle}} ->
+                    Excerpt =
+                        soma_delegate_prompt:artifact_excerpt(
+                          Artifact, CompleteBytes, MaxBytes),
+                    {ok, #{terminal_result => #{handle => Handle},
+                           artifact => Artifact,
+                           artifact_excerpt => Excerpt}};
+                {error, _StoreReason} ->
+                    {error, artifact_store_failed}
+            end;
+        false ->
+            {ok, #{terminal_result => Observation}}
+    end.
 
 bounded_failure_observation(Reason, Data) ->
     MaxBytes = max_observation_bytes(Data),
