@@ -47,6 +47,7 @@ init(#{request := Request = #{request_id := RequestId,
              counters => initial_counters(),
              mutation_ledger => [],
              unknown_outcome_ledger => [],
+             idempotency_state => #{},
              recent_round_data => undefined,
              task_summary => #{},
              recent_rounds => [],
@@ -443,15 +444,13 @@ commit_finished_round(
                    reason => deadline_after_unsafe_dispatch,
                    round => RoundId},
     LedgeredData =
-        Data#{mutation_ledger :=
-                  maps:get(mutation_ledger, Data) ++ [Mutation],
-              unknown_outcome_ledger :=
-                  maps:get(unknown_outcome_ledger, Data) ++
-                      [UnknownOutcome],
-              recent_round_data := Projection},
+        commit_unknown_outcome(
+          UnknownOutcome,
+          commit_mutation(Mutation, Data)),
     ClearedData =
         clear_committed_round(
-          Projection, RoundId, ActiveRound, LedgeredData),
+          Projection, RoundId, ActiveRound,
+          LedgeredData#{recent_round_data := Projection}),
     start_cleanup(Projection, ClearedData);
 commit_finished_round(
   Result, RoundId,
@@ -504,20 +503,15 @@ commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
     MutationData =
         case maps:find(mutation, Result) of
             {ok, Mutation} ->
-                MutationLedger = maps:get(mutation_ledger, UsageData),
-                UsageData#{mutation_ledger :=
-                               MutationLedger ++ [Mutation]};
+                commit_mutation(Mutation, UsageData);
             error ->
                 UsageData
         end,
     UnknownOutcomeData =
         case maps:find(unknown_outcome, Result) of
             {ok, UnknownOutcome} ->
-                UnknownOutcomeLedger =
-                    maps:get(unknown_outcome_ledger, MutationData),
-                MutationData#{unknown_outcome_ledger :=
-                                  UnknownOutcomeLedger ++
-                                      [UnknownOutcome]};
+                commit_unknown_outcome(
+                  UnknownOutcome, MutationData);
             error ->
                 MutationData
         end,
@@ -527,6 +521,48 @@ commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
         error ->
             UnknownOutcomeData
     end.
+
+commit_mutation(Mutation,
+                Data = #{mutation_ledger := MutationLedger}) ->
+    update_idempotency_state(
+      Mutation,
+      Data#{mutation_ledger := MutationLedger ++ [Mutation]}).
+
+commit_unknown_outcome(
+  UnknownOutcome,
+  Data = #{unknown_outcome_ledger := UnknownOutcomeLedger}) ->
+    IdempotencyDelta =
+        case maps:get(invocation, UnknownOutcome, undefined) of
+            Invocation when is_map(Invocation) ->
+                maps:merge(
+                  Invocation, maps:remove(invocation, UnknownOutcome));
+            _MissingInvocation ->
+                UnknownOutcome
+        end,
+    update_idempotency_state(
+      IdempotencyDelta,
+      Data#{unknown_outcome_ledger :=
+                UnknownOutcomeLedger ++ [UnknownOutcome]}).
+
+update_idempotency_state(
+  Delta, Data = #{idempotency_state := IdempotencyState}) ->
+    case invocation_key(Delta) of
+        {ok, InvocationKey} ->
+            Previous = maps:get(InvocationKey, IdempotencyState, #{}),
+            Updated = maps:merge(Previous, Delta),
+            Data#{idempotency_state :=
+                      maps:put(
+                        InvocationKey, Updated, IdempotencyState)};
+        error ->
+            Data
+    end.
+
+invocation_key(#{run_id := RunId}) ->
+    {ok, RunId};
+invocation_key(#{invocation_id := InvocationId}) ->
+    {ok, InvocationId};
+invocation_key(_UnidentifiedDelta) ->
+    error.
 
 commit_usage(Usage, Data) ->
     UsageData = Data#{usage := Usage},
@@ -733,18 +769,16 @@ finish_lost_unsafe_result(ActiveRound, RoundId, Data) ->
         #{round => RoundId,
           invocation => InvocationIdentity,
           outcome => unknown},
-    MutationLedger = maps:get(mutation_ledger, Data),
-    UnknownOutcomeLedger = maps:get(unknown_outcome_ledger, Data),
     Projection = #{status => in_doubt,
                    reason => unsafe_result_lost,
                    round => RoundId},
     ok = emit_round_completed(RoundId, Projection, Data),
     finish_worker_down(
       Projection,
-      Data#{mutation_ledger := MutationLedger ++ [Mutation],
-            unknown_outcome_ledger :=
-                UnknownOutcomeLedger ++ [UnknownOutcome],
-            recent_round_data := Projection}).
+      (commit_unknown_outcome(
+         UnknownOutcome,
+         commit_mutation(Mutation, Data)))#{
+           recent_round_data := Projection}).
 
 finish_worker_down(Projection, Data) ->
     start_cleanup(Projection, Data#{active_round := undefined}).
