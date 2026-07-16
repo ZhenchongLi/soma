@@ -6,6 +6,7 @@
 
 -define(DEFAULT_LLM_TIMEOUT_MS, 60000).
 -define(DEFAULT_ACTION_TIMEOUT_MS, 120000).
+-define(DEFAULT_MAX_OBSERVATION_BYTES, 16384).
 
 -export([start_link/1]).
 -export([init/1, callback_mode/0, handle_event/4, terminate/3]).
@@ -150,13 +151,16 @@ handle_event(info,
     case maps:get(cancel_status, ActiveRun, undefined) of
         undefined ->
             finish_run_child(ActiveRun),
+            Result0 =
+                #{status => succeeded,
+                  phase => action,
+                  decision => maps:get(decision, Work, terminal),
+                  terminal_result =>
+                      #{status => succeeded, outputs => Outputs}},
             report_round_result(
               Data#{active_run := undefined},
-              #{status => succeeded,
-                phase => action,
-                decision => maps:get(decision, Work, terminal),
-                terminal_result =>
-                    #{status => succeeded, outputs => Outputs}});
+              maybe_add_adaptive_mutation(
+                succeeded, ActiveRun, Data, Result0));
         PendingStatus ->
             finish_run_child(ActiveRun),
             report_round_result(
@@ -171,9 +175,10 @@ handle_event(info,
     finish_run_child(ActiveRun),
     case maps:get(cancel_status, ActiveRun, undefined) of
         undefined ->
+            Result = known_action_failure_result(Reason, ActiveRun, Data),
             report_round_result(
               Data#{active_run := undefined},
-              #{status => failed, phase => action, reason => Reason});
+              Result);
         PendingStatus ->
             report_round_result(
               Data#{active_run := undefined},
@@ -185,9 +190,10 @@ handle_event(info,
              Data = #{active_run :=
                           ActiveRun = #{run_id := RunId}}) ->
     finish_run_child(ActiveRun),
+    Result = known_action_timeout_result(ActiveRun, Data),
     report_round_result(
       Data#{active_run := undefined},
-      #{status => timeout, phase => action});
+      Result);
 handle_event(info,
              {run_cancelled, RunId},
              waiting_run,
@@ -346,7 +352,10 @@ execute_admitted_proposal(
     %% In delegate mode an admitted action is an observation-producing turn,
     %% never the terminal answer. The coordinator decides whether another
     %% configured model round remains after it commits the run result.
-    start_run(Steps, Data#{work := Work#{decision => continue}});
+    start_run(
+      Steps,
+      Data#{work := Work#{decision => continue,
+                          adaptive_action => true}});
 execute_admitted_proposal(#{kind := reply, text := Text}, Data) ->
     report_round_result(
       Data,
@@ -411,7 +420,8 @@ start_run(Steps,
                    correlation_id := CorrelationId,
                    work := Work}) ->
     RunId = mint_run_id(),
-    report_unsafe_dispatch(Steps, RunId, Data),
+    UnsafeInvocation = first_unsafe_invocation(Steps, RunId),
+    report_unsafe_dispatch(UnsafeInvocation, Data),
     RunOpts = #{run_id => RunId,
                 task_id => TaskId,
                 session_id => TaskId,
@@ -432,7 +442,8 @@ start_run(Steps,
                           pid => RunPid,
                           mref => RunMRef,
                           timer_ref => TimerRef,
-                          cancel_status => undefined},
+                          cancel_status => undefined,
+                          unsafe_invocation => UnsafeInvocation},
             {next_state, waiting_run,
              Data#{active_run := ActiveRun}};
         {error, Reason} ->
@@ -469,21 +480,89 @@ valid_timeout(undefined) ->
 valid_timeout(TimeoutMs) ->
     is_integer(TimeoutMs) andalso TimeoutMs > 0.
 
-report_unsafe_dispatch(Steps, RunId,
-                       #{coordinator_pid := CoordinatorPid,
-                         task_id := TaskId,
-                         round_id := RoundId,
-                         worker_identity := WorkerIdentity,
-                         result_capability := ResultCapability}) ->
-    case first_unsafe_invocation(Steps, RunId) of
-        none ->
-            ok;
-        InvocationIdentity ->
-            CoordinatorPid !
-                {delegate_unsafe_action_dispatched,
-                 TaskId, RoundId, self(), WorkerIdentity,
-                 ResultCapability, InvocationIdentity},
-            ok
+report_unsafe_dispatch(none, _Data) ->
+    ok;
+report_unsafe_dispatch(
+  InvocationIdentity,
+  #{coordinator_pid := CoordinatorPid,
+    task_id := TaskId,
+    round_id := RoundId,
+    worker_identity := WorkerIdentity,
+    result_capability := ResultCapability}) ->
+    CoordinatorPid !
+        {delegate_unsafe_action_dispatched,
+         TaskId, RoundId, self(), WorkerIdentity,
+         ResultCapability, InvocationIdentity},
+    ok.
+
+known_action_failure_result(Reason, ActiveRun, Data) ->
+    case adaptive_action(Data) of
+        true ->
+            Result0 =
+                #{status => failed,
+                  phase => action,
+                  decision => continue,
+                  terminal_result =>
+                      bounded_failure_observation(Reason, Data)},
+            maybe_add_adaptive_mutation(
+              failed, ActiveRun, Data, Result0);
+        false ->
+            #{status => failed, phase => action, reason => Reason}
+    end.
+
+known_action_timeout_result(ActiveRun, Data) ->
+    case adaptive_action(Data) of
+        true ->
+            Result0 =
+                #{status => timeout,
+                  phase => action,
+                  decision => continue,
+                  terminal_result => #{status => timeout}},
+            maybe_add_adaptive_mutation(
+              timeout, ActiveRun, Data, Result0);
+        false ->
+            #{status => timeout, phase => action}
+    end.
+
+maybe_add_adaptive_mutation(
+  Outcome,
+  #{unsafe_invocation := Invocation},
+  #{round_id := RoundId} = Data,
+  Result)
+  when is_map(Invocation) ->
+    case adaptive_action(Data) of
+        true ->
+            Result#{mutation =>
+                        Invocation#{round => RoundId,
+                                    outcome => Outcome}};
+        false ->
+            Result
+    end;
+maybe_add_adaptive_mutation(_Outcome, _ActiveRun, _Data, Result) ->
+    Result.
+
+adaptive_action(#{work := Work}) ->
+    maps:get(adaptive_action, Work, false).
+
+bounded_failure_observation(Reason, Data) ->
+    MaxBytes = max_observation_bytes(Data),
+    Serialized = iolist_to_binary(soma_lisp:render(Reason)),
+    RetainedBytes = min(byte_size(Serialized), MaxBytes),
+    Retained = binary:part(Serialized, 0, RetainedBytes),
+    Base = #{status => failed, reason => Retained},
+    case byte_size(Serialized) > MaxBytes of
+        true -> Base#{truncated => true};
+        false -> Base
+    end.
+
+max_observation_bytes(#{snapshot := Snapshot}) ->
+    Budgets = maps:get(budgets, Snapshot, #{}),
+    case maps:get(max_observation_bytes, Budgets,
+                  ?DEFAULT_MAX_OBSERVATION_BYTES) of
+        MaxBytes when is_integer(MaxBytes), MaxBytes > 0 ->
+            MaxBytes;
+        _InvalidMaxBytes ->
+            ?DEFAULT_MAX_OBSERVATION_BYTES
     end.
 
 first_unsafe_invocation([], _RunId) ->

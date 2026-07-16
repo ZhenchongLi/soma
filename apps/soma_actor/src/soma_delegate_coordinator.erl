@@ -434,13 +434,14 @@ commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
     end.
 
 commit_action_observation(
-  #{status := succeeded,
+  #{status := Status,
     phase := action,
+    decision := continue,
     terminal_result := Observation},
   RoundId,
   Data = #{recent_rounds := RecentRounds}) ->
     RecentRound = #{round => RoundId,
-                    status => succeeded,
+                    status => Status,
                     observation => Observation},
     Data#{recent_round_data := RecentRound,
           recent_rounds := RecentRounds ++ [RecentRound]};
@@ -450,6 +451,11 @@ commit_action_observation(_Result, _RoundId, Data) ->
 advance_after_round(
   #{status := succeeded, decision := continue}, _RoundId,
   Data = #{round_sequence := [_NextWork | _Remaining]}) ->
+    begin_task(Data);
+advance_after_round(
+  #{status := Status, phase := action, decision := continue}, _RoundId,
+  Data = #{round_sequence := [_NextWork | _Remaining]})
+  when Status =:= failed; Status =:= timeout ->
     begin_task(Data);
 advance_after_round(Result, RoundId, Data) ->
     Projection = round_projection(Result, RoundId),
