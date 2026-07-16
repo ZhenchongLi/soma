@@ -235,12 +235,25 @@ prepare_and_start_round(
   RoundEntry, Remaining, Snapshot, TaskId, CorrelationId, RoundId, Data) ->
     case prepare_round_work(RoundEntry, Snapshot) of
         {ok, Work} ->
+            PromptProjection =
+                soma_delegate_prompt:project(Snapshot, Data),
+            PromptedWork =
+                attach_prompt(Work, PromptProjection),
             start_round_worker(
-              Work, Remaining, Snapshot, TaskId,
+              PromptedWork, Remaining, Snapshot, TaskId,
               CorrelationId, RoundId, Data);
         {error, invalid_round_sequence} ->
             fail_before_round(Data, invalid_round_sequence)
     end.
+
+attach_prompt(Work = #{llm := Llm}, PromptProjection)
+  when is_map(Llm) ->
+    Messages = soma_delegate_prompt:render(PromptProjection),
+    Work#{llm :=
+              Llm#{prompt_projection => PromptProjection,
+                   messages => Messages}};
+attach_prompt(Work, _PromptProjection) ->
+    Work.
 
 start_round_worker(
   Work, Remaining, Snapshot, TaskId, CorrelationId, RoundId, Data) ->
