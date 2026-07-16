@@ -319,7 +319,14 @@ forbidden_canonical_name(Name) ->
        <<"userid">>, <<"productsession">>, <<"productsessionid">>,
        <<"sessionidentity">>, <<"sessionid">>, <<"rawlease">>,
        <<"rawleases">>, <<"leaserequests">>, <<"leaseguard">>,
-       <<"roundsequence">>, <<"roundsnapshot">>, <<"priorsnapshot">>])
+       <<"roundsequence">>, <<"roundsnapshot">>, <<"priorsnapshot">>,
+       %% Namespace members that must stay exact (a fragment would
+       %% collide with legitimate names such as prompt-token budgets;
+       %% bare token names stay allowed for the same reason — credential
+       %% tokens are covered by the compound fragments below):
+       <<"history">>, <<"transcript">>,
+       <<"messages">>, <<"chat">>, <<"conversation">>,
+       <<"lease">>, <<"leases">>])
         orelse contains_forbidden_fragment(Name).
 
 contains_forbidden_fragment(Name) ->
@@ -329,6 +336,10 @@ contains_forbidden_fragment(Name) ->
        <<"leaseguardpid">>, <<"monitorref">>, <<"authentication">>,
        <<"authorization">>, <<"credential">>, <<"apikey">>,
        <<"secret">>, <<"password">>, <<"bearer">>, <<"provider">>,
+       <<"accesstoken">>, <<"sessiontoken">>, <<"refreshtoken">>,
+       <<"bearertoken">>, <<"apitoken">>, <<"authtoken">>,
+       <<"idtoken">>, <<"chathistory">>, <<"chatlog">>,
+       <<"conversationlog">>, <<"messagehistory">>, <<"dialoghistory">>,
        <<"productconversation">>, <<"conversationhistory">>,
        <<"producthistory">>, <<"productuser">>, <<"useridentity">>,
        <<"productsession">>, <<"sessionidentity">>, <<"rawlease">>,
