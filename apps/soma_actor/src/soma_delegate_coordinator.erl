@@ -803,13 +803,13 @@ continue_after_pre_stateful_failure(Failure, Data) ->
     start_cleanup(Failure, Data#{recent_round_data := Failure}).
 
 start_cleanup(Projection0, Data = #{cleanup_started := false}) ->
-    Projection1 = maybe_attach_task_artifacts(Projection0, Data),
-    Projection = maybe_attach_budget_usage(Projection1, Data),
+    Projection = terminal_projection(Projection0, Data),
     Status = maps:get(status, Projection),
     DeadlineClearedData = cancel_task_deadline(Data),
-    CleanupData = DeadlineClearedData#{status := Status,
-                                       cleanup_started := true,
-                                       terminal_result := Projection},
+    CleanupData0 = DeadlineClearedData#{status := Status,
+                                        cleanup_started := true,
+                                        terminal_result := Projection},
+    CleanupData = terminal_event_data(Projection0, CleanupData0),
     ok = emit_delegate_event(
            <<"delegate.task.cleanup">>, 0,
            CleanupData, CleanupData),
@@ -1143,6 +1143,10 @@ event_store_pid() ->
         lists:keyfind(soma_event_store, 1, Children),
     Pid.
 
+public_projection(
+  #{cleanup_started := true, terminal_result := Projection})
+  when is_map(Projection) ->
+    Projection;
 public_projection(Data) ->
     maps:with([request_id, task_id, correlation_id, status], Data).
 
@@ -1222,22 +1226,40 @@ accounted_prompt_tokens(EstimatedPromptTokens, Budgets) ->
         false -> 0
     end.
 
-maybe_attach_task_artifacts(
-  Projection, #{task_artifacts := [_Artifact | _] = Artifacts}) ->
-    Projection#{artifacts => Artifacts};
-maybe_attach_task_artifacts(Projection, _Data) ->
-    Projection.
-
-maybe_attach_budget_usage(
-  Projection = #{result := {budget_exceeded, _Limit}},
-  #{counters := Counters}) ->
-    Projection#{usage => Counters};
-maybe_attach_budget_usage(
+terminal_projection(
   Projection,
-  #{budgets := Budgets, counters := Counters}) ->
-    case maps:is_key(max_context_tokens, Budgets) orelse
-         maps:is_key(max_total_prompt_tokens, Budgets) orelse
-         maps:get(prompt_tokens, Counters, 0) > 0 of
-        true -> Projection#{usage => Counters};
-        false -> Projection
-    end.
+  #{request_id := RequestId,
+    task_id := TaskId,
+    correlation_id := CorrelationId,
+    task_artifacts := TaskArtifacts,
+    mutation_ledger := Mutations,
+    unknown_outcome_ledger := UnknownOutcomes,
+    counters := Usage}) ->
+    Status = honest_terminal_status(
+               maps:get(status, Projection, failed),
+               UnknownOutcomes),
+    #{request_id => RequestId,
+      task_id => TaskId,
+      correlation_id => CorrelationId,
+      status => Status,
+      result => maps:get(result, Projection, undefined),
+      artifacts => maps:get(artifacts, Projection, TaskArtifacts),
+      mutations => Mutations,
+      unknown_outcomes => UnknownOutcomes,
+      usage => Usage,
+      trace_ref => CorrelationId}.
+
+honest_terminal_status(succeeded, [_Unknown | _]) ->
+    in_doubt;
+honest_terminal_status(Status, _UnknownOutcomes)
+  when Status =:= succeeded; Status =:= failed;
+       Status =:= rejected; Status =:= timeout;
+       Status =:= cancelled; Status =:= in_doubt ->
+    Status;
+honest_terminal_status(_InvalidStatus, _UnknownOutcomes) ->
+    failed.
+
+terminal_event_data(#{reason := Reason}, Data) ->
+    Data#{reason => soma_delegate_event:reason_class(Reason)};
+terminal_event_data(_Projection, Data) ->
+    maps:remove(reason, Data).
