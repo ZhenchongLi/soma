@@ -19,7 +19,7 @@ normalize(#{kind := run_steps, steps := Steps}) when is_list(Steps) ->
             {ok, #{kind => run_steps, steps => Steps}};
         false ->
             {error, [#{code => invalid_step,
-                       message => <<"run_steps proposal has a step missing id or tool">>,
+                       message => <<"run_steps proposal has an invalid canonical step">>,
                        kind => run_steps,
                        field => steps}]}
     end;
@@ -67,7 +67,13 @@ normalize(_Raw) ->
     {error, [#{code => invalid_proposal,
                message => <<"proposal must be a map">>}]}.
 
-valid_step(Step) when is_map(Step) ->
-    maps:is_key(id, Step) andalso maps:is_key(tool, Step);
+valid_step(#{id := _StepId, tool := _ToolName} = Step) ->
+    is_map(maps:get(args, Step, #{})) andalso
+        valid_timeout(maps:get(timeout_ms, Step, undefined));
 valid_step(_Step) ->
     false.
+
+valid_timeout(undefined) ->
+    true;
+valid_timeout(TimeoutMs) ->
+    is_integer(TimeoutMs) andalso TimeoutMs > 0.

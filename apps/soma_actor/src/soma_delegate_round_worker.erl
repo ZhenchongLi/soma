@@ -132,9 +132,9 @@ handle_event(info,
     start_reserved_run(
       Steps, Data#{pending_budget := undefined});
 handle_event(info,
-             {delegate_unsafe_action_recorded,
+             {delegate_state_action_recorded,
               TaskId, RoundId, WorkerIdentity, ResultCapability,
-              UnsafeInvocations},
+              StateInvocations, UnsafeInvocations},
              waiting_unsafe_dispatch,
              Data = #{task_id := TaskId,
                       round_id := RoundId,
@@ -143,9 +143,10 @@ handle_event(info,
                       pending_run :=
                           #{steps := Steps,
                             run_id := RunId,
+                            state_invocations := StateInvocations,
                             unsafe_invocations := UnsafeInvocations}}) ->
     launch_reserved_run(
-      Steps, RunId, UnsafeInvocations,
+      Steps, RunId, StateInvocations, UnsafeInvocations,
       Data#{pending_run := undefined});
 handle_event(info,
              {delegate_budget_reserved,
@@ -566,21 +567,24 @@ start_reserved_run(
   Steps,
   Data) ->
     RunId = mint_run_id(),
-    UnsafeInvocations = unsafe_invocations(Steps, RunId),
-    case UnsafeInvocations of
+    {StateInvocations, UnsafeInvocations} =
+        state_invocations(Steps, RunId),
+    case StateInvocations of
         [] ->
-            launch_reserved_run(Steps, RunId, [], Data);
-        [_Unsafe | _] ->
-            report_unsafe_dispatch(UnsafeInvocations, Data),
+            launch_reserved_run(Steps, RunId, [], [], Data);
+        [_StateInvocation | _] ->
+            report_state_dispatch(
+              StateInvocations, UnsafeInvocations, Data),
             PendingRun = #{steps => Steps,
                            run_id => RunId,
+                           state_invocations => StateInvocations,
                            unsafe_invocations => UnsafeInvocations},
             {next_state, waiting_unsafe_dispatch,
              Data#{pending_run := PendingRun}}
     end.
 
 launch_reserved_run(
-  Steps, RunId, UnsafeInvocations,
+  Steps, RunId, StateInvocations, UnsafeInvocations,
   Data = #{task_id := TaskId,
            correlation_id := CorrelationId,
            work := Work}) ->
@@ -605,6 +609,7 @@ launch_reserved_run(
                           mref => RunMRef,
                           timer_ref => TimerRef,
                           cancel_status => undefined,
+                          state_invocations => StateInvocations,
                           unsafe_invocations => UnsafeInvocations},
             {next_state, waiting_run,
              Data#{active_run := ActiveRun}};
@@ -683,35 +688,42 @@ valid_timeout(undefined) ->
 valid_timeout(TimeoutMs) ->
     is_integer(TimeoutMs) andalso TimeoutMs > 0.
 
-report_unsafe_dispatch([], _Data) ->
-    ok;
-report_unsafe_dispatch(
-  UnsafeInvocations,
+report_state_dispatch(
+  StateInvocations, UnsafeInvocations,
   #{coordinator_pid := CoordinatorPid,
     task_id := TaskId,
     round_id := RoundId,
     worker_identity := WorkerIdentity,
     result_capability := ResultCapability})
-  when is_list(UnsafeInvocations), UnsafeInvocations =/= [] ->
+  when is_list(StateInvocations), StateInvocations =/= [],
+       is_list(UnsafeInvocations) ->
     CoordinatorPid !
-        {delegate_unsafe_action_dispatched,
+        {delegate_state_action_dispatched,
          TaskId, RoundId, self(), WorkerIdentity,
-         ResultCapability, UnsafeInvocations},
+         ResultCapability, StateInvocations, UnsafeInvocations},
     ok.
 
 known_action_failure_result(Reason, ActiveRun, Data) ->
     case adaptive_action(Data) of
         true ->
-            Result0 =
-                #{status => failed,
-                  phase => action,
-                  decision => continue,
-                  terminal_result =>
-                      bounded_failure_observation(Reason, Data)},
-            maybe_add_adaptive_run_id(
-              ActiveRun, Data,
-              maybe_add_adaptive_safety(
-                ActiveRun, Data, Result0));
+            case action_observation(
+                   #{status => failed, reason => Reason}, Data) of
+                {ok, ObservationFields} ->
+                    Result0 =
+                        maps:merge(
+                          #{status => failed,
+                            phase => action,
+                            decision => continue},
+                          ObservationFields),
+                    maybe_add_adaptive_run_id(
+                      ActiveRun, Data,
+                      maybe_add_adaptive_safety(
+                        ActiveRun, Data, Result0));
+                {error, ObservationReason} ->
+                    #{status => failed,
+                      phase => action,
+                      reason => ObservationReason}
+            end;
         false ->
             #{status => failed, phase => action, reason => Reason}
     end.
@@ -719,29 +731,40 @@ known_action_failure_result(Reason, ActiveRun, Data) ->
 known_action_timeout_result(ActiveRun, Data) ->
     case adaptive_action(Data) of
         true ->
-            Result0 =
-                #{status => timeout,
-                  phase => action,
-                  decision => continue,
-                  terminal_result => #{status => timeout}},
-            maybe_add_adaptive_run_id(
-              ActiveRun, Data,
-              maybe_add_adaptive_safety(
-                ActiveRun, Data, Result0));
+            case action_observation(#{status => timeout}, Data) of
+                {ok, ObservationFields} ->
+                    Result0 =
+                        maps:merge(
+                          #{status => timeout,
+                            phase => action,
+                            decision => continue},
+                          ObservationFields),
+                    maybe_add_adaptive_run_id(
+                      ActiveRun, Data,
+                      maybe_add_adaptive_safety(
+                        ActiveRun, Data, Result0));
+                {error, ObservationReason} ->
+                    #{status => failed,
+                      phase => action,
+                      reason => ObservationReason}
+            end;
         false ->
             #{status => timeout, phase => action}
     end.
 
 maybe_add_adaptive_safety(
-  #{unsafe_invocations := UnsafeInvocations},
+  #{state_invocations := StateInvocations,
+    unsafe_invocations := UnsafeInvocations},
   #{round_id := RoundId} = Data,
   Result)
-  when is_list(UnsafeInvocations), UnsafeInvocations =/= [] ->
+  when is_list(StateInvocations), StateInvocations =/= [],
+       is_list(UnsafeInvocations) ->
     case adaptive_action(Data) of
         true ->
             Facts =
                 soma_delegate_safety:facts(
-                  UnsafeInvocations, RoundId, event_store_pid()),
+                  StateInvocations, UnsafeInvocations,
+                  RoundId, event_store_pid()),
             attach_safety_facts(Facts, Result);
         false ->
             Result
@@ -796,8 +819,11 @@ adaptive_action_summary(#{kind := Kind})
 adaptive_action_summary(_InvalidProposal) ->
     #{kind => invalid}.
 
-completed_action_observation(Outputs, Data = #{task_id := TaskId}) ->
+completed_action_observation(Outputs, Data) ->
     Observation = #{status => succeeded, outputs => Outputs},
+    action_observation(Observation, Data).
+
+action_observation(Observation, Data = #{task_id := TaskId}) ->
     CompleteBytes =
         iolist_to_binary(soma_lisp:render(Observation)),
     MaxBytes = observation_envelope_bytes(Data),
@@ -819,17 +845,6 @@ completed_action_observation(Outputs, Data = #{task_id := TaskId}) ->
             {ok, #{terminal_result => Observation}}
     end.
 
-bounded_failure_observation(Reason, Data) ->
-    MaxBytes = observation_envelope_bytes(Data),
-    Serialized = iolist_to_binary(soma_lisp:render(Reason)),
-    RetainedBytes = min(byte_size(Serialized), MaxBytes),
-    Retained = binary:part(Serialized, 0, RetainedBytes),
-    Base = #{status => failed, reason => Retained},
-    case byte_size(Serialized) > MaxBytes of
-        true -> Base#{truncated => true};
-        false -> Base
-    end.
-
 observation_envelope_bytes(Data) ->
     min(max_observation_bytes(Data), ?MAX_INLINE_OBSERVATION_BYTES).
 
@@ -843,31 +858,45 @@ max_observation_bytes(#{snapshot := Snapshot}) ->
             ?DEFAULT_MAX_OBSERVATION_BYTES
     end.
 
-unsafe_invocations(Steps, RunId) ->
-    unsafe_invocations(Steps, RunId, []).
+state_invocations(Steps, RunId) ->
+    state_invocations(Steps, RunId, [], []).
 
-unsafe_invocations([], _RunId, Acc) ->
-    lists:reverse(Acc);
-unsafe_invocations(
-  [#{id := StepId, tool := ToolName} = Step | Remaining], RunId, Acc) ->
-    case step_repeat_safe(Step) of
-        true ->
-            unsafe_invocations(Remaining, RunId, Acc);
-        false ->
+state_invocations([], _RunId, StateAcc, UnsafeAcc) ->
+    {lists:reverse(StateAcc), lists:reverse(UnsafeAcc)};
+state_invocations(
+  [#{id := StepId, tool := ToolName} | Remaining], RunId,
+  StateAcc, UnsafeAcc) ->
+    case state_repeat_safety(ToolName) of
+        not_state ->
+            state_invocations(
+              Remaining, RunId, StateAcc, UnsafeAcc);
+        RepeatSafety ->
             Invocation =
                 #{invocation_id => mint_invocation_id(),
                   run_id => RunId,
                   step_id => StepId,
                   tool => ToolName},
-            unsafe_invocations(Remaining, RunId, [Invocation | Acc])
+            UpdatedUnsafeAcc =
+                case RepeatSafety of
+                    unsafe -> [Invocation | UnsafeAcc];
+                    safe -> UnsafeAcc
+                end,
+            state_invocations(
+              Remaining, RunId,
+              [Invocation | StateAcc], UpdatedUnsafeAcc)
     end.
 
-step_repeat_safe(#{tool := ToolName}) ->
+state_repeat_safety(ToolName) ->
     case soma_tool_registry:resolve_descriptor(ToolName) of
-        {ok, Descriptor} ->
-            soma_run_resume_safety:descriptor_safe(Descriptor);
+        {ok, #{effect := state} = Descriptor} ->
+            case soma_run_resume_safety:descriptor_safe(Descriptor) of
+                true -> safe;
+                false -> unsafe
+            end;
+        {ok, _NonStateDescriptor} ->
+            not_state;
         {error, not_found} ->
-            false
+            unsafe
     end.
 
 release_child_monitor(Pid, MRef) ->
