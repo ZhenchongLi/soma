@@ -14,6 +14,7 @@
 -export([test_round_llm_and_tool_budgets_stop_before_child_start_and_reset/1]).
 -export([test_task_deadline_tears_down_all_owned_execution_children/1]).
 -export([test_context_preflight_and_provider_usage_accounting/1]).
+-export([test_oversized_observation_uses_stable_task_artifact_and_bounded_slice/1]).
 -export([invoke/2]).
 
 all() ->
@@ -26,7 +27,8 @@ all() ->
      test_prompt_schemas_equal_policy_capability_intersection,
      test_round_llm_and_tool_budgets_stop_before_child_start_and_reset,
      test_task_deadline_tears_down_all_owned_execution_children,
-     test_context_preflight_and_provider_usage_accounting].
+     test_context_preflight_and_provider_usage_accounting,
+     test_oversized_observation_uses_stable_task_artifact_and_bounded_slice].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -608,6 +610,138 @@ test_context_preflight_and_provider_usage_accounting(_Config) ->
            provider_usage_replaced_estimate => true}],
     ?assertEqual(Expected, Actual).
 
+test_oversized_observation_uses_stable_task_artifact_and_bounded_slice(
+  _Config) ->
+    ToolName = delegate_artifact_reader,
+    ok = soma_tool_registry:register_tool(
+           #{name => ToolName,
+             effect => reader,
+             idempotent => true,
+             timeout_ms => 1000,
+             adapter => erlang_module,
+             module => ?MODULE,
+             description => <<"Returns one local oversized observation.">>}),
+    try
+        MaxObservationBytes = 64,
+        RequestedSliceBytes = 13,
+        LargeOutput =
+            binary:copy(<<"complete-artifact-observation-">>, 32),
+        Observation =
+            #{status => succeeded,
+              outputs =>
+                  #{artifact_reader_action => #{value => LargeOutput}}},
+        CompleteBytes =
+            iolist_to_binary(soma_lisp:render(Observation)),
+        true = byte_size(CompleteBytes) > MaxObservationBytes,
+        Action =
+            #{kind => run_steps,
+              steps =>
+                  [#{id => artifact_reader_action,
+                     tool => ToolName,
+                     args => #{value => LargeOutput}}]},
+        TestPid = self(),
+        Responder =
+            fun(CallOpts) ->
+                    TestPid !
+                        {delegate_artifact_prompt,
+                         maps:get(prompt_projection, CallOpts)},
+                    terminal_response(<<"oversized observation stored">>)
+            end,
+        ok = application:set_env(
+               soma_actor, delegate_runtime_options,
+               #{tool_policy => #{allowed_tools => [ToolName]},
+                 round_sequence =>
+                     [#{llm => #{directive => proposal,
+                                 output => Action}},
+                      #{llm =>
+                            #{provider => openai_compat,
+                              base_url => <<"api.example.test/v1">>,
+                              api_key => <<"test-only-key">>,
+                              model => <<"test-model">>,
+                              response => Responder}}]}),
+        CorrelationId =
+            <<"delegate-oversized-observation-correlation">>,
+        Request =
+            #{request_id => <<"delegate-oversized-observation">>,
+              correlation_id => CorrelationId,
+              objective => #{goal => <<"retain the complete reader output">>},
+              output_contract => #{format => <<"text">>},
+              capability_scope =>
+                  #{tools => [atom_to_binary(ToolName, utf8)]},
+              artifacts => [],
+              budgets =>
+                  #{max_observation_bytes => MaxObservationBytes}},
+
+        {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+        Prompt = receive_artifact_prompt(),
+        Terminal = wait_for_terminal_projection(TaskId, 100),
+        [PromptArtifact] = maps:get(artifact_excerpts, Prompt, missing),
+        #{handle := PromptHandle,
+          bytes := CompleteByteCount,
+          excerpt := Excerpt,
+          truncated := true} = PromptArtifact,
+        ?assertEqual(
+           [bytes, excerpt, handle, truncated],
+           lists:sort(maps:keys(PromptArtifact))),
+        [#{round := 1,
+           observation := PromptObservationRef}] =
+            maps:get(recent_rounds, Prompt, missing),
+        ?assertEqual(#{handle => PromptHandle}, PromptObservationRef),
+        ?assertEqual(
+           binary:part(CompleteBytes, 0, MaxObservationBytes), Excerpt),
+        ?assertEqual(MaxObservationBytes, byte_size(Excerpt)),
+        ?assertEqual(byte_size(CompleteBytes), CompleteByteCount),
+        ?assertEqual(
+           nomatch,
+           binary:match(term_to_binary(Prompt), LargeOutput)),
+
+        Events =
+            soma_event_store:by_correlation(
+              event_store_pid(), CorrelationId),
+        [#{payload := #{observation_ref := AuditObservationRef}}] =
+            [Event || #{event_type := <<"delegate.action.completed">>} = Event
+                          <- Events],
+        #{handle := AuditHandle} = AuditObservationRef,
+        [#{handle := TerminalHandle}] =
+            maps:get(artifacts, Terminal, missing),
+
+        {ok, StoredCompleteBytes} =
+            soma_delegate:artifact_slice(
+              TaskId, PromptHandle, 0, CompleteByteCount),
+        SliceOffset = 7,
+        {ok, RequestedSlice} =
+            soma_delegate:artifact_slice(
+              TaskId, PromptHandle, SliceOffset, RequestedSliceBytes),
+        ?assertEqual(
+           binary:part(
+             CompleteBytes, SliceOffset, RequestedSliceBytes),
+           RequestedSlice),
+        ?assert(byte_size(RequestedSlice) =< RequestedSliceBytes),
+        ?assertEqual(
+           {error, not_found},
+           soma_delegate:artifact_slice(
+             <<"another-task">>, PromptHandle, 0,
+             RequestedSliceBytes)),
+
+        Actual =
+            #{stable_handles =>
+                  [PromptHandle, AuditHandle, TerminalHandle],
+              opaque_handle =>
+                  is_binary(PromptHandle) andalso
+                      binary:match(PromptHandle, TaskId) =:= nomatch,
+              complete_bytes => StoredCompleteBytes,
+              bounded_slice_bytes => byte_size(RequestedSlice)},
+        Expected =
+            #{stable_handles =>
+                  [PromptHandle, PromptHandle, PromptHandle],
+              opaque_handle => true,
+              complete_bytes => CompleteBytes,
+              bounded_slice_bytes => RequestedSliceBytes},
+        ?assertEqual(Expected, Actual)
+    after
+        ok = soma_tool_registry:unregister_tool(ToolName)
+    end.
+
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
 invoke(#{mode := <<"timeout">>}, _Ctx) ->
@@ -689,6 +823,14 @@ receive_prompt_projection() ->
             Projection
     after 2000 ->
         ct:fail(delegate_prompt_projection_not_observed)
+    end.
+
+receive_artifact_prompt() ->
+    receive
+        {delegate_artifact_prompt, Projection} ->
+            Projection
+    after 2000 ->
+        ct:fail(delegate_artifact_prompt_not_observed)
     end.
 
 terminal_response(Text) ->
