@@ -11,6 +11,7 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_daemon_boot_registers_config_tool/1,
+         test_daemon_boot_config_tool_names_are_binary_and_atom_safe/1,
          test_config_tool_description_in_catalog/1,
          test_load_dir_registers_cli_tool_with_argv_placeholders/1,
          test_load_dir_skips_cli_tool_with_unknown_argv_placeholder/1,
@@ -33,6 +34,7 @@
 
 all() ->
     [test_daemon_boot_registers_config_tool,
+     test_daemon_boot_config_tool_names_are_binary_and_atom_safe,
      test_config_tool_description_in_catalog,
      test_load_dir_registers_cli_tool_with_argv_placeholders,
      test_load_dir_skips_cli_tool_with_unknown_argv_placeholder,
@@ -90,6 +92,87 @@ test_daemon_boot_registers_config_tool(Config) ->
     <<"/bin/echo">> = unicode:characters_to_binary(Executable),
     [<<"hello">>, <<"world">>] =
         [unicode:characters_to_binary(A) || A <- Argv],
+    ok.
+
+%% Criterion 5 (#235): config tool names remain binaries through the real
+%% daemon boot path, and rejecting an overlong name does not intern either
+%% spelling. Warm and stop that path before generating the fresh names, then
+%% boot once with the two table rows so the VM-global atom-count measurement
+%% covers registration, the skip diagnostic, and a live daemon ping together.
+test_daemon_boot_config_tool_names_are_binary_and_atom_safe(Config) ->
+    ConfigPath = no_llm_config_file(Config),
+    WarmSocket = socket_path(Config),
+    WarmToolsDir = filename:join(?config(priv_dir, Config),
+                                 "tools_atom_safe_warm"),
+    ok = filelib:ensure_dir(filename:join(WarmToolsDir, "x")),
+    ok = file:write_file(
+           filename:join(WarmToolsDir, "a_valid.lisp"),
+           config_tool_source(<<"cfg_atom_safety_warmup">>)),
+    ok = file:write_file(
+           filename:join(WarmToolsDir, "b_skipped.lisp"),
+           <<"(tool (name \"cfg_atom_safety_bad_effect\") "
+             "(effect banana) (executable \"/bin/echo\") (argv))">>),
+    {ok, WarmSocket} =
+        soma_cli:daemon(#{socket => WarmSocket,
+                          config_path => ConfigPath,
+                          tools_dir => WarmToolsDir}),
+    {ok, _WarmDescriptor} =
+        soma_tool_registry:resolve_descriptor(cfg_atom_safety_warmup),
+    0 = soma_cli:ping(#{socket => WarmSocket}),
+    0 = soma_cli:stop(#{socket => WarmSocket}),
+    ok = wait_for_socket_file_gone(WarmSocket, 80),
+    _ = application:stop(soma_runtime),
+
+    Unique = integer_to_binary(erlang:unique_integer([monotonic, positive])),
+    ValidName = <<"cfg_atom_safe_", Unique/binary>>,
+    LongName = <<"cfg_", (binary:copy(<<"x">>, 256))/binary,
+                 Unique/binary>>,
+    Rows =
+        [#{file => "a_valid.lisp",
+           name => ValidName,
+           expected => registered},
+         #{file => "b_too_long.lisp",
+           name => LongName,
+           expected => {skipped, {invalid_tool_name, too_long}}}],
+    ToolsDir = filename:join(?config(priv_dir, Config),
+                             "tools_atom_safe_measured"),
+    ok = filelib:ensure_dir(filename:join(ToolsDir, "x")),
+    lists:foreach(
+      fun(#{file := File, name := Name}) ->
+              ok = file:write_file(filename:join(ToolsDir, File),
+                                   config_tool_source(Name))
+      end,
+      Rows),
+    SocketPath = socket_path(Config),
+    ok = logger:add_handler(soma_tool_config_atom_safe_capture, ?MODULE,
+                            #{config => #{pid => self()}}),
+    try
+        AtomCountBefore = erlang:system_info(atom_count),
+        BootResult =
+            try soma_cli:daemon(#{socket => SocketPath,
+                                  config_path => ConfigPath,
+                                  tools_dir => ToolsDir})
+            catch
+                Class:Reason -> {daemon_crashed, Class, Reason}
+            end,
+        ?assertEqual({ok, SocketPath}, BootResult),
+        lists:foreach(
+          fun(#{name := Name, expected := registered}) ->
+                  ?assertMatch({ok, _},
+                               soma_tool_registry:resolve_descriptor(Name)),
+                  {ok, Descriptor} =
+                      soma_tool_registry:resolve_descriptor(Name),
+                  ?assertEqual(Name, maps:get(name, Descriptor));
+             (#{file := File,
+                expected := {skipped, ExpectedReason}}) ->
+                  ?assertEqual(ExpectedReason, receive_skip(File))
+          end,
+          Rows),
+        ?assertEqual(0, soma_cli:ping(#{socket => SocketPath})),
+        ?assertEqual(AtomCountBefore, erlang:system_info(atom_count))
+    after
+        _ = logger:remove_handler(soma_tool_config_atom_safe_capture)
+    end,
     ok.
 
 %% Criterion 2 (#205): a tool file that declares a `(description "...")'
@@ -704,6 +787,28 @@ log(#{msg := {"soma tool config: skipped ~s: ~p", [File, Reason]}},
     ok;
 log(_LogEvent, _HandlerConfig) ->
     ok.
+
+%% Minimal valid config-tool source used by both the warm-up and measured
+%% table. The caller-provided name is always rendered as a quoted string.
+config_tool_source(Name) ->
+    iolist_to_binary(
+      ["(tool\n"
+       "  (name ", soma_lisp:render(Name), ")\n"
+       "  (effect reader) (idempotent true) (timeout-ms 5000)\n"
+       "  (executable \"/bin/echo\")\n"
+       "  (argv))\n"]).
+
+%% `(stop)' replies before the listener finishes unlinking its Unix socket.
+%% Wait for teardown so no warm-up process can perturb the atom-count sample.
+wait_for_socket_file_gone(_Path, 0) ->
+    {error, warm_daemon_socket_not_removed};
+wait_for_socket_file_gone(Path, Attempts) ->
+    case file:read_file_info(Path) of
+        {error, enoent} -> ok;
+        _ ->
+            timer:sleep(25),
+            wait_for_socket_file_gone(Path, Attempts - 1)
+    end.
 
 %% A fresh temp tools directory under the case's priv_dir.
 tools_dir(Config) ->
