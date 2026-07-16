@@ -1053,9 +1053,7 @@ arm_task_deadline(Budgets, TaskId) when is_map(Budgets) ->
               {delegate_task_deadline, TaskId});
         _MissingOrInvalidDeadline ->
             undefined
-    end;
-arm_task_deadline(_InvalidBudgets, _TaskId) ->
-    undefined.
+    end.
 
 expire_task_deadline(Data = #{active_round := ActiveRound})
   when is_map(ActiveRound) ->

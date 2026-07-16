@@ -187,3 +187,9 @@ provider-network-free test boundary.
 
 - Hermetic proof: `soma_as5_contract_doc_tests:test_as5_contract_maps_every_criterion_to_one_hermetic_test`
 - Hermetic boundary: EUnit reads deterministic repository bytes directly and opens zero provider network connections.
+
+## Review hardening — fourth round
+
+| Guarantee | Proof |
+| --- | --- |
+| The request boundary rejects credential, conversation-history, and lease namespace members in nested keys; run_steps lists validate as a whole (duplicate ids by spelling and forward/missing from_step references reject before policy admission, so safety facts cannot alias tool calls); arbitrary tool error terms pass a total bounded serializer before Lisp rendering (an integer map key cannot crash the worker or drop an observation); and provider usage commits to the coordinator at LLM completion, so a worker lost mid-action keeps authenticated totals with no double count. | `soma_delegate_adaptive_SUITE:test_review_namespaces_step_canon_serializer_and_usage_ownership` |
