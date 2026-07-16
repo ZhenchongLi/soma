@@ -5,17 +5,21 @@
 -export([all/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs/1]).
+-export([test_prompt_projection_uses_exact_task_local_fields/1]).
 
 all() ->
-    [test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs].
+    [test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs,
+     test_prompt_projection_uses_exact_task_local_fields].
 
 init_per_testcase(_TestCase, Config) ->
+    ok = application:unset_env(soma_actor, delegate_runtime_options),
     {ok, Started} = application:ensure_all_started(soma_actor),
     [{started_apps, Started} | Config].
 
 end_per_testcase(_TestCase, _Config) ->
     application:stop(soma_actor),
     application:stop(soma_runtime),
+    ok = application:unset_env(soma_actor, delegate_runtime_options),
     ok.
 
 test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs(
@@ -73,6 +77,99 @@ test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs(
               coordinator_count => 0}
             || {Class, _Extra} <- ForbiddenRows]],
     ?assertEqual(Expected, Actual).
+
+test_prompt_projection_uses_exact_task_local_fields(_Config) ->
+    TestPid = self(),
+    Objective = #{goal => <<"return the task-local answer">>},
+    OutputContract = #{format => <<"text">>},
+    CapabilityScope = #{tools => []},
+    Responder =
+        fun(CallOpts) ->
+                TestPid !
+                    {delegate_prompt_projection,
+                     maps:get(prompt_projection, CallOpts, missing)},
+                terminal_response(<<"task-local answer">>)
+        end,
+    RuntimeOptions =
+        #{round_sequence =>
+              [#{llm =>
+                     #{provider => openai_compat,
+                       base_url => <<"api.example.test/v1">>,
+                       api_key => <<"test-only-key">>,
+                       model => <<"test-model">>,
+                       response => Responder},
+                 decision => terminal}]},
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options, RuntimeOptions),
+    Request =
+        #{request_id => <<"delegate-prompt-fields">>,
+          correlation_id => <<"delegate-prompt-fields-correlation">>,
+          objective => Objective,
+          output_contract => OutputContract,
+          capability_scope => CapabilityScope,
+          artifacts => []},
+
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Projection = receive_prompt_projection(),
+    #{status := succeeded} = wait_for_terminal_projection(TaskId, 100),
+
+    ExpectedKeys =
+        lists:sort(
+          [objective, output_contract, task_summary,
+           pinned_safety_state, recent_rounds, artifact_excerpts,
+           tool_schemas]),
+    Actual =
+        case Projection of
+            Prompt when is_map(Prompt) ->
+                #{keys => lists:sort(maps:keys(Prompt)),
+                  objective => maps:get(objective, Prompt, missing),
+                  output_contract =>
+                      maps:get(output_contract, Prompt, missing),
+                  pinned_safety_state =>
+                      maps:get(pinned_safety_state, Prompt, missing)};
+            Missing ->
+                Missing
+        end,
+    Expected =
+        #{keys => ExpectedKeys,
+          objective => Objective,
+          output_contract => OutputContract,
+          pinned_safety_state =>
+              #{capability_scope => CapabilityScope,
+                mutation_ledger => [],
+                unknown_outcome_ledger => [],
+                idempotency_state => #{}}},
+    ?assertEqual(Expected, Actual).
+
+receive_prompt_projection() ->
+    receive
+        {delegate_prompt_projection, Projection} ->
+            Projection
+    after 2000 ->
+        ct:fail(delegate_prompt_projection_not_observed)
+    end.
+
+terminal_response(Text) ->
+    Body =
+        iolist_to_binary(
+          json:encode(
+            #{<<"choices">> =>
+                  [#{<<"message">> => #{<<"content">> => Text}}]})),
+    {200, Body}.
+
+wait_for_terminal_projection(_TaskId, 0) ->
+    ct:fail(delegate_task_did_not_finish);
+wait_for_terminal_projection(TaskId, Attempts) ->
+    case soma_delegate:status(TaskId) of
+        {ok, #{status := Status} = Projection}
+          when Status =:= succeeded; Status =:= failed;
+               Status =:= timeout; Status =:= cancelled;
+               Status =:= in_doubt ->
+            Projection;
+        {ok, #{status := running}} ->
+            timer:sleep(10),
+            wait_for_terminal_projection(TaskId, Attempts - 1)
+    end.
 
 observe_boundary_case({accepted, Request}) ->
     Reply = soma_delegate:submit(Request),
