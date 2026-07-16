@@ -23,15 +23,12 @@ compile(Source, Opts) when is_binary(Source) ->
             {error, Diags}
     end.
 
-reader_mode(#{existing_atoms_only := true}) ->
-    %% Loading the pure parser before scanning makes its fixed grammar atoms
-    %% available to list_to_existing_atom/1. Dynamic service names must already
-    %% belong to a loaded/registered vocabulary; rejected names never enter the
-    %% VM atom table.
-    {module, soma_lfe_parser} = code:ensure_loaded(soma_lfe_parser),
-    existing_atoms_only;
 reader_mode(_Opts) ->
-    create_atoms.
+    %% Loading the pure parser before scanning makes its fixed grammar atoms
+    %% available to list_to_existing_atom/1. Fresh caller names remain bounded
+    %% external-symbol data and never enter the VM atom table.
+    {module, soma_lfe_parser} = code:ensure_loaded(soma_lfe_parser),
+    existing_atoms_only.
 
 %% Route on the top-level head: a single (msg ...) form parses to an actor
 %% envelope; anything else stays on the run path.

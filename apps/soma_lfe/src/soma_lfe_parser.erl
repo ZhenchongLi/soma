@@ -257,35 +257,50 @@ parse_task_checked([task, [detach], LetStar]) ->
 parse_task_checked([task, LetStar]) ->
     parse_task_let_star(LetStar, #{});
 parse_task_checked([task | _]) ->
+    invalid_task_form().
+
+invalid_task_form() ->
     {error, [#{code => invalid_task_form,
                message => <<"task form must be (task (let* ((id (tool name ...))) (return id)))">>,
                line => 0}]}.
 
-parse_task_let_star(['let*', Bindings, [return, ReturnId]], RunFields)
-        when is_list(Bindings), is_atom(ReturnId) ->
-    case parse_task_bindings(Bindings, [], []) of
-        {ok, Steps} ->
-            case validate_task_steps(Steps) ++ validate_task_return(ReturnId, Steps) of
-                [] ->
-                    {ok, #{run => RunFields#{steps => Steps}}};
-                Diags ->
+parse_task_let_star(['let*', Bindings, [return, ReturnId0]], RunFields)
+        when is_list(Bindings) ->
+    case parse_run_identifier(ReturnId0) of
+        {ok, ReturnId} ->
+            case parse_task_bindings(Bindings, [], []) of
+                {ok, Steps} ->
+                    case validate_task_steps(Steps) ++
+                         validate_task_return(ReturnId, Steps) of
+                        [] ->
+                            {ok, #{run => RunFields#{steps => Steps}}};
+                        Diags ->
+                            {error, Diags}
+                    end;
+                {error, Diags} ->
                     {error, Diags}
             end;
-        {error, Diags} ->
-            {error, Diags}
+        error ->
+            invalid_task_form()
     end;
-parse_task_let_star(['let*', Bindings, [return, ReturnId] | _ExtraBody], _RunFields)
-        when is_list(Bindings), is_atom(ReturnId) ->
-    {error, [#{code => invalid_let_star,
-               message => <<"task let* body must contain exactly one return form">>,
-               line => 0}]};
+parse_task_let_star(['let*', Bindings, [return, ReturnId0] | _ExtraBody], _RunFields)
+        when is_list(Bindings) ->
+    case parse_run_identifier(ReturnId0) of
+        {ok, _ReturnId} ->
+            invalid_task_let_star();
+        error ->
+            invalid_task_form()
+    end;
 parse_task_let_star(['let*', Bindings], _RunFields) when is_list(Bindings) ->
     {error, [#{code => invalid_return,
                message => <<"task let* body must include (return Name)">>,
                line => 0}]};
 parse_task_let_star(_Other, _RunFields) ->
-    {error, [#{code => invalid_task_form,
-               message => <<"task form must be (task (let* ((id (tool name ...))) (return id)))">>,
+    invalid_task_form().
+
+invalid_task_let_star() ->
+    {error, [#{code => invalid_let_star,
+               message => <<"task let* body must contain exactly one return form">>,
                line => 0}]}.
 
 parse_task_bindings([], Acc, []) ->
@@ -300,28 +315,37 @@ parse_task_bindings([Binding | Rest], Acc, ErrAcc) ->
             parse_task_bindings(Rest, Acc, lists:reverse(Diags) ++ ErrAcc)
     end.
 
-parse_task_binding([Id, [tool | ToolTail]]) when is_atom(Id) ->
-    case is_reserved_task_word(Id) of
-        true ->
-            {error, [task_reserved_form_diag(Id)]};
-        false ->
-            case ToolTail of
-                [Tool | ArgForms] when is_atom(Tool) ->
-                    parse_task_tool_call(Id, Tool, ArgForms);
-                _ ->
-                    {error, [task_invalid_tool_form_diag([tool | ToolTail])]}
-            end
-    end;
-parse_task_binding([Id, _ToolForm]) when is_atom(Id) ->
-    case is_reserved_task_word(Id) of
-        true ->
-            {error, [task_reserved_form_diag(Id)]};
-        false ->
-            {error, [#{code => invalid_binding,
-                       message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
-                       line => 0}]}
+parse_task_binding([Id0, ToolForm]) ->
+    case parse_run_identifier(Id0) of
+        {ok, Id} ->
+            parse_task_binding_with_id(Id, ToolForm);
+        error ->
+            invalid_task_binding()
     end;
 parse_task_binding(_Other) ->
+    invalid_task_binding().
+
+parse_task_binding_with_id(Id, ToolForm) ->
+    case is_reserved_task_word(Id) of
+        true ->
+            {error, [task_reserved_form_diag(Id)]};
+        false ->
+            parse_task_tool_form(Id, ToolForm)
+    end.
+
+parse_task_tool_form(Id, [tool, Tool0 | ArgForms] = ToolForm) ->
+    case parse_run_identifier(Tool0) of
+        {ok, Tool} ->
+            parse_task_tool_call(Id, Tool, ArgForms);
+        error ->
+            {error, [task_invalid_tool_form_diag(ToolForm)]}
+    end;
+parse_task_tool_form(_Id, [tool | _] = ToolForm) ->
+    {error, [task_invalid_tool_form_diag(ToolForm)]};
+parse_task_tool_form(_Id, _ToolForm) ->
+    invalid_task_binding().
+
+invalid_task_binding() ->
     {error, [#{code => invalid_binding,
                message => <<"task let* bindings must be (id (tool name ...)) pairs">>,
                line => 0}]}.
@@ -433,7 +457,7 @@ task_invalid_timeout_diag(Value) ->
       line => 0}.
 
 parse_task_args([[from, Id]], Acc) when map_size(Acc) =:= 0 ->
-    {ok, #{from_step => Id}};
+    {ok, #{from_step => coerce_identifier(Id)}};
 parse_task_args(ArgForms, Acc) ->
     case task_args_have_mixed_bare_from(ArgForms) of
         true ->
@@ -906,14 +930,29 @@ check_args_from_step(Args, SeenIds) ->
     (_Key, _Val, Acc) -> Acc
     end, [], Args).
 
-parse_step([Id, Tool | ChildForms]) when is_atom(Id), is_atom(Tool) ->
-    case parse_step_children(ChildForms, #{args => #{}}, []) of
-        {ok, Partial} ->
-            {ok, Partial#{id => Id, tool => Tool}};
-        {error, Diags} ->
-            {error, Diags}
+parse_step([Id0, Tool0 | ChildForms]) ->
+    case {parse_run_identifier(Id0), parse_run_identifier(Tool0)} of
+        {{ok, Id}, {ok, Tool}} ->
+            case parse_step_children(ChildForms, #{args => #{}}, []) of
+                {ok, Partial} ->
+                    {ok, Partial#{id => Id, tool => Tool}};
+                {error, Diags} ->
+                    {error, Diags}
+            end;
+        _ ->
+            invalid_run_step()
     end;
 parse_step(_Other) ->
+    invalid_run_step().
+
+parse_run_identifier(Value) when is_atom(Value) ->
+    {ok, Value};
+parse_run_identifier({external_symbol, Value}) when is_binary(Value) ->
+    {ok, Value};
+parse_run_identifier(_Value) ->
+    error.
+
+invalid_run_step() ->
     {error, [#{code => invalid_step,
                message => <<"step form must be (step <id> <tool> ...): missing id or tool">>,
                line => 0}]}.
