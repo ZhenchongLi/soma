@@ -33,6 +33,7 @@ init(#{request := Request = #{request_id := RequestId,
              correlation_id => CorrelationId,
              ingress_pid => IngressPid,
              request => Request,
+             tool_policy => configured_tool_policy(RuntimeOptions),
              status => accepted,
              objective => maps:get(objective, Request, undefined),
              output_contract => maps:get(output_contract, Request, undefined),
@@ -265,6 +266,12 @@ start_round_worker(
                    round_id => RoundId,
                    worker_identity => WorkerIdentity,
                    result_capability => ResultCapability,
+                   tool_policy => maps:get(tool_policy, Data),
+                   capability_scope =>
+                       maps:get(
+                         capability_scope,
+                         maps:get(request, Data),
+                         #{tools => []}),
                    snapshot => Snapshot,
                    work => Work},
     case soma_delegate_round_sup:start_round(WorkerOpts) of
@@ -748,6 +755,15 @@ release_scoped_leases(_Data) ->
 
 initial_checkpoint(Opts) ->
     maps:get(context_checkpoint, Opts, maps:get(checkpoint, Opts, #{})).
+
+configured_tool_policy(RuntimeOptions) ->
+    Default =
+        application:get_env(
+          soma_actor, service_policy, #{allowed_tools => []}),
+    case maps:get(tool_policy, RuntimeOptions, Default) of
+        Policy when is_map(Policy) -> Policy;
+        _InvalidPolicy -> #{allowed_tools => []}
+    end.
 
 emit_delegate_event(
   EventType, Round, Outcome,
