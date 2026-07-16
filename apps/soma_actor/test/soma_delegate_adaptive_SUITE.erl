@@ -10,6 +10,7 @@
 -export([test_denied_and_malformed_actions_stop_before_run/1]).
 -export([test_reader_state_terminal_sequence_threads_observations/1]).
 -export([test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations/1]).
+-export([test_prompt_schemas_equal_policy_capability_intersection/1]).
 -export([invoke/2]).
 
 all() ->
@@ -18,7 +19,8 @@ all() ->
      test_model_action_admission_order_and_state_spine,
      test_denied_and_malformed_actions_stop_before_run,
      test_reader_state_terminal_sequence_threads_observations,
-     test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations].
+     test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations,
+     test_prompt_schemas_equal_policy_capability_intersection].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -447,6 +449,43 @@ test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations(
           mutation_runs_match_correlation_trail => true,
           mutation_outcomes => [failed, timeout, succeeded]},
     ?assertEqual(Expected, Actual).
+
+test_prompt_schemas_equal_policy_capability_intersection(_Config) ->
+    TestPid = self(),
+    Responder =
+        fun(CallOpts) ->
+                TestPid !
+                    {delegate_prompt_projection,
+                     maps:get(prompt_projection, CallOpts, missing)},
+                terminal_response(<<"schema intersection observed">>)
+        end,
+    RuntimeOptions =
+        #{tool_policy => #{allowed_tools => [echo, sleep]},
+          round_sequence =>
+              [#{llm =>
+                     #{provider => openai_compat,
+                       base_url => <<"api.example.test/v1">>,
+                       api_key => <<"test-only-key">>,
+                       model => <<"test-model">>,
+                       response => Responder},
+                 decision => terminal}]},
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options, RuntimeOptions),
+    Request =
+        #{request_id => <<"delegate-prompt-schema-intersection">>,
+          correlation_id =>
+              <<"delegate-prompt-schema-intersection-correlation">>,
+          objective => #{goal => <<"inspect the admitted schema">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => [<<"echo">>, <<"file_read">>]},
+          artifacts => []},
+
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Projection = receive_prompt_projection(),
+    #{status := succeeded} = wait_for_terminal_projection(TaskId, 100),
+    Catalog = soma_tool_registry:catalog(),
+    Expected = [Schema || Schema = #{name := echo} <- Catalog],
+    ?assertEqual(Expected, maps:get(tool_schemas, Projection, missing)).
 
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
