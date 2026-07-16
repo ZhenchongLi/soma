@@ -40,6 +40,7 @@ init(#{request := Request = #{request_id := RequestId,
              context_checkpoint => initial_checkpoint(RuntimeOptions),
              budgets => maps:get(budgets, Request, #{}),
              usage => #{},
+             counters => initial_counters(),
              mutation_ledger => [],
              unknown_outcome_ledger => [],
              recent_round_data => undefined,
@@ -69,6 +70,32 @@ handle_event(info, {delegate_begin, TaskId}, awaiting_start,
 handle_event({call, From}, status, _StateName, Data) ->
     {keep_state, Data,
      [{reply, From, {ok, public_projection(Data)}}]};
+handle_event(
+  info,
+  {delegate_reserve_budget,
+   TaskId, RoundId, WorkerPid, WorkerIdentity, ResultCapability,
+   Counter, Units},
+  running,
+  Data = #{task_id := TaskId,
+           active_round :=
+               #{round_id := RoundId,
+                 worker_pid := WorkerPid,
+                 worker_identity := WorkerIdentity,
+                 result_capability := ResultCapability}})
+  when (Counter =:= llm_calls orelse Counter =:= tool_calls),
+       is_integer(Units), Units >= 0 ->
+    {Reply, UpdatedData} =
+        case reserve_counter(Counter, Units, Data) of
+            {ok, ReservedData} ->
+                {ok, ReservedData};
+            {error, Limit} ->
+                {{error, {budget_exceeded, Limit}}, Data}
+        end,
+    WorkerPid !
+        {delegate_budget_reserved,
+         TaskId, RoundId, WorkerIdentity, ResultCapability,
+         Counter, Reply},
+    {keep_state, UpdatedData};
 handle_event(info,
              {delegate_status, TaskId, ReplyTo, StatusRef},
              _StateName,
@@ -219,11 +246,19 @@ begin_task(Data = #{round_sequence := [_Round | _Remaining]}) ->
 begin_task(Data) ->
     fail_before_round(Data, invalid_round_sequence).
 
-start_round(Data = #{round_sequence := [RoundEntry | Remaining],
-                    task_id := TaskId,
-                    correlation_id := CorrelationId,
-                    next_round_id := RoundId})
-  ->
+start_round(Data) ->
+    case counter_available(rounds, 1, Data) of
+        true ->
+            start_available_round(Data);
+        false ->
+            start_cleanup(budget_projection(max_rounds), Data)
+    end.
+
+start_available_round(
+  Data = #{round_sequence := [RoundEntry | Remaining],
+           task_id := TaskId,
+           correlation_id := CorrelationId,
+           next_round_id := RoundId}) ->
     case round_snapshot(Data) of
         {ok, Snapshot} ->
             prepare_and_start_round(
@@ -303,9 +338,10 @@ start_round_worker(
                             cancel_status => undefined,
                             unsafe_action_dispatched => false,
                             unsafe_invocation => undefined},
-            StartedData = Data#{round_sequence := Remaining,
-                                next_round_id := RoundId + 1,
-                                active_round := ActiveRound},
+            CountedData = consume_counter(rounds, 1, Data),
+            StartedData = CountedData#{round_sequence := Remaining,
+                                       next_round_id := RoundId + 1,
+                                       active_round := ActiveRound},
             ok = emit_delegate_event(
                    <<"delegate.round.started">>, RoundId,
                    StartedData, StartedData),
@@ -554,7 +590,8 @@ continue_after_pre_stateful_failure(
 continue_after_pre_stateful_failure(Failure, Data) ->
     start_cleanup(Failure, Data#{recent_round_data := Failure}).
 
-start_cleanup(Projection, Data = #{cleanup_started := false}) ->
+start_cleanup(Projection0, Data = #{cleanup_started := false}) ->
+    Projection = maybe_attach_budget_usage(Projection0, Data),
     Status = maps:get(status, Projection),
     CleanupData = Data#{status := Status,
                         cleanup_started := true,
@@ -701,6 +738,11 @@ round_projection(
     maps:merge(
       #{status => succeeded, round => RoundId},
       maps:with([result], TerminalResult));
+round_projection(
+  #{status := failed,
+    reason := {budget_exceeded, Limit}},
+  RoundId) ->
+    (budget_projection(Limit))#{round => RoundId};
 round_projection(#{status := succeeded}, RoundId) ->
     #{status => succeeded, round => RoundId};
 round_projection(#{status := Status} = Result, RoundId) ->
@@ -821,3 +863,51 @@ emit_round_completed(RoundId, Outcome, Data) ->
 
 public_projection(Data) ->
     maps:with([request_id, task_id, correlation_id, status], Data).
+
+initial_counters() ->
+    #{rounds => 0,
+      llm_calls => 0,
+      tool_calls => 0,
+      prompt_tokens => 0}.
+
+reserve_counter(_Counter, 0, Data) ->
+    {ok, Data};
+reserve_counter(Counter, Units, Data) ->
+    case counter_available(Counter, Units, Data) of
+        true ->
+            {ok, consume_counter(Counter, Units, Data)};
+        false ->
+            {error, counter_limit(Counter)}
+    end.
+
+counter_available(Counter, Units,
+                  #{budgets := Budgets, counters := Counters}) ->
+    Limit = counter_limit(Counter),
+    Current = maps:get(Counter, Counters, 0),
+    case maps:get(Limit, Budgets, undefined) of
+        undefined ->
+            true;
+        Max when is_integer(Max), Max >= 0 ->
+            Current + Units =< Max;
+        _InvalidLimit ->
+            false
+    end.
+
+consume_counter(Counter, Units, Data = #{counters := Counters}) ->
+    Current = maps:get(Counter, Counters, 0),
+    Data#{counters := maps:put(Counter, Current + Units, Counters)}.
+
+counter_limit(rounds) -> max_rounds;
+counter_limit(llm_calls) -> max_llm_calls;
+counter_limit(tool_calls) -> max_tool_calls.
+
+budget_projection(Limit) ->
+    #{status => failed,
+      result => {budget_exceeded, Limit}}.
+
+maybe_attach_budget_usage(
+  Projection = #{result := {budget_exceeded, _Limit}},
+  #{counters := Counters}) ->
+    Projection#{usage => Counters};
+maybe_attach_budget_usage(Projection, _Data) ->
+    Projection.

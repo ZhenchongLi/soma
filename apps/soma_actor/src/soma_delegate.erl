@@ -506,13 +506,23 @@ bounded_terminal_projection(Projection) ->
             error ->
                 WithRound
         end,
+    WithUsage =
+        case maps:find(usage, Projection) of
+            {ok, Usage} ->
+                case valid_terminal_usage(Usage) of
+                    true -> WithResult#{usage => Usage};
+                    false -> WithResult
+                end;
+            error ->
+                WithResult
+        end,
     Candidate =
         case maps:get(reason, Projection, undefined) of
             undefined ->
-                WithResult;
+                WithUsage;
             Reason ->
-                WithResult#{reason =>
-                                soma_delegate_event:reason_class(Reason)}
+                WithUsage#{reason =>
+                               soma_delegate_event:reason_class(Reason)}
         end,
     case encoded_bytes(Candidate) =<
              ?MAX_TERMINAL_PROJECTION_BYTES of
@@ -533,3 +543,12 @@ terminal_status(_InvalidStatus) ->
 
 encoded_bytes(Term) ->
     byte_size(term_to_binary(Term, [deterministic])).
+
+valid_terminal_usage(Usage) when is_map(Usage) ->
+    lists:sort(maps:keys(Usage)) =:=
+        [llm_calls, prompt_tokens, rounds, tool_calls] andalso
+        lists:all(
+          fun(Value) -> is_integer(Value) andalso Value >= 0 end,
+          maps:values(Usage));
+valid_terminal_usage(_Usage) ->
+    false.

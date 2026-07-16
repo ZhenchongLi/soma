@@ -40,6 +40,7 @@ init(Opts = #{coordinator_pid := CoordinatorPid,
                  maps:get(capability_scope, Opts, #{tools => []}),
              snapshot => maps:get(snapshot, Opts, #{}),
              work => Work,
+             pending_budget => undefined,
              active_llm => undefined,
              active_run => undefined},
     {ok, awaiting_start, Data}.
@@ -67,6 +68,75 @@ handle_event(info,
   when Status =:= cancelled; Status =:= timeout ->
     report_round_result(
       Data, #{status => Status, phase => decision});
+handle_event(info,
+             {delegate_round_cancel, TaskId, RoundId, WorkerIdentity,
+              ResultCapability, Status},
+             StateName,
+             Data = #{task_id := TaskId,
+                      round_id := RoundId,
+                      worker_identity := WorkerIdentity,
+                      result_capability := ResultCapability})
+  when (StateName =:= waiting_llm_budget orelse
+        StateName =:= waiting_tool_budget),
+       (Status =:= cancelled orelse Status =:= timeout) ->
+    Phase =
+        case StateName of
+            waiting_llm_budget -> llm;
+            waiting_tool_budget -> action
+        end,
+    report_round_result(
+      Data#{pending_budget := undefined},
+      #{status => Status, phase => Phase});
+handle_event(info,
+             {delegate_budget_reserved,
+              TaskId, RoundId, WorkerIdentity, ResultCapability,
+              llm_calls, ok},
+             waiting_llm_budget,
+             Data = #{task_id := TaskId,
+                      round_id := RoundId,
+                      worker_identity := WorkerIdentity,
+                      result_capability := ResultCapability,
+                      pending_budget :=
+                          #{operation := {llm, Llm}}}) ->
+    start_reserved_llm_call(
+      Llm, RoundId, Data#{pending_budget := undefined});
+handle_event(info,
+             {delegate_budget_reserved,
+              TaskId, RoundId, WorkerIdentity, ResultCapability,
+              llm_calls, {error, Reason}},
+             waiting_llm_budget,
+             Data = #{task_id := TaskId,
+                      round_id := RoundId,
+                      worker_identity := WorkerIdentity,
+                      result_capability := ResultCapability}) ->
+    report_round_result(
+      Data#{pending_budget := undefined},
+      #{status => failed, phase => llm, reason => Reason});
+handle_event(info,
+             {delegate_budget_reserved,
+              TaskId, RoundId, WorkerIdentity, ResultCapability,
+              tool_calls, ok},
+             waiting_tool_budget,
+             Data = #{task_id := TaskId,
+                      round_id := RoundId,
+                      worker_identity := WorkerIdentity,
+                      result_capability := ResultCapability,
+                      pending_budget :=
+                          #{operation := {run, Steps}}}) ->
+    start_reserved_run(
+      Steps, Data#{pending_budget := undefined});
+handle_event(info,
+             {delegate_budget_reserved,
+              TaskId, RoundId, WorkerIdentity, ResultCapability,
+              tool_calls, {error, Reason}},
+             waiting_tool_budget,
+             Data = #{task_id := TaskId,
+                      round_id := RoundId,
+                      worker_identity := WorkerIdentity,
+                      result_capability := ResultCapability}) ->
+    report_round_result(
+      Data#{pending_budget := undefined},
+      #{status => failed, phase => action, reason => Reason});
 handle_event(info,
              {delegate_round_cancel, TaskId, RoundId, WorkerIdentity,
               ResultCapability, Status},
@@ -238,30 +308,34 @@ terminate(_Reason, _StateName, Data) ->
     stop_active_child(Data),
     ok.
 
-start_llm_call(Data = #{work := Work, round_id := RoundId}) ->
+start_llm_call(Data = #{work := Work}) ->
     case maps:get(llm, Work, undefined) of
         Llm when is_map(Llm) ->
-            LlmCallId = mint_llm_call_id(RoundId),
-            LlmOpts = #{owner => self(),
-                        llm_call_id => LlmCallId,
-                        llm => Llm},
-            %% start_owned spawns and monitors; it has no failure return.
-            {ok, LlmPid, LlmMRef} = soma_llm_call:start_owned(LlmOpts),
-            TimerRef = arm_phase_timer(
-                         llm, LlmCallId,
-                         maps:get(timeout_ms, Llm, undefined),
-                         ?DEFAULT_LLM_TIMEOUT_MS),
-            ActiveLlm = #{llm_call_id => LlmCallId,
-                          pid => LlmPid,
-                          mref => LlmMRef,
-                          timer_ref => TimerRef},
-            {next_state, waiting_llm,
-             Data#{active_llm := ActiveLlm}};
+            request_budget(
+              llm_calls, 1, {llm, Llm}, waiting_llm_budget, Data);
         _InvalidLlm ->
             report_round_result(
               Data,
               #{status => failed, phase => llm, reason => invalid_llm})
     end.
+
+start_reserved_llm_call(Llm, RoundId, Data) ->
+    LlmCallId = mint_llm_call_id(RoundId),
+    LlmOpts = #{owner => self(),
+                llm_call_id => LlmCallId,
+                llm => Llm},
+    %% start_owned spawns and monitors; it has no failure return.
+    {ok, LlmPid, LlmMRef} = soma_llm_call:start_owned(LlmOpts),
+    TimerRef = arm_phase_timer(
+                 llm, LlmCallId,
+                 maps:get(timeout_ms, Llm, undefined),
+                 ?DEFAULT_LLM_TIMEOUT_MS),
+    ActiveLlm = #{llm_call_id => LlmCallId,
+                  pid => LlmPid,
+                  mref => LlmMRef,
+                  timer_ref => TimerRef},
+    {next_state, waiting_llm,
+     Data#{active_llm := ActiveLlm}}.
 
 start_action(Data = #{work := Work}) ->
     case maps:get(action_steps, Work, undefined) of
@@ -416,9 +490,16 @@ starts_lisp_form(_OtherContent) ->
     false.
 
 start_run(Steps,
-          Data = #{task_id := TaskId,
-                   correlation_id := CorrelationId,
-                   work := Work}) ->
+          Data) ->
+    request_budget(
+      tool_calls, length(Steps), {run, Steps},
+      waiting_tool_budget, Data).
+
+start_reserved_run(
+  Steps,
+  Data = #{task_id := TaskId,
+           correlation_id := CorrelationId,
+           work := Work}) ->
     RunId = mint_run_id(),
     UnsafeInvocation = first_unsafe_invocation(Steps, RunId),
     report_unsafe_dispatch(UnsafeInvocation, Data),
@@ -465,6 +546,23 @@ report_round_result(
         {delegate_round_result, TaskId, RoundId, self(), WorkerIdentity,
          ResultCapability, Result},
     {stop, normal, Data}.
+
+request_budget(
+  Counter, Units, Operation, WaitingState,
+  Data = #{coordinator_pid := CoordinatorPid,
+           task_id := TaskId,
+           round_id := RoundId,
+           worker_identity := WorkerIdentity,
+           result_capability := ResultCapability}) ->
+    CoordinatorPid !
+        {delegate_reserve_budget,
+         TaskId, RoundId, self(), WorkerIdentity, ResultCapability,
+         Counter, Units},
+    PendingBudget = #{counter => Counter,
+                      units => Units,
+                      operation => Operation},
+    {next_state, WaitingState,
+     Data#{pending_budget := PendingBudget}}.
 
 canonical_steps(Steps) ->
     lists:all(fun canonical_step/1, Steps).
