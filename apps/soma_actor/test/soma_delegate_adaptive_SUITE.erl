@@ -17,6 +17,7 @@
 -export([test_oversized_observation_uses_stable_task_artifact_and_bounded_slice/1]).
 -export([test_recent_round_window_replaces_old_observations_with_one_summary/1]).
 -export([test_pinned_safety_state_is_exact_and_never_truncated/1]).
+-export([test_maximum_round_prompts_obey_cumulative_input_bound/1]).
 -export([invoke/2]).
 
 all() ->
@@ -32,7 +33,8 @@ all() ->
      test_context_preflight_and_provider_usage_accounting,
      test_oversized_observation_uses_stable_task_artifact_and_bounded_slice,
      test_recent_round_window_replaces_old_observations_with_one_summary,
-     test_pinned_safety_state_is_exact_and_never_truncated].
+     test_pinned_safety_state_is_exact_and_never_truncated,
+     test_maximum_round_prompts_obey_cumulative_input_bound].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -977,6 +979,85 @@ test_pinned_safety_state_is_exact_and_never_truncated(_Config) ->
           oversized_llm_started => false},
     ?assertEqual(Expected, Actual).
 
+test_maximum_round_prompts_obey_cumulative_input_bound(_Config) ->
+    RoundCount = 4,
+    PerCallInputAllowance = 16384,
+    ReservedCompletionTokens = 1024,
+    MaximumPromptSlack = 1024,
+    ObjectivePadding = binary:copy(<<"p">>, 15000),
+    Responses =
+        [<<"(run-steps (step (id budget_action_one) (tool echo) "
+           "(args (value \"one\"))))">>,
+         <<"(run-steps (step (id budget_action_two) (tool echo) "
+           "(args (value \"two\"))))">>,
+         <<"(run-steps (step (id reader_action) (tool echo) "
+           "(args (value \"three\"))))">>,
+         <<"(reply (text \"maximum prompts bounded\"))">>],
+    TestPid = self(),
+    RoundSequence =
+        [#{llm =>
+               #{provider => openai_compat,
+                 base_url => <<"api.example.test/v1">>,
+                 api_key => <<"test-only-key">>,
+                 model => <<"test-model">>,
+                 response =>
+                     fun(CallOpts) ->
+                             Messages = maps:get(messages, CallOpts),
+                             Estimate =
+                                 lists:sum(
+                                   [byte_size(Content)
+                                    || #{content := Content} <- Messages]),
+                             TestPid !
+                                 {delegate_maximum_prompt_estimate,
+                                  Round, Estimate},
+                             terminal_response(Response)
+                     end}}
+         || {Round, Response} <- lists:enumerate(Responses)],
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [echo]},
+             round_sequence => RoundSequence}),
+    Request =
+        #{request_id => <<"delegate-maximum-round-prompts">>,
+          correlation_id =>
+              <<"delegate-maximum-round-prompts-correlation">>,
+          objective => #{goal => ObjectivePadding},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => [<<"echo">>]},
+          artifacts => [],
+          budgets =>
+              #{max_rounds => RoundCount,
+                max_llm_calls => RoundCount,
+                max_tool_calls => RoundCount - 1,
+                max_context_tokens =>
+                    PerCallInputAllowance + ReservedCompletionTokens,
+                reserved_completion_tokens => ReservedCompletionTokens,
+                max_total_prompt_tokens =>
+                    RoundCount * PerCallInputAllowance,
+                recent_round_window => RoundCount}},
+
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Terminal = wait_for_terminal_projection(TaskId, 100),
+    Estimates = collect_maximum_prompt_estimates(RoundCount, []),
+    #{status := succeeded,
+      usage := #{rounds := RoundCount,
+                 llm_calls := RoundCount,
+                 tool_calls := 3,
+                 prompt_tokens := TerminalPromptTokens}} = Terminal,
+    ?assert(
+       lists:all(
+         fun(Estimate) ->
+                 Estimate >= PerCallInputAllowance - MaximumPromptSlack
+         end,
+         Estimates)),
+    ?assert(
+       lists:all(
+         fun(Estimate) -> Estimate =< PerCallInputAllowance end,
+         Estimates)),
+    ?assert(
+       TerminalPromptTokens =< RoundCount * PerCallInputAllowance),
+    ?assertEqual(lists:sum(Estimates) + 1, TerminalPromptTokens).
+
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
 invoke(#{mode := <<"timeout">>}, _Ctx) ->
@@ -1137,6 +1218,17 @@ oversized_safety_llm_started() ->
             true
     after 100 ->
         false
+    end.
+
+collect_maximum_prompt_estimates(0, Acc) ->
+    [Estimate || {_Round, Estimate} <- lists:keysort(1, Acc)];
+collect_maximum_prompt_estimates(Remaining, Acc) ->
+    receive
+        {delegate_maximum_prompt_estimate, Round, Estimate} ->
+            collect_maximum_prompt_estimates(
+              Remaining - 1, [{Round, Estimate} | Acc])
+    after 2000 ->
+        ct:fail(delegate_maximum_prompt_estimate_not_observed)
     end.
 
 terminal_response(Text) ->
