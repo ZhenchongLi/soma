@@ -50,19 +50,39 @@ request_http_options(Config) ->
 %% the `choices[0].message.content' path all stay inside the function rather than
 %% escaping as a crash. The provider blob is never returned raw.
 parse_response({200, Body}) ->
+    strip_optional_usage(parse_response_with_usage({200, Body}));
+parse_response({Status, Body}) ->
+    parse_response_with_usage({Status, Body}).
+
+parse_response_with_usage({200, Body}) ->
     try
         Decoded = json:decode(Body),
         #{<<"choices">> :=
               [#{<<"message">> := #{<<"content">> := Content}} | _]} = Decoded,
-        {ok, #{kind => reply, text => Content}}
+        Reply = maybe_attach_prompt_usage(
+                  #{kind => reply, text => Content}, Decoded),
+        {ok, Reply}
     catch
         error:{badmatch, _} ->
             {error, {unexpected_response_shape, missing_content}};
         _:_ ->
             {error, {malformed_response_body, undecodable}}
     end;
-parse_response({Status, _Body}) ->
+parse_response_with_usage({Status, _Body}) ->
     {error, {http_status, Status}}.
+
+maybe_attach_prompt_usage(
+  Reply,
+  #{<<"usage">> := #{<<"prompt_tokens">> := PromptTokens}})
+  when is_integer(PromptTokens), PromptTokens >= 0 ->
+    Reply#{usage => #{prompt_tokens => PromptTokens}};
+maybe_attach_prompt_usage(Reply, _MissingOrInvalidUsage) ->
+    Reply.
+
+strip_optional_usage({ok, Reply}) ->
+    {ok, maps:remove(usage, Reply)};
+strip_optional_usage(Error) ->
+    Error.
 
 %% The build-then-parse path the `soma_llm_call' seam routes to: it shapes the
 %% request from the config and parses the chat-completions response into a reply
@@ -74,9 +94,9 @@ parse_response({Status, _Body}) ->
 %% `httpc:request/4' sends it (the live path, exercised only by the opt-in smoke
 %% test).
 chat(#{response := Responder} = Config) when is_function(Responder, 1) ->
-    parse_response(Responder(Config));
-chat(#{response := Response}) ->
-    parse_response(Response);
+    parse_chat_response(Responder(Config), Config);
+chat(#{response := Response} = Config) ->
+    parse_chat_response(Response, Config);
 chat(Config) ->
     #{url := Url, headers := Headers, body := Body} = build_request(Config),
     HttpOptions = request_http_options(Config),
@@ -85,7 +105,12 @@ chat(Config) ->
                         "application/json", Body},
                        HttpOptions, [{body_format, binary}]) of
         {ok, {{_Version, Status, _Reason}, _RespHeaders, RespBody}} ->
-            parse_response({Status, RespBody});
+            parse_chat_response({Status, RespBody}, Config);
         {error, Reason} ->
             {error, {http_request_failed, Reason}}
     end.
+
+parse_chat_response(Response, #{retain_usage := true}) ->
+    parse_response_with_usage(Response);
+parse_chat_response(Response, _Config) ->
+    parse_response(Response).

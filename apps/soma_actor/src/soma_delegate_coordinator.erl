@@ -90,7 +90,7 @@ handle_event(
   when (Counter =:= llm_calls orelse Counter =:= tool_calls),
        is_integer(Units), Units >= 0 ->
     {Reply, UpdatedData} =
-        case reserve_counter(Counter, Units, Data) of
+        case reserve_child_counter(Counter, Units, Data) of
             {ok, ReservedData} ->
                 {ok, ReservedData};
             {error, Limit} ->
@@ -288,22 +288,39 @@ prepare_and_start_round(
             PromptProjection =
                 soma_delegate_prompt:project(
                   Snapshot, prompt_data(Data)),
-            PromptedWork =
-                attach_prompt(Work, PromptProjection),
-            start_round_worker(
-              PromptedWork, Remaining, Snapshot, TaskId,
-              CorrelationId, RoundId, Data);
+            Budgets = maps:get(budgets, Data),
+            CommittedPromptTokens =
+                maps:get(prompt_tokens, maps:get(counters, Data), 0),
+            case soma_delegate_prompt:preflight(
+                   PromptProjection, Budgets, CommittedPromptTokens) of
+                {ok, PromptCall} ->
+                    PromptedWork =
+                        attach_prompt(
+                          Work, PromptProjection, PromptCall, Budgets),
+                    start_round_worker(
+                      PromptedWork, Remaining, Snapshot, TaskId,
+                      CorrelationId, RoundId, Data);
+                {error, context_budget_exceeded} ->
+                    start_cleanup(context_budget_projection(), Data)
+            end;
         {error, invalid_round_sequence} ->
             fail_before_round(Data, invalid_round_sequence)
     end.
 
-attach_prompt(Work = #{llm := Llm}, PromptProjection)
+attach_prompt(
+  Work = #{llm := Llm}, PromptProjection,
+  #{messages := Messages,
+    estimated_prompt_tokens := EstimatedPromptTokens},
+  Budgets)
   when is_map(Llm) ->
-    Messages = soma_delegate_prompt:render(PromptProjection),
-    Work#{llm :=
+    AccountedPromptTokens =
+        accounted_prompt_tokens(EstimatedPromptTokens, Budgets),
+    Work#{prompt_tokens_estimate => AccountedPromptTokens,
+          llm :=
               Llm#{prompt_projection => PromptProjection,
-                   messages => Messages}};
-attach_prompt(Work, _PromptProjection) ->
+                   messages => Messages,
+                   retain_usage => true}};
+attach_prompt(Work, _PromptProjection, _PromptCall, _Budgets) ->
     Work.
 
 prompt_data(Data = #{tool_policy := ToolPolicy,
@@ -349,6 +366,9 @@ start_round_worker(
                             round_timer => RoundTimer,
                             forced_stop_timer => undefined,
                             cancel_status => undefined,
+                            prompt_tokens_estimate =>
+                                maps:get(prompt_tokens_estimate, Work, 0),
+                            prompt_tokens_reserved => 0,
                             unsafe_action_dispatched => false,
                             unsafe_invocation => undefined},
             CountedData = consume_counter(rounds, 1, Data),
@@ -473,7 +493,7 @@ commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
     UsageData =
         case maps:find(usage, Result) of
             {ok, Usage} when is_map(Usage) ->
-                CheckpointData#{usage := Usage};
+                commit_usage(Usage, CheckpointData);
             _MissingOrInvalidUsage ->
                 CheckpointData
         end,
@@ -503,6 +523,31 @@ commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
         error ->
             UnknownOutcomeData
     end.
+
+commit_usage(Usage, Data) ->
+    UsageData = Data#{usage := Usage},
+    case maps:get(prompt_tokens, Usage, undefined) of
+        ReportedPromptTokens
+          when is_integer(ReportedPromptTokens),
+               ReportedPromptTokens >= 0 ->
+            replace_prompt_estimate(ReportedPromptTokens, UsageData);
+        _MissingOrInvalidPromptUsage ->
+            UsageData
+    end.
+
+replace_prompt_estimate(
+  ReportedPromptTokens,
+  Data = #{active_round := ActiveRound,
+           counters := Counters}) ->
+    ReservedPromptTokens =
+        maps:get(prompt_tokens_reserved, ActiveRound, 0),
+    CurrentPromptTokens = maps:get(prompt_tokens, Counters, 0),
+    RetainedPromptTokens =
+        CurrentPromptTokens - min(CurrentPromptTokens, ReservedPromptTokens),
+    CorrectedCounters =
+        Counters#{prompt_tokens :=
+                      RetainedPromptTokens + ReportedPromptTokens},
+    Data#{counters := CorrectedCounters}.
 
 commit_action_observation(
   #{status := Status,
@@ -939,6 +984,30 @@ initial_counters() ->
       tool_calls => 0,
       prompt_tokens => 0}.
 
+reserve_child_counter(llm_calls, Units, Data) ->
+    case reserve_counter(llm_calls, Units, Data) of
+        {ok, LlmReservedData} ->
+            {ok, reserve_prompt_estimate(LlmReservedData)};
+        {error, Limit} ->
+            {error, Limit}
+    end;
+reserve_child_counter(tool_calls, Units, Data) ->
+    reserve_counter(tool_calls, Units, Data).
+
+reserve_prompt_estimate(
+  Data = #{active_round := ActiveRound,
+           counters := Counters}) ->
+    EstimatedPromptTokens =
+        maps:get(prompt_tokens_estimate, ActiveRound, 0),
+    CurrentPromptTokens = maps:get(prompt_tokens, Counters, 0),
+    ReservedCounters =
+        Counters#{prompt_tokens :=
+                      CurrentPromptTokens + EstimatedPromptTokens},
+    ReservedRound =
+        ActiveRound#{prompt_tokens_reserved := EstimatedPromptTokens},
+    Data#{active_round := ReservedRound,
+          counters := ReservedCounters}.
+
 reserve_counter(_Counter, 0, Data) ->
     {ok, Data};
 reserve_counter(Counter, Units, Data) ->
@@ -974,9 +1043,27 @@ budget_projection(Limit) ->
     #{status => failed,
       result => {budget_exceeded, Limit}}.
 
+context_budget_projection() ->
+    #{status => failed,
+      result => context_budget_exceeded}.
+
+accounted_prompt_tokens(EstimatedPromptTokens, Budgets) ->
+    case maps:is_key(max_context_tokens, Budgets) orelse
+         maps:is_key(max_total_prompt_tokens, Budgets) of
+        true -> EstimatedPromptTokens;
+        false -> 0
+    end.
+
 maybe_attach_budget_usage(
   Projection = #{result := {budget_exceeded, _Limit}},
   #{counters := Counters}) ->
     Projection#{usage => Counters};
-maybe_attach_budget_usage(Projection, _Data) ->
-    Projection.
+maybe_attach_budget_usage(
+  Projection,
+  #{budgets := Budgets, counters := Counters}) ->
+    case maps:is_key(max_context_tokens, Budgets) orelse
+         maps:is_key(max_total_prompt_tokens, Budgets) orelse
+         maps:get(prompt_tokens, Counters, 0) > 0 of
+        true -> Projection#{usage => Counters};
+        false -> Projection
+    end.
