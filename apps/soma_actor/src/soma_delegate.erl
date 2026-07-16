@@ -539,6 +539,7 @@ empty_coordinator_checkpoint() ->
       unknown_outcome_ledger => [],
       artifacts => [],
       round => 0,
+      state_invocations => [],
       unsafe_invocations => []}.
 
 coordinator_crashed_projection(Checkpoint) ->
@@ -547,15 +548,21 @@ coordinator_crashed_projection(Checkpoint) ->
         checkpoint_list(unknown_outcome_ledger, Checkpoint),
     UnsafeInvocations =
         checkpoint_list(unsafe_invocations, Checkpoint),
+    StateInvocations =
+        case checkpoint_list(state_invocations, Checkpoint) of
+            [] -> UnsafeInvocations;
+            Invocations -> Invocations
+        end,
     Round = checkpoint_round(Checkpoint),
     SafetyFacts =
         case maps:get(adaptive_events, Checkpoint, false) of
             true ->
                 soma_delegate_safety:facts(
-                  UnsafeInvocations, Round, event_store_pid());
+                  StateInvocations, UnsafeInvocations,
+                  Round, event_store_pid());
             false ->
                 soma_delegate_safety:unknown_facts(
-                  UnsafeInvocations, Round)
+                  StateInvocations, UnsafeInvocations, Round)
         end,
     Mutations =
         Mutations0 ++ maps:get(mutations, SafetyFacts, []),

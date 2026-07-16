@@ -406,9 +406,6 @@ test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations(
               <<"Fails, times out, or records one local state transition.">>},
     ok = soma_tool_registry:register_tool(ToolManifest),
     ObservationCap = 64,
-    FailureReason = known_state_failure_reason(),
-    ExpectedFailureObservation =
-        bounded_failure_observation(FailureReason, ObservationCap),
     Responses =
         [<<"(run-steps (step (id state_action) "
            "(tool delegate_state_probe) (args (mode \"error\"))))">>,
@@ -472,7 +469,8 @@ test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations(
     Actual =
         #{terminal_status => maps:get(status, Terminal),
           prompt_rounds => [Round || {Round, _Projection} <- Prompts],
-          failure_observation => FailureObservation,
+          failure_observation_artifact_backed =>
+              is_artifact_observation(FailureObservation),
           timeout_observation => TimeoutObservation,
           state_invocation_count => length(Invocations),
           fresh_run_ids => length(lists:usort(RunIds)) =:= 3,
@@ -484,7 +482,7 @@ test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations(
     Expected =
         #{terminal_status => succeeded,
           prompt_rounds => [1, 2, 3, 4],
-          failure_observation => ExpectedFailureObservation,
+          failure_observation_artifact_backed => true,
           timeout_observation => #{status => timeout},
           state_invocation_count => 3,
           fresh_run_ids => true,
@@ -2352,15 +2350,10 @@ invoke(Input, _Ctx) ->
 known_state_failure_reason() ->
     {known_delegate_state_error, binary:copy(<<"e">>, 256)}.
 
-bounded_failure_observation(Reason, MaxBytes) ->
-    Serialized = iolist_to_binary(soma_lisp:render(Reason)),
-    RetainedBytes = min(byte_size(Serialized), MaxBytes),
-    Retained = binary:part(Serialized, 0, RetainedBytes),
-    Base = #{status => failed, reason => Retained},
-    case byte_size(Serialized) > MaxBytes of
-        true -> Base#{truncated => true};
-        false -> Base
-    end.
+is_artifact_observation(#{handle := Handle}) ->
+    is_binary(Handle);
+is_artifact_observation(_InlineOrMissingObservation) ->
+    false.
 
 start_admission_spine_trace() ->
     Modules =

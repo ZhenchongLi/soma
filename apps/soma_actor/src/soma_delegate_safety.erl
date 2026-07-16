@@ -3,7 +3,12 @@
 %% them, but only a matching `tool.started' event admits one to a safety ledger.
 -module(soma_delegate_safety).
 
--export([facts/3, unknown_facts/2]).
+-export([facts/3, facts/4, unknown_facts/2, unknown_facts/3]).
+
+facts(StateInvocations, UnsafeInvocations, Round, EventStorePid) ->
+    retain_unsafe_unknown_outcomes(
+      facts(StateInvocations, Round, EventStorePid),
+      UnsafeInvocations).
 
 facts(Invocations, Round, EventStorePid)
   when is_list(Invocations), is_integer(Round), Round >= 0,
@@ -32,6 +37,34 @@ unknown_facts(Invocations, Round)
       Invocations);
 unknown_facts(_InvalidInvocations, _InvalidRound) ->
     #{mutations => [], unknown_outcomes => []}.
+
+unknown_facts(StateInvocations, UnsafeInvocations, Round) ->
+    retain_unsafe_unknown_outcomes(
+      unknown_facts(StateInvocations, Round), UnsafeInvocations).
+
+retain_unsafe_unknown_outcomes(
+  Facts = #{unknown_outcomes := UnknownOutcomes}, UnsafeInvocations)
+  when is_list(UnsafeInvocations) ->
+    RetainedUnknownOutcomes =
+        [UnknownOutcome
+         || UnknownOutcome =
+                #{invocation := Invocation} <- UnknownOutcomes,
+            invocation_is_unsafe(Invocation, UnsafeInvocations)],
+    Facts#{unknown_outcomes := RetainedUnknownOutcomes};
+retain_unsafe_unknown_outcomes(Facts, _InvalidUnsafeInvocations) ->
+    Facts#{unknown_outcomes := []}.
+
+invocation_is_unsafe(
+  #{invocation_id := InvocationId}, UnsafeInvocations) ->
+    lists:any(
+      fun(#{invocation_id := UnsafeInvocationId}) ->
+              InvocationId =:= UnsafeInvocationId;
+         (_UnidentifiedInvocation) ->
+              false
+      end,
+      UnsafeInvocations);
+invocation_is_unsafe(Invocation, UnsafeInvocations) ->
+    lists:member(Invocation, UnsafeInvocations).
 
 events_by_run(Invocations, EventStorePid) ->
     RunIds =

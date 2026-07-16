@@ -55,7 +55,6 @@ init(#{request := Request = #{request_id := RequestId,
              recent_round_data => undefined,
              task_summary => #{},
              recent_rounds => [],
-             artifact_excerpts => maps:get(artifacts, Request, []),
              task_artifacts => [],
              scoped_leases =>
                  #{requests =>
@@ -157,6 +156,45 @@ handle_event(info, {delegate_terminal_stored, TaskId},
              Data = #{task_id := TaskId}) ->
     {stop, normal, Data};
 handle_event(info,
+             {delegate_state_action_dispatched,
+              TaskId, RoundId, WorkerPid, WorkerIdentity,
+              ResultCapability, StateInvocationData,
+              UnsafeInvocationData},
+             running,
+             Data = #{task_id := TaskId,
+                      active_round :=
+                          ActiveRound =
+                              #{round_id := RoundId,
+                                worker_pid := WorkerPid,
+                                worker_identity := WorkerIdentity,
+                                result_capability := ResultCapability,
+                                unsafe_action_dispatched := false}})
+  when is_list(StateInvocationData),
+       is_list(UnsafeInvocationData) ->
+    StateInvocations =
+        normalize_unsafe_invocations(StateInvocationData),
+    UnsafeInvocations =
+        normalize_unsafe_invocations(UnsafeInvocationData),
+    case StateInvocations of
+        [] ->
+            {keep_state, Data};
+        [_StateInvocation | _] ->
+            MarkedRound =
+                ActiveRound#{state_invocations := StateInvocations,
+                             unsafe_action_dispatched :=
+                                 UnsafeInvocations =/= [],
+                             unsafe_invocations := UnsafeInvocations,
+                             unsafe_invocation :=
+                                 first_invocation(UnsafeInvocations)},
+            MarkedData = Data#{active_round := MarkedRound},
+            checkpoint_ingress(MarkedData),
+            WorkerPid !
+                {delegate_state_action_recorded,
+                 TaskId, RoundId, WorkerIdentity, ResultCapability,
+                 StateInvocations, UnsafeInvocations},
+            {keep_state, MarkedData}
+    end;
+handle_event(info,
              {delegate_unsafe_action_dispatched,
               TaskId, RoundId, WorkerPid, WorkerIdentity,
               ResultCapability, UnsafeInvocationData},
@@ -176,6 +214,7 @@ handle_event(info,
         UnsafeInvocations ->
             MarkedRound =
                 ActiveRound#{unsafe_action_dispatched := true,
+                             state_invocations := UnsafeInvocations,
                              unsafe_invocations := UnsafeInvocations,
                              unsafe_invocation :=
                                  hd(UnsafeInvocations)},
@@ -414,6 +453,7 @@ start_round_worker(
                                 maps:get(prompt_tokens_estimate, Work, 0),
                             prompt_tokens_reserved => 0,
                             unsafe_action_dispatched => false,
+                            state_invocations => [],
                             unsafe_invocation => undefined,
                             unsafe_invocations => []},
             CountedData = consume_counter(rounds, 1, Data),
@@ -674,9 +714,16 @@ commit_action_observation(
     RecentRound = #{round => RoundId,
                     status => Status,
                     observation => Observation},
+    RecentRoundData =
+        case maps:find(artifact_excerpt, Result) of
+            {ok, ArtifactExcerpt} when is_map(ArtifactExcerpt) ->
+                RecentRound#{artifact_excerpt => ArtifactExcerpt};
+            _NoArtifactExcerpt ->
+                RecentRound
+        end,
     {EvictedRounds, RetainedRounds} =
         retain_recent_rounds(
-          RecentRounds ++ [RecentRound],
+          RecentRounds ++ [RecentRoundData],
           recent_round_window(Budgets)),
     UpdatedSummary =
         merge_evicted_rounds(EvictedRounds, TaskSummary),
@@ -697,11 +744,9 @@ commit_action_observation(_Result, _RoundId, Data) ->
 
 commit_action_artifact(
   #{artifact := Artifact, artifact_excerpt := ArtifactExcerpt},
-  Data = #{task_artifacts := TaskArtifacts,
-           artifact_excerpts := ArtifactExcerpts})
+  Data = #{task_artifacts := TaskArtifacts})
   when is_map(Artifact), is_map(ArtifactExcerpt) ->
-    Data#{task_artifacts := TaskArtifacts ++ [Artifact],
-          artifact_excerpts := ArtifactExcerpts ++ [ArtifactExcerpt]};
+    Data#{task_artifacts := TaskArtifacts ++ [Artifact]};
 commit_action_artifact(_Result, Data) ->
     Data.
 
@@ -866,14 +911,24 @@ commit_safety_facts(
       UnknownOutcomes, commit_mutations(Mutations, Data)).
 
 active_safety_facts(ActiveRound, RoundId, Data) ->
+    StateInvocations = active_state_invocations(ActiveRound),
     UnsafeInvocations = active_unsafe_invocations(ActiveRound),
     case maps:get(adaptive_events, Data, false) of
         true ->
             soma_delegate_safety:facts(
-              UnsafeInvocations, RoundId, event_store_pid());
+              StateInvocations, UnsafeInvocations,
+              RoundId, event_store_pid());
         false ->
             soma_delegate_safety:unknown_facts(
-              UnsafeInvocations, RoundId)
+              StateInvocations, UnsafeInvocations, RoundId)
+    end.
+
+active_state_invocations(ActiveRound) ->
+    case maps:get(state_invocations, ActiveRound, []) of
+        [_StateInvocation | _] = StateInvocations ->
+            StateInvocations;
+        [] ->
+            active_unsafe_invocations(ActiveRound)
     end.
 
 active_unsafe_invocations(ActiveRound) ->
@@ -891,6 +946,11 @@ normalize_unsafe_invocations(Invocations) when is_list(Invocations) ->
     [Invocation || Invocation <- Invocations, is_map(Invocation)];
 normalize_unsafe_invocations(_InvalidInvocationData) ->
     [].
+
+first_invocation([Invocation | _Remaining]) ->
+    Invocation;
+first_invocation([]) ->
+    undefined.
 
 finish_worker_down(Projection, Data) ->
     start_cleanup(Projection, Data#{active_round := undefined}).
@@ -1284,13 +1344,14 @@ checkpoint_ingress(
            unknown_outcome_ledger := UnknownOutcomes,
            task_artifacts := Artifacts}) ->
     ActiveRound = maps:get(active_round, Data, undefined),
-    {Round, UnsafeInvocations} =
+    {Round, StateInvocations, UnsafeInvocations} =
         case ActiveRound of
             RoundData when is_map(RoundData) ->
                 {maps:get(round_id, RoundData, 0),
+                 active_state_invocations(RoundData),
                  active_unsafe_invocations(RoundData)};
             undefined ->
-                {0, []}
+                {0, [], []}
         end,
     Checkpoint =
         #{adaptive_events => maps:get(adaptive_events, Data, false),
@@ -1299,6 +1360,7 @@ checkpoint_ingress(
           unknown_outcome_ledger => UnknownOutcomes,
           artifacts => Artifacts,
           round => Round,
+          state_invocations => StateInvocations,
           unsafe_invocations => UnsafeInvocations},
     IngressPid ! {delegate_checkpoint, TaskId, self(), Checkpoint},
     ok.

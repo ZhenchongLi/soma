@@ -8,6 +8,13 @@
 project(Snapshot, CoordinatorData)
   when is_map(Snapshot), is_map(CoordinatorData) ->
     Request = maps:get(request, CoordinatorData, #{}),
+    RecentRoundData = maps:get(recent_rounds, CoordinatorData, []),
+    RecentRounds =
+        [maps:remove(artifact_excerpt, Round)
+         || Round <- RecentRoundData],
+    ActionArtifactExcerpts =
+        [ArtifactExcerpt
+         || #{artifact_excerpt := ArtifactExcerpt} <- RecentRoundData],
     #{objective => maps:get(objective, Snapshot, undefined),
       output_contract => maps:get(output_contract, Snapshot, undefined),
       task_summary => maps:get(task_summary, CoordinatorData, #{}),
@@ -19,11 +26,9 @@ project(Snapshot, CoordinatorData)
                 maps:get(unknown_outcome_ledger, CoordinatorData, []),
             idempotency_state =>
                 maps:get(idempotency_state, CoordinatorData, #{})},
-      recent_rounds => maps:get(recent_rounds, CoordinatorData, []),
+      recent_rounds => RecentRounds,
       artifact_excerpts =>
-          maps:get(
-            artifact_excerpts, CoordinatorData,
-            maps:get(artifacts, Request, [])),
+          maps:get(artifacts, Request, []) ++ ActionArtifactExcerpts,
       tool_schemas => maps:get(tool_schemas, CoordinatorData, [])}.
 
 artifact_excerpt(
