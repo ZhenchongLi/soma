@@ -135,7 +135,14 @@ soma_sup
 
 soma_actor_sup                              (apps/soma_actor)
   |-- soma_actor_registry                   (gen_server, stable-name index)
+  |-- soma_service                          (gen_server, runtime-service owner)
   `-- soma_actor                            (gen_statem, long-lived actor)
+
+soma_delegate ingress                       (apps/soma_actor)
+  `-- soma_delegate_coordinator             (gen_statem, one per delegated task)
+        `-- soma_delegate_round_worker      (temporary, one per round)
+              |-- soma_llm_call             (disposable LLM worker)
+              `-- soma_run -> soma_tool_call (owned action execution)
 ```
 
 - `soma_agent_session` owns the session id, accepts run requests, starts

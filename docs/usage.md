@@ -499,6 +499,47 @@ both take a pid exactly as before, and passing the pid returned by
 `start_actor/1` continues to work whether or not the actor was started with a
 `stable_name`.
 
+## The Runtime Service
+
+The daemon can expose a second local socket for programs (as opposed to the
+interactive `soma` command): a versioned invoke/status/result/watch/cancel
+service for an upstream agent. It is off by default; enable it with a
+`[service]` table in `~/.soma/config`:
+
+```toml
+[service]
+enabled = true
+# socket = "/custom/path/service.sock"   # default: service.sock beside the CLI socket
+```
+
+The wire speaks length-prefixed Lisp frames. An invocation carries a
+caller-generated request id, so retries and reconnects are safe:
+
+```lisp
+(invoke (api-version "1") (request-id "req-1")
+        (tool (name echo) (args (value "hello"))))
+(status "task-id")
+(result "task-id")
+(watch "task-id" (limit 20))
+(watch "task-id" (cursor "<opaque-cursor>") (limit 20))
+(cancel "task-id")
+```
+
+The semantics differ from the interactive CLI on purpose: **disconnecting
+does not cancel accepted work**. The caller reconnects and resolves the same
+`request-id` to the original task, resumes `watch` from its last cursor, or
+cancels explicitly. A repeated identical `invoke` never executes twice — even
+across a daemon restart — and a conflicting payload under the same request id
+is a typed error. Results above the inline cap come back as artifact
+references; an interrupted non-idempotent step reports `in_doubt` rather than
+being silently replayed. Step ids and `from_step` references may be written
+as symbols or strings — both arrive as binary identifiers, and fresh spellings
+never grow the daemon's atom table.
+
+The full compatibility matrix — typed error and status sets, cursor
+semantics, size limits, and the version/deprecation rule — is
+[service-contract.md](service-contract.md).
+
 ## Reading events
 
 Most users read events through:
