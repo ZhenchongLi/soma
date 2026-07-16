@@ -19,6 +19,7 @@
 -export([test_pinned_safety_state_is_exact_and_never_truncated/1]).
 -export([test_maximum_round_prompts_obey_cumulative_input_bound/1]).
 -export([test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded/1]).
+-export([test_terminal_projection_has_exact_public_contract/1]).
 -export([invoke/2]).
 
 all() ->
@@ -36,7 +37,8 @@ all() ->
      test_recent_round_window_replaces_old_observations_with_one_summary,
      test_pinned_safety_state_is_exact_and_never_truncated,
      test_maximum_round_prompts_obey_cumulative_input_bound,
-     test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded].
+     test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded,
+     test_terminal_projection_has_exact_public_contract].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -1178,6 +1180,212 @@ test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded(
         erlang:port_close(Port),
         ok = soma_tool_registry:unregister_tool(ToolName)
     end.
+
+test_terminal_projection_has_exact_public_contract(_Config) ->
+    ToolName = delegate_terminal_projection_state,
+    ok = soma_tool_registry:register_tool(
+           #{name => ToolName,
+             effect => state,
+             idempotent => false,
+             timeout_ms => 10000,
+             adapter => erlang_module,
+             module => ?MODULE,
+             description =>
+                 <<"Holds one unsafe invocation for terminal projection. ">>}),
+    FixedResult = <<"fixed output-contract response">>,
+    FixedContract = #{format => <<"text">>},
+    UnsafeAction =
+        #{kind => run_steps,
+          steps =>
+              [#{id => terminal_projection_state_action,
+                 tool => ToolName,
+                 args => #{mode => <<"timeout">>},
+                 timeout_ms => 10000}]},
+    Rows =
+        [{succeeded,
+          #{round_sequence =>
+                [#{llm =>
+                       #{directive => proposal,
+                         output => #{kind => reply, text => FixedResult}}}]},
+          await},
+         {failed,
+          #{round_sequence =>
+                [#{llm =>
+                       #{directive => proposal,
+                         output => #{kind => reply}}}]},
+          await},
+         {rejected,
+          #{tool_policy => #{allowed_tools => []},
+            round_sequence =>
+                [#{llm =>
+                       #{directive => proposal,
+                         output =>
+                             #{kind => run_steps,
+                               steps =>
+                                   [#{id => terminal_projection_denied,
+                                      tool => echo,
+                                      args => #{value => <<"denied">>}}]}}}]},
+          await},
+         {timeout,
+          #{round_sequence =>
+                [#{llm => #{directive => hang, timeout_ms => 60000},
+                   round_timeout_ms => 20}]},
+          await},
+         {cancelled,
+          #{round_sequence =>
+                [#{llm => #{directive => hang, timeout_ms => 60000},
+                   round_timeout_ms => 60000}]},
+          cancel},
+         {in_doubt,
+          #{tool_policy => #{allowed_tools => [ToolName]},
+            round_sequence =>
+                [#{llm =>
+                       #{directive => proposal, output => UnsafeAction},
+                   round_timeout_ms => 60000}]},
+          lose_unsafe_result}],
+    try
+        Actual =
+            [observe_terminal_projection_case(
+               Row, FixedContract, FixedResult, ToolName)
+             || Row <- Rows],
+        PublicKeys =
+            lists:sort(
+              [request_id, task_id, correlation_id, status, result,
+               artifacts, mutations, unknown_outcomes, usage, trace_ref]),
+        Expected =
+            [#{case_name => Status,
+               keys => PublicKeys,
+               status => Status,
+               identifiers_match => true,
+               result =>
+                   case Status of
+                       succeeded -> FixedResult;
+                       _ -> undefined
+                   end,
+               artifacts => [],
+               mutation_count =>
+                   case Status of
+                       in_doubt -> 1;
+                       _ -> 0
+                   end,
+               unknown_outcome_count =>
+                   case Status of
+                       in_doubt -> 1;
+                       _ -> 0
+                   end,
+               usage_keys =>
+                   [llm_calls, prompt_tokens, rounds, tool_calls],
+               usage_is_non_negative => true,
+               trace_ref_matches => true}
+             || {Status, _RuntimeOptions, _Trigger} <- Rows],
+        ?assertEqual(Expected, Actual)
+    after
+        ok = soma_tool_registry:unregister_tool(ToolName)
+    end.
+
+observe_terminal_projection_case(
+  {ExpectedStatus, RuntimeOptions0, Trigger},
+  OutputContract, FixedResult, ToolName) ->
+    RuntimeOptions =
+        case ExpectedStatus of
+            rejected -> RuntimeOptions0;
+            in_doubt -> RuntimeOptions0;
+            _ ->
+                RuntimeOptions0#{tool_policy => #{allowed_tools => []}}
+        end,
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options, RuntimeOptions),
+    Suffix = atom_to_binary(ExpectedStatus, utf8),
+    RequestId = <<"delegate-terminal-projection-", Suffix/binary>>,
+    CorrelationId =
+        <<"delegate-terminal-projection-", Suffix/binary,
+          "-correlation">>,
+    CapabilityScope =
+        case ExpectedStatus of
+            rejected -> #{tools => [<<"echo">>]};
+            in_doubt -> #{tools => [atom_to_binary(ToolName, utf8)]};
+            _ -> #{tools => []}
+        end,
+    Request =
+        #{request_id => RequestId,
+          correlation_id => CorrelationId,
+          objective => #{goal => <<"return one terminal projection">>},
+          output_contract => OutputContract,
+          capability_scope => CapabilityScope,
+          artifacts => []},
+    {ok, Accepted = #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Projection =
+        trigger_terminal_projection(Trigger, TaskId),
+    wait_for_no_coordinators(100),
+    Usage = maps:get(usage, Projection, missing),
+    Mutations = maps:get(mutations, Projection, missing),
+    UnknownOutcomes = maps:get(unknown_outcomes, Projection, missing),
+    #{case_name => ExpectedStatus,
+      keys => lists:sort(maps:keys(Projection)),
+      status => maps:get(status, Projection, missing),
+      identifiers_match =>
+          maps:get(request_id, Projection, missing) =:= RequestId andalso
+              maps:get(task_id, Projection, missing) =:=
+                  maps:get(task_id, Accepted) andalso
+              maps:get(correlation_id, Projection, missing) =:=
+                  CorrelationId,
+      result => maps:get(result, Projection, missing),
+      artifacts => maps:get(artifacts, Projection, missing),
+      mutation_count => terminal_list_length(Mutations),
+      unknown_outcome_count => terminal_list_length(UnknownOutcomes),
+      usage_keys => terminal_usage_keys(Usage),
+      usage_is_non_negative => terminal_usage_is_non_negative(Usage),
+      trace_ref_matches =>
+          maps:get(trace_ref, Projection, missing) =:= CorrelationId andalso
+              maps:get(status, Projection, missing) =:= ExpectedStatus andalso
+              (ExpectedStatus =/= succeeded orelse
+               maps:get(result, Projection, missing) =:= FixedResult)}.
+
+trigger_terminal_projection(await, TaskId) ->
+    wait_for_terminal_projection(TaskId, 300);
+trigger_terminal_projection(cancel, TaskId) ->
+    _Running = wait_for_running_projection(TaskId, 100),
+    {ok, Projection} = soma_delegate:cancel(TaskId),
+    Projection;
+trigger_terminal_projection(lose_unsafe_result, TaskId) ->
+    RoundWorkerPid = wait_for_unsafe_round_worker(TaskId, 200),
+    exit(RoundWorkerPid, kill),
+    wait_for_terminal_projection(TaskId, 300).
+
+wait_for_unsafe_round_worker(_TaskId, 0) ->
+    ct:fail(delegate_terminal_unsafe_dispatch_not_observed);
+wait_for_unsafe_round_worker(TaskId, Attempts) ->
+    Matching =
+        [CoordinatorData
+         || CoordinatorPid <- live_coordinators(),
+            {_StateName, CoordinatorData} <- [sys:get_state(CoordinatorPid)],
+            maps:get(task_id, CoordinatorData, undefined) =:= TaskId],
+    case Matching of
+        [#{active_round :=
+               #{unsafe_action_dispatched := true,
+                 worker_pid := RoundWorkerPid}}] ->
+            RoundWorkerPid;
+        _NotYetDispatched ->
+            timer:sleep(10),
+            wait_for_unsafe_round_worker(TaskId, Attempts - 1)
+    end.
+
+terminal_list_length(Value) when is_list(Value) ->
+    length(Value);
+terminal_list_length(_MissingOrInvalid) ->
+    invalid.
+
+terminal_usage_keys(Usage) when is_map(Usage) ->
+    lists:sort(maps:keys(Usage));
+terminal_usage_keys(_MissingOrInvalid) ->
+    invalid.
+
+terminal_usage_is_non_negative(Usage) when is_map(Usage) ->
+    lists:all(
+      fun(Value) -> is_integer(Value) andalso Value >= 0 end,
+      maps:values(Usage));
+terminal_usage_is_non_negative(_MissingOrInvalid) ->
+    false.
 
 adaptive_event_observation(
   {CaseName, EventType}, Events, Forbidden) ->
