@@ -22,6 +22,7 @@
 -export([test_terminal_projection_has_exact_public_contract/1]).
 -export([test_review_regressions_are_bounded_and_safety_preserving/1]).
 -export([test_review_actual_dispatch_usage_and_observation_regressions/1]).
+-export([test_review_admission_artifact_window_and_idempotent_state_regressions/1]).
 -export([invoke/2]).
 
 all() ->
@@ -42,7 +43,8 @@ all() ->
      test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded,
      test_terminal_projection_has_exact_public_contract,
      test_review_regressions_are_bounded_and_safety_preserving,
-     test_review_actual_dispatch_usage_and_observation_regressions].
+     test_review_actual_dispatch_usage_and_observation_regressions,
+     test_review_admission_artifact_window_and_idempotent_state_regressions].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -1327,6 +1329,266 @@ test_review_actual_dispatch_usage_and_observation_regressions(_Config) ->
     assert_review_ledgers_follow_actual_dispatch_and_terminal_facts(),
     assert_review_valid_usage_aggregate_survives_public_projection(),
     assert_review_compatible_observation_budget_commits_completed_action().
+
+test_review_admission_artifact_window_and_idempotent_state_regressions(
+  _Config) ->
+    assert_review_noncanonical_step_stops_before_run(),
+    assert_review_oversized_failure_is_artifact_backed(),
+    assert_review_artifact_excerpts_follow_recent_round_window(),
+    assert_review_idempotent_state_invocation_is_ledgered().
+
+assert_review_noncanonical_step_stops_before_run() ->
+    Case =
+        {review_noncanonical_step,
+         #{allowed_tools => [echo]},
+         #{tools => [<<"echo">>]},
+         #{kind => run_steps,
+           steps =>
+               [#{id => review_noncanonical_step,
+                  tool => echo,
+                  args => not_a_map}]},
+         failed},
+    ?assertEqual(
+       #{case_name => review_noncanonical_step,
+         status => failed,
+         run_started => false},
+       observe_denied_action_case(Case)),
+    wait_for_no_coordinators(100).
+
+assert_review_oversized_failure_is_artifact_backed() ->
+    MaxObservationBytes = 32,
+    LargeReason = binary:copy(<<"complete-known-failure-">>, 32),
+    CompleteBytes =
+        iolist_to_binary(
+          soma_lisp:render(
+            #{status => failed, reason => LargeReason})),
+    true = byte_size(CompleteBytes) > MaxObservationBytes,
+    Action =
+        #{kind => run_steps,
+          steps =>
+              [#{id => review_oversized_failure,
+                 tool => fail,
+                 args => #{mode => error, reason => LargeReason}}]},
+    TestPid = self(),
+    Responder =
+        fun(CallOpts) ->
+                TestPid !
+                    {delegate_review_failure_artifact_prompt,
+                     maps:get(prompt_projection, CallOpts)},
+                terminal_response(<<"known failure retained">>)
+        end,
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [fail]},
+             round_sequence =>
+                 [#{llm => #{directive => proposal, output => Action}},
+                  #{llm =>
+                        #{provider => openai_compat,
+                          base_url => <<"api.example.test/v1">>,
+                          api_key => <<"test-only-key">>,
+                          model => <<"test-model">>,
+                          response => Responder}}]}),
+    Request =
+        #{request_id => <<"delegate-review-failure-artifact">>,
+          correlation_id =>
+              <<"delegate-review-failure-artifact-correlation">>,
+          objective => #{goal => <<"retain one complete failure">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => [<<"fail">>]},
+          artifacts => [],
+          budgets => #{max_observation_bytes => MaxObservationBytes}},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Prompt = receive_review_failure_artifact_prompt(),
+    Terminal = wait_for_terminal_projection(TaskId, 200),
+    [#{handle := Handle,
+       bytes := CompleteByteCount,
+       excerpt := Excerpt,
+       truncated := true}] = maps:get(artifact_excerpts, Prompt),
+    [#{round := 1, observation := #{handle := Handle}}] =
+        maps:get(recent_rounds, Prompt),
+    [#{handle := Handle}] = maps:get(artifacts, Terminal),
+    {ok, StoredBytes} =
+        soma_delegate:artifact_slice(
+          TaskId, Handle, 0, CompleteByteCount),
+    ?assertEqual(CompleteBytes, StoredBytes),
+    ?assertEqual(byte_size(CompleteBytes), CompleteByteCount),
+    ?assertEqual(
+       binary:part(CompleteBytes, 0, MaxObservationBytes), Excerpt),
+    wait_for_no_coordinators(100).
+
+receive_review_failure_artifact_prompt() ->
+    receive
+        {delegate_review_failure_artifact_prompt, Projection} ->
+            Projection
+    after 2000 ->
+        ct:fail(delegate_review_failure_artifact_prompt_missing)
+    end.
+
+assert_review_artifact_excerpts_follow_recent_round_window() ->
+    MaxObservationBytes = 128,
+    Rows =
+        [{review_artifact_window_one, <<"evicted-artifact-one">>},
+         {review_artifact_window_two, <<"evicted-artifact-two">>},
+         {review_artifact_window_three, <<"retained-artifact-three">>}],
+    Actions =
+        [begin
+             Payload =
+                 <<Sentinel/binary, "-",
+                   (binary:copy(<<"x">>, 512))/binary>>,
+             CompleteBytes =
+                 iolist_to_binary(
+                   soma_lisp:render(
+                     #{status => succeeded,
+                       outputs => #{StepId => #{value => Payload}}})),
+             true = byte_size(CompleteBytes) > MaxObservationBytes,
+             Excerpt =
+                 binary:part(CompleteBytes, 0, MaxObservationBytes),
+             true = binary:match(Excerpt, Sentinel) =/= nomatch,
+             #{kind => run_steps,
+               steps =>
+                   [#{id => StepId,
+                      tool => echo,
+                      args => #{value => Payload}}]}
+         end
+         || {StepId, Sentinel} <- Rows],
+    TestPid = self(),
+    Responder =
+        fun(CallOpts) ->
+                TestPid !
+                    {delegate_review_artifact_window_prompt,
+                     maps:get(prompt_projection, CallOpts)},
+                terminal_response(<<"artifact window observed">>)
+        end,
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [echo]},
+             round_sequence =>
+                 [#{llm => #{directive => proposal, output => Action}}
+                  || Action <- Actions] ++
+                 [#{llm =>
+                        #{provider => openai_compat,
+                          base_url => <<"api.example.test/v1">>,
+                          api_key => <<"test-only-key">>,
+                          model => <<"test-model">>,
+                          response => Responder}}]}),
+    Request =
+        #{request_id => <<"delegate-review-artifact-window">>,
+          correlation_id =>
+              <<"delegate-review-artifact-window-correlation">>,
+          objective => #{goal => <<"evict old artifact excerpts">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => [<<"echo">>]},
+          artifacts => [],
+          budgets =>
+              #{max_observation_bytes => MaxObservationBytes,
+                recent_round_window => 1}},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Prompt = receive_review_artifact_window_prompt(),
+    #{status := succeeded} =
+        wait_for_terminal_projection(TaskId, 200),
+    [#{handle := RetainedHandle, excerpt := RetainedExcerpt}] =
+        maps:get(artifact_excerpts, Prompt),
+    [#{round := 3,
+       observation := #{handle := RetainedHandle}}] =
+        maps:get(recent_rounds, Prompt),
+    PromptBytes = term_to_binary(Prompt, [deterministic]),
+    ?assertEqual(
+       nomatch, binary:match(PromptBytes, <<"evicted-artifact-one">>)),
+    ?assertEqual(
+       nomatch, binary:match(PromptBytes, <<"evicted-artifact-two">>)),
+    ?assertNotEqual(
+       nomatch, binary:match(RetainedExcerpt, <<"retained-artifact-three">>)),
+    wait_for_no_coordinators(100).
+
+receive_review_artifact_window_prompt() ->
+    receive
+        {delegate_review_artifact_window_prompt, Projection} ->
+            Projection
+    after 2000 ->
+        ct:fail(delegate_review_artifact_window_prompt_missing)
+    end.
+
+assert_review_idempotent_state_invocation_is_ledgered() ->
+    ToolName = delegate_review_idempotent_state,
+    ok = soma_tool_registry:register_tool(
+           #{name => ToolName,
+             effect => state,
+             idempotent => true,
+             timeout_ms => 1000,
+             adapter => erlang_module,
+             module => ?MODULE,
+             description =>
+                 <<"Records one repeat-safe state invocation.">>}),
+    try
+        Action =
+            #{kind => run_steps,
+              steps =>
+                  [#{id => review_idempotent_state_action,
+                     tool => ToolName,
+                     args => #{value => <<"idempotent mutation">>}}]},
+        TestPid = self(),
+        Responder =
+            fun(CallOpts) ->
+                    TestPid !
+                        {delegate_review_idempotent_state_prompt,
+                         maps:get(prompt_projection, CallOpts)},
+                    terminal_response(<<"idempotent mutation observed">>)
+            end,
+        ok = application:set_env(
+               soma_actor, delegate_runtime_options,
+               #{tool_policy => #{allowed_tools => [ToolName]},
+                 round_sequence =>
+                     [#{llm => #{directive => proposal, output => Action}},
+                      #{llm =>
+                            #{provider => openai_compat,
+                              base_url => <<"api.example.test/v1">>,
+                              api_key => <<"test-only-key">>,
+                              model => <<"test-model">>,
+                              response => Responder}}]}),
+        CorrelationId =
+            <<"delegate-review-idempotent-state-correlation">>,
+        Request =
+            #{request_id => <<"delegate-review-idempotent-state">>,
+              correlation_id => CorrelationId,
+              objective => #{goal => <<"retain idempotent state facts">>},
+              output_contract => #{format => <<"text">>},
+              capability_scope =>
+                  #{tools => [atom_to_binary(ToolName, utf8)]},
+              artifacts => []},
+        {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+        Prompt = receive_review_idempotent_state_prompt(),
+        Terminal = wait_for_terminal_projection(TaskId, 200),
+        [Mutation =
+             #{invocation_id := InvocationId,
+               step_id := review_idempotent_state_action,
+               tool := ToolName,
+               outcome := succeeded}] = maps:get(mutations, Terminal),
+        SafetyState = maps:get(pinned_safety_state, Prompt),
+        ?assertEqual(
+           [Mutation], maps:get(mutation_ledger, SafetyState)),
+        ?assertEqual(
+           Mutation,
+           maps:get(
+             InvocationId, maps:get(idempotency_state, SafetyState))),
+        [#{payload := TerminalPayload}] =
+            [Event
+             || #{event_type := <<"delegate.task.terminal">>} = Event <-
+                    soma_event_store:by_correlation(
+                      event_store_pid(), CorrelationId)],
+        ?assertEqual(
+           [Mutation], maps:get(mutation_state, TerminalPayload)),
+        wait_for_no_coordinators(100)
+    after
+        ok = soma_tool_registry:unregister_tool(ToolName)
+    end.
+
+receive_review_idempotent_state_prompt() ->
+    receive
+        {delegate_review_idempotent_state_prompt, Projection} ->
+            Projection
+    after 2000 ->
+        ct:fail(delegate_review_idempotent_state_prompt_missing)
+    end.
 
 assert_review_ledgers_follow_actual_dispatch_and_terminal_facts() ->
     FirstTool = delegate_review_actual_state_one,
