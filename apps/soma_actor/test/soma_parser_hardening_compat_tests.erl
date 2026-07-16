@@ -107,7 +107,7 @@ compile_map_fixtures() ->
       #{cancel => #{task_id => <<"t-1">>}}},
      {stop_command,
       <<"(stop)">>,
-      #{stop => true}}].
+      #{stop => #{}}}].
 
 wire_round_trip_fixtures() ->
     [{msg,
