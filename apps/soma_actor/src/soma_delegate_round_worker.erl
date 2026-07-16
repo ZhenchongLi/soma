@@ -7,6 +7,7 @@
 -define(DEFAULT_LLM_TIMEOUT_MS, 60000).
 -define(DEFAULT_ACTION_TIMEOUT_MS, 120000).
 -define(DEFAULT_MAX_OBSERVATION_BYTES, 16384).
+-define(MAX_INLINE_OBSERVATION_BYTES, 4096).
 
 -export([start_link/1]).
 -export([init/1, callback_mode/0, handle_event/4, terminate/3]).
@@ -256,8 +257,8 @@ handle_event(info,
                                 maps:get(decision, Work, terminal)},
                           ObservationFields),
                     Result1 =
-                        maybe_add_adaptive_mutation(
-                          succeeded, ActiveRun, Data, Result0),
+                        maybe_add_adaptive_safety(
+                          ActiveRun, Data, Result0),
                     report_round_result(
                       Data#{active_run := undefined},
                       maybe_add_adaptive_run_id(
@@ -273,7 +274,11 @@ handle_event(info,
             finish_run_child(ActiveRun),
             report_round_result(
               Data#{active_run := undefined},
-              #{status => PendingStatus, phase => action})
+              maybe_add_adaptive_run_id(
+                ActiveRun, Data,
+                maybe_add_adaptive_safety(
+                  ActiveRun, Data,
+                  #{status => PendingStatus, phase => action})))
     end;
 handle_event(info,
              {run_failed, RunId, Reason},
@@ -290,7 +295,11 @@ handle_event(info,
         PendingStatus ->
             report_round_result(
               Data#{active_run := undefined},
-              #{status => PendingStatus, phase => action})
+              maybe_add_adaptive_run_id(
+                ActiveRun, Data,
+                maybe_add_adaptive_safety(
+                  ActiveRun, Data,
+                  #{status => PendingStatus, phase => action})))
     end;
 handle_event(info,
              {run_timeout, RunId},
@@ -311,7 +320,11 @@ handle_event(info,
     finish_run_child(ActiveRun),
     report_round_result(
       Data#{active_run := undefined},
-      #{status => Status, phase => action});
+      maybe_add_adaptive_run_id(
+        ActiveRun, Data,
+        maybe_add_adaptive_safety(
+          ActiveRun, Data,
+          #{status => Status, phase => action})));
 handle_event(info,
              {'DOWN', RunMRef, process, RunPid, Reason},
              waiting_run,
@@ -321,7 +334,11 @@ handle_event(info,
     cancel_child_timer(ActiveRun),
     report_round_result(
       Data#{active_run := undefined},
-      #{status => failed, phase => action, reason => Reason});
+      maybe_add_adaptive_run_id(
+        ActiveRun, Data,
+        maybe_add_adaptive_safety(
+          ActiveRun, Data,
+          #{status => failed, phase => action, reason => Reason})));
 handle_event(info,
              {timeout, TimerRef,
               {delegate_phase_timeout, action, RunId}},
@@ -693,8 +710,8 @@ known_action_failure_result(Reason, ActiveRun, Data) ->
                       bounded_failure_observation(Reason, Data)},
             maybe_add_adaptive_run_id(
               ActiveRun, Data,
-              maybe_add_adaptive_mutation(
-                failed, ActiveRun, Data, Result0));
+              maybe_add_adaptive_safety(
+                ActiveRun, Data, Result0));
         false ->
             #{status => failed, phase => action, reason => Reason}
     end.
@@ -709,29 +726,42 @@ known_action_timeout_result(ActiveRun, Data) ->
                   terminal_result => #{status => timeout}},
             maybe_add_adaptive_run_id(
               ActiveRun, Data,
-              maybe_add_adaptive_mutation(
-                timeout, ActiveRun, Data, Result0));
+              maybe_add_adaptive_safety(
+                ActiveRun, Data, Result0));
         false ->
             #{status => timeout, phase => action}
     end.
 
-maybe_add_adaptive_mutation(
-  Outcome,
+maybe_add_adaptive_safety(
   #{unsafe_invocations := UnsafeInvocations},
   #{round_id := RoundId} = Data,
   Result)
   when is_list(UnsafeInvocations), UnsafeInvocations =/= [] ->
     case adaptive_action(Data) of
         true ->
-            Result#{mutations =>
-                        [Invocation#{round => RoundId,
-                                     outcome => Outcome}
-                         || Invocation <- UnsafeInvocations]};
+            Facts =
+                soma_delegate_safety:facts(
+                  UnsafeInvocations, RoundId, event_store_pid()),
+            attach_safety_facts(Facts, Result);
         false ->
             Result
     end;
-maybe_add_adaptive_mutation(_Outcome, _ActiveRun, _Data, Result) ->
+maybe_add_adaptive_safety(_ActiveRun, _Data, Result) ->
     Result.
+
+attach_safety_facts(
+  #{mutations := Mutations, unknown_outcomes := UnknownOutcomes},
+  Result) ->
+    MutationResult =
+        case Mutations of
+            [] -> Result;
+            [_Mutation | _] -> Result#{mutations => Mutations}
+        end,
+    case UnknownOutcomes of
+        [] -> MutationResult;
+        [_Unknown | _] ->
+            MutationResult#{unknown_outcomes => UnknownOutcomes}
+    end.
 
 maybe_add_adaptive_run_id(
   #{run_id := RunId}, Data, Result) ->
@@ -770,7 +800,7 @@ completed_action_observation(Outputs, Data = #{task_id := TaskId}) ->
     Observation = #{status => succeeded, outputs => Outputs},
     CompleteBytes =
         iolist_to_binary(soma_lisp:render(Observation)),
-    MaxBytes = max_observation_bytes(Data),
+    MaxBytes = observation_envelope_bytes(Data),
     case adaptive_action(Data) andalso
          byte_size(CompleteBytes) > MaxBytes of
         true ->
@@ -790,7 +820,7 @@ completed_action_observation(Outputs, Data = #{task_id := TaskId}) ->
     end.
 
 bounded_failure_observation(Reason, Data) ->
-    MaxBytes = max_observation_bytes(Data),
+    MaxBytes = observation_envelope_bytes(Data),
     Serialized = iolist_to_binary(soma_lisp:render(Reason)),
     RetainedBytes = min(byte_size(Serialized), MaxBytes),
     Retained = binary:part(Serialized, 0, RetainedBytes),
@@ -799,6 +829,9 @@ bounded_failure_observation(Reason, Data) ->
         true -> Base#{truncated => true};
         false -> Base
     end.
+
+observation_envelope_bytes(Data) ->
+    min(max_observation_bytes(Data), ?MAX_INLINE_OBSERVATION_BYTES).
 
 max_observation_bytes(#{snapshot := Snapshot}) ->
     Budgets = maps:get(budgets, Snapshot, #{}),

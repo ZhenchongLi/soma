@@ -5,7 +5,7 @@
 -behaviour(gen_server).
 
 -define(MAX_TERMINAL_PROJECTION_BYTES, 4096).
--define(MAX_TERMINAL_COUNTER, 16#ffffffff).
+-define(MAX_USAGE_COUNTER, 16#ffffffffffffffff).
 -define(FORWARDED_REQUEST_TIMEOUT_MS, 2500).
 
 -export([start_link/0, submit/1, status/1, cancel/1, artifact_slice/4]).
@@ -548,9 +548,20 @@ coordinator_crashed_projection(Checkpoint) ->
     UnsafeInvocations =
         checkpoint_list(unsafe_invocations, Checkpoint),
     Round = checkpoint_round(Checkpoint),
-    {Mutations, UnknownOutcomes} =
-        append_pending_unsafe_outcomes(
-          UnsafeInvocations, Round, Mutations0, UnknownOutcomes0),
+    SafetyFacts =
+        case maps:get(adaptive_events, Checkpoint, false) of
+            true ->
+                soma_delegate_safety:facts(
+                  UnsafeInvocations, Round, event_store_pid());
+            false ->
+                soma_delegate_safety:unknown_facts(
+                  UnsafeInvocations, Round)
+        end,
+    Mutations =
+        Mutations0 ++ maps:get(mutations, SafetyFacts, []),
+    UnknownOutcomes =
+        UnknownOutcomes0 ++
+            maps:get(unknown_outcomes, SafetyFacts, []),
     Status =
         case UnknownOutcomes of
             [] -> failed;
@@ -572,26 +583,6 @@ coordinator_crashed_event_outcome(Projection, Checkpoint) ->
       unknown_outcome_ledger =>
           maps:get(unknown_outcomes, Projection, []),
       usage => maps:get(usage, Projection, #{})}.
-
-append_pending_unsafe_outcomes(
-  [], _Round, Mutations, UnknownOutcomes) ->
-    {Mutations, UnknownOutcomes};
-append_pending_unsafe_outcomes(
-  [Invocation | Remaining], Round, Mutations, UnknownOutcomes)
-  when is_map(Invocation) ->
-    Mutation = Invocation#{round => Round, outcome => unknown},
-    UnknownOutcome =
-        #{round => Round,
-          invocation => Invocation,
-          outcome => unknown},
-    append_pending_unsafe_outcomes(
-      Remaining, Round,
-      Mutations ++ [Mutation],
-      UnknownOutcomes ++ [UnknownOutcome]);
-append_pending_unsafe_outcomes(
-  [_InvalidInvocation | Remaining], Round, Mutations, UnknownOutcomes) ->
-    append_pending_unsafe_outcomes(
-      Remaining, Round, Mutations, UnknownOutcomes).
 
 checkpoint_list(Key, Checkpoint) ->
     case maps:get(Key, Checkpoint, []) of
@@ -725,7 +716,7 @@ valid_terminal_usage(Usage) when is_map(Usage) ->
         lists:all(
           fun(Value) ->
                   is_integer(Value) andalso Value >= 0 andalso
-                      Value =< ?MAX_TERMINAL_COUNTER
+                      Value =< ?MAX_USAGE_COUNTER
           end,
           maps:values(Usage));
 valid_terminal_usage(_Usage) ->
@@ -743,3 +734,9 @@ valid_terminal_artifact(
         is_integer(Bytes) andalso Bytes >= 0;
 valid_terminal_artifact(_Artifact) ->
     false.
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Modules} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.

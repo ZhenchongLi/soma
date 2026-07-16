@@ -6,6 +6,11 @@
 -define(MAX_ID_BYTES, 256).
 -define(MAX_REQUEST_BYTES, 65536).
 -define(MAX_TIMER_MS, 16#ffffffff).
+%% Provider usage is admitted per call as an unsigned 32-bit value. Bounding
+%% the call count to the same range guarantees every exact task aggregate fits
+%% the unsigned 64-bit public counter below.
+-define(MAX_LLM_CALLS, 16#ffffffff).
+-define(MAX_USAGE_COUNTER, 16#ffffffffffffffff).
 
 -define(DEFAULT_BUDGETS,
         #{max_rounds => 16,
@@ -77,18 +82,20 @@ valid_field_shapes(Request) ->
         valid_artifacts(maps:get(artifacts, Request, [])).
 
 valid_budgets(Budgets) when is_map(Budgets) ->
-    valid_optional_non_neg_integer(max_rounds, Budgets) andalso
-        valid_optional_non_neg_integer(max_llm_calls, Budgets) andalso
-        valid_optional_non_neg_integer(max_tool_calls, Budgets) andalso
-        valid_optional_non_neg_integer(max_context_tokens, Budgets) andalso
-        valid_optional_non_neg_integer(
+    valid_optional_bounded_non_neg_integer(max_rounds, Budgets) andalso
+        valid_optional_llm_call_count(max_llm_calls, Budgets) andalso
+        valid_optional_bounded_non_neg_integer(max_tool_calls, Budgets) andalso
+        valid_optional_bounded_non_neg_integer(
+          max_context_tokens, Budgets) andalso
+        valid_optional_bounded_non_neg_integer(
           reserved_completion_tokens, Budgets) andalso
-        valid_optional_non_neg_integer(
+        valid_optional_bounded_non_neg_integer(
           max_total_prompt_tokens, Budgets) andalso
         valid_optional_positive_integer(deadline_ms, Budgets) andalso
-        valid_optional_positive_integer(
+        valid_optional_bounded_positive_integer(
           max_observation_bytes, Budgets) andalso
-        valid_optional_non_neg_integer(recent_round_window, Budgets) andalso
+        valid_optional_bounded_non_neg_integer(
+          recent_round_window, Budgets) andalso
         valid_deadline_upper_bound(Budgets);
 valid_budgets(_InvalidBudgets) ->
     false.
@@ -97,6 +104,33 @@ valid_optional_positive_integer(Key, Map) ->
     case maps:find(Key, Map) of
         {ok, Value} -> is_integer(Value) andalso Value > 0;
         error -> true
+    end.
+
+valid_optional_bounded_positive_integer(Key, Map) ->
+    case maps:find(Key, Map) of
+        {ok, Value} ->
+            is_integer(Value) andalso Value > 0 andalso
+                Value =< ?MAX_USAGE_COUNTER;
+        error ->
+            true
+    end.
+
+valid_optional_bounded_non_neg_integer(Key, Map) ->
+    case maps:find(Key, Map) of
+        {ok, Value} ->
+            is_integer(Value) andalso Value >= 0 andalso
+                Value =< ?MAX_USAGE_COUNTER;
+        error ->
+            true
+    end.
+
+valid_optional_llm_call_count(Key, Map) ->
+    case maps:find(Key, Map) of
+        {ok, Value} ->
+            is_integer(Value) andalso Value >= 0 andalso
+                Value =< ?MAX_LLM_CALLS;
+        error ->
+            true
     end.
 
 valid_deadline_upper_bound(Budgets) ->
