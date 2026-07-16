@@ -359,7 +359,7 @@ execute_admitted_proposal(#{kind := reject, reason := Reason}, Data) ->
 report_admission_rejection(Gate, Reason, Data) ->
     report_round_result(
       Data,
-      #{status => failed,
+      #{status => rejected,
         phase => decision,
         reason => {admission_rejected, Gate, Reason}}).
 

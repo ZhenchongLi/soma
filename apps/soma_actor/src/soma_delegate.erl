@@ -514,6 +514,7 @@ bounded_terminal_projection(Projection) ->
 
 terminal_status(Status)
   when Status =:= succeeded; Status =:= failed;
+       Status =:= rejected;
        Status =:= timeout; Status =:= cancelled;
        Status =:= in_doubt ->
     Status;

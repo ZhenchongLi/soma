@@ -631,7 +631,7 @@ valid_round_result_keys(Result) ->
 valid_result_status(Result) ->
     lists:member(
       maps:get(status, Result, invalid),
-      [succeeded, failed, timeout, cancelled]).
+      [succeeded, failed, rejected, timeout, cancelled]).
 
 valid_optional_enum(Key, Result, Allowed) ->
     case maps:find(Key, Result) of
