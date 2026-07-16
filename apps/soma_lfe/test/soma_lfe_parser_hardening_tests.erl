@@ -72,3 +72,47 @@ test_external_lisp_symbols_have_zero_atom_count_delta() ->
 
 external_lisp_symbols_have_zero_atom_count_delta_test() ->
     test_external_lisp_symbols_have_zero_atom_count_delta().
+
+%% Review finding (#235): unknown fresh grammar heads must produce fixed
+%% named diagnostics whose bytes do not depend on the rejected symbol's
+%% length — a 255-character head yields the same diagnostic as a short one.
+test_unknown_grammar_symbols_have_fixed_named_diagnostics() ->
+    Short = <<"zzq">>,
+    Long = binary:copy(<<"z">>, 255),
+    Sources =
+        [{msg_field,
+          fun(Head) ->
+                  <<"(msg (type \"chat\") (payload \"p\") (",
+                    Head/binary, " 1))">>
+          end},
+         {steps_child,
+          fun(Head) ->
+                  <<"(run-steps (", Head/binary,
+                    " (id a) (tool echo) (args)))">>
+          end},
+         {step_child,
+          fun(Head) ->
+                  <<"(run-steps (step (id a) (tool echo) (",
+                    Head/binary, " 1)))">>
+          end},
+         {ask_field,
+          fun(Head) ->
+                  <<"(ask (intent \"do\") (", Head/binary, " 1))">>
+          end}],
+    lists:foreach(
+        fun({Label, Source}) ->
+            AtomCountBefore = erlang:system_info(atom_count),
+            ShortResult = soma_lfe:compile(Source(Short), #{}),
+            LongResult = soma_lfe:compile(Source(Long), #{}),
+            ?assertMatch({Label, {error, [#{code := _}]}},
+                         {Label, ShortResult}),
+            ?assertEqual({Label, ShortResult}, {Label, LongResult}),
+            ?assertEqual(
+                {Label, AtomCountBefore},
+                {Label, erlang:system_info(atom_count)})
+        end,
+        Sources
+    ).
+
+unknown_grammar_symbols_have_fixed_named_diagnostics_test() ->
+    test_unknown_grammar_symbols_have_fixed_named_diagnostics().
