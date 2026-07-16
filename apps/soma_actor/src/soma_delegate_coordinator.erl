@@ -31,6 +31,7 @@ init(#{request := Request = #{request_id := RequestId,
   when is_binary(RequestId), is_binary(TaskId), is_binary(CorrelationId),
        is_pid(IngressPid), is_map(RuntimeOptions) ->
     Budgets = maps:get(budgets, Request, #{}),
+    RoundSequence = maps:get(round_sequence, RuntimeOptions, []),
     TaskDeadlineTimer = arm_task_deadline(Budgets, TaskId),
     Data = #{request_id => RequestId,
              task_id => TaskId,
@@ -48,7 +49,7 @@ init(#{request := Request = #{request_id := RequestId,
              mutation_ledger => [],
              unknown_outcome_ledger => [],
              idempotency_state => #{},
-             adaptive_events => false,
+             adaptive_events => adaptive_round_sequence(RoundSequence),
              recent_round_data => undefined,
              task_summary => #{},
              recent_rounds => [],
@@ -65,8 +66,8 @@ init(#{request := Request = #{request_id := RequestId,
              task_deadline_expired => false,
              cleanup_started => false,
              terminal_result => undefined,
-             round_sequence =>
-                 maps:get(round_sequence, RuntimeOptions, [])},
+             continuation_round_entry => undefined,
+             round_sequence => RoundSequence},
     {ok, awaiting_start, Data}.
 
 callback_mode() ->
@@ -278,11 +279,28 @@ start_available_round(
            task_id := TaskId,
            correlation_id := CorrelationId,
            next_round_id := RoundId}) ->
+    start_available_round_entry(
+      RoundEntry, Remaining, TaskId, CorrelationId, RoundId, Data);
+start_available_round(
+  Data = #{round_sequence := [],
+           continuation_round_entry := RoundEntry,
+           task_id := TaskId,
+           correlation_id := CorrelationId,
+           next_round_id := RoundId})
+  when RoundEntry =/= undefined ->
+    start_available_round_entry(
+      RoundEntry, [], TaskId, CorrelationId, RoundId, Data);
+start_available_round(Data) ->
+    fail_before_round(Data, invalid_round_sequence).
+
+start_available_round_entry(
+  RoundEntry, Remaining, TaskId, CorrelationId, RoundId, Data) ->
     case round_snapshot(Data) of
         {ok, Snapshot} ->
             prepare_and_start_round(
               RoundEntry, Remaining, Snapshot, TaskId,
-              CorrelationId, RoundId, Data);
+              CorrelationId, RoundId,
+              Data#{continuation_round_entry := RoundEntry});
         {error, Reason} ->
             fail_before_round(Data, Reason)
     end.
@@ -291,12 +309,14 @@ prepare_and_start_round(
   RoundEntry, Remaining, Snapshot, TaskId, CorrelationId, RoundId, Data) ->
     case prepare_round_work(RoundEntry, Snapshot) of
         {ok, Work} ->
+            AdaptiveData = enable_adaptive_events(Work, Data),
             PromptProjection =
                 soma_delegate_prompt:project(
-                  Snapshot, prompt_data(Data)),
-            Budgets = maps:get(budgets, Data),
+                  Snapshot, prompt_data(AdaptiveData)),
+            Budgets = maps:get(budgets, AdaptiveData),
             CommittedPromptTokens =
-                maps:get(prompt_tokens, maps:get(counters, Data), 0),
+                maps:get(
+                  prompt_tokens, maps:get(counters, AdaptiveData), 0),
             case soma_delegate_prompt:preflight(
                    PromptProjection, Budgets, CommittedPromptTokens) of
                 {ok, PromptCall} ->
@@ -305,9 +325,10 @@ prepare_and_start_round(
                           Work, PromptProjection, PromptCall, Budgets),
                     start_round_worker(
                       PromptedWork, Remaining, Snapshot, TaskId,
-                      CorrelationId, RoundId, Data);
+                      CorrelationId, RoundId, AdaptiveData);
                 {error, context_budget_exceeded} ->
-                    start_cleanup(context_budget_projection(), Data)
+                    start_cleanup(
+                      context_budget_projection(), AdaptiveData)
             end;
         {error, invalid_round_sequence} ->
             fail_before_round(Data, invalid_round_sequence)
@@ -699,6 +720,11 @@ merged_summary_status(Status, Status) ->
 merged_summary_status(_PreviousStatus, _Status) ->
     mixed.
 
+advance_after_round(
+  #{status := Status, phase := action, decision := continue,
+    adaptive_event := true}, _RoundId, Data)
+  when Status =:= succeeded; Status =:= failed; Status =:= timeout ->
+    start_round(Data);
 advance_after_round(
   #{status := succeeded, decision := continue}, _RoundId,
   Data = #{round_sequence := [_NextWork | _Remaining]}) ->
@@ -1118,6 +1144,29 @@ configured_tool_policy(RuntimeOptions) ->
         _InvalidPolicy -> #{allowed_tools => []}
     end.
 
+adaptive_round_sequence(RoundSequence) when is_list(RoundSequence) ->
+    lists:any(fun adaptive_round_entry/1, RoundSequence);
+adaptive_round_sequence(_InvalidRoundSequence) ->
+    false.
+
+adaptive_round_entry(Work) when is_map(Work) ->
+    adaptive_round_work(Work);
+adaptive_round_entry(_PreparedOrInvalidEntry) ->
+    false.
+
+enable_adaptive_events(Work, Data) ->
+    case adaptive_round_work(Work) of
+        true -> Data#{adaptive_events := true};
+        false -> Data
+    end.
+
+adaptive_round_work(#{llm := #{provider := openai_compat}}) ->
+    true;
+adaptive_round_work(#{llm := #{directive := proposal}}) ->
+    true;
+adaptive_round_work(_LegacyRoundWork) ->
+    false.
+
 emit_delegate_event(
   EventType, Round, Outcome,
   #{task_id := TaskId, correlation_id := CorrelationId}) ->
@@ -1219,12 +1268,8 @@ context_budget_projection() ->
     #{status => failed,
       result => context_budget_exceeded}.
 
-accounted_prompt_tokens(EstimatedPromptTokens, Budgets) ->
-    case maps:is_key(max_context_tokens, Budgets) orelse
-         maps:is_key(max_total_prompt_tokens, Budgets) of
-        true -> EstimatedPromptTokens;
-        false -> 0
-    end.
+accounted_prompt_tokens(EstimatedPromptTokens, _Budgets) ->
+    EstimatedPromptTokens.
 
 terminal_projection(
   Projection,

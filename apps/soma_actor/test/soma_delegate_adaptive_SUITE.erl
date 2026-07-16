@@ -207,6 +207,10 @@ test_model_action_admission_order_and_state_spine(_Config) ->
                        api_key => <<"test-only-key">>,
                        model => <<"test-model">>,
                        response => Responder},
+                 decision => terminal},
+               #{llm =>
+                     #{directive => success,
+                       output => <<"admission trace complete">>},
                  decision => terminal}]},
     ok = application:set_env(
            soma_actor, delegate_runtime_options, RuntimeOptions),
