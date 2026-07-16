@@ -227,6 +227,10 @@ parse_msg_fields([[Head | _] | _], _Acc) when is_atom(Head) ->
                message => iolist_to_binary(
                    io_lib:format("unknown msg sub-form: '~s'", [Head])),
                line => 0}]};
+parse_msg_fields([[{external_symbol, _Name} | _] | _], _Acc) ->
+    {error, [#{code => unknown_form,
+               message => <<"unknown msg sub-form">>,
+               line => 0}]};
 parse_msg_fields([Other | _], _Acc) ->
     {error, [#{code => unknown_form,
                message => iolist_to_binary(
@@ -533,6 +537,10 @@ parse_proposal_steps([[Head | _] | _], _Acc) when is_atom(Head) ->
                message => iolist_to_binary(
                    io_lib:format("steps child form must be 'step', got '~s'", [Head])),
                line => 0}]};
+parse_proposal_steps([[{external_symbol, _Name} | _] | _], _Acc) ->
+    {error, [#{code => unknown_form,
+               message => <<"steps child form must be 'step'">>,
+               line => 0}]};
 parse_proposal_steps([Other | _], _Acc) ->
     {error, [#{code => unknown_form,
                message => iolist_to_binary(
@@ -579,6 +587,10 @@ parse_proposal_step([[Head | _] | _], _Acc) when is_atom(Head) ->
                        "(expected 'id', 'tool', 'args' or 'timeout_ms')",
                        [Head]
                    )),
+               line => 0}]};
+parse_proposal_step([[{external_symbol, _Name} | _] | _], _Acc) ->
+    {error, [#{code => unknown_form,
+               message => <<"unknown step child form">>,
                line => 0}]};
 parse_proposal_step([Other | _], _Acc) ->
     {error, [#{code => unknown_form,
@@ -682,6 +694,10 @@ parse_ask_fields([[intent, Value] | _Rest], _Acc) ->
     {error, [#{code => malformed_form,
                message => iolist_to_binary(
                    io_lib:format("ask intent must be a string, got: ~p", [Value])),
+               line => 0}]};
+parse_ask_fields([[{external_symbol, _Name} | _] | _Rest], _Acc) ->
+    {error, [#{code => unknown_form,
+               message => <<"unknown ask sub-form">>,
                line => 0}]};
 parse_ask_fields([Other | _Rest], _Acc) ->
     {error, [#{code => unknown_form,
