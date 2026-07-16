@@ -6,7 +6,7 @@
 %% Membership is a plain value comparison (no binary<->atom normalization).
 -module(soma_policy).
 
--export([check/2]).
+-export([check/2, allows_tool/2]).
 
 -type proposal() :: map().
 -type policy() :: map().
@@ -21,16 +21,24 @@ check(#{kind := ask}, _Policy) ->
     allow;
 check(#{kind := actor_message}, _Policy) ->
     allow;
-check(#{kind := run_steps}, #{allowed_tools := all}) ->
-    allow;
-check(#{kind := run_steps} = Proposal, Policy) when not is_map_key(allowed_tools, Policy) ->
-    check(Proposal, Policy#{allowed_tools => all});
-check(#{kind := run_steps, steps := Steps}, #{allowed_tools := Allowed}) ->
+check(#{kind := run_steps, steps := Steps}, Policy) when is_map(Policy) ->
     Tools = [maps:get(tool, Step) || Step <- Steps],
-    case lists:all(fun(Tool) -> lists:member(Tool, Allowed) end, Tools) of
+    case lists:all(fun(Tool) -> allows_tool(Tool, Policy) end, Tools) of
         true ->
             allow;
         false ->
-            Disallowed = [Tool || Tool <- Tools, not lists:member(Tool, Allowed)],
+            Disallowed =
+                [Tool || Tool <- Tools,
+                         not allows_tool(Tool, Policy)],
             {reject, {tools_not_allowed, Disallowed}}
     end.
+
+-spec allows_tool(term(), policy()) -> boolean().
+allows_tool(_Tool, #{allowed_tools := all}) ->
+    true;
+allows_tool(_Tool, Policy) when not is_map_key(allowed_tools, Policy) ->
+    true;
+allows_tool(Tool, #{allowed_tools := Allowed}) when is_list(Allowed) ->
+    lists:member(Tool, Allowed);
+allows_tool(_Tool, _Policy) ->
+    false.

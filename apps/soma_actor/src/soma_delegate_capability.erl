@@ -4,7 +4,25 @@
 %% still resolves in the live registry.
 -module(soma_delegate_capability).
 
--export([check/2]).
+-export([check/2, tool_schemas/2]).
+
+-spec tool_schemas([map()], map()) -> [map()].
+tool_schemas(
+  Catalog,
+  #{tool_policy := ToolPolicy,
+    capability_scope := CapabilityScope})
+  when is_list(Catalog), is_map(ToolPolicy) ->
+    case normalized_scope(CapabilityScope) of
+        {ok, AllowedNames} ->
+            [Schema
+             || Schema = #{name := Tool} <- Catalog,
+                soma_policy:allows_tool(Tool, ToolPolicy),
+                task_allows(Tool, AllowedNames)];
+        error ->
+            []
+    end;
+tool_schemas(_Catalog, _Scope) ->
+    [].
 
 -spec check(map(), map()) -> allow | {reject, term()}.
 check(#{kind := reply}, _CapabilityScope) ->

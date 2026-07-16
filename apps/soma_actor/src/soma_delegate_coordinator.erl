@@ -238,7 +238,8 @@ prepare_and_start_round(
     case prepare_round_work(RoundEntry, Snapshot) of
         {ok, Work} ->
             PromptProjection =
-                soma_delegate_prompt:project(Snapshot, Data),
+                soma_delegate_prompt:project(
+                  Snapshot, prompt_data(Data)),
             PromptedWork =
                 attach_prompt(Work, PromptProjection),
             start_round_worker(
@@ -256,6 +257,17 @@ attach_prompt(Work = #{llm := Llm}, PromptProjection)
                    messages => Messages}};
 attach_prompt(Work, _PromptProjection) ->
     Work.
+
+prompt_data(Data = #{tool_policy := ToolPolicy,
+                     request := Request}) ->
+    CapabilityScope =
+        maps:get(capability_scope, Request, #{tools => []}),
+    ToolSchemas =
+        soma_delegate_capability:tool_schemas(
+          soma_tool_registry:catalog(),
+          #{tool_policy => ToolPolicy,
+            capability_scope => CapabilityScope}),
+    Data#{tool_schemas => ToolSchemas}.
 
 start_round_worker(
   Work, Remaining, Snapshot, TaskId, CorrelationId, RoundId, Data) ->
