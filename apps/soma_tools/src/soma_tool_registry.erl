@@ -16,7 +16,7 @@
 
 %% Pure map API
 -export([register/3, lookup/2, names/1, catalog/1, list_tools/1,
-         builtin_names/0]).
+         builtin_names/0, name_binary/1]).
 
 %% Process API
 -export([start_link/0, register_tool/1, unregister_tool/1, resolve/1,
@@ -33,7 +33,8 @@
 %% Both shapes may additionally carry the optional model-facing half:
 %% `description' (binary) and `params' (a list of param-spec maps). The
 %% catalog is built from those two fields alone.
--type descriptor() :: #{name := atom(),
+-type tool_name() :: atom() | binary().
+-type descriptor() :: #{name := tool_name(),
                         effect := atom(),
                         idempotent := boolean(),
                         timeout_ms := non_neg_integer(),
@@ -41,7 +42,7 @@
                         module := module(),
                         description => binary(),
                         params => [map()]}
-                    | #{name := atom(),
+                    | #{name := tool_name(),
                         effect := atom(),
                         idempotent := boolean(),
                         timeout_ms := non_neg_integer(),
@@ -50,17 +51,18 @@
                         argv := [string() | binary()],
                         description => binary(),
                         params => [map()]}.
--type registry() :: #{atom() => descriptor()}.
--type catalog_entry() :: #{name := atom(),
+-type registry() :: #{tool_name() => descriptor()}.
+-type catalog_entry() :: #{name := tool_name(),
                            description := binary(),
                            params := [map()]}.
--type tool_summary() :: #{name := atom(),
+-type tool_summary() :: #{name := tool_name(),
                           effect := atom(),
                           idempotent := boolean(),
                           adapter := erlang_module | cli,
                           description => binary()}.
 
--export_type([descriptor/0, registry/0, catalog_entry/0, tool_summary/0]).
+-export_type([tool_name/0, descriptor/0, registry/0, catalog_entry/0,
+              tool_summary/0]).
 
 %% The backing modules for the built-in tools. Each one exports
 %% `manifest/0'; the seed is built by normalizing those manifests, so the
@@ -73,20 +75,45 @@
                           soma_tool_text_grep,
                           soma_tool_text_head]).
 
--spec register(registry(), atom(), descriptor()) -> registry().
+-spec register(registry(), tool_name(), descriptor()) -> registry().
 register(Registry, Name, Descriptor) ->
-    Registry#{Name => Descriptor}.
+    Spelling = name_binary(Name),
+    WithoutSameSpelling =
+        maps:filter(
+          fun(RegisteredName, _RegisteredDescriptor) ->
+                  name_binary(RegisteredName) =/= Spelling
+          end,
+          Registry),
+    WithoutSameSpelling#{Name => Descriptor}.
 
--spec lookup(registry(), atom()) -> {ok, descriptor()} | {error, not_found}.
+-spec lookup(registry(), tool_name()) ->
+    {ok, descriptor()} | {error, not_found}.
 lookup(Registry, Name) ->
-    case Registry of
-        #{Name := Descriptor} -> {ok, Descriptor};
-        _ -> {error, not_found}
+    case maps:find(Name, Registry) of
+        {ok, Descriptor} ->
+            {ok, Descriptor};
+        error ->
+            Spelling = name_binary(Name),
+            case [Descriptor
+                  || {RegisteredName, Descriptor} <- maps:to_list(Registry),
+                     name_binary(RegisteredName) =:= Spelling] of
+                [Descriptor | _] -> {ok, Descriptor};
+                [] -> {error, not_found}
+            end
     end.
 
--spec names(registry()) -> [atom()].
+-spec names(registry()) -> [tool_name()].
 names(Registry) ->
     maps:keys(Registry).
+
+%% Canonical external spelling for either supported identity representation.
+%% This is the one conversion used by registry comparisons and direct name
+%% consumers; binaries pass through and atoms are closed internal vocabulary.
+-spec name_binary(tool_name()) -> binary().
+name_binary(Name) when is_atom(Name) ->
+    atom_to_binary(Name, utf8);
+name_binary(Name) when is_binary(Name) ->
+    Name.
 
 %% @doc The names of the built-in tools, derived from the same
 %% `?BUILTIN_MODULES' seed list `seed/0' builds the registry from — one
@@ -115,7 +142,10 @@ catalog(Registry) ->
           end,
           [],
           Registry),
-    lists:sort(fun(#{name := A}, #{name := B}) -> A =< B end, Entries).
+    lists:sort(fun(#{name := A}, #{name := B}) ->
+                       name_binary(A) =< name_binary(B)
+               end,
+               Entries).
 
 %% @doc The operator-facing list projection of a registry map: one entry per
 %% live descriptor — every tool appears, unlike `catalog/1'. Each entry is
@@ -144,7 +174,10 @@ list_tools(Registry) ->
           end,
           [],
           Registry),
-    lists:sort(fun(#{name := A}, #{name := B}) -> A =< B end, Entries).
+    lists:sort(fun(#{name := A}, #{name := B}) ->
+                       name_binary(A) =< name_binary(B)
+               end,
+               Entries).
 
 %%% Process API
 
@@ -163,17 +196,18 @@ register_tool(Manifest) ->
 %% @doc Remove a tool name from the running registry, so it no longer
 %% resolves. Admission (only a live config tool may be removed — never a
 %% built-in) is the caller's gate; this call only owns the live removal.
--spec unregister_tool(atom()) -> ok.
+-spec unregister_tool(tool_name()) -> ok.
 unregister_tool(Name) ->
     gen_server:call(?MODULE, {unregister_tool, Name}).
 
 %% @doc Resolve a tool name to its module through the running registry.
--spec resolve(atom()) -> {ok, module()} | {error, not_found}.
+-spec resolve(tool_name()) -> {ok, module()} | {error, not_found}.
 resolve(Name) ->
     gen_server:call(?MODULE, {resolve, Name}).
 
 %% @doc Resolve a tool name to its full descriptor through the running registry.
--spec resolve_descriptor(atom()) -> {ok, descriptor()} | {error, not_found}.
+-spec resolve_descriptor(tool_name()) ->
+    {ok, descriptor()} | {error, not_found}.
 resolve_descriptor(Name) ->
     gen_server:call(?MODULE, {resolve_descriptor, Name}).
 
@@ -218,7 +252,13 @@ handle_call({register_tool, Manifest}, _From, Registry) ->
             {reply, Error, Registry}
     end;
 handle_call({unregister_tool, Name}, _From, Registry) ->
-    {reply, ok, maps:remove(Name, Registry)};
+    Spelling = name_binary(Name),
+    Remaining = maps:filter(
+                  fun(RegisteredName, _Descriptor) ->
+                          name_binary(RegisteredName) =/= Spelling
+                  end,
+                  Registry),
+    {reply, ok, Remaining};
 handle_call({resolve, Name}, _From, Registry) ->
     %% `resolve/1' keeps its bare-module shape by reading `module' out of the
     %% stored descriptor, so the seed map holds descriptors as the one source

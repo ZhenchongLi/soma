@@ -15,9 +15,9 @@
 %% directory returns the empty result with no log and no registry call, so
 %% boot stays unchanged.
 %%
-%% Atom policy: the tool name arrives as a string and becomes an atom here —
-%% at boot only, from the user's own trusted local files, bounded by file
-%% count. Nothing on the wire mints atoms.
+%% Name policy: the tool name arrives as a binary string and stays binary
+%% through manifest normalization and registry storage. External config never
+%% mints atoms.
 %%
 %% The runtime never imports this module; the one-way dependency holds.
 -module(soma_tool_config).
@@ -32,7 +32,8 @@
                     timeout_ms => 30000}).
 
 -type skip_entry() :: #{file := file:filename(), reason := term()}.
--type result() :: #{registered := [atom()], skipped := [skip_entry()]}.
+-type result() :: #{registered := [soma_tool_registry:tool_name()],
+                    skipped := [skip_entry()]}.
 
 %% @doc Load every `Dir/*.lisp' tool file, sorted by name, registering each
 %% valid one and skipping each broken one with a named diagnostic.
@@ -96,19 +97,27 @@ compile_and_register(Form, Registered) ->
 %% check is per-load (the fold accumulator), not against the live registry —
 %% re-loading a directory must keep working.
 register_manifest(#{name := Name} = Manifest, Registered) ->
-    case lists:member(Name, soma_tool_registry:builtin_names()) of
-        true ->
-            {error, {reserved_name, Name}};
-        false ->
-            case lists:member(Name, Registered) of
-                true ->
-                    {error, {duplicate_name, Name}};
-                false ->
+    case matching_name(Name, soma_tool_registry:builtin_names()) of
+        {ok, BuiltinName} ->
+            {error, {reserved_name, BuiltinName}};
+        error ->
+            case matching_name(Name, Registered) of
+                {ok, RegisteredName} ->
+                    {error, {duplicate_name, RegisteredName}};
+                error ->
                     case soma_tool_registry:register_tool(Manifest) of
                         ok -> {ok, Name};
                         {error, _} = Error -> Error
                     end
             end
+    end.
+
+matching_name(Name, Names) ->
+    Spelling = soma_tool_registry:name_binary(Name),
+    case [KnownName || KnownName <- Names,
+                       soma_tool_registry:name_binary(KnownName) =:= Spelling] of
+        [KnownName | _] -> {ok, KnownName};
+        [] -> error
     end.
 
 %% @doc Compile a parsed `(tool ...)' form into the manifest map
@@ -227,16 +236,15 @@ compile_param_required(Required) ->
 
 %% Assemble the manifest: require a name, gate the adapter to `cli' (config
 %% files cannot inject modules — `(adapter erlang_module)' must never fall
-%% through to normalize), fill the conservative defaults, and mint the name
-%% atom (boot-only, trusted local file).
+%% through to normalize), fill the conservative defaults, and preserve the
+%% external name as a binary for the manifest validator and registry.
 build_manifest(Fields) ->
     case Fields of
         #{name := NameBin} ->
             case maps:get(adapter, Fields, cli) of
                 cli ->
-                    Name = binary_to_atom(NameBin, utf8),
                     Manifest = maps:merge(?DEFAULTS,
-                                          Fields#{name => Name,
+                                          Fields#{name => NameBin,
                                                   adapter => cli}),
                     {ok, Manifest};
                 Other ->

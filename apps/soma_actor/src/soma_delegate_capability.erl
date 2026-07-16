@@ -85,7 +85,7 @@ task_allows(Tool, AllowedNames) ->
         error -> false
     end.
 
-live_descriptor(Tool) when is_atom(Tool) ->
+live_descriptor(Tool) when is_atom(Tool); is_binary(Tool) ->
     soma_tool_registry:resolve_descriptor(Tool);
 live_descriptor(_NonCanonicalTool) ->
     {error, not_found}.
