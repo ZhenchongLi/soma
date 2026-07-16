@@ -21,6 +21,7 @@
 -export([test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded/1]).
 -export([test_terminal_projection_has_exact_public_contract/1]).
 -export([test_review_regressions_are_bounded_and_safety_preserving/1]).
+-export([test_review_actual_dispatch_usage_and_observation_regressions/1]).
 -export([invoke/2]).
 
 all() ->
@@ -40,7 +41,8 @@ all() ->
      test_maximum_round_prompts_obey_cumulative_input_bound,
      test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded,
      test_terminal_projection_has_exact_public_contract,
-     test_review_regressions_are_bounded_and_safety_preserving].
+     test_review_regressions_are_bounded_and_safety_preserving,
+     test_review_actual_dispatch_usage_and_observation_regressions].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -1320,6 +1322,249 @@ test_review_regressions_are_bounded_and_safety_preserving(_Config) ->
     assert_review_malformed_map_emits_invalid_decision(),
     assert_review_coordinator_loss_preserves_safety(),
     assert_review_large_provider_usage_preserves_result().
+
+test_review_actual_dispatch_usage_and_observation_regressions(_Config) ->
+    assert_review_ledgers_follow_actual_dispatch_and_terminal_facts(),
+    assert_review_valid_usage_aggregate_survives_public_projection(),
+    assert_review_compatible_observation_budget_commits_completed_action().
+
+assert_review_ledgers_follow_actual_dispatch_and_terminal_facts() ->
+    FirstTool = delegate_review_actual_state_one,
+    SecondTool = delegate_review_actual_state_two,
+    ToolNames = [FirstTool, SecondTool],
+    [ok = soma_tool_registry:register_tool(
+            #{name => ToolName,
+              effect => state,
+              idempotent => false,
+              timeout_ms => 10000,
+              adapter => erlang_module,
+              module => ?MODULE,
+              description =>
+                  <<"Exercises reviewed actual-dispatch safety facts.">>})
+     || ToolName <- ToolNames],
+    try
+        PartialCorrelationId =
+            <<"delegate-review-actual-partial-correlation">>,
+        PartialAction =
+            #{kind => run_steps,
+              steps =>
+                  [#{id => review_actual_first,
+                     tool => FirstTool,
+                     args => #{mode => <<"error">>}},
+                   #{id => review_actual_never_started,
+                     tool => SecondTool,
+                     args => #{value => <<"must not run">>}}]},
+        ok = application:set_env(
+               soma_actor, delegate_runtime_options,
+               #{tool_policy => #{allowed_tools => ToolNames},
+                 round_sequence =>
+                     [#{llm =>
+                            #{directive => proposal,
+                              output => PartialAction}},
+                      #{llm =>
+                            #{directive => proposal,
+                              output =>
+                                  #{kind => reply,
+                                    text => <<"failure observed">>}}}]}),
+        PartialRequest =
+            #{request_id => <<"delegate-review-actual-partial">>,
+              correlation_id => PartialCorrelationId,
+              objective =>
+                  #{goal => <<"ledger only the state call that ran">>},
+              output_contract => #{format => <<"text">>},
+              capability_scope =>
+                  #{tools => [atom_to_binary(ToolName, utf8)
+                              || ToolName <- ToolNames]},
+              artifacts => []},
+        {ok, #{task_id := PartialTaskId}} =
+            soma_delegate:submit(PartialRequest),
+        PartialTerminal =
+            wait_for_terminal_projection(PartialTaskId, 200),
+        PartialEvents =
+            soma_event_store:by_correlation(
+              event_store_pid(), PartialCorrelationId),
+        ?assertEqual(
+           [review_actual_first],
+           [StepId
+            || #{event_type := <<"tool.started">>,
+                 step_id := StepId} <- PartialEvents]),
+        PartialMutations = maps:get(mutations, PartialTerminal),
+        ?assertEqual(1, length(PartialMutations)),
+        [PartialMutation] = PartialMutations,
+        ?assertEqual(review_actual_first,
+                     maps:get(step_id, PartialMutation)),
+        ?assertEqual(FirstTool, maps:get(tool, PartialMutation)),
+        ?assertEqual(failed, maps:get(outcome, PartialMutation)),
+        ?assertEqual([], maps:get(unknown_outcomes, PartialTerminal)),
+        wait_for_no_coordinators(100),
+
+        CancelCorrelationId =
+            <<"delegate-review-actual-cancel-correlation">>,
+        CancelAction =
+            #{kind => run_steps,
+              steps =>
+                  [#{id => review_actual_cancelled,
+                     tool => FirstTool,
+                     args => #{mode => <<"timeout">>},
+                     timeout_ms => 10000}]},
+        ok = application:set_env(
+               soma_actor, delegate_runtime_options,
+               #{tool_policy => #{allowed_tools => [FirstTool]},
+                 round_sequence =>
+                     [#{llm =>
+                            #{directive => proposal,
+                              output => CancelAction},
+                        round_timeout_ms => 60000}]}),
+        CancelRequest =
+            #{request_id => <<"delegate-review-actual-cancel">>,
+              correlation_id => CancelCorrelationId,
+              objective =>
+                  #{goal => <<"retain an unresolved started mutation">>},
+              output_contract => #{format => <<"text">>},
+              capability_scope =>
+                  #{tools => [atom_to_binary(FirstTool, utf8)]},
+              artifacts => []},
+        {ok, #{task_id := CancelTaskId}} =
+            soma_delegate:submit(CancelRequest),
+        CancelToolCallPid =
+            wait_for_tool_call_pid(CancelCorrelationId, 200),
+        {ok, CancelTerminal} = soma_delegate:cancel(CancelTaskId),
+        ?assertEqual(in_doubt, maps:get(status, CancelTerminal)),
+        [CancelMutation] = maps:get(mutations, CancelTerminal),
+        [CancelUnknown] = maps:get(unknown_outcomes, CancelTerminal),
+        ?assertEqual(review_actual_cancelled,
+                     maps:get(step_id, CancelMutation)),
+        ?assertEqual(unknown, maps:get(outcome, CancelMutation)),
+        ?assertEqual(unknown, maps:get(outcome, CancelUnknown)),
+        ?assertEqual(
+           maps:get(invocation_id, CancelMutation),
+           maps:get(
+             invocation_id, maps:get(invocation, CancelUnknown))),
+        review_wait_for_process_dead(CancelToolCallPid, 200),
+        wait_for_no_coordinators(100)
+    after
+        [ok = soma_tool_registry:unregister_tool(ToolName)
+         || ToolName <- ToolNames]
+    end.
+
+assert_review_valid_usage_aggregate_survives_public_projection() ->
+    PromptTokensPerCall = 3000000000,
+    Responses =
+        [<<"(run-steps (step (id review_usage_action) (tool echo) "
+           "(args (value \"usage\"))))">>,
+         <<"(reply (text \"usage preserved\"))">>],
+    RoundSequence =
+        [#{llm =>
+               #{provider => openai_compat,
+                 base_url => <<"api.example.test/v1">>,
+                 api_key => <<"test-only-key">>,
+                 model => <<"test-model">>,
+                 response =>
+                     fun(_CallOpts) ->
+                             terminal_response(
+                               Response, PromptTokensPerCall)
+                     end}}
+         || Response <- Responses],
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [echo]},
+             round_sequence => RoundSequence}),
+    Request =
+        #{request_id => <<"delegate-review-usage-aggregate">>,
+          correlation_id =>
+              <<"delegate-review-usage-aggregate-correlation">>,
+          objective => #{goal => <<"retain valid aggregate usage">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => [<<"echo">>]},
+          artifacts => [],
+          budgets =>
+              #{max_rounds => 2,
+                max_llm_calls => 2,
+                max_tool_calls => 1,
+                max_total_prompt_tokens => 7000000000}},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Terminal = wait_for_terminal_projection(TaskId, 200),
+    ?assertEqual(succeeded, maps:get(status, Terminal)),
+    ?assertEqual(<<"usage preserved">>, maps:get(result, Terminal)),
+    ?assertEqual(
+       #{rounds => 2,
+         llm_calls => 2,
+         tool_calls => 1,
+         prompt_tokens => 6000000000},
+       maps:get(usage, Terminal)),
+    wait_for_no_coordinators(100).
+
+assert_review_compatible_observation_budget_commits_completed_action() ->
+    LargeOutput = binary:copy(<<"x">>, 17000),
+    ActionSource =
+        iolist_to_binary(
+          [<<"(run-steps (step (id review_large_observation) "
+             "(tool echo) (args (value ">>,
+           $\",
+           LargeOutput,
+           <<"\"))))">>]),
+    TestPid = self(),
+    RoundSequence =
+        [#{llm =>
+               #{provider => openai_compat,
+                 base_url => <<"api.example.test/v1">>,
+                 api_key => <<"test-only-key">>,
+                 model => <<"test-model">>,
+                 response =>
+                     fun(_CallOpts) -> terminal_response(ActionSource) end}},
+         #{llm =>
+               #{provider => openai_compat,
+                 base_url => <<"api.example.test/v1">>,
+                 api_key => <<"test-only-key">>,
+                 model => <<"test-model">>,
+                 response =>
+                     fun(CallOpts) ->
+                             TestPid !
+                                 {delegate_review_large_observation_prompt,
+                                  maps:get(
+                                    prompt_projection, CallOpts, missing)},
+                             terminal_response(
+                               <<"(reply (text \"large observation kept\"))">>)
+                     end}}],
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [echo]},
+             round_sequence => RoundSequence}),
+    CorrelationId =
+        <<"delegate-review-large-observation-correlation">>,
+    Request =
+        #{request_id => <<"delegate-review-large-observation">>,
+          correlation_id => CorrelationId,
+          objective => #{goal => <<"commit the completed large action">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => [<<"echo">>]},
+          artifacts => [],
+          budgets => #{max_observation_bytes => 20000}},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    Terminal = wait_for_terminal_projection(TaskId, 200),
+    Prompt = receive_review_large_observation_prompt(),
+    RecentRounds = maps:get(recent_rounds, Prompt),
+    ?assertEqual(1, length(RecentRounds)),
+    [#{round := 1, observation := #{handle := Handle}}] = RecentRounds,
+    [#{handle := Handle}] = maps:get(artifacts, Terminal),
+    [#{payload := ActionPayload}] =
+        [Event
+         || #{event_type := <<"delegate.action.completed">>} = Event <-
+                soma_event_store:by_correlation(
+                  event_store_pid(), CorrelationId)],
+    ?assertEqual(#{handle => Handle},
+                 maps:get(observation_ref, ActionPayload)),
+    ?assertEqual(succeeded, maps:get(status, Terminal)),
+    ?assertEqual(<<"large observation kept">>, maps:get(result, Terminal)),
+    wait_for_no_coordinators(100).
+
+receive_review_large_observation_prompt() ->
+    receive
+        {delegate_review_large_observation_prompt, Projection} ->
+            Projection
+    after 2000 ->
+        ct:fail(delegate_review_large_observation_prompt_missing)
+    end.
 
 observe_terminal_projection_case(
   {ExpectedStatus, RuntimeOptions0, Trigger},
