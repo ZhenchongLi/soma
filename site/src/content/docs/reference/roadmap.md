@@ -42,6 +42,10 @@ CLI     single-user soma daemon + CLI clients            [done — packaged `som
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
 tools   shipped tool slices                              [done — T.1 manifest v2 + catalog/0; T.2 config tools; catalog-fed planning prompt; T.4 ask_actor]
         live config-tool management                       [done — soma tool register + soma tool list + soma tool remove]
+shell   agent-shell exploration (AS.1-AS.4)               [done — text tools, (explore ...) form, bounded reader-only loop, config/CLI surface]
+service versioned soma.run runtime service (RS.1a-d)      [done — invoke/status/watch/cancel over service.sock]
+delegate soma.delegate agent-as-tool (AS.5a + AS.5)        [done — per-task coordinator, round workers, leases, adaptive decision loop]
+hardening parser atom hygiene                              [done — safe reader default, binary config-tool identities, fixed diagnostics]
 
 Remaining tool slices:
 T.3     memory as tools                                   [deferred — not scheduled]

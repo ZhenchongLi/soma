@@ -104,6 +104,25 @@ release node-control script is `bin/somad`.
 
 ![soma_actor message-driven workflow: messages enter the actor, LLM calls produce proposals, policy gates execution, approved work starts runs or actor messages, and the event stream ties the whole result trail together.](docs/diagrams/soma-actor-flow.svg)
 
+**`soma_service`** (`gen_server`) is the versioned runtime-service owner for
+upstream agents: it normalizes `(invoke ...)` envelopes, deduplicates by
+caller request id (rebuilt from the durable trail across restarts), admits
+steps through the policy gate, runs them through the same owned
+`soma_run -> soma_tool_call` path with no LLM anywhere, and answers
+`status` / `result` / `watch` / `cancel` — with artifact-backed large results,
+`event_id`-cursor event pages, and an honest `in_doubt` state for interrupted
+non-idempotent work. A config-gated Unix-socket ingress (`service.sock`)
+exposes the same contract to external processes; its compatibility matrix is
+[docs/service-contract.md](docs/service-contract.md).
+
+**`soma.delegate`** is the bounded agent-as-tool layer: a per-task
+`soma_delegate_coordinator` owns cross-round state (context checkpoints,
+budgets, mutation and unknown-outcome ledgers, task-scoped leases) while
+disposable round workers isolate each LLM/action round. Every model-selected
+action passes normalize -> policy -> capability admission before it reaches
+the runtime spine, observations are bounded (with artifact overflow), and
+provider usage is committed to the coordinator the moment a call completes.
+
 ## Quick start
 
 Use the packaged `soma` command. It speaks Lisp at the edge. `run`, `ask`,
@@ -255,6 +274,22 @@ proof→test map (a `cli` tool succeeds through the real layers, a hanging or
 cancelled `cli` run leaves no live external process, a CLI failure fails the run
 not the session, …) is **[docs/contracts/v0.2-test-contract.md](docs/contracts/v0.2-test-contract.md)**.
 
+- **An optional exploration mode.** With `explore => true` (or `[llm] explore
+  = true` in `~/.soma/config`), `soma ask` runs a bounded reader-only loop —
+  the model requests `(explore ...)` mini-runs, reads byte-capped
+  observations, then answers with a terminal proposal through the unchanged
+  normalize/policy/budget path. Round budgets default to 5 rounds and 16384
+  observation bytes; `explore.round.*` events ride the correlation trail.
+- **A versioned runtime service.** `soma_service` gives an upstream agent
+  durable request identity (idempotent `invoke`, typed conflicts), monotonic
+  lifecycle reads incl. `in_doubt`, artifact-backed results, resumable
+  `watch` cursors, and idempotent `cancel` — over the BEAM API or the
+  config-gated `service.sock` ingress. Wire identifiers are history-free:
+  fresh symbols never intern atoms.
+- **A bounded delegate loop.** `soma.delegate` runs multi-round, policy-gated
+  tool work (state tools included, never retried implicitly) beneath an
+  upstream agent that keeps the product conversation and final answer.
+
 ## Tools
 
 A tool is a behaviour with `describe/0` and `invoke/2`; its spec declares an
@@ -325,6 +360,10 @@ release artifacts.
 - **[docs/usage.md](docs/usage.md)** — user manual: getting the `soma` command,
   running task files, managing task ids, tracing, cancellation, model
   configuration, durable events, and troubleshooting.
+- **[docs/service-contract.md](docs/service-contract.md)** — the versioned
+  runtime-service compatibility matrix: request/response forms, typed errors
+  and statuses, identifier semantics, cursor resume, size limits, and the
+  deprecation rule.
 - **[docs/tool-manifest.md](docs/tool-manifest.md)** — tool manifest contract:
   the shape of a tool entry, which adapter runs it, and the cli execution
   protocol.
