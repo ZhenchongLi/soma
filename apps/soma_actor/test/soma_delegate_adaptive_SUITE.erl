@@ -82,6 +82,16 @@ test_request_boundary_normalizes_allowlist_and_rejects_forbidden_inputs(
                 [#{pid => self(),
                    reference => make_ref(),
                    callback => fun() -> ok end}]}},
+         {invalid_budgets_shape,
+          #{budgets => []}},
+         {invalid_capability_shape,
+          #{capability_scope => []}},
+         {invalid_artifacts_shape,
+          #{artifacts => #{handle => <<"artifact-1">>}}},
+         {invalid_resource_handles_shape,
+          #{resource_handles => []}},
+         {invalid_artifact_handle_shape,
+          #{artifacts => [#{handle => []}]}},
          {round_sequence,
           #{round_sequence => []}}],
     Cases =
@@ -271,6 +281,11 @@ test_denied_and_malformed_actions_stop_before_run(_Config) ->
           #{allowed_tools => [echo]},
           #{tools => []},
           Action,
+          rejected},
+         {model_rejected,
+          #{allowed_tools => [echo]},
+          #{tools => []},
+          #{kind => reject, reason => <<"model declined the task">>},
           rejected},
          {malformed_action,
           #{allowed_tools => [echo]},
@@ -513,24 +528,21 @@ test_round_llm_and_tool_budgets_stop_before_child_start_and_reset(
             max_llm_calls => 10,
             max_tool_calls => 10},
           terminal,
-          #{rounds => 1, llm_calls => 1,
-            tool_calls => 1, prompt_tokens => 0},
+          #{rounds => 1, llm_calls => 1, tool_calls => 1},
           #{round_workers => 1, llm_workers => 1, runs => 1}},
          {max_llm_calls,
           #{max_rounds => 10,
             max_llm_calls => 1,
             max_tool_calls => 10},
           terminal,
-          #{rounds => 2, llm_calls => 1,
-            tool_calls => 1, prompt_tokens => 0},
+          #{rounds => 2, llm_calls => 1, tool_calls => 1},
           #{round_workers => 2, llm_workers => 1, runs => 1}},
          {max_tool_calls,
           #{max_rounds => 10,
             max_llm_calls => 10,
             max_tool_calls => 1},
           action,
-          #{rounds => 2, llm_calls => 2,
-            tool_calls => 1, prompt_tokens => 0},
+          #{rounds => 2, llm_calls => 2, tool_calls => 1},
           #{round_workers => 2, llm_workers => 2, runs => 1}}],
     ActualCases = [observe_budget_case(Case) || Case <- Cases],
     ExpectedCases =
@@ -538,6 +550,7 @@ test_round_llm_and_tool_budgets_stop_before_child_start_and_reset(
            status => failed,
            budget_data => {budget_exceeded, Limit},
            usage => ExpectedUsage,
+           prompt_tokens_match_estimates => true,
            started_children => ExpectedStarts,
            llm_workers_dead => true,
            live_round_workers => 0,
@@ -1175,7 +1188,17 @@ test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded(
                       unknown_outcome_state => []}],
                bounded => true,
                scrubbed => true}],
-        ?assertEqual(Expected, Actual)
+        ?assertEqual(Expected, Actual),
+
+        PreflightCorrelationId =
+            <<"delegate-adaptive-events-preflight-correlation">>,
+        PreflightTerminalFields =
+            observe_preflight_terminal_event(PreflightCorrelationId),
+        ?assertEqual(
+           #{status => failed,
+             mutation_state => [],
+             unknown_outcome_state => []},
+           PreflightTerminalFields)
     after
         erlang:port_close(Port),
         ok = soma_tool_registry:unregister_tool(ToolName)
@@ -1386,6 +1409,40 @@ terminal_usage_is_non_negative(Usage) when is_map(Usage) ->
       maps:values(Usage));
 terminal_usage_is_non_negative(_MissingOrInvalid) ->
     false.
+
+observe_preflight_terminal_event(CorrelationId) ->
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{round_sequence =>
+                 [#{llm =>
+                        #{provider => openai_compat,
+                          base_url => <<"api.example.test/v1">>,
+                          api_key => <<"test-only-key">>,
+                          model => <<"test-model">>,
+                          response =>
+                              fun(_CallOpts) ->
+                                      terminal_response(
+                                        <<"must not start">>)
+                              end}}]}),
+    Request =
+        #{request_id => <<"delegate-adaptive-events-preflight">>,
+          correlation_id => CorrelationId,
+          objective => #{goal => <<"fail before the first model child">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => #{tools => []},
+          artifacts => [],
+          budgets => #{max_context_tokens => 0}},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    #{status := failed, result := context_budget_exceeded} =
+        wait_for_terminal_projection(TaskId, 100),
+    Events =
+        soma_event_store:by_correlation(
+          event_store_pid(), CorrelationId),
+    [#{payload := Payload}] =
+        [Event || #{event_type := <<"delegate.task.terminal">>} = Event
+                      <- Events],
+    maps:with(
+      [status, mutation_state, unknown_outcome_state], Payload).
 
 adaptive_event_observation(
   {CaseName, EventType}, Events, Forbidden) ->
@@ -1745,8 +1802,13 @@ observe_budget_case(
     TestPid = self(),
     Suffix = atom_to_binary(Limit, utf8),
     Responses =
-        [budget_action_response(1),
-         budget_second_response(SecondDecision)],
+        case Limit of
+            max_rounds ->
+                [budget_action_response(1)];
+            _OtherLimit ->
+                [budget_action_response(1),
+                 budget_second_response(SecondDecision)]
+        end,
     RoundSequence =
         [#{llm =>
                #{provider => openai_compat,
@@ -1754,10 +1816,11 @@ observe_budget_case(
                  api_key => <<"test-only-key">>,
                  model => <<"test-model">>,
                  response =>
-                     fun(_CallOpts) ->
+                     fun(CallOpts) ->
                              TestPid !
                                  {delegate_budget_llm_started,
-                                  Limit, Round, self()},
+                                  Limit, Round, self(),
+                                  rendered_prompt_tokens(CallOpts)},
                              terminal_response(Response)
                      end}}
          || {Round, Response} <- lists:enumerate(Responses)],
@@ -1779,7 +1842,11 @@ observe_budget_case(
     {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
     Terminal = wait_for_terminal_projection(TaskId, 100),
     wait_for_no_coordinators(100),
-    LlmWorkers = collect_budget_llm_workers(Limit, []),
+    LlmStarts = collect_budget_llm_workers(Limit, []),
+    LlmWorkers = [Pid || {_Round, Pid, _Estimate} <- LlmStarts],
+    PromptEstimates =
+        [Estimate || {_Round, _Pid, Estimate} <- LlmStarts],
+    Usage = maps:get(usage, Terminal, missing),
     Events =
         soma_event_store:by_correlation(
           event_store_pid(), CorrelationId),
@@ -1787,7 +1854,10 @@ observe_budget_case(
     #{limit => Limit,
       status => maps:get(status, Terminal),
       budget_data => maps:get(result, Terminal, missing),
-      usage => maps:get(usage, Terminal, missing),
+      usage => maps:remove(prompt_tokens, Usage),
+      prompt_tokens_match_estimates =>
+          maps:get(prompt_tokens, Usage, missing) =:=
+              lists:sum(PromptEstimates),
       started_children =>
           #{round_workers =>
                 event_type_count(
@@ -2113,12 +2183,20 @@ budget_second_response(action) ->
 
 collect_budget_llm_workers(Limit, Acc) ->
     receive
-        {delegate_budget_llm_started, Limit, Round, WorkerPid} ->
+        {delegate_budget_llm_started,
+         Limit, Round, WorkerPid, EstimatedPromptTokens} ->
             collect_budget_llm_workers(
-              Limit, [{Round, WorkerPid} | Acc])
+              Limit,
+              [{Round, WorkerPid, EstimatedPromptTokens} | Acc])
     after 100 ->
-        [WorkerPid || {_Round, WorkerPid} <- lists:keysort(1, Acc)]
+        lists:keysort(1, Acc)
     end.
+
+rendered_prompt_tokens(CallOpts) ->
+    lists:sum(
+      [byte_size(Content)
+       || #{content := Content} <- maps:get(messages, CallOpts, []),
+          is_binary(Content)]).
 
 event_type_count(EventType, Events) ->
     length(
