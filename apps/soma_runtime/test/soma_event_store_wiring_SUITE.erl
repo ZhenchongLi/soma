@@ -55,6 +55,9 @@ test_unset_env_store_is_in_memory_writes_no_file(Config) ->
     Before = list_dir(TmpDir),
 
     StorePid = store_child(),
+    %% Runtime boot gives the store a stable name for finite owner lookups while
+    %% preserving the existing pid-taking event-store API.
+    ?assertEqual(StorePid, whereis(soma_runtime_event_store)),
     ok = soma_event_store:append(StorePid, #{run_id => run_a,
                                              session_id => sess_a,
                                              correlation_id => corr_a,
@@ -78,6 +81,7 @@ test_set_env_store_persists_append_to_log(Config) ->
     Path = ?config(log_path, Config),
 
     StorePid = store_child(),
+    ?assertEqual(StorePid, whereis(soma_runtime_event_store)),
     ok = soma_event_store:append(StorePid, #{run_id => run_a,
                                             session_id => sess_a,
                                             correlation_id => corr_a,
@@ -94,31 +98,32 @@ test_set_env_store_persists_append_to_log(Config) ->
 
     ?assertEqual(Normalized, FromDisk).
 
-%% Criterion 3: with `event_store_log' unset, `soma_sup' boots its four children
-%% in start order `[soma_event_store, soma_tool_registry, soma_session_sup,
-%% soma_run_sup]' with `soma_event_store' first.
+%% Criterion 3: with `event_store_log' unset, `soma_sup' boots its five children
+%% in start order `[soma_event_store, soma_tool_registry, soma_run_index,
+%% soma_session_sup, soma_run_sup]' with the named store first and the live RunId
+%% index before the dynamic run supervisor.
 %%
 %% `supervisor:which_children/1' returns children in the *reverse* of their start
 %% order, so the case reverses that list to recover start order before asserting.
 test_unset_env_boot_order(_Config) ->
     Children = supervisor:which_children(soma_sup),
     StartOrder = [Id || {Id, _Pid, _Type, _Mods} <- lists:reverse(Children)],
-    ?assertEqual([soma_event_store, soma_tool_registry,
+    ?assertEqual([soma_event_store, soma_tool_registry, soma_run_index,
                   soma_session_sup, soma_run_sup],
                  StartOrder).
 
 %% Criterion 4: with `event_store_log' set to a path, `soma_sup' still boots the
-%% same four children in the same start order `[soma_event_store,
-%% soma_tool_registry, soma_session_sup, soma_run_sup]' with `soma_event_store'
-%% first. The persistent branch changes only the store child's `start' tuple, not
-%% the child set or its order.
+%% same five children in the same start order `[soma_event_store,
+%% soma_tool_registry, soma_run_index, soma_session_sup, soma_run_sup]' with
+%% `soma_event_store' first. The persistent branch changes only the store
+%% child's start options, not the child set or its order.
 %%
 %% Like Criterion 3, this reverses `which_children/1' to recover start order
 %% before asserting (the supervisor reports children in reverse start order).
 test_set_env_boot_order(_Config) ->
     Children = supervisor:which_children(soma_sup),
     StartOrder = [Id || {Id, _Pid, _Type, _Mods} <- lists:reverse(Children)],
-    ?assertEqual([soma_event_store, soma_tool_registry,
+    ?assertEqual([soma_event_store, soma_tool_registry, soma_run_index,
                   soma_session_sup, soma_run_sup],
                  StartOrder).
 

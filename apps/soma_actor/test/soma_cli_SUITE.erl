@@ -11,6 +11,7 @@
 -export([test_trace_prints_reply_exit_zero/1]).
 -export([test_status_prints_reply_exit_zero/1]).
 -export([test_cancel_sends_cancel_request_prints_reply_exit_zero/1]).
+-export([test_cancel_error_reply_exits_nonzero/1]).
 -export([test_run_detach_sends_detach_marker/1]).
 -export([test_run_task_file_detach_returns_accepted/1]).
 -export([test_ask_detach_sends_detach_marker/1]).
@@ -25,6 +26,7 @@ all() ->
      test_trace_prints_reply_exit_zero,
      test_status_prints_reply_exit_zero,
      test_cancel_sends_cancel_request_prints_reply_exit_zero,
+     test_cancel_error_reply_exits_nonzero,
      test_run_detach_sends_detach_marker,
      test_run_task_file_detach_returns_accepted,
      test_ask_detach_sends_detach_marker,
@@ -313,6 +315,24 @@ test_cancel_sends_cancel_request_prints_reply_exit_zero(Config) ->
     match = re:run(Printed, TaskPattern, [{capture, none}]),
     match = re:run(Printed, CorrPattern, [{capture, none}]),
     0 = Exit.
+
+test_cancel_error_reply_exits_nonzero(Config) ->
+    Path = socket_path(Config),
+    Capture = soma_cli_request_capture:start(
+                Path,
+                <<"(result (status error) "
+                  "(error cancel-intent-not-persisted))">>),
+    ct:capture_start(),
+    Exit = try soma_cli:cancel(
+                 #{task_id => <<"task-unconfirmed">>, socket => Path})
+           after ct:capture_stop()
+           end,
+    Printed = iolist_to_binary(ct:capture_get()),
+    Request = soma_cli_request_capture:request(Capture),
+    1 = Exit,
+    match = re:run(Printed, "cancel-intent-not-persisted",
+                   [{capture, none}]),
+    <<"(cancel \"task-unconfirmed\")">> = Request.
 
 %% Criterion #16 (CLI.4): `soma_cli:run/1' with `detach => true' sends a request
 %% carrying the literal `(detach)' marker. The capture helper records only the

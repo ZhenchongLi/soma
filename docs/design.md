@@ -45,6 +45,7 @@ flowchart TD
         sup["soma_sup"]
         store["soma_event_store<br/>memory or disk_log"]
         registry["soma_tool_registry<br/>normalized descriptors"]
+        run_index["soma_run_index<br/>live RunId ownership fence"]
         session_sup["soma_session_sup"]
         session["soma_agent_session<br/>long-lived gen_server"]
         run_sup["soma_run_sup"]
@@ -52,8 +53,10 @@ flowchart TD
         tool_call["soma_tool_call<br/>one invocation"]
         sup --> store
         sup --> registry
+        sup --> run_index
         sup --> session_sup --> session
         sup --> run_sup --> run --> tool_call
+        run -. atomic claim .-> run_index
     end
 
     cli_child["external OS process<br/>for cli tools"]
@@ -85,6 +88,12 @@ Core boundaries:
   tools.
 - `soma_run` owns one execution attempt: step cursor, prior outputs, active
   worker, timers, cancellation, resume metadata, and event emission.
+- `soma_run_index` owns the one-live-pid-per-RunId mapping. A run claims before
+  journalling or executing, and a monitor releases the claim only after that
+  exact pid dies. The index is supervised separately from `soma_run_sup`.
+- Runtime-owned in-memory and durable event stores are registered as
+  `soma_runtime_event_store`. The `soma_sup` child id stays
+  `soma_event_store`, and existing APIs continue to accept the resolved pid.
 - `soma_tool_call` executes exactly one tool invocation and exits. Every tool
   call crosses this process boundary.
 - `soma_actor` sits above the runtime. It owns tasks, correlation ids, proposal
@@ -110,8 +119,9 @@ Soma currently includes:
 - mandatory event emission, in-memory event store, durable `disk_log` event
   store, and Lisp trace rendering;
 - persistent resume from the event trail: journal, read-only reconstruction,
-  planning, a manual resume executor, and boot auto-resume with fail-safe
-  handling for unsafe in-flight state steps;
+  planning, a manual resume executor, default boot auto-resume, and upper-layer
+  recovery for explicit owner-managed runs, with fail-safe handling for unsafe
+  in-flight state steps;
 - compile-only Lisp forms for runs, messages, proposals, ask/status/trace/cancel
   commands, and audit rendering;
 - long-lived `soma_actor` task ownership with proposal normalization, policy,
@@ -300,11 +310,38 @@ Manual resume uses the reconstructed trail to start a fresh `soma_run` for the
 pending suffix. Committed outputs are seeded into the resumed run. A resumed run
 emits `run.resumed`, not another `run.started`.
 
+Live RunId ownership is independent of durable reconstruction. Every new or
+resumed run must first claim `soma_run_index`; a second live pid with the same id
+is rejected before an event or effect. The index starts before the session/run
+supervisors. If `soma_run_sup` changes generation, dead owners are released by
+monitor `DOWN` before that id can be reused. If the index changes generation,
+its init forms a stronger fence: it kills and waits for all pre-existing
+`soma_run` processes before serving lookup or claim, including scheduler-
+suspended runs that cannot cooperate with shutdown.
+
 The fail-safe rule is conservative: if a crash happened while a non-idempotent
 `state` step was in flight, resume does not silently re-run it. It records a
-clear failed terminal event instead. On boot, a durable event store can report
+clear failed terminal event instead. `tool.started` records the bounded
+effect/idempotency snapshot used by the original invocation; resume requires
+both that snapshot and the current descriptor to be safe, so a manifest edit
+cannot weaken the decision after a crash. On boot, a durable event store can report
 interrupted run ids (`run.started` with no terminal run event), and
-`soma_runtime` auto-resumes those runs through the same resume executor.
+`soma_runtime` auto-resumes only runs carrying the exact durable
+`run_origin = runtime_default, auto_resume = true` opt-in through the same
+resume executor. Missing, malformed, unknown, legacy, and owner-managed values
+fail closed; detached CLI runs use their upper-layer owner after configured
+tools have loaded.
+
+The CLI recovery owner journals `cli.task.cancel_requested` before acknowledging
+detached cancellation or controlled stop. On recovery, an existing live run is
+adopted and cancelled. If bounded lookup proves no live run exists, the owner
+lands `run.cancelled` without starting a resumed process; an ambiguous run or
+supervisor lookup is retried. This closes both the lost-cancel window and the
+start-before-cancel effect window.
+Cancel markers are matched on the complete run/task/session/correlation owner
+identity. Controlled stop closes the current listener generation's admission in
+the same registry transition that snapshots running tasks, so a concurrent
+detached request is either included or rejected.
 
 ## Cancellation And Timeout
 
@@ -346,6 +383,8 @@ Execution-core constraints:
 - External tools use executable plus argv, never shell command strings.
 - Cancellation and timeout must stop active child work.
 - Events are mandatory.
+- Every live RunId has exactly one claimed `soma_run` owner; index restart must
+  fence pre-existing runs before admitting a new generation.
 
 Actor constraints:
 

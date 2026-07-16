@@ -18,6 +18,7 @@
 -export([test_timing_out_resumed_run_lands_terminal_event/1]).
 -export([test_tool_crash_in_resumed_step_does_not_crash_owner/1]).
 -export([test_resumed_run_stamps_correlation_id_from_run_options/1]).
+-export([test_descriptor_change_after_plan_fails_before_tool_invocation/1]).
 
 all() ->
     [test_between_steps_resume_starts_fresh_child_that_completes,
@@ -33,7 +34,8 @@ all() ->
      test_cancelling_resumed_run_stops_worker,
      test_timing_out_resumed_run_lands_terminal_event,
      test_tool_crash_in_resumed_step_does_not_crash_owner,
-     test_resumed_run_stamps_correlation_id_from_run_options].
+     test_resumed_run_stamps_correlation_id_from_run_options,
+     test_descriptor_change_after_plan_fails_before_tool_invocation].
 
 init_per_testcase(_Case, Config) ->
     application:unset_env(soma_runtime, event_store_log),
@@ -165,7 +167,11 @@ test_in_flight_safe_step_reruns_in_own_worker_and_completes(_Config) ->
                                    session_id => SessionId,
                                    step_id => s1,
                                    event_type => <<"tool.started">>,
-                                   payload => #{tool_call_pid => self()}}),
+                                   payload =>
+                                       #{tool_call_pid => self(),
+                                         resume_safety =>
+                                             #{effect => reader,
+                                               idempotent => true}}}),
 
     {ok, RunPid} = soma_run_resume_executor:resume(RunId, Owner, StorePid),
     ?assert(is_pid(RunPid)),
@@ -675,6 +681,71 @@ test_resumed_run_stamps_correlation_id_from_run_options(_Config) ->
                        maps:get(run_id, E, undefined) =:= RunId,
                        maps:get(event_type, E) =:= <<"run.completed">>],
     ?assert(lists:member(<<"run.completed">>, ResumedTypes)).
+
+%% The safe descriptor resolved by planning is a TOCTOU guard, not just an
+%% eligibility hint. Replacing the same tool name after plan and before activate
+%% must fail the resumed run before it starts a fresh tool-call worker.
+test_descriptor_change_after_plan_fails_before_tool_invocation(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-exec-descriptor-guard">>,
+    SessionId = <<"sess-exec-descriptor-guard">>,
+    Tool = <<"mutable-safe-reader">>,
+    Step = #{id => guarded, tool => Tool, args => #{}},
+    OriginalManifest = #{name => Tool,
+                         effect => reader,
+                         idempotent => true,
+                         timeout_ms => 5000,
+                         adapter => cli,
+                         executable => "/bin/echo",
+                         argv => ["original"]},
+    ok = soma_tool_registry:register_tool(OriginalManifest),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => RunId,
+             session_id => SessionId,
+             event_type => <<"run.started">>,
+             payload => #{steps => [Step],
+                          run_options => #{run_id => RunId,
+                                           session_id => SessionId}}}),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => RunId,
+             session_id => SessionId,
+             step_id => guarded,
+             event_type => <<"tool.started">>,
+             payload => #{resume_safety =>
+                              #{effect => reader, idempotent => true}}}),
+    {resume, Plan} = soma_run_resume_plan:plan(StorePid, RunId),
+    Guard = maps:get(resume_descriptor_guard, Plan),
+
+    ok = soma_tool_registry:register_tool(
+           OriginalManifest#{argv => ["changed-after-plan"]}),
+    BaselineToolStarts =
+        length([Event || Event <- soma_event_store:by_run(StorePid, RunId),
+                         maps:get(event_type, Event) =:= <<"tool.started">>]),
+    {ok, RunPid} = soma_run_sup:start_run(
+                     #{run_id => RunId,
+                       session_id => SessionId,
+                       session_pid => self(),
+                       event_store => StorePid,
+                       steps => maps:get(steps, Plan),
+                       pending => maps:get(pending, Plan),
+                       outputs => maps:get(outputs, Plan),
+                       resume_descriptor_guard => Guard,
+                       start_paused => true}),
+    ok = soma_run:activate(RunPid),
+    ok = wait_for_event(StorePid, RunId, <<"run.failed">>, 50),
+
+    Events = soma_event_store:by_run(StorePid, RunId),
+    ?assertEqual(
+       BaselineToolStarts,
+       length([Event || Event <- Events,
+                        maps:get(event_type, Event) =:= <<"tool.started">>])),
+    Failed = lists:last(
+               [Event || Event <- Events,
+                          maps:get(event_type, Event) =:= <<"run.failed">>]),
+    ?assertEqual(resume_descriptor_changed,
+                 maps:get(reason, maps:get(payload, Failed))).
 
 wait_for_event(_StorePid, _RunId, _Type, 0) ->
     {error, timeout};

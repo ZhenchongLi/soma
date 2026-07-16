@@ -1,0 +1,77 @@
+-module(soma_cli_4_contract_tests).
+
+-include_lib("eunit/include/eunit.hrl").
+
+-define(DOC_PATH, "docs/contracts/cli-4-test-contract.md").
+
+test_contract_names_detached_restart_proofs() ->
+    {ok, Doc} = file:read_file(?DOC_PATH),
+    ?assert(byte_size(Doc) > 0),
+    Names = [<<"soma_cli_task_registry_tests">>,
+             <<"test_registered_task_survives_registering_process_exit">>,
+             <<"test_detached_run_completion_updates_registry_status">>,
+             <<"test_legacy_registered_task_cancel_remains_compatible">>,
+             <<"soma_cli_server_SUITE">>,
+             <<"test_detached_run_completes_after_client_close_registry_completed">>,
+             <<"test_detached_run_replies_accepted_before_sleep_terminal">>,
+             <<"test_status_running_detached_task_reads_registry">>,
+             <<"test_status_completed_detached_task_reads_completed">>,
+             <<"test_cancel_detached_run_records_run_cancelled">>,
+             <<"test_cancel_detached_run_kills_tool_worker">>,
+             <<"test_cancel_detached_run_replies_cancelled">>,
+             <<"test_cancel_terminal_task_reports_already_terminal_no_new_run">>,
+             <<"test_non_detached_run_still_terminal_and_disconnect_cancels">>,
+             <<"soma_cli_SUITE">>,
+             <<"test_run_task_file_detach_returns_accepted">>,
+             <<"test_cancel_sends_cancel_request_prints_reply_exit_zero">>,
+             <<"test_cancel_error_reply_exits_nonzero">>,
+             <<"soma_cli_resume_SUITE">>,
+             <<"test_detached_run_journals_durable_cli_owner">>,
+             <<"test_uncommitted_fresh_admission_fails_closed_after_registry_restart">>,
+             <<"test_rejected_admission_outvotes_later_exact_acceptance">>,
+             <<"test_committed_before_accepted_is_rejected">>,
+             <<"test_structured_admission_in_doubt_render_preserves_ids">>,
+             <<"test_restarted_detached_run_is_visible_cancellable_and_traceable">>,
+             <<"test_unsafe_detached_resume_reports_failed_without_reexecution">>,
+             <<"test_unmarked_foreground_run_is_not_adopted">>,
+             <<"test_config_cli_tool_recovers_after_restart_and_cancel_kills_os_process">>,
+             <<"test_listener_restart_adopts_live_detached_run_without_second_resume">>,
+             <<"test_runtime_restart_recovers_with_registry_alive">>,
+             <<"test_tool_registry_generation_reload_recovers_config_tool">>,
+             <<"test_unresponsive_live_run_defers_without_duplicate">>,
+             <<"test_suspended_run_supervisor_keeps_recovery_bounded">>,
+             <<"test_start_in_doubt_resumes_once_after_supervisor_unblocks">>,
+             <<"test_cancel_fences_start_in_doubt_before_first_tool">>,
+             <<"test_cancelled_start_in_doubt_survives_registry_replacement">>,
+             <<"test_store_unavailable_during_registry_scan_fails_closed">>,
+             <<"test_mismatched_cancel_marker_is_not_owner_intent">>,
+             <<"test_unrelated_unresponsive_run_does_not_block_adoption">>,
+             <<"test_changed_manifest_cannot_weaken_in_flight_resume_safety">>,
+             <<"test_malformed_marked_journal_fails_closed_without_daemon_crash">>,
+             <<"test_stop_cancel_intent_survives_immediate_restart_without_replay">>,
+             <<"test_stop_fails_closed_when_cancel_intent_store_unavailable">>,
+             <<"test_stop_quiesce_rejects_concurrent_detached_admission">>,
+             <<"test_timed_out_stop_cannot_close_admission_later">>,
+             <<"test_timed_out_open_admission_cannot_rebind_dead_owner">>,
+             <<"test_live_rebind_ignores_old_owner_down">>,
+             <<"test_controlled_stop_retires_blocked_registry_workers">>,
+             <<"test_timed_out_detached_start_has_no_late_effect">>,
+             <<"test_timed_out_prepare_retires_claim_and_rejects_late_journal">>,
+             <<"test_timed_out_supervisor_start_leaves_no_claim_or_effect">>,
+             <<"test_rebound_tools_dir_is_used_after_tool_registry_restart">>,
+             <<"test_nothing_to_do_projection_survives_registry_restart">>,
+             <<"test_recorded_terminals_remain_monotonic_after_restart">>,
+             <<"soma_cli_9_stop_SUITE">>,
+             <<"test_stop_cancels_active_detached_run">>,
+             <<"test_stop_kills_active_detached_tool_worker">>,
+             <<"soma_cli_md_read_tests">>,
+             <<"test_cli_md_documents_status_trace_and_defers_cancel_detach">>,
+             <<"test_cli_md_documents_detached_restart_recovery">>,
+             <<"test_contract_names_detached_restart_proofs">>],
+    lists:foreach(
+      fun(Name) ->
+              ?assertNotEqual(nomatch, binary:match(Doc, Name))
+      end, Names).
+
+contract_names_detached_restart_proofs_test() ->
+    test_contract_names_detached_restart_proofs().

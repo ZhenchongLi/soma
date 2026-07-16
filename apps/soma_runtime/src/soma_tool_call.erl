@@ -5,7 +5,7 @@
 %% the run can prove each invocation ran in a distinct process.
 -module(soma_tool_call).
 
--export([start/1]).
+-export([start/1, invoke/1]).
 
 %% Configured upper bound on the bytes the cli adapter buffers from a program's
 %% merged stdout/stderr. A program that emits more than this is stopped rather
@@ -22,15 +22,26 @@ start(Opts) when is_map(Opts) ->
         spawn_monitor(
           fun() ->
                   %% Link before invoking the tool, then acknowledge ownership
-                  %% so start/1 never returns a worker that can outlive its run.
+                  %% and wait. The run durably records tool.started (including
+                  %% the original repeat-safety snapshot) before invoke/1 lets
+                  %% any in-BEAM or external side effect begin.
                   link(Owner),
                   Owner ! {tool_call_linked, ReadyRef, self()},
-                  run(Opts)
+                  receive
+                      invoke -> run(Opts)
+                  end
           end),
     receive
         {tool_call_linked, ReadyRef, Pid} ->
             {ok, Pid, MRef}
     end.
+
+%% Release one linked, monitored worker after its owner has durably recorded the
+%% invocation boundary. Sending to an already-dead pid is harmless; the run's
+%% monitor remains the authoritative crash protocol.
+invoke(Pid) when is_pid(Pid) ->
+    Pid ! invoke,
+    ok.
 
 %% Branch on which adapter opts the worker received. With a `module' it runs the
 %% in-BEAM tool. With an `executable' and `argv' it runs an external program

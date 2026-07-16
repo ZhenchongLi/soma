@@ -102,7 +102,9 @@ status_source(TaskId) ->
 
 %% Build the `(cancel "<task>")' request client-side -- the daemon is the only
 %% parser -- then drive the same connect / frame+send / read / print path as the
-%% other CLI commands. A successful daemon reply returns exit 0.
+%% other CLI commands. A terminal/accepted daemon reply returns exit 0; a fixed
+%% error/unknown status (including an unpersisted cancellation intent) returns
+%% non-zero so scripts do not mistake an unconfirmed owner decision for success.
 -spec cancel(map()) -> non_neg_integer().
 cancel(#{task_id := TaskId, socket := Path}) ->
     Source = cancel_source(TaskId),
@@ -112,12 +114,19 @@ cancel(#{task_id := TaskId, socket := Path}) ->
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
     io:format("~ts~n", [Reply]),
-    0.
+    cancel_exit_code(Reply).
 
 %% Wrap the task id in a `(cancel "...")' s-expr -- the literal bytes between the
 %% quotes.
 cancel_source(TaskId) ->
     iolist_to_binary(["(cancel \"", TaskId, "\")"]).
+
+cancel_exit_code(Reply) ->
+    case re:run(Reply, "\\(status (error|unknown)\\)",
+                [{capture, none}]) of
+        match -> 1;
+        nomatch -> 0
+    end.
 
 %% Build the bare `(stop)' request client-side -- the daemon is the only parser --
 %% then drive the same connect / frame+send / read / print path as the other CLI

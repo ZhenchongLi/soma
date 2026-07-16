@@ -6,6 +6,9 @@
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([test_session_start_journals_steps_in_run_started/1]).
 -export([test_direct_run_journals_durable_options_with_correlation_id/1]).
+-export([test_run_origin_is_fixed_allowlist/1]).
+-export([test_tool_invocation_waits_for_durable_tool_started_append/1]).
+-export([test_cancel_during_tool_started_append_prevents_effect/1]).
 -export([test_restarted_disk_log_by_run_exposes_run_started_journal/1]).
 -export([test_reconstruct_returns_journaled_steps/1]).
 -export([test_reconstruct_returns_journaled_durable_options/1]).
@@ -14,12 +17,19 @@
 -export([test_reconstruct_returns_terminal_status/1]).
 -export([test_reconstruct_rejects_missing_run_started_journal/1]).
 -export([test_reconstruct_rejects_unknown_committed_step/1]).
+-export([test_reconstruct_rejects_non_prefix_commits/1]).
+-export([test_reconstruct_rejects_mismatched_run_id/1]).
+-export([test_reconstruct_rejects_malformed_step_shapes/1]).
+-export([test_reconstruct_rejects_malformed_tool_identity/1]).
 -export([test_reconstruct_does_not_append_events/1]).
 -export([test_reconstruct_does_not_start_run_children/1]).
 
 all() ->
     [test_session_start_journals_steps_in_run_started,
      test_direct_run_journals_durable_options_with_correlation_id,
+     test_run_origin_is_fixed_allowlist,
+     test_tool_invocation_waits_for_durable_tool_started_append,
+     test_cancel_during_tool_started_append_prevents_effect,
      test_restarted_disk_log_by_run_exposes_run_started_journal,
      test_reconstruct_returns_journaled_steps,
      test_reconstruct_returns_journaled_durable_options,
@@ -28,11 +38,17 @@ all() ->
      test_reconstruct_returns_terminal_status,
      test_reconstruct_rejects_missing_run_started_journal,
      test_reconstruct_rejects_unknown_committed_step,
+     test_reconstruct_rejects_non_prefix_commits,
+     test_reconstruct_rejects_mismatched_run_id,
+     test_reconstruct_rejects_malformed_step_shapes,
+     test_reconstruct_rejects_malformed_tool_identity,
      test_reconstruct_does_not_append_events,
      test_reconstruct_does_not_start_run_children].
 
-init_per_testcase(test_restarted_disk_log_by_run_exposes_run_started_journal,
-                  Config) ->
+init_per_testcase(Case, Config)
+  when Case =:= test_restarted_disk_log_by_run_exposes_run_started_journal;
+       Case =:= test_tool_invocation_waits_for_durable_tool_started_append;
+       Case =:= test_cancel_during_tool_started_append_prevents_effect ->
     TmpDir = make_tmp_dir(),
     Path = filename:join(TmpDir, "events.log"),
     application:set_env(soma_runtime, event_store_log, Path),
@@ -92,10 +108,140 @@ test_direct_run_journals_durable_options_with_correlation_id(_Config) ->
 
     ?assertEqual(#{run_id => RunId,
                    session_id => SessionId,
-                   correlation_id => CorrelationId},
+                   correlation_id => CorrelationId,
+                   run_origin => runtime_default,
+                   auto_resume => true},
                  RunOptions),
     ?assertNot(maps:is_key(session_pid, RunOptions)),
     ?assertNot(maps:is_key(event_store, RunOptions)).
+
+%% Only the declared edge-owner vocabulary may enter durable run options. An
+%% arbitrary existing atom is no safer than an arbitrary term: accepting it
+%% would silently expand the recovery protocol without an owner implementation.
+test_run_origin_is_fixed_allowlist(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-origin-allowlist">>,
+    Steps = [#{id => s1, tool => echo, args => #{value => <<"ok">>}}],
+    {ok, _RunPid} = soma_run_sup:start_run(
+                      #{run_id => RunId,
+                        event_store => StorePid,
+                        session_pid => self(),
+                        run_origin => unexpected_owner,
+                        steps => Steps}),
+    [Started] = [Event || Event <- soma_event_store:by_run(StorePid, RunId),
+                          maps:get(event_type, Event) =:= <<"run.started">>],
+    RunOptions = maps:get(run_options, maps:get(payload, Started)),
+    ?assertNot(maps:is_key(run_origin, RunOptions)).
+
+%% The tool worker starts paused. Block the synchronous tool.started append,
+%% first before it reaches disk and then after disk_log accepted it but before
+%% the append reply reaches soma_run. The state effect must be absent in both
+%% phases and may occur only after the durable acknowledgement releases worker.
+test_tool_invocation_waits_for_durable_tool_started_append(Config) ->
+    StorePid = event_store_pid(),
+    OutputName = "journal-barrier.out",
+    OutputPath = filename:join(?config(tmp_dir, Config), OutputName),
+    RunId = <<"run-tool-started-barrier">>,
+    TestPid = self(),
+    Proxy = spawn_link(fun() -> event_store_proxy(TestPid, StorePid) end),
+    Step = #{id => write_once,
+             tool => file_write,
+             args => #{root => ?config(tmp_dir, Config),
+                       path => list_to_binary(OutputName),
+                       bytes => <<"after durable append">>},
+             timeout_ms => 5000},
+
+    {ok, _RunPid} = soma_run_sup:start_run(
+                      #{run_id => RunId,
+                        session_pid => self(),
+                        event_store => Proxy,
+                        steps => [Step]}),
+    ToolStarted = receive
+                      {tool_started_append_blocked, Proxy, Event} -> Event
+                  after 2000 ->
+                      ct:fail(tool_started_append_was_not_blocked)
+                  end,
+    WorkerPid = maps:get(tool_call_pid, ToolStarted),
+    ?assert(is_process_alive(WorkerPid)),
+    timer:sleep(100),
+    ?assertNot(filelib:is_file(OutputPath)),
+    ?assertEqual([], [Event || Event <- soma_event_store:by_run(StorePid, RunId),
+                              maps:get(event_type, Event) =:= <<"tool.started">>]),
+
+    Proxy ! {persist_tool_started, self()},
+    receive
+        {tool_started_persisted, Proxy} -> ok
+    after 2000 ->
+        ct:fail(tool_started_was_not_persisted)
+    end,
+    [Persisted] = [Event || Event <- soma_event_store:by_run(StorePid, RunId),
+                            maps:get(event_type, Event) =:= <<"tool.started">>],
+    ?assertEqual(WorkerPid, maps:get(tool_call_pid, Persisted)),
+    ?assertEqual(#{effect => state, idempotent => false},
+                 maps:get(resume_safety, maps:get(payload, Persisted))),
+    timer:sleep(100),
+    ?assertNot(filelib:is_file(OutputPath)),
+
+    Proxy ! {release_tool_started, self()},
+    receive
+        {tool_started_released, Proxy} -> ok
+    after 2000 ->
+        ct:fail(tool_started_append_was_not_released)
+    end,
+    ok = wait_for_run_completed(StorePid, RunId, 100),
+    ?assertEqual({ok, <<"after durable append">>}, file:read_file(OutputPath)),
+    Proxy ! stop.
+
+%% Cancellation may arrive while the run is synchronously journalling the
+%% invocation boundary. Once the append is released, that already-queued cancel
+%% must be processed before the worker's later invoke message, leaving the
+%% non-idempotent file_write effect absent.
+test_cancel_during_tool_started_append_prevents_effect(Config) ->
+    StorePid = event_store_pid(),
+    OutputName = "cancel-before-invoke.out",
+    OutputPath = filename:join(?config(tmp_dir, Config), OutputName),
+    RunId = <<"run-cancel-before-tool-invoke">>,
+    TestPid = self(),
+    Proxy = spawn_link(fun() -> event_store_proxy(TestPid, StorePid) end),
+    Step = #{id => never_write,
+             tool => file_write,
+             args => #{root => ?config(tmp_dir, Config),
+                       path => list_to_binary(OutputName),
+                       bytes => <<"must stay absent">>},
+             timeout_ms => 5000},
+    {ok, RunPid} = soma_run_sup:start_run(
+                     #{run_id => RunId,
+                       session_pid => self(),
+                       event_store => Proxy,
+                       steps => [Step]}),
+    receive
+        {tool_started_append_blocked, Proxy, _Event} -> ok
+    after 2000 ->
+        ct:fail(tool_started_append_was_not_blocked)
+    end,
+    RunPid ! cancel,
+    Proxy ! {persist_tool_started, self()},
+    receive
+        {tool_started_persisted, Proxy} -> ok
+    after 2000 ->
+        ct:fail(tool_started_was_not_persisted)
+    end,
+    Proxy ! {release_tool_started, self()},
+    receive
+        {tool_started_released, Proxy} -> ok
+    after 2000 ->
+        ct:fail(tool_started_append_was_not_released)
+    end,
+    ok = wait_for_event_type(StorePid, RunId, <<"run.cancelled">>, 100),
+    ?assertNot(filelib:is_file(OutputPath)),
+    Events = soma_event_store:by_run(StorePid, RunId),
+    ?assertEqual(1, length([Event || Event <- Events,
+                                    maps:get(event_type, Event) =:=
+                                        <<"tool.started">>])),
+    ?assertEqual([], [Event || Event <- Events,
+                              maps:get(event_type, Event) =:=
+                                  <<"tool.succeeded">>]),
+    Proxy ! stop.
 
 test_restarted_disk_log_by_run_exposes_run_started_journal(Config) ->
     Path = ?config(log_path, Config),
@@ -119,7 +265,9 @@ test_restarted_disk_log_by_run_exposes_run_started_journal(Config) ->
 
     ?assertEqual(#{steps => Steps,
                    run_options => #{run_id => RunId,
-                                    session_id => SessionId}},
+                                    session_id => SessionId,
+                                    run_origin => runtime_default,
+                                    auto_resume => true}},
                  Payload).
 
 test_reconstruct_returns_journaled_steps(_Config) ->
@@ -269,6 +417,76 @@ test_reconstruct_rejects_unknown_committed_step(_Config) ->
     ?assertEqual({error, {unknown_committed_step, s2}},
                  soma_run_resume:reconstruct(StorePid, RunId)).
 
+%% A sequential executor can only have committed a prefix. If s2 is durable
+%% while s1 is absent, replaying from s1 would eventually execute s2 twice.
+test_reconstruct_rejects_non_prefix_commits(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-reconstruct-non-prefix">>,
+    Steps = [#{id => s1, tool => echo, args => #{}},
+             #{id => s2, tool => echo, args => #{}}],
+    ok = append_started_journal(StorePid, RunId, Steps,
+                                #{run_id => RunId}),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => RunId,
+             step_id => s2,
+             event_type => <<"step.succeeded">>,
+             payload => #{output => #{value => <<"already committed">>}}}),
+    ?assertEqual({error, invalid_run_started_journal},
+                 soma_run_resume:reconstruct(StorePid, RunId)).
+
+%% The outer event/index RunId is authoritative. A damaged run_options copy may
+%% not redirect recovery to a second identity.
+test_reconstruct_rejects_mismatched_run_id(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-reconstruct-authoritative">>,
+    Steps = [#{id => s1, tool => echo, args => #{}}],
+    ok = append_started_journal(
+           StorePid, RunId, Steps, #{run_id => <<"other-run">>}),
+    ?assertEqual({error, invalid_run_started_journal},
+                 soma_run_resume:reconstruct(StorePid, RunId)).
+
+%% Durable steps are executable input. Reject malformed args/timeouts, duplicate
+%% ids, forward references, and atom/binary references that do not exactly name
+%% a previously committed map key.
+test_reconstruct_rejects_malformed_step_shapes(_Config) ->
+    StorePid = event_store_pid(),
+    Cases =
+        [{<<"args">>, [#{id => s1, tool => echo, args => []}]},
+         {<<"timeout">>,
+          [#{id => s1, tool => echo, args => #{}, timeout_ms => -1}]},
+         {<<"duplicate">>,
+          [#{id => s1, tool => echo, args => #{}},
+           #{id => s1, tool => echo, args => #{}}]},
+         {<<"forward-ref">>,
+          [#{id => s1, tool => echo, args => #{from_step => s2}},
+           #{id => s2, tool => echo, args => #{}}]},
+         {<<"mixed-ref">>,
+          [#{id => <<"s1">>, tool => echo, args => #{}},
+           #{id => s2, tool => echo,
+             args => #{value => {from_step, s1}}}]}],
+    lists:foreach(
+      fun({Suffix, Steps}) ->
+              RunId = <<"run-reconstruct-malformed-", Suffix/binary>>,
+              ok = append_started_journal(
+                     StorePid, RunId, Steps, #{run_id => RunId}),
+              ?assertEqual({error, invalid_run_started_journal},
+                           soma_run_resume:reconstruct(StorePid, RunId))
+      end, Cases).
+
+test_reconstruct_rejects_malformed_tool_identity(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-reconstruct-malformed-tool">>,
+    MalformedStep = #{id => s1, tool => #{external => <<"bad">>}, args => #{}},
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => RunId,
+             event_type => <<"run.started">>,
+             payload => #{steps => [MalformedStep],
+                          run_options => #{run_id => RunId}}}),
+    ?assertEqual({error, invalid_run_started_journal},
+                 soma_run_resume:reconstruct(StorePid, RunId)).
+
 test_reconstruct_does_not_append_events(_Config) ->
     StorePid = event_store_pid(),
     {ok, SessionPid} = soma_agent_session:start_link(#{}),
@@ -321,6 +539,13 @@ terminal_status_of(StorePid, RunId, Steps, TerminalEventType) ->
     {ok, Reconstructed} = soma_run_resume:reconstruct(StorePid, RunId),
     maps:get(terminal_status, Reconstructed, missing).
 
+append_started_journal(StorePid, RunId, Steps, RunOptions) ->
+    soma_event_store:append(
+      StorePid,
+      #{run_id => RunId,
+        event_type => <<"run.started">>,
+        payload => #{steps => Steps, run_options => RunOptions}}).
+
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),
     {soma_event_store, Pid, _Type, _Mods} =
@@ -345,6 +570,52 @@ wait_for_run_completed(StorePid, RunId, N) ->
         false ->
             timer:sleep(20),
             wait_for_run_completed(StorePid, RunId, N - 1)
+    end.
+
+wait_for_event_type(_StorePid, _RunId, _Type, 0) ->
+    {error, timeout};
+wait_for_event_type(StorePid, RunId, Type, N) ->
+    case lists:any(
+           fun(Event) -> maps:get(event_type, Event) =:= Type end,
+           soma_event_store:by_run(StorePid, RunId)) of
+        true -> ok;
+        false ->
+            timer:sleep(20),
+            wait_for_event_type(StorePid, RunId, Type, N - 1)
+    end.
+
+event_store_proxy(TestPid, StorePid) ->
+    receive
+        {'$gen_call', From,
+         {append, #{event_type := <<"tool.started">>} = Event}} ->
+            TestPid ! {tool_started_append_blocked, self(), Event},
+            blocked_event_store_proxy(TestPid, StorePid, From, Event);
+        {'$gen_call', From, {append, Event}} ->
+            Reply = soma_event_store:append(StorePid, Event),
+            gen_server:reply(From, Reply),
+            event_store_proxy(TestPid, StorePid);
+        stop ->
+            ok
+    end.
+
+blocked_event_store_proxy(TestPid, StorePid, From, Event) ->
+    receive
+        {persist_tool_started, TestPid} ->
+            ok = soma_event_store:append(StorePid, Event),
+            TestPid ! {tool_started_persisted, self()},
+            persisted_event_store_proxy(TestPid, StorePid, From);
+        stop ->
+            ok
+    end.
+
+persisted_event_store_proxy(TestPid, StorePid, From) ->
+    receive
+        {release_tool_started, TestPid} ->
+            gen_server:reply(From, ok),
+            TestPid ! {tool_started_released, self()},
+            event_store_proxy(TestPid, StorePid);
+        stop ->
+            ok
     end.
 
 make_tmp_dir() ->

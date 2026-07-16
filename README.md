@@ -75,6 +75,12 @@ Terminal states are explicit: `completed | failed | timeout | cancelled`. A
 resumed run starts from a reconstructed suffix of the original step list and
 emits `run.resumed` rather than re-journaling `run.started`.
 
+**`soma_run_index`** is the supervised live RunId ownership fence. A run claims
+its id atomically during init, before its first journal or tool boundary. The
+index monitors the exact owner pid, rejects a second live owner, and starts
+before the session/run supervisors. If the index itself restarts, its init kills
+and waits for every pre-existing `soma_run` before accepting new claims.
+
 **`soma_tool_call`** runs exactly one tool invocation in its own process and
 exits. It dispatches on the tool's adapter: an `erlang_module` tool runs in-BEAM
 via `invoke/2`; a `cli` tool launches an external executable through a port.
@@ -87,6 +93,9 @@ can be backed by `disk_log` for durable replay. The same event trail powers
 progress, `soma_run_resume_plan:plan/2` decides whether replay is safe, and
 `soma_run_resume_executor:resume/3` starts the resumed run under `soma_run_sup`
 or fails clearly when an in-flight stateful step is unsafe to repeat.
+Both runtime store modes register as `soma_runtime_event_store`; the supervisor
+child remains `soma_event_store`, and existing callers continue to pass the same
+store pid to the append/query APIs.
 
 **`soma_actor`** (`gen_statem`) is the long-lived agent entity above the
 execution core. It receives messages through `send/2` and `ask/3`, owns
@@ -182,6 +191,23 @@ $SOMA run examples/cli-demo/slow.lfe --detach
 $SOMA cancel "<task-id-from-accepted>"
 ```
 
+With the durable event store enabled, an interrupted detached run is reclaimed
+after configured tools load on daemon restart.  Its original task/correlation
+ids remain valid for `status`, `trace`, and real cancellation of the resumed
+worker. Fresh detached work stays paused until the trail contains the exact
+`run.started -> cli.task.accepted -> run.admission.committed` identity chain;
+missing or causally malformed proof is durably rejected before recovery can
+cross a tool boundary. If admission is commit-unknown, the CLI reports a
+structured `admission-in-doubt` result with stable task/run/correlation ids
+instead of claiming acceptance. A controlled `soma stop` first journals a
+cancellation decision, so an immediate VM exit cannot turn stopped work into a
+resumed attempt; if that decision cannot be confirmed, stop fails and leaves
+the daemon listening.
+
+Upgrade note: an older in-flight journal without the bounded
+`tool.started.resume_safety` snapshot now fails closed even when the currently
+registered tool is a safe reader. Between-step journals are unaffected.
+
 `soma ask "..."` drives the actor decision path through the same daemon. It needs
 a model configured in `~/.soma/config` and `SOMA_LLM_API_KEY` exported in the
 daemon's environment; `soma run` needs no model. See [docs/usage.md](docs/usage.md)
@@ -195,6 +221,9 @@ wire reference.
   like `bytes => {from_step, StepId}` (feed it into one field).
 - **A process per tool call.** Tool results come back to the run as messages; the
   run owns all state. Each invocation runs in its own `soma_tool_call` worker.
+- **One live owner per RunId.** `soma_run_index` atomically claims each id before
+  journalling or execution, monitors the owner, and rejects overlap. Its restart
+  fence kills pre-existing runs before a new claim table becomes available.
 - **Tool manifests + a descriptor registry.** A tool declares itself with a
   manifest (a data map) validated by `soma_tool_manifest:normalize/1`; a manifest
   missing a required field is rejected and never resolves. `soma_tool_registry`
@@ -258,7 +287,9 @@ wire reference.
   the prod release turns persistence on by setting one app env
   (`event_store_log`), and the `by_*` query API does not change. The principle is
   **the durable log is the source of truth, the in-memory index is a rebuildable
-  cache**.
+  cache**. Runtime boot gives either mode the stable registered name
+  `soma_runtime_event_store` without changing the store child id or pid-based
+  API contract.
 - **A readable trace view.** `soma_trace:render/2` takes one
   `correlation_id` and renders the whole chain as a timestamp-ordered timeline,
   one line per event (`actor.* -> llm.* -> run.* -> step.* -> tool.* ->
@@ -337,8 +368,9 @@ agent-entity skeleton, the agent decision layer (`soma_llm_call` + proposal sche
 + policy gate + decision-loop execution + budgets + actor-to-actor), the
 OpenAI-compatible real-provider path, actor-level real-provider planning mode,
 the Lisp message/proposal/trace/repair edge forms, persistent run resume
-(`soma_run_resume_executor:resume/3`) plus boot auto-resume for interrupted
-durable runs, the packaged `bin/soma` Unix-socket task command, the
+(`soma_run_resume_executor:resume/3`) plus boot auto-resume for default-owned
+interrupted durable runs and upper-layer recovery for explicit owner-managed
+runs, the packaged `bin/soma` Unix-socket task command, the
 model-facing tool catalog and config-registered cli tools (`~/.soma/tools`),
 the catalog-fed planning prompt, the `ask_actor` sub-agent tool,
 and a self-contained release.
@@ -418,9 +450,11 @@ release artifacts.
   non-idempotent in-flight steps, and boot auto-resume.
 - **[docs/contracts/cli-1b-test-contract.md](docs/contracts/cli-1b-test-contract.md)**,
   **[docs/contracts/cli-2-test-contract.md](docs/contracts/cli-2-test-contract.md)**,
-  and **[docs/contracts/cli-3-test-contract.md](docs/contracts/cli-3-test-contract.md)**
+  **[docs/contracts/cli-3-test-contract.md](docs/contracts/cli-3-test-contract.md)**,
+  and **[docs/contracts/cli-4-test-contract.md](docs/contracts/cli-4-test-contract.md)**
   — local Unix-socket Lisp-wire proofs for `soma_cli` / `soma_cli_server` run,
-  ask, status, trace, cancel, and detach behavior.
+  ask, status, trace, cancel, detach behavior, and durable detached-task
+  ownership across daemon restart.
 - **[docs/contracts/cli-real-planning-test-contract.md](docs/contracts/cli-real-planning-test-contract.md)**
   — the productized real-provider planning surface: config and CLI proofs for
   driving actor planning mode from `~/.soma/config`.

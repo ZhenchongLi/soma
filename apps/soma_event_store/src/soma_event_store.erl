@@ -3,7 +3,9 @@
 -behaviour(gen_server).
 
 %% Public API
--export([start_link/0, start_link/1, append/2, all/1, by_run/2, by_session/2,
+-export([start_link/0, start_link/1, append/2, append/3, append_many/3,
+         all/1, all/2,
+         by_run/2, by_run/3, by_session/2, by_session/3,
          by_correlation/2, interrupted_runs/1]).
 
 %% gen_server callbacks
@@ -18,6 +20,8 @@ start_link() ->
     gen_server:start_link(?MODULE, [], []).
 
 -spec start_link(map()) -> {ok, pid()}.
+start_link(#{name := Name} = Opts) when is_atom(Name) ->
+    gen_server:start_link({local, Name}, ?MODULE, maps:remove(name, Opts), []);
 start_link(#{log := Path}) ->
     gen_server:start_link(?MODULE, #{log => Path}, []).
 
@@ -25,17 +29,47 @@ start_link(#{log := Path}) ->
 append(Pid, Event) when is_map(Event) ->
     gen_server:call(Pid, {append, Event}).
 
+%% Owners on shutdown/recovery paths need the append acknowledgement without an
+%% unbounded gen_server call. The legacy append/2 API keeps its original
+%% semantics; append/3 is the explicit finite variant.
+-spec append(pid(), map(), timeout()) -> ok.
+append(Pid, Event, Timeout) when is_map(Event) ->
+    gen_server:call(Pid, {append, Event}, Timeout).
+
+%% A controlled shutdown may need to durably record several independent CLI
+%% cancellation decisions. One store call gives that operation a fixed API
+%% bound instead of multiplying a per-task timeout. Events are still normalized
+%% and logged one by one, in list order, while the store owns the call.
+-spec append_many(pid(), [map()], timeout()) -> ok.
+append_many(Pid, Events, Timeout) when is_list(Events) ->
+    case lists:all(fun is_map/1, Events) of
+        true -> gen_server:call(Pid, {append_many, Events}, Timeout);
+        false -> erlang:error(badarg)
+    end.
+
 -spec all(pid()) -> [map()].
 all(Pid) ->
     gen_server:call(Pid, all).
+
+-spec all(pid(), timeout()) -> [map()].
+all(Pid, Timeout) ->
+    gen_server:call(Pid, all, Timeout).
 
 -spec by_run(pid(), term()) -> [map()].
 by_run(Pid, RunId) ->
     gen_server:call(Pid, {by_run, RunId}).
 
+-spec by_run(pid(), term(), timeout()) -> [map()].
+by_run(Pid, RunId, Timeout) ->
+    gen_server:call(Pid, {by_run, RunId}, Timeout).
+
 -spec by_session(pid(), term()) -> [map()].
 by_session(Pid, SessionId) ->
     gen_server:call(Pid, {by_session, SessionId}).
+
+-spec by_session(pid(), term(), timeout()) -> [map()].
+by_session(Pid, SessionId, Timeout) ->
+    gen_server:call(Pid, {by_session, SessionId}, Timeout).
 
 -spec by_correlation(pid(), term()) -> [map()].
 by_correlation(Pid, CorrelationId) ->
@@ -58,7 +92,9 @@ init(#{log := Path}) ->
         {repaired, Log, _Recovered, _BadBytes} -> ok
     end,
     Events = replay_log(Log),
-    {ok, #state{events = Events, log = Log}}.
+    {ok, #state{events = Events, log = Log}};
+init(#{}) ->
+    {ok, #state{}}.
 
 %% Read every term the log holds, in append (oldest-first) order, and build the
 %% in-memory index in the same internal order an equivalent sequence of
@@ -97,6 +133,15 @@ handle_call({append, Event}, _From, State = #state{events = Events, log = Log}) 
     Normalized = normalize(Event),
     ok = log_event(Log, Normalized),
     {reply, ok, State#state{events = [Normalized | Events]}};
+handle_call({append_many, NewEvents}, _From,
+            State = #state{events = Events, log = Log}) ->
+    StoredEvents = lists:foldl(
+                     fun(Event, Acc) ->
+                             Normalized = normalize(Event),
+                             ok = log_event(Log, Normalized),
+                             [Normalized | Acc]
+                     end, Events, NewEvents),
+    {reply, ok, State#state{events = StoredEvents}};
 handle_call(all, _From, State = #state{events = Events}) ->
     {reply, lists:reverse(Events), State};
 handle_call({by_run, RunId}, _From, State = #state{events = Events}) ->

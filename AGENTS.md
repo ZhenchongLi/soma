@@ -20,9 +20,9 @@ Built apps:
   persistence, trace rendering, and term-to-Lisp rendering.
 - `apps/soma_tools`: tool behaviour, built-in tools, manifests, registry, and
   one-shot CLI adapter support files.
-- `apps/soma_runtime`: session, run, supervision, tool-call worker, timeout,
-  cancellation, failure isolation, event emission, LLM-call worker, and
-  OpenAI-compatible provider support.
+- `apps/soma_runtime`: session, run, live RunId ownership index, supervision,
+  tool-call worker, timeout, cancellation, failure isolation, event emission,
+  LLM-call worker, and OpenAI-compatible provider support.
 - `apps/soma_actor`: actor entity, proposal/policy/budget logic,
   actor-to-actor messages, real-provider actor wiring, and local CLI
   server/client modules.
@@ -48,14 +48,21 @@ Layer status:
   providers are added by node B.
 - v0.6 durability and observability are built: `soma_trace`, durable
   `disk_log` event store, and app-env wiring through `soma_runtime`
-  `event_store_log`.
+  `event_store_log`. Runtime-owned in-memory and durable stores share the fixed
+  registered name `soma_runtime_event_store`; the supervisor child id and
+  existing pid-taking store APIs remain compatible.
 - v0.7 persistent resume is built through boot auto-resume: `run.started`
   journals steps and durable options, `soma_run_resume:reconstruct/2` rebuilds
   progress from the durable trail, `soma_run_resume_plan:plan/2` classifies the
   restart decision, and `soma_run_resume_executor:resume/3` starts a resumed run
   or fails clearly on a non-idempotent in-flight state step. The durable event
-  store reports interrupted runs and `soma_runtime` boot hands them to the same
-  executor.
+  store reports interrupted runs and `soma_runtime` boot hands default-owned
+  runs to the same executor only for the exact durable
+  `runtime_default/auto_resume=true` pair; absent, malformed, legacy, and
+  owner-managed values fail closed. `soma_run_index` atomically owns each live RunId before its
+  first journal/effect boundary. It starts before the session/run supervisors;
+  a restarted index fences and kills every pre-existing `soma_run` before
+  accepting fresh claims.
 - node B real-provider path is built: `soma_llm_openai` handles an
   OpenAI-compatible chat API behind `soma_llm_call:perform_call/1`; actor
   `model_config` can route to it. Gate tests use fixed response seams and do not
@@ -97,13 +104,21 @@ Layer status:
   `daemon` over a local Unix socket, with Lisp on the wire, detach, cancellation
   on disconnect, daemon auto-start, and the release's node-control script renamed
   to `bin/somad`.
+- Durable detached CLI ownership (#256) is built: marked detached journals opt
+  out of ownerless runtime boot resume; after configured tools load, the CLI
+  registry rebuilds unfinished tasks, adopts or resumes each run with itself as
+  owner, and preserves status/trace/cancel through daemon restart. New CLI ids
+  use restart-safe random suffixes; legacy unmarked journals fail closed.
+  Cancel/stop journals durable owner intent before acknowledgement, so recovery
+  never starts a fresh tool attempt for operator-cancelled work. Stop closes
+  listener-generation admission atomically with its cancellation snapshot.
 
 Latest layers: **the agent-shell exploration track (#225)**, **the versioned
-runtime service RS.1 (#236)**, **the soma.delegate track (#233/#234)**, and
-**parser atom hardening (#235)** are all built and merged on top of v0.7
-persistent resume. Remaining open tracks: effect-aware policy, log/index
-compaction, and Linux release artifacts; #175's crash/resume validation demo
-is the remaining docmod work.
+runtime service RS.1 (#236)**, **the soma.delegate track (#233/#234)**,
+**parser atom hardening (#235)**, and **durable detached CLI ownership (#256)**
+are built on top of v0.7 persistent resume. Remaining open tracks:
+effect-aware policy, log/index compaction, and Linux release artifacts; #175's
+crash/resume validation demo is the remaining docmod work.
 
 ## What Soma Is
 
@@ -127,8 +142,9 @@ Runtime supervision shape:
 
 ```text
 soma_sup
-  |-- soma_event_store
+  |-- soma_event_store  (registered as soma_runtime_event_store)
   |-- soma_tool_registry
+  |-- soma_run_index    (live RunId -> exact owner pid)
   |-- soma_session_sup -> soma_agent_session  (gen_server, long-lived)
   `-- soma_run_sup     -> soma_run            (gen_statem, per-run)
                               `-- soma_tool_call (per-tool-call worker)
@@ -152,6 +168,11 @@ soma_delegate ingress                       (apps/soma_actor)
   active tool-call pid, active external OS pid for CLI tools, timers,
   cancellation, and event emission. Terminal states are explicit:
   `completed | failed | timeout | cancelled`.
+- `soma_run_index` is the supervised live-ownership fence. Every `soma_run`
+  claims its RunId there during init, before journalling or executing. A second
+  live owner is rejected; monitor `DOWN` releases the claim. On index restart,
+  init kills and waits for all pre-existing runs before opening an empty table,
+  so a new generation cannot overlap an old suspended execution.
 - `soma_tool_call` executes exactly one tool invocation, reports the result or
   error to `soma_run`, then exits. Every tool call crosses this process
   boundary. `soma_tool_call:start/1` uses `spawn_monitor`, so the run atomically
@@ -213,6 +234,9 @@ states.
 - Use message protocols deliberately. Include enough ids to correlate replies
   and `'DOWN'` messages; demonitor with `[flush]` after a normal result; ignore
   stale worker messages that do not match the active pid or monitor ref.
+- Treat a RunId as one live ownership key. Admission must cross the atomic
+  `soma_run_index` claim; do not infer absence by scanning only the current
+  `soma_run_sup` generation.
 - Keep app dependencies one-way: `soma_runtime` must not import `soma_actor` or
   edge layers; LFE compiles to maps and remains pure; higher layers compile down
   to canonical step lists.
@@ -334,7 +358,8 @@ The local task daemon path is implemented as Erlang modules:
 
 - `soma_cli_server`: local Unix-socket listener and request handler.
 - `soma_cli`: thin client functions for run/ask/status/trace/cancel.
-- `soma_cli_task_registry`: live detached task registry.
+- `soma_cli_task_registry`: detached task owner and live cache, rebuilt for
+  marked unfinished tasks from the durable trail after daemon restart.
 
 The wire is Lisp S-expressions, not JSON. The server parses request forms with
 `soma_lfe` and renders replies with `soma_lisp`. Synchronous run/ask cancellation
@@ -376,6 +401,7 @@ Keep docs and tests aligned:
 - `docs/contracts/cli-1b-test-contract.md`
 - `docs/contracts/cli-2-test-contract.md`
 - `docs/contracts/cli-3-test-contract.md`
+- `docs/contracts/cli-4-test-contract.md`
 
 The normal merge gate is `rebar3 eunit && rebar3 ct`. `rebar3 dialyzer` is useful
 but is not the current gate; baseline warnings have been documented separately

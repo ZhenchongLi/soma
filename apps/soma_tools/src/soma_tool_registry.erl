@@ -20,7 +20,8 @@
 
 %% Process API
 -export([start_link/0, register_tool/1, unregister_tool/1, resolve/1,
-         resolve_descriptor/1, catalog/0, list_tools/0]).
+         resolve_descriptor/1, resolve_descriptor/2,
+         catalog/0, list_tools/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
@@ -210,6 +211,14 @@ resolve(Name) ->
     {ok, descriptor()} | {error, not_found}.
 resolve_descriptor(Name) ->
     gen_server:call(?MODULE, {resolve_descriptor, Name}).
+
+%% Recovery planning carries an end-to-end deadline. Keep the established
+%% resolve_descriptor/1 call unchanged while allowing that owner to avoid the
+%% gen_server default timeout silently extending its budget.
+-spec resolve_descriptor(tool_name(), timeout()) ->
+    {ok, descriptor()} | {error, not_found}.
+resolve_descriptor(Name, Timeout) ->
+    gen_server:call(?MODULE, {resolve_descriptor, Name}, Timeout).
 
 %% @doc The model-facing catalog of the running registry. See `catalog/1'.
 -spec catalog() -> [catalog_entry()].

@@ -219,14 +219,15 @@ is_terminal_status(rejected) -> true;
 is_terminal_status(error) -> true;
 is_terminal_status(_) -> false.
 
-%% The result sub-forms, in order: status, then task-id if present, then outputs
-%% if present, then error or reason when present, then correlation-id if
+%% The result sub-forms, in order: status, then task-id/run-id if present, then
+%% outputs if present, then error or reason when present, then correlation-id if
 %% present. `task-id' sits after status and before correlation-id so the
 %% existing completed-result order (`status outputs correlation-id') stays
 %% stable.
 result_pairs(Map) ->
     [render_pair(status, maps:get(status, Map))]
         ++ [render_pair(task_id, V) || {ok, V} <- [maps:find(task_id, Map)]]
+        ++ [render_pair(run_id, V) || {ok, V} <- [maps:find(run_id, Map)]]
         ++ [render_pair(outputs, V) || {ok, V} <- [maps:find(outputs, Map)]]
         ++ [render_pair(error, V) || {ok, V} <- [maps:find(error, Map)]]
         ++ [render_pair(reason, V) || {ok, V} <- [maps:find(reason, Map)]]
