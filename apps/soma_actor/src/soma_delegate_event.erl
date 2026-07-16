@@ -44,14 +44,18 @@ outcome_payload(EventType, Outcome) ->
         maybe_put(usage_count, usage_count(Outcome), WithReason),
     WithMutations =
         maybe_put(mutation_count, mutation_count(Outcome), WithUsage),
-    maybe_put(
+    WithUnknownOutcomes = maybe_put(
       unknown_outcome_count, unknown_outcome_count(Outcome),
-      WithMutations).
+      WithMutations),
+    maybe_put(
+      observation_ref, observation_ref(Outcome),
+      WithUnknownOutcomes).
 
 event_phase(<<"delegate.task.accepted">>) -> accepted;
 event_phase(<<"delegate.task.running">>) -> running;
 event_phase(<<"delegate.round.started">>) -> round_started;
 event_phase(<<"delegate.round.completed">>) -> round_completed;
+event_phase(<<"delegate.action.completed">>) -> action_completed;
 event_phase(<<"delegate.task.cancel_requested">>) -> cancel_requested;
 event_phase(<<"delegate.task.cleanup">>) -> cleanup;
 event_phase(<<"delegate.task.terminal">>) -> terminal.
@@ -115,6 +119,14 @@ unknown_outcome_count(Outcome) ->
     ledger_or_delta_count(
       unknown_outcome_count, unknown_outcome_ledger,
       unknown_outcome, Outcome).
+
+observation_ref(#{observation_ref := #{handle := Handle}})
+  when is_binary(Handle) ->
+    #{handle => Handle};
+observation_ref(#{observation_ref := #{inline := true}}) ->
+    #{inline => true};
+observation_ref(_Outcome) ->
+    undefined.
 
 ledger_or_delta_count(CountKey, LedgerKey, DeltaKey, Outcome) ->
     case maps:get(CountKey, Outcome, undefined) of
@@ -194,7 +206,7 @@ fallback_payload(Payload, OriginalBytes) ->
     Summary =
         maps:with(
           [phase, status, usage_count, mutation_count,
-           unknown_outcome_count],
+           unknown_outcome_count, observation_ref],
           Payload),
     Summary#{truncated => true, original_bytes => OriginalBytes}.
 

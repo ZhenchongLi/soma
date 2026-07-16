@@ -45,6 +45,11 @@ init([]) ->
           start => {soma_delegate_lease_sup, start_link, []},
           restart => permanent,
           type => supervisor},
+    DelegateArtifactStore =
+        #{id => soma_delegate_artifact_store,
+          start => {soma_delegate_artifact_store, start_link, []},
+          restart => permanent,
+          type => worker},
     Delegate = #{id => soma_delegate,
                  start => {soma_delegate, start_link, []},
                  restart => permanent,
@@ -56,8 +61,8 @@ init([]) ->
                       restart => permanent,
                       type => supervisor},
     {ok, {SupFlags, [Registry, Service, DelegateCoordinatorSup,
-                     DelegateRoundSup, DelegateLeaseSup, Delegate,
-                     ActorChildSup]}};
+                     DelegateRoundSup, DelegateLeaseSup,
+                     DelegateArtifactStore, Delegate, ActorChildSup]}};
 init(actor_children) ->
     SupFlags = #{strategy => simple_one_for_one,
                  intensity => 1,

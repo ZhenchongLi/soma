@@ -3,7 +3,7 @@
 %% absent from the returned map.
 -module(soma_delegate_prompt).
 
--export([project/2, render/1, preflight/3]).
+-export([project/2, artifact_excerpt/3, render/1, preflight/3]).
 
 project(Snapshot, CoordinatorData)
   when is_map(Snapshot), is_map(CoordinatorData) ->
@@ -20,8 +20,21 @@ project(Snapshot, CoordinatorData)
             idempotency_state =>
                 maps:get(idempotency_state, CoordinatorData, #{})},
       recent_rounds => maps:get(recent_rounds, CoordinatorData, []),
-      artifact_excerpts => maps:get(artifacts, Request, []),
+      artifact_excerpts =>
+          maps:get(
+            artifact_excerpts, CoordinatorData,
+            maps:get(artifacts, Request, [])),
       tool_schemas => maps:get(tool_schemas, CoordinatorData, [])}.
+
+artifact_excerpt(
+  #{handle := Handle, bytes := ByteCount}, Bytes, MaxBytes)
+  when is_binary(Handle), is_integer(ByteCount), ByteCount >= 0,
+       is_binary(Bytes), is_integer(MaxBytes), MaxBytes >= 0 ->
+    ExcerptBytes = min(byte_size(Bytes), MaxBytes),
+    #{handle => Handle,
+      bytes => ByteCount,
+      excerpt => binary:part(Bytes, 0, ExcerptBytes),
+      truncated => byte_size(Bytes) > ExcerptBytes}.
 
 render(Projection) when is_map(Projection) ->
     Content = iolist_to_binary(io_lib:format("~0p", [Projection])),
