@@ -16,6 +16,7 @@
 -export([test_context_preflight_and_provider_usage_accounting/1]).
 -export([test_oversized_observation_uses_stable_task_artifact_and_bounded_slice/1]).
 -export([test_recent_round_window_replaces_old_observations_with_one_summary/1]).
+-export([test_pinned_safety_state_is_exact_and_never_truncated/1]).
 -export([invoke/2]).
 
 all() ->
@@ -30,7 +31,8 @@ all() ->
      test_task_deadline_tears_down_all_owned_execution_children,
      test_context_preflight_and_provider_usage_accounting,
      test_oversized_observation_uses_stable_task_artifact_and_bounded_slice,
-     test_recent_round_window_replaces_old_observations_with_one_summary].
+     test_recent_round_window_replaces_old_observations_with_one_summary,
+     test_pinned_safety_state_is_exact_and_never_truncated].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -835,6 +837,146 @@ test_recent_round_window_replaces_old_observations_with_one_summary(
           summary_bounded => true},
     ?assertEqual(Expected, Actual).
 
+test_pinned_safety_state_is_exact_and_never_truncated(_Config) ->
+    CapabilityScope =
+        #{tools => [<<"echo">>],
+          constraints => #{workspace => <<"task-workspace">>}},
+    Invocation =
+        #{run_id => <<"delegate-safety-run">>,
+          step_id => safety_state_action,
+          tool => echo},
+    Mutation = Invocation#{round => 1, outcome => succeeded},
+    UnknownOutcome =
+        #{round => 1,
+          invocation => Invocation,
+          outcome => unknown},
+    ExpectedInitialSafety =
+        #{capability_scope => CapabilityScope,
+          mutation_ledger => [],
+          unknown_outcome_ledger => [],
+          idempotency_state => #{}},
+    ExpectedCommittedSafety =
+        #{capability_scope => CapabilityScope,
+          mutation_ledger => [Mutation],
+          unknown_outcome_ledger => [UnknownOutcome],
+          idempotency_state =>
+              #{<<"delegate-safety-run">> =>
+                    Mutation#{outcome => unknown}}},
+    TestPid = self(),
+    FirstResponder =
+        fun(CallOpts) ->
+                TestPid !
+                    {delegate_safety_prompt, 1,
+                     maps:get(prompt_projection, CallOpts)},
+                receive
+                    delegate_safety_responder_release ->
+                        terminal_response(
+                          <<"unreachable blocked response">>)
+                end
+        end,
+    SecondResponder =
+        fun(CallOpts) ->
+                TestPid !
+                    {delegate_safety_prompt, 2,
+                     maps:get(prompt_projection, CallOpts)},
+                terminal_response(<<"pinned safety state observed">>)
+        end,
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{tool_policy => #{allowed_tools => [echo]},
+             round_sequence =>
+                 [#{llm => safety_llm(FirstResponder)},
+                  #{llm => safety_llm(SecondResponder)}]}),
+    Request =
+        #{request_id => <<"delegate-pinned-safety-exact">>,
+          correlation_id =>
+              <<"delegate-pinned-safety-exact-correlation">>,
+          objective => #{goal => <<"preserve authoritative safety data">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => CapabilityScope,
+          artifacts => []},
+
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    FirstProjection = receive_safety_prompt(1),
+    [CoordinatorPid] = live_coordinators(),
+    {running, CoordinatorData} = sys:get_state(CoordinatorPid),
+    ActiveRound = maps:get(active_round, CoordinatorData),
+    send_safety_round_result(
+      CoordinatorPid, TaskId, ActiveRound,
+      #{status => succeeded,
+        phase => decision,
+        decision => continue,
+        mutation => Mutation,
+        unknown_outcome => UnknownOutcome,
+        terminal_result => #{status => succeeded}}),
+    SecondProjection = receive_safety_prompt(2),
+    _Terminal = wait_for_terminal_projection(TaskId, 100),
+    wait_for_no_coordinators(100),
+
+    OversizedMarker = binary:copy(<<"pinned-safety-marker">>, 64),
+    OversizedCapability =
+        #{tools => [],
+          constraints => #{mutation_guard => OversizedMarker}},
+    ExpectedOversizedSafety =
+        #{capability_scope => OversizedCapability,
+          mutation_ledger => [],
+          unknown_outcome_ledger => [],
+          idempotency_state => #{}},
+    PerCallAllowance = 128,
+    true = safety_state_bytes(ExpectedOversizedSafety) > PerCallAllowance,
+    OversizedResponder =
+        fun(_CallOpts) ->
+                TestPid ! delegate_oversized_safety_llm_started,
+                terminal_response(<<"must not start">>)
+        end,
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{round_sequence =>
+                 [#{llm => safety_llm(OversizedResponder)}]}),
+    OversizedRequest =
+        #{request_id => <<"delegate-pinned-safety-oversized">>,
+          correlation_id =>
+              <<"delegate-pinned-safety-oversized-correlation">>,
+          objective => #{goal => <<"reject without truncating safety">>},
+          output_contract => #{format => <<"text">>},
+          capability_scope => OversizedCapability,
+          artifacts => [],
+          budgets =>
+              #{max_context_tokens => PerCallAllowance,
+                reserved_completion_tokens => 0,
+                max_total_prompt_tokens => 100000}},
+    start_safety_preflight_trace(),
+    {OversizedProjection, OversizedTerminal} =
+        try
+            {ok, #{task_id := OversizedTaskId}} =
+                soma_delegate:submit(OversizedRequest),
+            Projection = receive_safety_preflight_projection(),
+            Terminal =
+                wait_for_terminal_projection(OversizedTaskId, 100),
+            {Projection, Terminal}
+        after
+            clear_safety_preflight_trace()
+        end,
+
+    ActualSafetyStates =
+        [maps:get(pinned_safety_state, Projection, missing)
+         || Projection <-
+                [FirstProjection, SecondProjection, OversizedProjection]],
+    ExpectedSafetyStates =
+        [ExpectedInitialSafety, ExpectedCommittedSafety,
+         ExpectedOversizedSafety],
+    Actual =
+        #{safety_states => ActualSafetyStates,
+          oversized_terminal =>
+              maps:with([status, result], OversizedTerminal),
+          oversized_llm_started => oversized_safety_llm_started()},
+    Expected =
+        #{safety_states => ExpectedSafetyStates,
+          oversized_terminal =>
+              #{status => failed, result => context_budget_exceeded},
+          oversized_llm_started => false},
+    ?assertEqual(Expected, Actual).
+
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
 invoke(#{mode := <<"timeout">>}, _Ctx) ->
@@ -932,6 +1074,69 @@ receive_recent_window_prompt() ->
             Projection
     after 2000 ->
         ct:fail(delegate_recent_window_prompt_not_observed)
+    end.
+
+receive_safety_prompt(Round) ->
+    receive
+        {delegate_safety_prompt, Round, Projection} ->
+            Projection
+    after 2000 ->
+        ct:fail({delegate_safety_prompt_not_observed, Round})
+    end.
+
+safety_llm(Responder) ->
+    #{provider => openai_compat,
+      base_url => <<"api.example.test/v1">>,
+      api_key => <<"test-only-key">>,
+      model => <<"test-model">>,
+      response => Responder}.
+
+send_safety_round_result(
+  CoordinatorPid, TaskId,
+  #{round_id := RoundId,
+    worker_pid := WorkerPid,
+    worker_identity := WorkerIdentity,
+    result_capability := ResultCapability},
+  Result) ->
+    CoordinatorPid !
+        {delegate_round_result, TaskId, RoundId, WorkerPid,
+         WorkerIdentity, ResultCapability, Result},
+    ok.
+
+safety_state_bytes(SafetyState) ->
+    byte_size(
+      iolist_to_binary(io_lib:format("~0p", [SafetyState]))).
+
+start_safety_preflight_trace() ->
+    {module, soma_delegate_prompt} =
+        code:ensure_loaded(soma_delegate_prompt),
+    _ = erlang:trace_pattern(
+          {soma_delegate_prompt, preflight, 3}, true, [local]),
+    _ = erlang:trace(new, true, [call, {tracer, self()}]),
+    ok.
+
+receive_safety_preflight_projection() ->
+    receive
+        {trace, _CoordinatorPid, call,
+         {soma_delegate_prompt, preflight,
+          [Projection, _Budgets, _CommittedPromptTokens]}} ->
+            Projection
+    after 2000 ->
+        ct:fail(delegate_safety_preflight_not_observed)
+    end.
+
+clear_safety_preflight_trace() ->
+    _ = erlang:trace(new, false, [call]),
+    _ = erlang:trace_pattern(
+          {soma_delegate_prompt, preflight, 3}, false, [local]),
+    ok.
+
+oversized_safety_llm_started() ->
+    receive
+        delegate_oversized_safety_llm_started ->
+            true
+    after 100 ->
+        false
     end.
 
 terminal_response(Text) ->
