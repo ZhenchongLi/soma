@@ -73,6 +73,19 @@ test_load_carries_optional_keys_and_omits_absent() ->
 load_carries_optional_keys_and_omits_absent_test() ->
     test_load_carries_optional_keys_and_omits_absent().
 
+%% Issue #235 criterion 4: TOML text keys may only map through the fixed config
+%% vocabulary. A source assertion proves the production module contains no
+%% atom-creation BIF, including one that could be dormant at runtime.
+test_toml_key_path_has_no_atom_creation_bif() ->
+    {ok, Source} =
+        file:read_file("apps/soma_actor/src/soma_config.erl"),
+    AtomCreationBifs = [<<"list_to_atom(">>, <<"binary_to_atom(">>],
+    [?assertEqual(nomatch, binary:match(Source, Bif))
+     || Bif <- AtomCreationBifs].
+
+toml_key_path_has_no_atom_creation_bif_test() ->
+    test_toml_key_path_has_no_atom_creation_bif().
+
 %% Criterion (#199): optional `plan = true' is carried into the daemon
 %% `model_config' so the CLI ask path can opt into real-provider planning mode
 %% from config without changing the runtime executor.
