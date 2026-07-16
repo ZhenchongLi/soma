@@ -48,6 +48,7 @@ init(#{request := Request = #{request_id := RequestId,
              mutation_ledger => [],
              unknown_outcome_ledger => [],
              idempotency_state => #{},
+             adaptive_events => false,
              recent_round_data => undefined,
              task_summary => #{},
              recent_rounds => [],
@@ -515,11 +516,16 @@ commit_round_deltas(Result, Data = #{active_round := ActiveRound}) ->
             error ->
                 MutationData
         end,
-    case maps:find(terminal_result, Result) of
-        {ok, TerminalResult} ->
-            UnknownOutcomeData#{terminal_result := TerminalResult};
-        error ->
-            UnknownOutcomeData
+    TerminalData =
+        case maps:find(terminal_result, Result) of
+            {ok, TerminalResult} ->
+                UnknownOutcomeData#{terminal_result := TerminalResult};
+            error ->
+                UnknownOutcomeData
+        end,
+    case maps:get(adaptive_event, Result, false) of
+        true -> TerminalData#{adaptive_events := true};
+        false -> TerminalData
     end.
 
 commit_mutation(Mutation,
@@ -600,6 +606,8 @@ commit_action_observation(
            budgets := Budgets}) ->
     ArtifactData = commit_action_artifact(Result, Data),
     ObservationRef = action_observation_ref(Observation),
+    RunId = maps:get(run_id, Result, undefined),
+    ToolCallIds = action_tool_call_ids(RunId),
     RecentRound = #{round => RoundId,
                     status => Status,
                     observation => Observation},
@@ -615,7 +623,10 @@ commit_action_observation(
                       recent_rounds := RetainedRounds},
     ok = emit_delegate_event(
            <<"delegate.action.completed">>, RoundId,
-           #{status => Status, observation_ref => ObservationRef},
+           #{status => Status,
+             run_id => RunId,
+             tool_call_ids => ToolCallIds,
+             observation_ref => ObservationRef},
            CommittedData),
     CommittedData;
 commit_action_observation(_Result, _RoundId, Data) ->
@@ -922,6 +933,8 @@ valid_round_result(Result) when is_map(Result) ->
           phase, Result, [decision, llm, action]) andalso
         valid_optional_enum(
           decision, Result, [continue, terminal]) andalso
+        valid_optional_boolean(adaptive_event, Result) andalso
+        valid_optional_binary(run_id, Result) andalso
         valid_optional_result_term(checkpoint, Result) andalso
         valid_optional_result_map(usage, Result) andalso
         valid_optional_result_map(mutation, Result) andalso
@@ -936,7 +949,7 @@ valid_round_result_keys(Result) ->
     Allowed =
         [status, phase, decision, reason, checkpoint, usage,
          mutation, unknown_outcome, artifact, artifact_excerpt,
-         terminal_result],
+         terminal_result, adaptive_event, run_id],
     lists:all(
       fun(Key) -> lists:member(Key, Allowed) end,
       maps:keys(Result)).
@@ -968,6 +981,20 @@ valid_optional_result_term(Key, Result) ->
             soma_delegate_task_data:safe_term(Value);
         error ->
             true
+    end.
+
+valid_optional_boolean(Key, Result) ->
+    case maps:find(Key, Result) of
+        {ok, Value} when is_boolean(Value) -> true;
+        {ok, _InvalidValue} -> false;
+        error -> true
+    end.
+
+valid_optional_binary(Key, Result) ->
+    case maps:find(Key, Result) of
+        {ok, Value} when is_binary(Value) -> true;
+        {ok, _InvalidValue} -> false;
+        error -> true
     end.
 
 round_projection(
@@ -1100,6 +1127,21 @@ emit_delegate_event(
 emit_round_completed(RoundId, Outcome, Data) ->
     emit_delegate_event(
       <<"delegate.round.completed">>, RoundId, Outcome, Data).
+
+action_tool_call_ids(undefined) ->
+    [];
+action_tool_call_ids(RunId) when is_binary(RunId) ->
+    [ToolCallId
+     || #{event_type := <<"tool.started">>,
+          tool_call_id := ToolCallId} <-
+            soma_event_store:by_run(event_store_pid(), RunId),
+        is_binary(ToolCallId)].
+
+event_store_pid() ->
+    Children = supervisor:which_children(soma_sup),
+    {soma_event_store, Pid, _Type, _Modules} =
+        lists:keyfind(soma_event_store, 1, Children),
+    Pid.
 
 public_projection(Data) ->
     maps:with([request_id, task_id, correlation_id, status], Data).
