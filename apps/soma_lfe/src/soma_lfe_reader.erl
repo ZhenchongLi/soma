@@ -4,8 +4,9 @@
 %% and nested parenthesised lists. Does NOT handle: floats, character literals,
 %% LFE quoting syntax, or comments. Any unrecognised token produces a diagnostic.
 %%
-%% Forms come back as Erlang terms: atoms are atoms, strings are binaries,
-%% integers are integers, lists are lists.
+%% Forms come back as Erlang terms: existing atoms are atoms, fresh unquoted
+%% symbols are {external_symbol, Binary}, strings are binaries, integers are
+%% integers, and lists are lists.
 -module(soma_lfe_reader).
 
 -export([read_forms/1, read_forms/2]).
@@ -15,7 +16,7 @@
 -spec read_forms(binary()) ->
     {ok, [term()]} | {error, [diagnostic()]}.
 read_forms(Source) when is_binary(Source) ->
-    read_forms(Source, create_atoms).
+    read_forms(Source, existing_atoms_only).
 
 -spec read_forms(binary(), create_atoms | existing_atoms_only) ->
     {ok, [term()]} | {error, [diagnostic()]}.
