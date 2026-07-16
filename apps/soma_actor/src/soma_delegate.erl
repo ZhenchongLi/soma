@@ -4,7 +4,7 @@
 
 -behaviour(gen_server).
 
--define(MAX_TERMINAL_PROJECTION_BYTES, 512).
+-define(MAX_TERMINAL_PROJECTION_BYTES, 4096).
 -define(FORWARDED_REQUEST_TIMEOUT_MS, 2500).
 
 -export([start_link/0, submit/1, status/1, cancel/1, artifact_slice/4]).
@@ -102,9 +102,9 @@ status_task(TaskId, From,
     case maps:get(TaskId, Tasks, undefined) of
         undefined ->
             {reply, {error, not_found}, State};
-        Route = #{terminal_projection := Projection}
+        #{terminal_projection := Projection}
           when is_map(Projection) ->
-            {reply, {ok, public_projection(Route, Projection)}, State};
+            {reply, {ok, public_projection(Projection)}, State};
         #{coordinator_pid := CoordinatorPid} when is_pid(CoordinatorPid) ->
             StatusRef = make_ref(),
             {CallerPid, _ReplyTag} = From,
@@ -132,8 +132,8 @@ cancel_task(TaskId, From, State = #{tasks := Tasks}) ->
     case maps:get(TaskId, Tasks, undefined) of
         undefined ->
             {reply, {error, not_found}, State};
-        Route = #{terminal_projection := #{status := cancelled} = Projection} ->
-            {reply, {ok, public_projection(Route, Projection)}, State};
+        #{terminal_projection := #{status := cancelled} = Projection} ->
+            {reply, {ok, public_projection(Projection)}, State};
         #{terminal_projection := Projection} when is_map(Projection) ->
             {reply, {error, not_running}, State};
         Route = #{coordinator_pid := CoordinatorPid}
@@ -233,9 +233,9 @@ remove_active_coordinator(MRef, CoordinatorPid,
                     CoordinatorPid ->
                         Projection =
                             bounded_terminal_projection(
-                              coordinator_crashed_projection()),
+                              coordinator_crashed_projection(), Route),
                         PublicProjection =
-                            public_projection(Route, Projection),
+                            public_projection(Projection),
                         ok = soma_delegate_event:append(
                                <<"delegate.task.terminal">>, TaskId,
                                route_correlation_id(Route), 0,
@@ -267,9 +267,9 @@ store_terminal_projection(
                   terminal_projection := undefined} ->
             _ = erlang:demonitor(MRef, [flush]),
             BoundedProjection =
-                bounded_terminal_projection(Projection),
+                bounded_terminal_projection(Projection, Route),
             PublicProjection =
-                public_projection(Route, BoundedProjection),
+                public_projection(BoundedProjection),
             reply_cancel_waiters(Route, PublicProjection),
             TerminalRoute =
                 terminal_route(Route, BoundedProjection),
@@ -466,8 +466,8 @@ cancel_timer(TimerRef) when is_reference(TimerRef) ->
           TimerRef, [{async, false}, {info, false}]),
     ok.
 
-public_projection(Route, Projection) ->
-    maps:merge(maps:get(accepted_handle, Route), Projection).
+public_projection(Projection) ->
+    Projection.
 
 terminal_route(Route, Projection) ->
     #{request_id => maps:get(request_id, Route),
@@ -496,63 +496,84 @@ mint_task_id() ->
     <<"delegate-task-", Suffix/binary>>.
 
 coordinator_crashed_projection() ->
-    #{status => failed, reason => coordinator_crashed}.
+    #{status => failed, result => coordinator_crashed}.
 
-bounded_terminal_projection(Projection) ->
+bounded_terminal_projection(Projection, Route) ->
+    AcceptedHandle = maps:get(accepted_handle, Route),
+    RequestId = maps:get(request_id, AcceptedHandle),
+    TaskId = maps:get(task_id, AcceptedHandle),
+    CorrelationId = maps:get(correlation_id, AcceptedHandle),
     Status = terminal_status(maps:get(status, Projection, failed)),
-    Base = #{status => Status},
-    WithRound =
-        case maps:get(round, Projection, undefined) of
-            Round when is_integer(Round), Round >= 0 ->
-                Base#{round => Round};
-            _NoBoundedRound ->
-                Base
-        end,
-    WithResult =
-        case maps:find(result, Projection) of
-            {ok, Result} ->
-                case soma_delegate_task_data:safe_term(Result) of
-                    true -> WithRound#{result => Result};
-                    false -> WithRound
-                end;
-            error ->
-                WithRound
-        end,
-    WithUsage =
-        case maps:find(usage, Projection) of
-            {ok, Usage} ->
-                case valid_terminal_usage(Usage) of
-                    true -> WithResult#{usage => Usage};
-                    false -> WithResult
-                end;
-            error ->
-                WithResult
-        end,
-    WithArtifacts =
-        case maps:find(artifacts, Projection) of
-            {ok, Artifacts} ->
-                case valid_terminal_artifacts(Artifacts) of
-                    true -> WithUsage#{artifacts => Artifacts};
-                    false -> WithUsage
-                end;
-            error ->
-                WithUsage
-        end,
+    Result = valid_terminal_result(
+               maps:get(result, Projection, undefined)),
+    Usage = valid_terminal_usage_or_default(
+              maps:get(usage, Projection, #{})),
+    Artifacts = valid_terminal_artifacts_or_default(
+                  maps:get(artifacts, Projection, [])),
+    Mutations = valid_terminal_ledger_or_default(
+                  maps:get(mutations, Projection, [])),
+    UnknownOutcomes = valid_terminal_ledger_or_default(
+                        maps:get(unknown_outcomes, Projection, [])),
     Candidate =
-        case maps:get(reason, Projection, undefined) of
-            undefined ->
-                WithArtifacts;
-            Reason ->
-                WithArtifacts#{reason =>
-                                   soma_delegate_event:reason_class(Reason)}
-        end,
+        #{request_id => RequestId,
+          task_id => TaskId,
+          correlation_id => CorrelationId,
+          status => Status,
+          result => Result,
+          artifacts => Artifacts,
+          mutations => Mutations,
+          unknown_outcomes => UnknownOutcomes,
+          usage => Usage,
+          trace_ref => CorrelationId},
     case encoded_bytes(Candidate) =<
              ?MAX_TERMINAL_PROJECTION_BYTES of
         true ->
             Candidate;
         false ->
-            #{status => failed, reason => failed}
+            overflow_terminal_projection(Candidate)
     end.
+
+valid_terminal_result(Result) ->
+    case soma_delegate_task_data:safe_term(Result) of
+        true -> Result;
+        false -> undefined
+    end.
+
+valid_terminal_usage_or_default(Usage) ->
+    case valid_terminal_usage(Usage) of
+        true -> Usage;
+        false -> #{rounds => 0,
+                   llm_calls => 0,
+                   tool_calls => 0,
+                   prompt_tokens => 0}
+    end.
+
+valid_terminal_artifacts_or_default(Artifacts) ->
+    case valid_terminal_artifacts(Artifacts) of
+        true -> Artifacts;
+        false -> []
+    end.
+
+valid_terminal_ledger_or_default(Ledger) when is_list(Ledger) ->
+    case soma_delegate_task_data:safe_term(Ledger) of
+        true -> Ledger;
+        false -> []
+    end;
+valid_terminal_ledger_or_default(_InvalidLedger) ->
+    [].
+
+overflow_terminal_projection(
+  Candidate = #{mutations := Mutations,
+                unknown_outcomes := UnknownOutcomes}) ->
+    Candidate#{result := terminal_projection_too_large,
+               artifacts := [],
+               mutations := overflow_ledger(Mutations),
+               unknown_outcomes := overflow_ledger(UnknownOutcomes)}.
+
+overflow_ledger([]) ->
+    [];
+overflow_ledger(Ledger) ->
+    [#{count => length(Ledger), truncated => true}].
 
 terminal_status(Status)
   when Status =:= succeeded; Status =:= failed;

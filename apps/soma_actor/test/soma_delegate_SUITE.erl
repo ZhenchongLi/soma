@@ -153,10 +153,11 @@ test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections(
 
     exit(CoordinatorPid, kill),
     TerminalProjection = wait_for_terminal_projection(TaskId, 100),
-    ?assertEqual(#{status => failed, reason => coordinator_crashed},
-                 TerminalProjection),
+    ?assertEqual(failed, maps:get(status, TerminalProjection)),
+    ?assertEqual(coordinator_crashed,
+                 maps:get(result, TerminalProjection)),
     ?assert(byte_size(term_to_binary(TerminalProjection, [deterministic])) =<
-            512),
+            4096),
     TerminalIngressState = sys:get_state(soma_delegate),
     lists:foreach(
       fun(TaskLocalValue) ->
@@ -193,8 +194,8 @@ test_coordinator_owns_task_state_ingress_keeps_routes_and_terminal_projections(
         wait_for_terminal_projection(LargeFailureTaskId, 100),
     ?assert(byte_size(
               term_to_binary(LargeTerminalProjection, [deterministic])) =<
-            512),
-    ?assertEqual(failed, maps:get(reason, LargeTerminalProjection)),
+            4096),
+    ?assertEqual(undefined, maps:get(result, LargeTerminalProjection)),
     ?assertEqual([], delegate_sensitive_terms(LargeTerminalProjection)),
     ?assertNot(term_contains(LargeTerminalProjection, LargeSecret)),
     ?assertNot(term_contains(LargeFailureStatus, LargeSecret)),
@@ -526,16 +527,17 @@ test_coordinator_and_round_worker_crashes_leave_ingress_responsive(_Config) ->
     ?assertEqual(IngressPid, whereis(soma_delegate)),
     CoordinatorCrashProjection =
         wait_for_terminal_projection(CoordinatorCrashTaskId, 100),
-    ?assertEqual(#{status => failed, reason => coordinator_crashed},
-                 CoordinatorCrashProjection),
+    ?assertEqual(failed, maps:get(status, CoordinatorCrashProjection)),
+    ?assertEqual(coordinator_crashed,
+                 maps:get(result, CoordinatorCrashProjection)),
     ?assert(byte_size(term_to_binary(CoordinatorCrashProjection,
-                                     [deterministic])) =< 512),
+                                     [deterministic])) =< 4096),
     ?assertEqual(IngressPid, whereis(soma_delegate)),
     ?assertMatch({ok, #{status := failed,
-                        reason := coordinator_crashed}},
+                        result := coordinator_crashed}},
                  soma_delegate:status(CoordinatorCrashTaskId)),
     ?assertMatch({ok, #{status := failed,
-                        reason := coordinator_crashed}},
+                        result := coordinator_crashed}},
                  StatusCrashRaceReply),
     ?assertEqual(
        {ok, CoordinatorCrashHandle},
@@ -550,16 +552,13 @@ test_coordinator_and_round_worker_crashes_leave_ingress_responsive(_Config) ->
     wait_for_process_dead(RoundWorkerPid, 100),
     WorkerCrashProjection =
         wait_for_terminal_projection(WorkerCrashTaskId, 100),
-    ?assertEqual(#{status => failed,
-                   reason => round_worker_crashed,
-                   round => 1},
-                 WorkerCrashProjection),
+    ?assertEqual(failed, maps:get(status, WorkerCrashProjection)),
+    ?assertEqual(undefined, maps:get(result, WorkerCrashProjection)),
     ?assert(byte_size(term_to_binary(WorkerCrashProjection,
-                                     [deterministic])) =< 512),
+                                     [deterministic])) =< 4096),
     ?assertEqual(IngressPid, whereis(soma_delegate)),
     ?assertMatch({ok, #{status := failed,
-                        reason := round_worker_crashed,
-                        round := 1}},
+                        result := undefined}},
                  soma_delegate:status(WorkerCrashTaskId)),
 
     FreshSpec = #{request_id => <<"delegate-request-after-crashes">>,
@@ -1631,7 +1630,7 @@ assert_terminal_cleanup_scrubs_task_state(Outcome) ->
     ?assertEqual(expected_cleanup_status(Outcome),
                  maps:get(status, TerminalProjection)),
     ?assert(byte_size(term_to_binary(TerminalProjection, [deterministic])) =<
-            512),
+            4096),
 
     TerminalIngressState = sys:get_state(soma_delegate),
     TerminalRoute =
@@ -1642,8 +1641,8 @@ assert_terminal_cleanup_scrubs_task_state(Outcome) ->
     RetainedEvents =
         soma_event_store:by_correlation(
           event_store_pid(), CorrelationId),
-    OldTaskState =
-        [Objective, Transcript, Budgets, Usage, Mutation, ResultSentinel,
+    OldPrivateTaskState =
+        [Objective, Transcript, Budgets, Usage, ResultSentinel,
          OpaqueHandle, RawLease, ResultCapability],
     lists:foreach(
       fun(TaskLocalValue) ->
@@ -1651,7 +1650,9 @@ assert_terminal_cleanup_scrubs_task_state(Outcome) ->
                                        TaskLocalValue)),
               ?assertNot(term_contains(RetainedEvents, TaskLocalValue))
       end,
-      OldTaskState),
+      OldPrivateTaskState),
+    ?assert(term_contains(TerminalIngressState, Mutation)),
+    ?assertNot(term_contains(RetainedEvents, Mutation)),
 
     FreshRequestId =
         <<"delegate-request-fresh-after-", OutcomeBin/binary>>,
@@ -1689,7 +1690,7 @@ assert_terminal_cleanup_scrubs_task_state(Outcome) ->
       fun(TaskLocalValue) ->
               ?assertNot(term_contains(FreshData, TaskLocalValue))
       end,
-      OldTaskState),
+      [Mutation | OldPrivateTaskState]),
     {ok, #{status := cancelled}} = soma_delegate:cancel(FreshTaskId),
     wait_for_process_dead(FreshCoordinatorPid, 100).
 
@@ -2161,7 +2162,15 @@ test_completed_delegate_preserves_existing_result_contracts(_Config) ->
               task_id => DelegateTaskId,
               correlation_id => DelegateCorrelationId,
               status => succeeded,
-              round => 1}},
+              result => undefined,
+              artifacts => [],
+              mutations => [],
+              unknown_outcomes => [],
+              usage => #{rounds => 1,
+                         llm_calls => 1,
+                         tool_calls => 1,
+                         prompt_tokens => 0},
+              trace_ref => DelegateCorrelationId}},
        wait_for_task_status(DelegateTaskId, succeeded, 200)),
 
     ActualContracts =
@@ -2540,12 +2549,12 @@ later_round_fixture(Phase, Observer) ->
 
 assert_one_terminal_cancellation(TaskId, PublicProjection) ->
     ?assertEqual(
-       [#{status => cancelled, round => 1}],
+       [PublicProjection],
        cancelled_terminal_projections(TaskId)),
     ?assertEqual({ok, PublicProjection}, soma_delegate:status(TaskId)),
     ?assertEqual({ok, PublicProjection}, soma_delegate:cancel(TaskId)),
     ?assertEqual(
-       [#{status => cancelled, round => 1}],
+       [PublicProjection],
        cancelled_terminal_projections(TaskId)).
 
 cancelled_terminal_projections(TaskId) ->
