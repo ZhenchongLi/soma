@@ -12,6 +12,7 @@
 -export([test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations/1]).
 -export([test_prompt_schemas_equal_policy_capability_intersection/1]).
 -export([test_round_llm_and_tool_budgets_stop_before_child_start_and_reset/1]).
+-export([test_task_deadline_tears_down_all_owned_execution_children/1]).
 -export([invoke/2]).
 
 all() ->
@@ -22,7 +23,8 @@ all() ->
      test_reader_state_terminal_sequence_threads_observations,
      test_failed_and_timed_out_actions_feed_observations_with_fresh_invocations,
      test_prompt_schemas_equal_policy_capability_intersection,
-     test_round_llm_and_tool_budgets_stop_before_child_start_and_reset].
+     test_round_llm_and_tool_budgets_stop_before_child_start_and_reset,
+     test_task_deadline_tears_down_all_owned_execution_children].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -538,6 +540,25 @@ test_round_llm_and_tool_budgets_stop_before_child_start_and_reset(
                 tool_calls => 0, prompt_tokens => 0}},
     ?assertEqual(Expected, Actual).
 
+test_task_deadline_tears_down_all_owned_execution_children(Config) ->
+    DeadlineMs = 1000,
+    LlmResult = observe_blocked_llm_deadline(DeadlineMs),
+    CliResult = observe_blocked_cli_deadline(DeadlineMs, Config),
+    Expected =
+        [#{case_name => blocked_llm,
+           status => timeout,
+           owned_beam_pids_dead => true,
+           external_process_dead => not_applicable,
+           live_round_workers => 0,
+           live_runs => 0},
+         #{case_name => blocked_cli_action,
+           status => timeout,
+           owned_beam_pids_dead => true,
+           external_process_dead => true,
+           live_round_workers => 0,
+           live_runs => 0}],
+    ?assertEqual(Expected, [LlmResult, CliResult]).
+
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
 invoke(#{mode := <<"timeout">>}, _Ctx) ->
@@ -778,6 +799,228 @@ observe_budget_case(
             LlmWorkers),
       live_round_workers => length(live_round_workers()),
       live_runs => length(live_runs())}.
+
+observe_blocked_llm_deadline(DeadlineMs) ->
+    ok = application:set_env(
+           soma_actor, delegate_runtime_options,
+           #{round_sequence =>
+                 [#{llm => #{directive => hang, timeout_ms => 60000},
+                    decision => terminal}]}),
+    Request =
+        #{request_id => <<"delegate-deadline-blocked-llm">>,
+          correlation_id => <<"delegate-deadline-blocked-llm-correlation">>,
+          objective => #{goal => <<"stop one blocked model call">>},
+          output_contract => #{format => <<"task-data">>},
+          capability_scope => #{tools => []},
+          artifacts => [],
+          budgets => #{deadline_ms => DeadlineMs}},
+    {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+    RoundWorkerPid = wait_for_single_round_worker(100),
+    #{pid := LlmPid} =
+        wait_for_worker_child(
+          RoundWorkerPid, waiting_llm, active_llm, 100),
+    ?assert(is_process_alive(RoundWorkerPid)),
+    ?assert(is_process_alive(LlmPid)),
+
+    Terminal = wait_for_deadline_terminal_or_cancel(TaskId, 300),
+    #{case_name => blocked_llm,
+      status => maps:get(status, Terminal),
+      owned_beam_pids_dead =>
+          lists:all(
+            fun(Pid) -> not is_process_alive(Pid) end,
+            [RoundWorkerPid, LlmPid]),
+      external_process_dead => not_applicable,
+      live_round_workers => length(live_round_workers()),
+      live_runs => length(live_runs())}.
+
+observe_blocked_cli_deadline(DeadlineMs, Config) ->
+    ToolName = delegate_deadline_cli,
+    {Helper, PidFile} =
+        write_deadline_cli_stub(
+          proplists:get_value(priv_dir, Config)),
+    ok = soma_tool_registry:register_tool(
+           #{name => ToolName,
+             effect => reader,
+             idempotent => true,
+             timeout_ms => 60000,
+             adapter => cli,
+             executable => Helper,
+             argv => [PidFile],
+             description => <<"Blocks until the task owner cancels it.">>}),
+    try
+        TestPid = self(),
+        ActionSource =
+            <<"(run-steps (step (id deadline_cli_action) "
+              "(tool delegate_deadline_cli) "
+              "(args (value \"block until deadline\")) "
+              "(timeout_ms 60000)))">>,
+        Responder =
+            fun(_CallOpts) ->
+                    TestPid ! {delegate_deadline_action_llm, self()},
+                    terminal_response(ActionSource)
+            end,
+        ok = application:set_env(
+               soma_actor, delegate_runtime_options,
+               #{tool_policy => #{allowed_tools => [ToolName]},
+                 round_sequence =>
+                     [#{llm =>
+                            #{provider => openai_compat,
+                              base_url => <<"api.example.test/v1">>,
+                              api_key => <<"test-only-key">>,
+                              model => <<"test-model">>,
+                              timeout_ms => 60000,
+                              response => Responder}}]}),
+        CorrelationId =
+            <<"delegate-deadline-blocked-cli-correlation">>,
+        Request =
+            #{request_id => <<"delegate-deadline-blocked-cli">>,
+              correlation_id => CorrelationId,
+              objective => #{goal => <<"stop one blocked CLI action">>},
+              output_contract => #{format => <<"task-data">>},
+              capability_scope => #{tools => [<<"delegate_deadline_cli">>]},
+              artifacts => [],
+              budgets => #{deadline_ms => DeadlineMs}},
+        {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+        ActionLlmPid = receive_deadline_action_llm(),
+        RoundWorkerPid = wait_for_single_round_worker(100),
+        #{pid := RunPid} =
+            wait_for_worker_child(
+              RoundWorkerPid, waiting_run, active_run, 100),
+        ToolCallPid =
+            wait_for_tool_call_pid(CorrelationId, 100),
+        OsPid = wait_for_deadline_os_pid(PidFile, 100),
+        ?assert(is_process_alive(RoundWorkerPid)),
+        ?assert(is_process_alive(RunPid)),
+        ?assert(is_process_alive(ToolCallPid)),
+        ?assert(deadline_os_process_alive(OsPid)),
+
+        Terminal = wait_for_deadline_terminal_or_cancel(TaskId, 300),
+        #{case_name => blocked_cli_action,
+          status => maps:get(status, Terminal),
+          owned_beam_pids_dead =>
+              lists:all(
+                fun(Pid) -> not is_process_alive(Pid) end,
+                [ActionLlmPid, RoundWorkerPid, RunPid, ToolCallPid]),
+          external_process_dead => not deadline_os_process_alive(OsPid),
+          live_round_workers => length(live_round_workers()),
+          live_runs => length(live_runs())}
+    after
+        ok = soma_tool_registry:unregister_tool(ToolName)
+    end.
+
+write_deadline_cli_stub(TmpDir) ->
+    Helper = filename:join(TmpDir, "delegate-deadline-cli.sh"),
+    PidFile = filename:join(TmpDir, "delegate-deadline-cli.pid"),
+    _ = file:delete(PidFile),
+    Script = <<"#!/bin/sh\n"
+               "printf '%s\\n' \"$$\" > \"$1\"\n"
+               "sleep 30\n">>,
+    ok = filelib:ensure_dir(Helper),
+    ok = file:write_file(Helper, Script),
+    ok = file:change_mode(Helper, 8#755),
+    {Helper, PidFile}.
+
+receive_deadline_action_llm() ->
+    receive
+        {delegate_deadline_action_llm, LlmPid} ->
+            LlmPid
+    after 2000 ->
+        ct:fail(delegate_deadline_action_llm_not_started)
+    end.
+
+wait_for_single_round_worker(0) ->
+    ct:fail(delegate_deadline_round_worker_not_started);
+wait_for_single_round_worker(Attempts) ->
+    case live_round_workers() of
+        [RoundWorkerPid] ->
+            RoundWorkerPid;
+        [] ->
+            timer:sleep(10),
+            wait_for_single_round_worker(Attempts - 1)
+    end.
+
+wait_for_worker_child(_WorkerPid, _StateName, _ChildKey, 0) ->
+    ct:fail(delegate_deadline_child_not_started);
+wait_for_worker_child(WorkerPid, StateName, ChildKey, Attempts) ->
+    case sys:get_state(WorkerPid) of
+        {StateName, WorkerData} ->
+            case maps:get(ChildKey, WorkerData, undefined) of
+                Child when is_map(Child) ->
+                    Child;
+                undefined ->
+                    timer:sleep(10),
+                    wait_for_worker_child(
+                      WorkerPid, StateName, ChildKey, Attempts - 1)
+            end;
+        {_OtherStateName, _WorkerData} ->
+            timer:sleep(10),
+            wait_for_worker_child(
+              WorkerPid, StateName, ChildKey, Attempts - 1)
+    end.
+
+wait_for_tool_call_pid(_CorrelationId, 0) ->
+    ct:fail(delegate_deadline_tool_worker_not_started);
+wait_for_tool_call_pid(CorrelationId, Attempts) ->
+    Events =
+        soma_event_store:by_correlation(
+          event_store_pid(), CorrelationId),
+    case [maps:get(tool_call_pid, Event)
+          || #{event_type := <<"tool.started">>} = Event <- Events] of
+        [ToolCallPid] ->
+            ToolCallPid;
+        [] ->
+            timer:sleep(10),
+            wait_for_tool_call_pid(CorrelationId, Attempts - 1)
+    end.
+
+wait_for_deadline_os_pid(_PidFile, 0) ->
+    ct:fail(delegate_deadline_cli_did_not_write_os_pid);
+wait_for_deadline_os_pid(PidFile, Attempts) ->
+    case file:read_file(PidFile) of
+        {ok, Bytes} ->
+            list_to_integer(string:trim(binary_to_list(Bytes)));
+        {error, enoent} ->
+            timer:sleep(10),
+            wait_for_deadline_os_pid(PidFile, Attempts - 1)
+    end.
+
+wait_for_deadline_terminal_or_cancel(TaskId, 0) ->
+    {ok, Cancelled} = soma_delegate:cancel(TaskId),
+    Cancelled;
+wait_for_deadline_terminal_or_cancel(TaskId, Attempts) ->
+    case soma_delegate:status(TaskId) of
+        {ok, #{status := Status} = Projection}
+          when Status =:= succeeded; Status =:= failed;
+               Status =:= rejected; Status =:= timeout;
+               Status =:= cancelled; Status =:= in_doubt ->
+            Projection;
+        {ok, #{status := Status}}
+          when Status =:= accepted; Status =:= running ->
+            timer:sleep(10),
+            wait_for_deadline_terminal_or_cancel(
+              TaskId, Attempts - 1)
+    end.
+
+deadline_os_process_alive(OsPid) ->
+    Kill = os:find_executable("kill"),
+    Port = open_port(
+             {spawn_executable, Kill},
+             [{args, ["-0", integer_to_list(OsPid)]},
+              exit_status, binary, use_stdio, stderr_to_stdout]),
+    deadline_os_process_probe_result(Port).
+
+deadline_os_process_probe_result(Port) ->
+    receive
+        {Port, {data, _Bytes}} ->
+            deadline_os_process_probe_result(Port);
+        {Port, {exit_status, 0}} ->
+            true;
+        {Port, {exit_status, _NonZero}} ->
+            false
+    after 1000 ->
+        erlang:port_close(Port),
+        ct:fail(delegate_deadline_os_process_probe_timeout)
+    end.
 
 budget_action_response(1) ->
     <<"(run-steps (step (id budget_action_one) (tool echo) "
