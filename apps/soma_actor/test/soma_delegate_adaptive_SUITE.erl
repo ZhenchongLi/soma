@@ -18,6 +18,7 @@
 -export([test_recent_round_window_replaces_old_observations_with_one_summary/1]).
 -export([test_pinned_safety_state_is_exact_and_never_truncated/1]).
 -export([test_maximum_round_prompts_obey_cumulative_input_bound/1]).
+-export([test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded/1]).
 -export([invoke/2]).
 
 all() ->
@@ -34,7 +35,8 @@ all() ->
      test_oversized_observation_uses_stable_task_artifact_and_bounded_slice,
      test_recent_round_window_replaces_old_observations_with_one_summary,
      test_pinned_safety_state_is_exact_and_never_truncated,
-     test_maximum_round_prompts_obey_cumulative_input_bound].
+     test_maximum_round_prompts_obey_cumulative_input_bound,
+     test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded].
 
 init_per_testcase(_TestCase, Config) ->
     ok = application:unset_env(soma_actor, delegate_runtime_options),
@@ -1057,6 +1059,199 @@ test_maximum_round_prompts_obey_cumulative_input_bound(_Config) ->
     ?assert(
        TerminalPromptTokens =< RoundCount * PerCallInputAllowance),
     ?assertEqual(lists:sum(Estimates), TerminalPromptTokens).
+
+test_adaptive_events_are_documented_scrubbed_and_4096_byte_bounded(
+  _Config) ->
+    ToolName = delegate_state_probe,
+    ok = soma_tool_registry:register_tool(
+           #{name => ToolName,
+             effect => state,
+             idempotent => false,
+             timeout_ms => 1000,
+             adapter => erlang_module,
+             module => ?MODULE,
+             description => <<"Records one audited state transition.">>}),
+    OversizedSecret =
+        binary:copy(<<"delegate-event-secret-sentinel">>, 256),
+    ProcessRef = make_ref(),
+    ProcessFun = fun() -> OversizedSecret end,
+    Port = open_port({spawn_executable, "/bin/cat"}, [binary]),
+    try
+        Action =
+            #{kind => run_steps,
+              steps =>
+                  [#{id => audited_state_action,
+                     tool => ToolName,
+                     args => #{value => OversizedSecret}}]},
+        TerminalReply =
+            #{kind => reply, text => <<"adaptive audit complete">>},
+        RuntimeNoise =
+            #{oversized_secret => OversizedSecret,
+              owner => self(),
+              monitor => ProcessRef,
+              port => Port,
+              callback => ProcessFun},
+        ok = application:set_env(
+               soma_actor, delegate_runtime_options,
+               #{tool_policy =>
+                     #{allowed_tools => [ToolName],
+                       event_test_noise => RuntimeNoise},
+                 round_sequence =>
+                     [#{llm =>
+                            #{directive => proposal,
+                              output => Action},
+                        event_test_noise => RuntimeNoise},
+                      #{llm =>
+                            #{directive => proposal,
+                              output => TerminalReply},
+                        event_test_noise => RuntimeNoise}]}),
+        CorrelationId = <<"delegate-adaptive-events-correlation">>,
+        Request =
+            #{request_id => <<"delegate-adaptive-events">>,
+              correlation_id => CorrelationId,
+              objective => #{goal => <<"exercise adaptive audit events">>},
+              output_contract => #{format => <<"text">>},
+              capability_scope =>
+                  #{tools => [atom_to_binary(ToolName, utf8)]},
+              artifacts => [],
+              budgets => #{max_observation_bytes => 64}},
+
+        {ok, #{task_id := TaskId}} = soma_delegate:submit(Request),
+        Terminal = wait_for_terminal_projection(TaskId, 100),
+        #{status := succeeded,
+          artifacts := [#{handle := ObservationHandle}]} = Terminal,
+        Events =
+            soma_event_store:by_correlation(
+              event_store_pid(), CorrelationId),
+        [#{run_id := RunId,
+           tool_call_id := ToolCallId}] =
+            [Event || #{event_type := <<"tool.started">>,
+                        step_id := audited_state_action} = Event <- Events],
+        Forbidden =
+            [OversizedSecret, self(), ProcessRef, Port, ProcessFun],
+        Rows =
+            [{decision, <<"delegate.decision.completed">>},
+             {action, <<"delegate.action.completed">>},
+             {terminal, <<"delegate.task.terminal">>}],
+        Actual =
+            [adaptive_event_observation(Row, Events, Forbidden)
+             || Row <- Rows],
+        Expected =
+            [#{case_name => decision,
+               event_count => 2,
+               rounds => [1, 2],
+               documented_fields =>
+                   [#{action_summary =>
+                          #{kind => run_steps, step_count => 1},
+                      global_policy_verdict => allow,
+                      task_capability_verdict => allow},
+                    #{action_summary => #{kind => reply},
+                      global_policy_verdict => allow,
+                      task_capability_verdict => allow}],
+               bounded => true,
+               scrubbed => true},
+             #{case_name => action,
+               event_count => 1,
+               rounds => [1],
+               documented_fields =>
+                   [#{run_id => RunId,
+                      tool_call_ids => [ToolCallId],
+                      observation_ref => #{handle => ObservationHandle}}],
+               bounded => true,
+               scrubbed => true},
+             #{case_name => terminal,
+               event_count => 1,
+               rounds => [0],
+               documented_fields =>
+                   [#{status => succeeded,
+                      mutation_state =>
+                          [#{round => 1,
+                             run_id => RunId,
+                             step_id => audited_state_action,
+                             tool => ToolName,
+                             outcome => succeeded}],
+                      unknown_outcome_state => []}],
+               bounded => true,
+               scrubbed => true}],
+        ?assertEqual(Expected, Actual)
+    after
+        erlang:port_close(Port),
+        ok = soma_tool_registry:unregister_tool(ToolName)
+    end.
+
+adaptive_event_observation(
+  {CaseName, EventType}, Events, Forbidden) ->
+    Matching =
+        [Event || #{event_type := ActualType} = Event <- Events,
+                  ActualType =:= EventType],
+    #{case_name => CaseName,
+      event_count => length(Matching),
+      rounds => [maps:get(round, Event, missing) || Event <- Matching],
+      documented_fields =>
+          [adaptive_event_fields(CaseName, Event) || Event <- Matching],
+      bounded =>
+          lists:all(
+            fun(Event) ->
+                    byte_size(term_to_binary(Event, [deterministic])) =<
+                        soma_delegate_event:max_bytes()
+            end,
+            Matching),
+      scrubbed =>
+          lists:all(
+            fun(Event) ->
+                    no_process_local_terms(Event) andalso
+                        lists:all(
+                          fun(Value) ->
+                                  not adaptive_term_contains(Event, Value)
+                          end,
+                          Forbidden)
+            end,
+            Matching)}.
+
+adaptive_event_fields(decision, #{payload := Payload}) ->
+    maps:with(
+      [action_summary, global_policy_verdict,
+       task_capability_verdict],
+      Payload);
+adaptive_event_fields(action, Event = #{payload := Payload}) ->
+    (maps:with([tool_call_ids, observation_ref], Payload))#{
+      run_id => maps:get(run_id, Event, missing)};
+adaptive_event_fields(terminal, #{payload := Payload}) ->
+    maps:with(
+      [status, mutation_state, unknown_outcome_state], Payload).
+
+no_process_local_terms(Term) when is_map(Term) ->
+    lists:all(
+      fun no_process_local_terms/1,
+      maps:keys(Term) ++ maps:values(Term));
+no_process_local_terms(Term) when is_list(Term) ->
+    lists:all(fun no_process_local_terms/1, Term);
+no_process_local_terms(Term) when is_tuple(Term) ->
+    no_process_local_terms(tuple_to_list(Term));
+no_process_local_terms(Term)
+  when is_pid(Term); is_port(Term); is_reference(Term);
+       is_function(Term) ->
+    false;
+no_process_local_terms(_Term) ->
+    true.
+
+adaptive_term_contains(Term, Term) ->
+    true;
+adaptive_term_contains(Map, Needle) when is_map(Map) ->
+    lists:any(
+      fun({Key, Value}) ->
+              adaptive_term_contains(Key, Needle) orelse
+                  adaptive_term_contains(Value, Needle)
+      end,
+      maps:to_list(Map));
+adaptive_term_contains(List, Needle) when is_list(List) ->
+    lists:any(
+      fun(Value) -> adaptive_term_contains(Value, Needle) end,
+      List);
+adaptive_term_contains(Tuple, Needle) when is_tuple(Tuple) ->
+    adaptive_term_contains(tuple_to_list(Tuple), Needle);
+adaptive_term_contains(_Term, _Needle) ->
+    false.
 
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
