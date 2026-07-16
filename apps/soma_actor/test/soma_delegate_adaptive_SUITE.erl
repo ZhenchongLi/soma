@@ -1056,7 +1056,7 @@ test_maximum_round_prompts_obey_cumulative_input_bound(_Config) ->
          Estimates)),
     ?assert(
        TerminalPromptTokens =< RoundCount * PerCallInputAllowance),
-    ?assertEqual(lists:sum(Estimates) + 1, TerminalPromptTokens).
+    ?assertEqual(lists:sum(Estimates), TerminalPromptTokens).
 
 invoke(#{mode := <<"error">>}, _Ctx) ->
     {error, known_state_failure_reason()};
