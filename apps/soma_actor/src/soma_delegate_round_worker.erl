@@ -40,6 +40,7 @@ init(Opts = #{coordinator_pid := CoordinatorPid,
                  maps:get(capability_scope, Opts, #{tools => []}),
              snapshot => maps:get(snapshot, Opts, #{}),
              work => Work,
+             adaptive_mode => model_selects_proposal(Work),
              pending_budget => undefined,
              provider_usage => undefined,
              active_llm => undefined,
@@ -235,10 +236,13 @@ handle_event(info,
                             decision =>
                                 maps:get(decision, Work, terminal)},
                           ObservationFields),
+                    Result1 =
+                        maybe_add_adaptive_mutation(
+                          succeeded, ActiveRun, Data, Result0),
                     report_round_result(
                       Data#{active_run := undefined},
-                      maybe_add_adaptive_mutation(
-                        succeeded, ActiveRun, Data, Result0));
+                      maybe_add_adaptive_run_id(
+                        ActiveRun, Data, Result1));
                 {error, Reason} ->
                     report_round_result(
                       Data#{active_run := undefined},
@@ -401,6 +405,9 @@ admit_model_result(ModelResult, Data) ->
         {ok, RawProposal} ->
             admit_raw_proposal(RawProposal, Data);
         {error, Reason} ->
+            ok = emit_adaptive_decision(
+                   #{kind => invalid}, not_evaluated,
+                   not_evaluated, Data),
             report_round_result(
               Data,
               #{status => failed,
@@ -418,16 +425,25 @@ admit_raw_proposal(RawProposal,
                     case soma_delegate_capability:check(
                            Proposal, CapabilityScope) of
                         allow ->
+                            ok = emit_adaptive_decision(
+                                   Proposal, allow, allow, Data),
                             execute_admitted_proposal(Proposal, Data);
                         {reject, Reason} ->
+                            ok = emit_adaptive_decision(
+                                   Proposal, allow, reject, Data),
                             report_admission_rejection(
                               task_capability, Reason, Data)
                     end;
                 {reject, Reason} ->
+                    ok = emit_adaptive_decision(
+                           Proposal, reject, not_evaluated, Data),
                     report_admission_rejection(
                       global_policy, Reason, Data)
             end;
         {error, Diagnostics} ->
+            ok = emit_adaptive_decision(
+                   #{kind => invalid}, not_evaluated,
+                   not_evaluated, Data),
             report_round_result(
               Data,
               #{status => failed,
@@ -557,7 +573,8 @@ report_round_result(
            worker_identity := WorkerIdentity,
            result_capability := ResultCapability},
   Result) ->
-    ReportedResult = maybe_attach_provider_usage(Result, Data),
+    ReportedResult0 = maybe_attach_provider_usage(Result, Data),
+    ReportedResult = maybe_attach_adaptive_event(ReportedResult0, Data),
     CoordinatorPid !
         {delegate_round_result, TaskId, RoundId, self(), WorkerIdentity,
          ResultCapability, ReportedResult},
@@ -577,6 +594,12 @@ maybe_attach_provider_usage(
   Result, #{provider_usage := Usage}) when is_map(Usage) ->
     Result#{usage => Usage};
 maybe_attach_provider_usage(Result, _Data) ->
+    Result.
+
+maybe_attach_adaptive_event(
+  Result, #{adaptive_mode := true}) ->
+    Result#{adaptive_event => true};
+maybe_attach_adaptive_event(Result, _Data) ->
     Result.
 
 request_budget(
@@ -634,8 +657,10 @@ known_action_failure_result(Reason, ActiveRun, Data) ->
                   decision => continue,
                   terminal_result =>
                       bounded_failure_observation(Reason, Data)},
-            maybe_add_adaptive_mutation(
-              failed, ActiveRun, Data, Result0);
+            maybe_add_adaptive_run_id(
+              ActiveRun, Data,
+              maybe_add_adaptive_mutation(
+                failed, ActiveRun, Data, Result0));
         false ->
             #{status => failed, phase => action, reason => Reason}
     end.
@@ -648,8 +673,10 @@ known_action_timeout_result(ActiveRun, Data) ->
                   phase => action,
                   decision => continue,
                   terminal_result => #{status => timeout}},
-            maybe_add_adaptive_mutation(
-              timeout, ActiveRun, Data, Result0);
+            maybe_add_adaptive_run_id(
+              ActiveRun, Data,
+              maybe_add_adaptive_mutation(
+                timeout, ActiveRun, Data, Result0));
         false ->
             #{status => timeout, phase => action}
     end.
@@ -671,8 +698,38 @@ maybe_add_adaptive_mutation(
 maybe_add_adaptive_mutation(_Outcome, _ActiveRun, _Data, Result) ->
     Result.
 
+maybe_add_adaptive_run_id(
+  #{run_id := RunId}, Data, Result) ->
+    case adaptive_action(Data) of
+        true -> Result#{run_id => RunId};
+        false -> Result
+    end.
+
 adaptive_action(#{work := Work}) ->
     maps:get(adaptive_action, Work, false).
+
+emit_adaptive_decision(
+  Proposal, GlobalPolicyVerdict, TaskCapabilityVerdict,
+  Data = #{task_id := TaskId,
+           correlation_id := CorrelationId,
+           round_id := RoundId}) ->
+    Outcome =
+        Data#{action_summary => adaptive_action_summary(Proposal),
+              global_policy_verdict => GlobalPolicyVerdict,
+              task_capability_verdict => TaskCapabilityVerdict},
+    soma_delegate_event:append(
+      <<"delegate.decision.completed">>, TaskId,
+      CorrelationId, RoundId, Outcome).
+
+adaptive_action_summary(#{kind := run_steps, steps := Steps})
+  when is_list(Steps) ->
+    #{kind => run_steps, step_count => length(Steps)};
+adaptive_action_summary(#{kind := Kind})
+  when Kind =:= reply; Kind =:= reject; Kind =:= ask;
+       Kind =:= actor_message; Kind =:= invalid ->
+    #{kind => Kind};
+adaptive_action_summary(_InvalidProposal) ->
+    #{kind => invalid}.
 
 completed_action_observation(Outputs, Data = #{task_id := TaskId}) ->
     Observation = #{status => succeeded, outputs => Outputs},

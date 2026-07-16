@@ -4,6 +4,9 @@
 -module(soma_delegate_event).
 
 -define(MAX_BYTES, 4096).
+-define(MAX_TOOL_CALL_IDS, 16).
+-define(MAX_TOOL_CALL_ID_BYTES, 128).
+-define(MAX_RUN_ID_BYTES, 256).
 
 -export([append/5, max_bytes/0, reason_class/1]).
 
@@ -18,15 +21,17 @@ append(EventType, TaskId, CorrelationId, Round, Outcome)
        is_map(Outcome) ->
     Payload = scrub_term(outcome_payload(EventType, Outcome)),
     Event0 = complete_event(
-               EventType, TaskId, CorrelationId, Round, Payload),
+               EventType, TaskId, CorrelationId, Round,
+               Payload, Outcome),
     Event = fit_event(Event0),
     soma_event_store:append(event_store_pid(), Event).
 
-complete_event(EventType, TaskId, CorrelationId, Round, Payload) ->
+complete_event(
+  EventType, TaskId, CorrelationId, Round, Payload, Outcome) ->
     #{event_id => mint_event_id(),
       timestamp => erlang:system_time(nanosecond),
       session_id => undefined,
-      run_id => undefined,
+      run_id => event_run_id(EventType, Outcome),
       step_id => undefined,
       tool_call_id => undefined,
       event_type => EventType,
@@ -35,6 +40,23 @@ complete_event(EventType, TaskId, CorrelationId, Round, Payload) ->
       correlation_id => CorrelationId,
       round => Round}.
 
+outcome_payload(<<"delegate.decision.completed">>, Outcome) ->
+    #{phase => decision,
+      action_summary => action_summary(Outcome),
+      global_policy_verdict =>
+          admission_verdict(global_policy_verdict, Outcome),
+      task_capability_verdict =>
+          admission_verdict(task_capability_verdict, Outcome)};
+outcome_payload(<<"delegate.action.completed">>, Outcome) ->
+    #{phase => action_completed,
+      tool_call_ids => tool_call_ids(Outcome),
+      observation_ref => observation_ref(Outcome)};
+outcome_payload(<<"delegate.task.terminal">>,
+                Outcome = #{adaptive_events := true}) ->
+    #{phase => terminal,
+      status => outcome_status(Outcome),
+      mutation_state => mutation_state(Outcome),
+      unknown_outcome_state => unknown_outcome_state(Outcome)};
 outcome_payload(EventType, Outcome) ->
     Base = #{phase => event_phase(EventType)},
     WithStatus = maybe_put(status, outcome_status(Outcome), Base),
@@ -55,6 +77,7 @@ event_phase(<<"delegate.task.accepted">>) -> accepted;
 event_phase(<<"delegate.task.running">>) -> running;
 event_phase(<<"delegate.round.started">>) -> round_started;
 event_phase(<<"delegate.round.completed">>) -> round_completed;
+event_phase(<<"delegate.decision.completed">>) -> decision;
 event_phase(<<"delegate.action.completed">>) -> action_completed;
 event_phase(<<"delegate.task.cancel_requested">>) -> cancel_requested;
 event_phase(<<"delegate.task.cleanup">>) -> cleanup;
@@ -128,6 +151,77 @@ observation_ref(#{observation_ref := #{inline := true}}) ->
 observation_ref(_Outcome) ->
     undefined.
 
+event_run_id(<<"delegate.action.completed">>, #{run_id := RunId})
+  when is_binary(RunId), byte_size(RunId) =< ?MAX_RUN_ID_BYTES ->
+    RunId;
+event_run_id(_EventType, _Outcome) ->
+    undefined.
+
+action_summary(#{action_summary :=
+                     #{kind := run_steps, step_count := StepCount}})
+  when is_integer(StepCount), StepCount >= 0 ->
+    #{kind => run_steps, step_count => StepCount};
+action_summary(#{action_summary := #{kind := Kind}})
+  when Kind =:= reply; Kind =:= reject; Kind =:= ask;
+       Kind =:= actor_message; Kind =:= invalid ->
+    #{kind => Kind};
+action_summary(_Outcome) ->
+    #{kind => invalid}.
+
+admission_verdict(Key, Outcome) ->
+    case maps:get(Key, Outcome, not_evaluated) of
+        allow -> allow;
+        reject -> reject;
+        not_evaluated -> not_evaluated;
+        _InvalidVerdict -> not_evaluated
+    end.
+
+tool_call_ids(Outcome) ->
+    Candidates = maps:get(tool_call_ids, Outcome, []),
+    Valid =
+        [ToolCallId || ToolCallId <- proper_list(Candidates),
+                       is_binary(ToolCallId),
+                       byte_size(ToolCallId) =<
+                           ?MAX_TOOL_CALL_ID_BYTES],
+    lists:sublist(Valid, ?MAX_TOOL_CALL_IDS).
+
+proper_list(List) when is_list(List) ->
+    try length(List) of
+        _Length -> List
+    catch
+        error:badarg -> []
+    end;
+proper_list(_NotAList) ->
+    [].
+
+mutation_state(Outcome) ->
+    State = maps:get(
+              mutation_state, Outcome,
+              maps:get(mutation_ledger, Outcome, [])),
+    [project_mutation(Mutation)
+     || Mutation <- proper_list(State), is_map(Mutation)].
+
+unknown_outcome_state(Outcome) ->
+    State = maps:get(
+              unknown_outcome_state, Outcome,
+              maps:get(unknown_outcome_ledger, Outcome, [])),
+    [project_unknown_outcome(UnknownOutcome)
+     || UnknownOutcome <- proper_list(State), is_map(UnknownOutcome)].
+
+project_mutation(Mutation) ->
+    maps:with(
+      [round, run_id, invocation_id, step_id, tool, outcome],
+      Mutation).
+
+project_unknown_outcome(UnknownOutcome) ->
+    Base = maps:with([round, outcome], UnknownOutcome),
+    case maps:get(invocation, UnknownOutcome, undefined) of
+        Invocation when is_map(Invocation) ->
+            Base#{invocation => project_mutation(Invocation)};
+        _MissingOrInvalidInvocation ->
+            Base
+    end.
+
 ledger_or_delta_count(CountKey, LedgerKey, DeltaKey, Outcome) ->
     case maps:get(CountKey, Outcome, undefined) of
         Count when is_integer(Count), Count >= 0 ->
@@ -197,18 +291,46 @@ fit_event(Event) ->
             Fallback =
                 Event#{payload =>
                            fallback_payload(
+                             maps:get(event_type, Event),
                              maps:get(payload, Event), EventBytes)},
             true = encoded_bytes(Fallback) =< ?MAX_BYTES,
             Fallback
     end.
 
-fallback_payload(Payload, OriginalBytes) ->
+fallback_payload(<<"delegate.decision.completed">>,
+                 Payload, OriginalBytes) ->
+    (maps:with(
+       [phase, action_summary, global_policy_verdict,
+        task_capability_verdict],
+       Payload))#{truncated => true,
+                  original_bytes => OriginalBytes};
+fallback_payload(<<"delegate.action.completed">>,
+                 Payload, OriginalBytes) ->
+    (maps:with(
+       [phase, tool_call_ids, observation_ref],
+       Payload))#{truncated => true,
+                  original_bytes => OriginalBytes};
+fallback_payload(<<"delegate.task.terminal">>,
+                 Payload = #{mutation_state := MutationState,
+                             unknown_outcome_state := UnknownOutcomeState},
+                 OriginalBytes) ->
+    (maps:with([phase, status], Payload))#{
+      mutation_state => state_summary(MutationState),
+      unknown_outcome_state => state_summary(UnknownOutcomeState),
+      truncated => true,
+      original_bytes => OriginalBytes};
+fallback_payload(_EventType, Payload, OriginalBytes) ->
     Summary =
         maps:with(
           [phase, status, usage_count, mutation_count,
            unknown_outcome_count, observation_ref],
           Payload),
     Summary#{truncated => true, original_bytes => OriginalBytes}.
+
+state_summary(State) when is_list(State) ->
+    #{count => length(State), truncated => true};
+state_summary(_InvalidState) ->
+    #{count => 0, truncated => true}.
 
 encoded_bytes(Term) ->
     byte_size(term_to_binary(Term, [deterministic])).
