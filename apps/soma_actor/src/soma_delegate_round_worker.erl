@@ -42,6 +42,7 @@ init(Opts = #{coordinator_pid := CoordinatorPid,
              work => Work,
              adaptive_mode => model_selects_proposal(Work),
              pending_budget => undefined,
+             pending_run => undefined,
              provider_usage => undefined,
              active_llm => undefined,
              active_run => undefined},
@@ -79,15 +80,17 @@ handle_event(info,
                       worker_identity := WorkerIdentity,
                       result_capability := ResultCapability})
   when (StateName =:= waiting_llm_budget orelse
-        StateName =:= waiting_tool_budget),
+        StateName =:= waiting_tool_budget orelse
+        StateName =:= waiting_unsafe_dispatch),
        (Status =:= cancelled orelse Status =:= timeout) ->
     Phase =
         case StateName of
             waiting_llm_budget -> llm;
-            waiting_tool_budget -> action
+            waiting_tool_budget -> action;
+            waiting_unsafe_dispatch -> action
         end,
     report_round_result(
-      Data#{pending_budget := undefined},
+      Data#{pending_budget := undefined, pending_run := undefined},
       #{status => Status, phase => Phase});
 handle_event(info,
              {delegate_budget_reserved,
@@ -127,6 +130,22 @@ handle_event(info,
                           #{operation := {run, Steps}}}) ->
     start_reserved_run(
       Steps, Data#{pending_budget := undefined});
+handle_event(info,
+             {delegate_unsafe_action_recorded,
+              TaskId, RoundId, WorkerIdentity, ResultCapability,
+              UnsafeInvocations},
+             waiting_unsafe_dispatch,
+             Data = #{task_id := TaskId,
+                      round_id := RoundId,
+                      worker_identity := WorkerIdentity,
+                      result_capability := ResultCapability,
+                      pending_run :=
+                          #{steps := Steps,
+                            run_id := RunId,
+                            unsafe_invocations := UnsafeInvocations}}) ->
+    launch_reserved_run(
+      Steps, RunId, UnsafeInvocations,
+      Data#{pending_run := undefined});
 handle_event(info,
              {delegate_budget_reserved,
               TaskId, RoundId, WorkerIdentity, ResultCapability,
@@ -528,12 +547,26 @@ start_run(Steps,
 
 start_reserved_run(
   Steps,
+  Data) ->
+    RunId = mint_run_id(),
+    UnsafeInvocations = unsafe_invocations(Steps, RunId),
+    case UnsafeInvocations of
+        [] ->
+            launch_reserved_run(Steps, RunId, [], Data);
+        [_Unsafe | _] ->
+            report_unsafe_dispatch(UnsafeInvocations, Data),
+            PendingRun = #{steps => Steps,
+                           run_id => RunId,
+                           unsafe_invocations => UnsafeInvocations},
+            {next_state, waiting_unsafe_dispatch,
+             Data#{pending_run := PendingRun}}
+    end.
+
+launch_reserved_run(
+  Steps, RunId, UnsafeInvocations,
   Data = #{task_id := TaskId,
            correlation_id := CorrelationId,
            work := Work}) ->
-    RunId = mint_run_id(),
-    UnsafeInvocation = first_unsafe_invocation(Steps, RunId),
-    report_unsafe_dispatch(UnsafeInvocation, Data),
     RunOpts = #{run_id => RunId,
                 task_id => TaskId,
                 session_id => TaskId,
@@ -555,7 +588,7 @@ start_reserved_run(
                           mref => RunMRef,
                           timer_ref => TimerRef,
                           cancel_status => undefined,
-                          unsafe_invocation => UnsafeInvocation},
+                          unsafe_invocations => UnsafeInvocations},
             {next_state, waiting_run,
              Data#{active_run := ActiveRun}};
         {error, Reason} ->
@@ -633,19 +666,20 @@ valid_timeout(undefined) ->
 valid_timeout(TimeoutMs) ->
     is_integer(TimeoutMs) andalso TimeoutMs > 0.
 
-report_unsafe_dispatch(none, _Data) ->
+report_unsafe_dispatch([], _Data) ->
     ok;
 report_unsafe_dispatch(
-  InvocationIdentity,
+  UnsafeInvocations,
   #{coordinator_pid := CoordinatorPid,
     task_id := TaskId,
     round_id := RoundId,
     worker_identity := WorkerIdentity,
-    result_capability := ResultCapability}) ->
+    result_capability := ResultCapability})
+  when is_list(UnsafeInvocations), UnsafeInvocations =/= [] ->
     CoordinatorPid !
         {delegate_unsafe_action_dispatched,
          TaskId, RoundId, self(), WorkerIdentity,
-         ResultCapability, InvocationIdentity},
+         ResultCapability, UnsafeInvocations},
     ok.
 
 known_action_failure_result(Reason, ActiveRun, Data) ->
@@ -683,15 +717,16 @@ known_action_timeout_result(ActiveRun, Data) ->
 
 maybe_add_adaptive_mutation(
   Outcome,
-  #{unsafe_invocation := Invocation},
+  #{unsafe_invocations := UnsafeInvocations},
   #{round_id := RoundId} = Data,
   Result)
-  when is_map(Invocation) ->
+  when is_list(UnsafeInvocations), UnsafeInvocations =/= [] ->
     case adaptive_action(Data) of
         true ->
-            Result#{mutation =>
-                        Invocation#{round => RoundId,
-                                    outcome => Outcome}};
+            Result#{mutations =>
+                        [Invocation#{round => RoundId,
+                                     outcome => Outcome}
+                         || Invocation <- UnsafeInvocations]};
         false ->
             Result
     end;
@@ -775,15 +810,23 @@ max_observation_bytes(#{snapshot := Snapshot}) ->
             ?DEFAULT_MAX_OBSERVATION_BYTES
     end.
 
-first_unsafe_invocation([], _RunId) ->
-    none;
-first_unsafe_invocation(
-  [#{id := StepId, tool := ToolName} = Step | Remaining], RunId) ->
+unsafe_invocations(Steps, RunId) ->
+    unsafe_invocations(Steps, RunId, []).
+
+unsafe_invocations([], _RunId, Acc) ->
+    lists:reverse(Acc);
+unsafe_invocations(
+  [#{id := StepId, tool := ToolName} = Step | Remaining], RunId, Acc) ->
     case step_repeat_safe(Step) of
         true ->
-            first_unsafe_invocation(Remaining, RunId);
+            unsafe_invocations(Remaining, RunId, Acc);
         false ->
-            #{run_id => RunId, step_id => StepId, tool => ToolName}
+            Invocation =
+                #{invocation_id => mint_invocation_id(),
+                  run_id => RunId,
+                  step_id => StepId,
+                  tool => ToolName},
+            unsafe_invocations(Remaining, RunId, [Invocation | Acc])
     end.
 
 step_repeat_safe(#{tool := ToolName}) ->
@@ -872,6 +915,11 @@ mint_run_id() ->
     Suffix = integer_to_binary(
                erlang:unique_integer([positive, monotonic])),
     <<"delegate-run-", Suffix/binary>>.
+
+mint_invocation_id() ->
+    Suffix = integer_to_binary(
+               erlang:unique_integer([positive, monotonic])),
+    <<"delegate-invocation-", Suffix/binary>>.
 
 event_store_pid() ->
     Children = supervisor:which_children(soma_sup),

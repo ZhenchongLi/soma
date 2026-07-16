@@ -5,6 +5,7 @@
 -behaviour(gen_server).
 
 -define(MAX_TERMINAL_PROJECTION_BYTES, 4096).
+-define(MAX_TERMINAL_COUNTER, 16#ffffffff).
 -define(FORWARDED_REQUEST_TIMEOUT_MS, 2500).
 
 -export([start_link/0, submit/1, status/1, cancel/1, artifact_slice/4]).
@@ -31,6 +32,7 @@ init([]) ->
     {ok, #{requests => #{},
            tasks => #{},
            monitors => #{},
+           checkpoints => #{},
            status_requests => #{}}}.
 
 handle_call({submit, Request0}, _From, State) ->
@@ -76,6 +78,12 @@ handle_info(
     {noreply,
      expire_cancel_waiter(
        TaskId, WaiterRef, TimerRef, State)};
+handle_info(
+  {delegate_checkpoint, TaskId, CoordinatorPid, Checkpoint}, State)
+  when is_binary(TaskId), is_pid(CoordinatorPid), is_map(Checkpoint) ->
+    {noreply,
+     store_coordinator_checkpoint(
+       TaskId, CoordinatorPid, Checkpoint, State)};
 handle_info({'DOWN', MRef, process, Pid, _Reason}, State) ->
     case remove_dead_status_caller(MRef, Pid, State) of
         {removed, UpdatedState} ->
@@ -186,10 +194,13 @@ start_new_request(RequestId, Request, State) ->
                task_id => TaskId,
                correlation_id => CorrelationId},
     CoordinatorRequest = Request#{correlation_id => CorrelationId},
+    BudgetLimits =
+        soma_delegate_request:effective_budgets(CoordinatorRequest),
     CoordinatorOpts =
         #{request => CoordinatorRequest,
           task_id => TaskId,
           ingress_pid => self(),
+          budget_limits => BudgetLimits,
           runtime_options => trusted_runtime_options()},
     start_coordinator(CoordinatorOpts, Handle, State).
 
@@ -224,6 +235,7 @@ start_coordinator(CoordinatorOpts,
 remove_active_coordinator(MRef, CoordinatorPid,
                           State = #{tasks := Tasks,
                                     monitors := Monitors,
+                                    checkpoints := Checkpoints,
                                     status_requests := StatusRequests}) ->
     case maps:take(MRef, Monitors) of
         {TaskId, RemainingMonitors} ->
@@ -231,15 +243,21 @@ remove_active_coordinator(MRef, CoordinatorPid,
             {UpdatedRoute, RemainingStatusRequests} =
                 case maps:get(coordinator_pid, Route, undefined) of
                     CoordinatorPid ->
+                        Checkpoint =
+                            maps:get(
+                              TaskId, Checkpoints,
+                              empty_coordinator_checkpoint()),
                         Projection =
                             bounded_terminal_projection(
-                              coordinator_crashed_projection(), Route),
+                              coordinator_crashed_projection(Checkpoint),
+                              Route),
                         PublicProjection =
                             public_projection(Projection),
                         ok = soma_delegate_event:append(
                                <<"delegate.task.terminal">>, TaskId,
                                route_correlation_id(Route), 0,
-                               Projection),
+                               coordinator_crashed_event_outcome(
+                                 Projection, Checkpoint)),
                         reply_cancel_waiters(Route,
                                              PublicProjection),
                         {terminal_route(Route, Projection),
@@ -252,6 +270,7 @@ remove_active_coordinator(MRef, CoordinatorPid,
                 end,
             State#{tasks := maps:put(TaskId, UpdatedRoute, Tasks),
                    monitors := RemainingMonitors,
+                   checkpoints := maps:remove(TaskId, Checkpoints),
                    status_requests := RemainingStatusRequests};
         error ->
             State
@@ -259,7 +278,9 @@ remove_active_coordinator(MRef, CoordinatorPid,
 
 store_terminal_projection(
   TaskId, CoordinatorPid, Projection,
-  State = #{tasks := Tasks, monitors := Monitors})
+  State = #{tasks := Tasks,
+            monitors := Monitors,
+            checkpoints := Checkpoints})
   when is_map(Projection) ->
     case maps:get(TaskId, Tasks, undefined) of
         Route = #{coordinator_pid := CoordinatorPid,
@@ -276,6 +297,7 @@ store_terminal_projection(
             CoordinatorPid ! {delegate_terminal_stored, TaskId},
             State#{tasks := maps:put(TaskId, TerminalRoute, Tasks),
                    monitors := maps:remove(MRef, Monitors),
+                   checkpoints := maps:remove(TaskId, Checkpoints),
                    status_requests :=
                        reply_status_requests(
                          TaskId, CoordinatorPid,
@@ -286,6 +308,18 @@ store_terminal_projection(
     end;
 store_terminal_projection(_TaskId, _CoordinatorPid, _Projection, State) ->
     State.
+
+store_coordinator_checkpoint(
+  TaskId, CoordinatorPid, Checkpoint,
+  State = #{tasks := Tasks, checkpoints := Checkpoints}) ->
+    case maps:get(TaskId, Tasks, undefined) of
+        #{coordinator_pid := CoordinatorPid,
+          terminal_projection := undefined} ->
+            State#{checkpoints :=
+                       maps:put(TaskId, Checkpoint, Checkpoints)};
+        _StaleOrTerminalTask ->
+            State
+    end.
 
 reply_cancel_waiters(Route, Projection) ->
     maps:foreach(
@@ -495,8 +529,81 @@ mint_task_id() ->
                erlang:unique_integer([positive, monotonic])),
     <<"delegate-task-", Suffix/binary>>.
 
-coordinator_crashed_projection() ->
-    #{status => failed, result => coordinator_crashed}.
+empty_coordinator_checkpoint() ->
+    #{adaptive_events => false,
+      usage => #{rounds => 0,
+                 llm_calls => 0,
+                 tool_calls => 0,
+                 prompt_tokens => 0},
+      mutation_ledger => [],
+      unknown_outcome_ledger => [],
+      artifacts => [],
+      round => 0,
+      unsafe_invocations => []}.
+
+coordinator_crashed_projection(Checkpoint) ->
+    Mutations0 = checkpoint_list(mutation_ledger, Checkpoint),
+    UnknownOutcomes0 =
+        checkpoint_list(unknown_outcome_ledger, Checkpoint),
+    UnsafeInvocations =
+        checkpoint_list(unsafe_invocations, Checkpoint),
+    Round = checkpoint_round(Checkpoint),
+    {Mutations, UnknownOutcomes} =
+        append_pending_unsafe_outcomes(
+          UnsafeInvocations, Round, Mutations0, UnknownOutcomes0),
+    Status =
+        case UnknownOutcomes of
+            [] -> failed;
+            [_Unknown | _] -> in_doubt
+        end,
+    #{status => Status,
+      result => coordinator_crashed,
+      artifacts => checkpoint_list(artifacts, Checkpoint),
+      mutations => Mutations,
+      unknown_outcomes => UnknownOutcomes,
+      usage => maps:get(
+                 usage, Checkpoint,
+                 maps:get(usage, empty_coordinator_checkpoint()))}.
+
+coordinator_crashed_event_outcome(Projection, Checkpoint) ->
+    #{adaptive_events => maps:get(adaptive_events, Checkpoint, false),
+      status => maps:get(status, Projection),
+      mutation_ledger => maps:get(mutations, Projection, []),
+      unknown_outcome_ledger =>
+          maps:get(unknown_outcomes, Projection, []),
+      usage => maps:get(usage, Projection, #{})}.
+
+append_pending_unsafe_outcomes(
+  [], _Round, Mutations, UnknownOutcomes) ->
+    {Mutations, UnknownOutcomes};
+append_pending_unsafe_outcomes(
+  [Invocation | Remaining], Round, Mutations, UnknownOutcomes)
+  when is_map(Invocation) ->
+    Mutation = Invocation#{round => Round, outcome => unknown},
+    UnknownOutcome =
+        #{round => Round,
+          invocation => Invocation,
+          outcome => unknown},
+    append_pending_unsafe_outcomes(
+      Remaining, Round,
+      Mutations ++ [Mutation],
+      UnknownOutcomes ++ [UnknownOutcome]);
+append_pending_unsafe_outcomes(
+  [_InvalidInvocation | Remaining], Round, Mutations, UnknownOutcomes) ->
+    append_pending_unsafe_outcomes(
+      Remaining, Round, Mutations, UnknownOutcomes).
+
+checkpoint_list(Key, Checkpoint) ->
+    case maps:get(Key, Checkpoint, []) of
+        List when is_list(List) -> List;
+        _InvalidList -> []
+    end.
+
+checkpoint_round(Checkpoint) ->
+    case maps:get(round, Checkpoint, 0) of
+        Round when is_integer(Round), Round >= 0 -> Round;
+        _InvalidRound -> 0
+    end.
 
 bounded_terminal_projection(Projection, Route) ->
     AcceptedHandle = maps:get(accepted_handle, Route),
@@ -565,10 +672,35 @@ valid_terminal_ledger_or_default(_InvalidLedger) ->
 overflow_terminal_projection(
   Candidate = #{mutations := Mutations,
                 unknown_outcomes := UnknownOutcomes}) ->
-    Candidate#{result := terminal_projection_too_large,
-               artifacts := [],
-               mutations := overflow_ledger(Mutations),
-               unknown_outcomes := overflow_ledger(UnknownOutcomes)}.
+    Compact =
+        Candidate#{artifacts := [],
+                   mutations := overflow_ledger(Mutations),
+                   unknown_outcomes := overflow_ledger(UnknownOutcomes)},
+    case encoded_bytes(Compact) =< ?MAX_TERMINAL_PROJECTION_BYTES of
+        true ->
+            Compact;
+        false ->
+            ResultBounded =
+                Compact#{result := terminal_projection_too_large},
+            case encoded_bytes(ResultBounded) =<
+                     ?MAX_TERMINAL_PROJECTION_BYTES of
+                true ->
+                    ResultBounded;
+                false ->
+                    Minimal =
+                        ResultBounded#{artifacts := [],
+                                       mutations := [],
+                                       unknown_outcomes := [],
+                                       usage :=
+                                           #{rounds => 0,
+                                             llm_calls => 0,
+                                             tool_calls => 0,
+                                             prompt_tokens => 0}},
+                    true = encoded_bytes(Minimal) =<
+                               ?MAX_TERMINAL_PROJECTION_BYTES,
+                    Minimal
+            end
+    end.
 
 overflow_ledger([]) ->
     [];
@@ -591,7 +723,10 @@ valid_terminal_usage(Usage) when is_map(Usage) ->
     lists:sort(maps:keys(Usage)) =:=
         [llm_calls, prompt_tokens, rounds, tool_calls] andalso
         lists:all(
-          fun(Value) -> is_integer(Value) andalso Value >= 0 end,
+          fun(Value) ->
+                  is_integer(Value) andalso Value >= 0 andalso
+                      Value =< ?MAX_TERMINAL_COUNTER
+          end,
           maps:values(Usage));
 valid_terminal_usage(_Usage) ->
     false.

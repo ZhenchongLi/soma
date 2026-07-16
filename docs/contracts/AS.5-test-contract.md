@@ -11,6 +11,20 @@ callbacks, local test tools, in-memory OTP services, and CLI helpers created in
 the Common Test private directory. They do not contact a model provider or any
 non-local network service.
 
+## Review hardening — bounded defaults and preserved safety state
+
+Production ingress rejects ill-typed adaptive limits and resolves finite
+defaults before coordinator creation. Every unsafe step in a multi-step action
+gets a distinct invocation identity and ledger outcome. Empty external proposal
+maps normalize to bounded invalid-decision data. The ingress retains a bounded
+safety checkpoint so coordinator loss after unsafe dispatch terminates
+`in_doubt` with usage and both ledgers preserved. Provider usage counters and
+all terminal-projection fallbacks are bounded without replacing a valid small
+output-contract result.
+
+- Hermetic proof: `soma_delegate_adaptive_SUITE:test_review_regressions_are_bounded_and_safety_preserving`
+- Hermetic boundary: Fixed local responses, in-BEAM state tools, supervisor loss injection, and deterministic term-size checks open zero provider network connections.
+
 ## Criterion 1 — strict production request boundary
 
 Delegate ingress accepts only the eight documented top-level request fields,

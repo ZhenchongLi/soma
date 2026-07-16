@@ -5,8 +5,20 @@
 -define(MAX_DEPTH, 64).
 -define(MAX_ID_BYTES, 256).
 -define(MAX_REQUEST_BYTES, 65536).
+-define(MAX_TIMER_MS, 16#ffffffff).
 
--export([normalize/1]).
+-define(DEFAULT_BUDGETS,
+        #{max_rounds => 16,
+          max_llm_calls => 16,
+          max_tool_calls => 64,
+          max_context_tokens => 131072,
+          reserved_completion_tokens => 4096,
+          max_total_prompt_tokens => 1048576,
+          deadline_ms => 300000,
+          max_observation_bytes => 16384,
+          recent_round_window => 4}).
+
+-export([normalize/1, effective_budgets/1]).
 
 normalize(Request) when is_map(Request) ->
     case valid_top_level_keys(Request) andalso
@@ -22,6 +34,13 @@ normalize(Request) when is_map(Request) ->
     end;
 normalize(_Request) ->
     invalid_request().
+
+%% Defaults are resolved by the ingress before coordinator creation. The
+%% request itself remains the caller's normalized task data, while every
+%% production coordinator receives a complete, finite execution envelope.
+effective_budgets(Request) when is_map(Request) ->
+    maps:merge(
+      ?DEFAULT_BUDGETS, maps:get(budgets, Request, #{})).
 
 valid_top_level_keys(Request) ->
     Allowed =
@@ -50,17 +69,44 @@ valid_id(_Id) ->
     false.
 
 valid_field_shapes(Request) ->
-    valid_optional_map(budgets, Request) andalso
+    valid_budgets(maps:get(budgets, Request, #{})) andalso
         valid_capability_scope(
           maps:get(capability_scope, Request, #{})) andalso
         valid_resource_handles(
           maps:get(resource_handles, Request, #{})) andalso
         valid_artifacts(maps:get(artifacts, Request, [])).
 
-valid_optional_map(Key, Request) ->
-    case maps:find(Key, Request) of
-        {ok, Value} -> is_map(Value);
+valid_budgets(Budgets) when is_map(Budgets) ->
+    valid_optional_non_neg_integer(max_rounds, Budgets) andalso
+        valid_optional_non_neg_integer(max_llm_calls, Budgets) andalso
+        valid_optional_non_neg_integer(max_tool_calls, Budgets) andalso
+        valid_optional_non_neg_integer(max_context_tokens, Budgets) andalso
+        valid_optional_non_neg_integer(
+          reserved_completion_tokens, Budgets) andalso
+        valid_optional_non_neg_integer(
+          max_total_prompt_tokens, Budgets) andalso
+        valid_optional_positive_integer(deadline_ms, Budgets) andalso
+        valid_optional_positive_integer(
+          max_observation_bytes, Budgets) andalso
+        valid_optional_non_neg_integer(recent_round_window, Budgets) andalso
+        valid_deadline_upper_bound(Budgets);
+valid_budgets(_InvalidBudgets) ->
+    false.
+
+valid_optional_positive_integer(Key, Map) ->
+    case maps:find(Key, Map) of
+        {ok, Value} -> is_integer(Value) andalso Value > 0;
         error -> true
+    end.
+
+valid_deadline_upper_bound(Budgets) ->
+    case maps:find(deadline_ms, Budgets) of
+        {ok, DeadlineMs} when is_integer(DeadlineMs) ->
+            DeadlineMs =< ?MAX_TIMER_MS;
+        {ok, _InvalidDeadline} ->
+            false;
+        error ->
+            true
     end.
 
 valid_capability_scope(Scope) when is_map(Scope) ->
