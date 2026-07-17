@@ -199,6 +199,50 @@ test_packaged_tool_verbs_autostart_daemon() ->
 packaged_tool_verbs_autostart_daemon_test_() ->
     {timeout, 90, fun test_packaged_tool_verbs_autostart_daemon/0}.
 
+%% A self-contained relx tree carries its own ERTS but does not carry the OTP
+%% installation's `bin/start.boot'.  The wrapper must therefore select relx's
+%% release-local `bin/no_dot_erlang.boot' before starting the one-shot client.
+%% A release-shaped tree with a recording `erl' executable proves the exact
+%% argv without booting a VM or daemon.
+test_packaged_wrapper_selects_release_boot() ->
+    Base = filename:join(
+             tmp_dir(),
+             "soma_cli_packaged_boot_" ++ os:getpid() ++ "_"
+             ++ integer_to_list(erlang:unique_integer([positive]))),
+    Release = filename:join(Base, "somad"),
+    BinDir = filename:join(Release, "bin"),
+    ErtsBin = filename:join([Release, "erts-17.0.3", "bin"]),
+    Wrapper = filename:join(BinDir, "soma"),
+    RecordingErl = filename:join(ErtsBin, "erl"),
+    Capture = filename:join(Base, "erl.argv"),
+    Boot = filename:join(BinDir, "no_dot_erlang"),
+    SourceWrapper = filename:join([repo_root(), "scripts", "soma"]),
+    ok = filelib:ensure_dir(filename:join(BinDir, "placeholder")),
+    ok = filelib:ensure_dir(filename:join(ErtsBin, "placeholder")),
+    ok = filelib:ensure_dir(
+           filename:join([Release, "lib", "placeholder", "ebin", "x"])),
+    {ok, _} = file:copy(SourceWrapper, Wrapper),
+    ok = file:change_mode(Wrapper, 8#755),
+    ok = file:write_file(Boot ++ ".boot", <<"release boot fixture">>),
+    ok = file:write_file(
+           RecordingErl,
+           <<"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SOMA_ARGV_CAPTURE\"\n">>),
+    ok = file:change_mode(RecordingErl, 8#755),
+    try
+        Port = start_packaged_soma(
+                 Wrapper, [], [{"SOMA_ARGV_CAPTURE", Capture}]),
+        {0, <<>>} = collect_port(Port, []),
+        {ok, Captured} = file:read_file(Capture),
+        [<<"-boot">>, BootBin, <<"-noshell">> | _] =
+            binary:split(Captured, <<"\n">>, [global, trim_all]),
+        ?assertEqual(unicode:characters_to_binary(Boot), BootBin)
+    after
+        _ = file:del_dir_r(Base)
+    end.
+
+packaged_wrapper_selects_release_boot_test_() ->
+    {timeout, 15, fun test_packaged_wrapper_selects_release_boot/0}.
+
 %% Criterion #16: `soma_cli_main:main(Argv)' halts the OS process with the
 %% `dispatch/1' integer as the exit status, and routes any diagnostics to
 %% stderr. A real `halt/1' would kill the test runner, so this is a
@@ -279,10 +323,19 @@ restore_env(Key, Value) ->
 run_main_argv_subprocess(PlainArgv) ->
     Erl = os:find_executable("erl"),
     ?assert(is_list(Erl)),
+    CrashDump = filename:join(
+                  tmp_dir(),
+                  "soma_cli_main_child_crash_" ++ os:getpid() ++ "_"
+                  ++ integer_to_list(erlang:unique_integer([positive]))
+                  ++ ".dump"),
     Port = open_port({spawn_executable, Erl},
                      [binary, exit_status, stderr_to_stdout, use_stdio,
-                      {args, erl_main_argv_args(PlainArgv)}]),
-    collect_port(Port, []).
+                      {args, erl_main_argv_args(PlainArgv)},
+                      {env, [{"ERL_CRASH_DUMP", CrashDump}]}]),
+    try collect_port(Port, [])
+    after
+        _ = file:delete(CrashDump)
+    end.
 
 start_packaged_soma(Wrapper, Argv, Env) ->
     open_port({spawn_executable, Wrapper},

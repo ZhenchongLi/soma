@@ -1933,7 +1933,11 @@ test_timed_out_stop_cannot_close_admission_later(Config) ->
     Registry = whereis(soma_cli_task_registry),
     ok = sys:suspend(Registry),
     try
-        TimedOut = catch soma_cli_task_registry:cancel_all(Server),
+        TimedOut =
+            try soma_cli_task_registry:cancel_all(Server)
+            catch
+                exit:CancelAllReason -> {'EXIT', CancelAllReason}
+            end,
         ?assertMatch({'EXIT', {timeout, _}}, TimedOut),
         ok = sys:resume(Registry),
 
@@ -1985,8 +1989,12 @@ test_timed_out_open_admission_cannot_rebind_dead_owner(Config) ->
     {ExpiredOwner, OwnerMRef} =
         spawn_monitor(
           fun() ->
-                  Result = catch soma_cli_task_registry:open_admission(
-                                   self(), PoisonToolsDir),
+                  Result =
+                      try soma_cli_task_registry:open_admission(
+                            self(), PoisonToolsDir)
+                      catch
+                          exit:OpenReason -> {'EXIT', OpenReason}
+                      end,
                   Parent ! {expired_open_admission_result, self(), Result}
           end),
     try
@@ -2231,8 +2239,12 @@ test_timed_out_detached_start_has_no_late_effect(Config) ->
                args => #{value => <<"must-not-run">>}}],
     ok = sys:suspend(Registry),
     try
-        TimedOut = catch soma_cli_task_registry:start_detached_run(
-                           TaskId, CorrId, RunId, Steps, Store, Server),
+        TimedOut =
+            try soma_cli_task_registry:start_detached_run(
+                  TaskId, CorrId, RunId, Steps, Store, Server)
+            catch
+                exit:StartReason -> {'EXIT', StartReason}
+            end,
         ?assertMatch({'EXIT', {timeout, _}}, TimedOut),
         ok = sys:resume(Registry),
 
@@ -2795,7 +2807,10 @@ release_admission_store_gate(#{store := Store, token := Token}) ->
 remove_admission_store_gate(#{store := Store, name := Name}) ->
     case is_process_alive(Store) of
         true ->
-            _ = catch sys:remove(Store, Name),
+            _ = try sys:remove(Store, Name)
+                catch
+                    _:_ -> ok
+                end,
             ok;
         false ->
             ok

@@ -1118,12 +1118,26 @@ tool_removed_events(Store) ->
 %% Send a framed `(stop)' over the daemon's socket to tear the listener down,
 %% the way the `soma stop' client does, and return the reply bytes.
 stop_over_socket(SocketPath) ->
+    %% Recovery is asynchronous by contract; these restart tests need a
+    %% controlled stop only after the registry has an authoritative snapshot.
+    ok = wait_for_registry_ready(100),
     {ok, Sock} = gen_tcp:connect({local, SocketPath}, 0,
                                  [binary, {packet, 4}, {active, false}]),
     ok = gen_tcp:send(Sock, <<"(stop)">>),
     {ok, Reply} = gen_tcp:recv(Sock, 0, 60000),
     ok = gen_tcp:close(Sock),
     Reply.
+
+wait_for_registry_ready(0) ->
+    {error, recovery_timeout};
+wait_for_registry_ready(Attempts) ->
+    case soma_cli_task_registry:lookup(<<"__recovery_probe__">>) of
+        {error, recovery_incomplete} ->
+            timer:sleep(20),
+            wait_for_registry_ready(Attempts - 1);
+        _AuthoritativeProjection ->
+            ok
+    end.
 
 %% Poll until the daemon's listen socket at Path stops answering, so a reboot
 %% binds a fresh listener instead of racing the old one still closing.

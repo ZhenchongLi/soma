@@ -809,6 +809,7 @@ test_cli_socket_rejects_service_only_forms_and_survives(_Config) ->
     {ok, Server} = soma_cli_server:start_link(#{socket => Path}),
     unlink(Server),
     try
+        ok = wait_for_registry_ready(100),
         Requests =
             [<<"(result \"not-a-cli-task\")">>,
              <<"(watch \"not-a-cli-task\" (limit 1))">>],
@@ -1161,6 +1162,7 @@ service_socket_is_listening(Path) ->
     end.
 
 stop_daemon(Path) ->
+    ok = wait_for_registry_ready(100),
     0 = soma_cli:stop(#{socket => Path}),
     wait_for_daemon_stop(Path, 100).
 
@@ -1179,6 +1181,17 @@ wait_for_daemon_stop(Path, Attempts) ->
         0 ->
             timer:sleep(10),
             wait_for_daemon_stop(Path, Attempts - 1)
+    end.
+
+wait_for_registry_ready(0) ->
+    {error, recovery_timeout};
+wait_for_registry_ready(Attempts) ->
+    case soma_cli_task_registry:lookup(<<"__recovery_probe__">>) of
+        {error, recovery_incomplete} ->
+            timer:sleep(20),
+            wait_for_registry_ready(Attempts - 1);
+        _AuthoritativeProjection ->
+            ok
     end.
 
 frame(Payload) ->

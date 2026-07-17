@@ -49,6 +49,7 @@ test_daemon_foreground_serves_stop_then_returns(Config) ->
 
     %% The daemon must come up: a real client can connect on Path.
     {ok, Client} = connect(Path),
+    ok = wait_for_registry_ready(100),
     ok = gen_tcp:send(Client, <<"(stop)">>),
     {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
     %% The reply is the terminal `(result ...)' s-expr whose status is `stopped'.
@@ -87,6 +88,7 @@ test_dispatch_daemon_blocks_then_exits_zero(Config) ->
 
     %% The daemon must come up: a real client can connect on Path.
     {ok, Client} = connect(Path),
+    ok = wait_for_registry_ready(100),
     ok = gen_tcp:send(Client, <<"(stop)">>),
     {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
     %% The reply is the terminal `(result ...)' s-expr whose status is `stopped'.
@@ -140,6 +142,7 @@ test_cold_boot_registers_actor_sup(Config) ->
     true = is_process_alive(Sup),
 
     %% Tear the daemon down cleanly so the child returns and exits.
+    ok = wait_for_registry_ready(100),
     ok = gen_tcp:send(Client, <<"(stop)">>),
     {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
     ok = gen_tcp:close(Client),
@@ -185,6 +188,7 @@ test_warm_boot_tolerates_existing_actor_sup(Config) ->
     true = (Sup0 =:= Sup1),
 
     %% Tear the daemon down cleanly so the child returns and exits.
+    ok = wait_for_registry_ready(100),
     ok = gen_tcp:send(Client, <<"(stop)">>),
     {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
     ok = gen_tcp:close(Client),
@@ -208,6 +212,17 @@ connect(Path, N) ->
         {error, _} ->
             timer:sleep(25),
             connect(Path, N - 1)
+    end.
+
+wait_for_registry_ready(0) ->
+    {error, recovery_timeout};
+wait_for_registry_ready(N) ->
+    case soma_cli_task_registry:lookup(<<"__recovery_probe__">>) of
+        {error, recovery_incomplete} ->
+            timer:sleep(20),
+            wait_for_registry_ready(N - 1);
+        _AuthoritativeProjection ->
+            ok
     end.
 
 %% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS). Use a

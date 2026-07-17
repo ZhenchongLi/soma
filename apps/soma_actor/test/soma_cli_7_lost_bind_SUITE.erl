@@ -121,6 +121,11 @@ test_lost_bind_leaves_original_listener_alive(Config) ->
         ct:fail(daemon_foreground_lost_bind_did_not_return)
     end,
 
+    %% Stop is deliberately fail-closed while the detached-task projection is
+    %% still recovering.  This case tests lost-bind ownership, not recovery
+    %% timing, so wait for the authoritative empty projection first.
+    ok = wait_for_registry_ready(100),
+
     %% The winner is untouched: a brand-new framed client connects to Path and
     %% the winner answers a `(stop)' round-trip with a `(status stopped)' result.
     {ok, Client} = connect(Path),
@@ -249,6 +254,17 @@ connect(Path, N) ->
         {error, _} ->
             timer:sleep(25),
             connect(Path, N - 1)
+    end.
+
+wait_for_registry_ready(0) ->
+    {error, recovery_timeout};
+wait_for_registry_ready(N) ->
+    case soma_cli_task_registry:lookup(<<"__recovery_probe__">>) of
+        {error, recovery_incomplete} ->
+            timer:sleep(20),
+            wait_for_registry_ready(N - 1);
+        _AuthoritativeProjection ->
+            ok
     end.
 
 %% AF_UNIX socket paths are bounded by sun_path (~104 bytes on macOS). Use a

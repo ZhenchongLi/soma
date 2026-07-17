@@ -39,6 +39,9 @@ resolved socket path.
   Pins this contract doc (`docs/contracts/cli-1b-test-contract.md`): asserts the
   file exists, is non-empty, and names every CLI.1b suite/module together with
   each of its case names.
+- **`soma_cli_main_tests`** — EUnit module in `apps/soma_actor/test/`. Exercises
+  the exact packaged `scripts/soma` entry from a release-shaped tree, including
+  its bundled-ERTS boot-file selection.
 
 ## CLI.1b proofs → cases
 
@@ -58,6 +61,7 @@ resolved socket path.
 | 12 | This contract (`docs/contracts/cli-1b-test-contract.md`) names a suite + case for each CLI.1b proof | `soma_cli_1b_contract_tests` | `test_doc_names_cli_1b_suites_and_cases` (the mapping table above is the deliverable) |
 | 13 | Neither `docs/cli.md` nor `docs/contracts/cli-test-contract.md` describes a JSON wire for `soma run` | _docs deliverable_ | the prose in `docs/cli.md` and `docs/contracts/cli-test-contract.md` (Lisp `(run ...)` request / `(result ...)` reply; no test function) |
 | 14 | CLI.1b test sources carry no real-provider marker and open no non-local socket | `soma_cli_1b_marker_tests` | `test_cli_1b_sources_have_no_real_provider_or_socket_marker` |
+| 15 | When the packaged command finds the release's bundled ERTS, it selects the release-local `bin/no_dot_erlang.boot` before starting the one-shot client | `soma_cli_main_tests` | `test_packaged_wrapper_selects_release_boot` |
 
 ## Notes for the auditor
 
@@ -66,6 +70,6 @@ resolved socket path.
   which fails if any suite/module or case name above goes missing. Criterion 13 is
   satisfied by the prose in `docs/cli.md` and `docs/contracts/cli-test-contract.md`
   describing the Lisp wire and dropping the JSON-wire wording — no CT/EUnit case.
-- **The `soma` escript/release entry is thin glue** over `soma_cli` and is
-  exercised by the end-to-end path, not unit-tested, per the issue's out-of-scope
-  note.
+- **The `soma` release entry is thin glue** over `soma_cli`. Its bundled-ERTS
+  boot selection is pinned by criterion 15; the CLI behavior behind that entry
+  remains covered by the end-to-end paths above.
