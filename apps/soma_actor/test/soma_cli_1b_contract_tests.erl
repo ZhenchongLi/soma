@@ -7,8 +7,9 @@
 %% Issue #110 criterion 12: `docs/contracts/cli-1b-test-contract.md` names, for
 %% each CLI.1b proof, the suite and case that proves it. The CLI.1b proofs live
 %% across the server CT suite, the server source-text tests, the client CT
-%% suite, the marker guard, and the two docs deliverables. The contract must
-%% name every suite/module together with each of its case names.
+%% suite, the marker guard, the packaged-entry test, and the two docs
+%% deliverables. The contract must name every suite/module together with each
+%% of its case names.
 
 read_doc() ->
     case file:read_file(?DOC_PATH) of
@@ -46,7 +47,10 @@ test_doc_names_cli_1b_suites_and_cases() ->
     ?assert(contains(Doc, <<"cli-test-contract.md">>)),
     %% Marker guard (criterion 14)
     ?assert(contains(Doc, <<"soma_cli_1b_marker_tests">>)),
-    ?assert(contains(Doc, <<"test_cli_1b_sources_have_no_real_provider_or_socket_marker">>)).
+    ?assert(contains(Doc, <<"test_cli_1b_sources_have_no_real_provider_or_socket_marker">>)),
+    %% Packaged release entry (criterion 15)
+    ?assert(contains(Doc, <<"soma_cli_main_tests">>)),
+    ?assert(contains(Doc, <<"test_packaged_wrapper_selects_release_boot">>)).
 
 doc_names_cli_1b_suites_and_cases_test() ->
     test_doc_names_cli_1b_suites_and_cases().

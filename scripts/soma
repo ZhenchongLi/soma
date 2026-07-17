@@ -29,9 +29,11 @@ rel=$(cd "$here/.." && pwd)
 
 # Prefer the release's bundled ERTS; fall back to a system `erl' for a dev tree.
 erl=""
+boot=""
 for d in "$rel"/erts-*/bin; do
     if [ -x "$d/erl" ]; then
         erl="$d/erl"
+        boot="$rel/bin/no_dot_erlang"
         break
     fi
 done
@@ -49,6 +51,17 @@ SOMA_SELF="$rel/bin/soma"
 [ -x "$SOMA_SELF" ] || SOMA_SELF="$0"
 export SOMA_SELF
 
+if [ -n "$boot" ]; then
+    # A bundled ERTS derives ROOTDIR from the release and would otherwise look
+    # for the OTP installation's bin/start.boot, which a relx release does not
+    # contain.  relx supplies this release-local boot file specifically for
+    # one-shot, no-dot-erlang commands such as the task client.
+    # shellcheck disable=SC2086
+    exec "$erl" -boot "$boot" -noshell -pa "$libs"/*/ebin \
+        -run soma_cli_main main_argv -extra "$@"
+fi
+
+# Development tree: use the system Erlang installation's normal boot file.
 # shellcheck disable=SC2086
 exec "$erl" -noshell -pa "$libs"/*/ebin \
     -run soma_cli_main main_argv -extra "$@"

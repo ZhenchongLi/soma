@@ -119,6 +119,7 @@ test_daemon_boot_config_tool_names_are_binary_and_atom_safe(Config) ->
     {ok, _WarmDescriptor} =
         soma_tool_registry:resolve_descriptor(cfg_atom_safety_warmup),
     0 = soma_cli:ping(#{socket => WarmSocket}),
+    ok = wait_for_registry_ready(100),
     0 = soma_cli:stop(#{socket => WarmSocket}),
     ok = wait_for_socket_file_gone(WarmSocket, 80),
     _ = application:stop(soma_runtime),
@@ -812,6 +813,17 @@ wait_for_socket_file_gone(Path, Attempts) ->
         _ ->
             timer:sleep(25),
             wait_for_socket_file_gone(Path, Attempts - 1)
+    end.
+
+wait_for_registry_ready(0) ->
+    {error, recovery_timeout};
+wait_for_registry_ready(Attempts) ->
+    case soma_cli_task_registry:lookup(<<"__recovery_probe__">>) of
+        {error, recovery_incomplete} ->
+            timer:sleep(20),
+            wait_for_registry_ready(Attempts - 1);
+        _AuthoritativeProjection ->
+            ok
     end.
 
 %% A fresh temp tools directory under the case's priv_dir.
