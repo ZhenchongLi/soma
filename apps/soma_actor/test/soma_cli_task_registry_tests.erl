@@ -43,6 +43,58 @@ test_registered_task_survives_registering_process_exit() ->
 registered_task_survives_registering_process_exit_test() ->
     test_registered_task_survives_registering_process_exit().
 
+test_legacy_registered_task_cancel_remains_compatible() ->
+    {ok, Registry} = soma_cli_task_registry:start_link(),
+    try
+        TaskId = <<"task-legacy-cancel">>,
+        ok = soma_cli_task_registry:register(
+               TaskId,
+               #{pid => self(), status => running,
+                 correlation_id => <<"corr-legacy-cancel">>}),
+        ?assertEqual(ok, soma_cli_task_registry:cancel(TaskId)),
+        receive cancel -> ok after 1000 -> ?assert(false) end,
+        ?assertEqual(ok, soma_cli_task_registry:cancel_all()),
+        receive cancel -> ok after 1000 -> ?assert(false) end,
+        ?assert(is_process_alive(Registry))
+    after
+        unlink(Registry),
+        exit(Registry, shutdown)
+    end.
+
+legacy_registered_task_cancel_remains_compatible_test() ->
+    test_legacy_registered_task_cancel_remains_compatible().
+
+%% The daemon's admission-in-doubt branch renders this exact map shape. Keep
+%% the stable ids queryable and make sure it cannot be mistaken for the normal
+%% `(accepted ...)` response merely because the durable outcome is unknown.
+test_structured_admission_in_doubt_render_preserves_ids() ->
+    Rendered = iolist_to_binary(
+                 soma_lisp:render(
+                   #{status => error,
+                     error => admission_in_doubt,
+                     task_id => <<"task-render-in-doubt">>,
+                     run_id => <<"run-render-in-doubt">>,
+                     correlation_id => <<"corr-render-in-doubt">>})),
+    ?assertNotEqual(nomatch, binary:match(Rendered, <<"(status error)">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(Rendered,
+                                 <<"(error admission-in-doubt)">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(Rendered,
+                                 <<"(task-id \"task-render-in-doubt\")">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(Rendered,
+                                 <<"(run-id \"run-render-in-doubt\")">>)),
+    ?assertNotEqual(
+       nomatch,
+       binary:match(
+         Rendered,
+         <<"(correlation-id \"corr-render-in-doubt\")">>)),
+    ?assertEqual(nomatch, binary:match(Rendered, <<"(accepted ">>)).
+
+structured_admission_in_doubt_render_preserves_ids_test() ->
+    test_structured_admission_in_doubt_render_preserves_ids().
+
 %% Criterion #5: once a detached run the registry owns reaches a terminal
 %% completed state, the existing task entry is updated from running to completed.
 test_detached_run_completion_updates_registry_status() ->

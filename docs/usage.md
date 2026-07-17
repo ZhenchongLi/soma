@@ -247,6 +247,10 @@ Detached runs print an accepted handle:
 (accepted (task-id "task-3") (correlation-id "corr-4"))
 ```
 
+The short ids in these examples are abbreviations. Real task, correlation, and
+run ids are opaque handles with restart-safe random suffixes; do not parse or
+generate them in client code.
+
 Read status:
 
 ```bash
@@ -277,6 +281,22 @@ terminal is a no-op or returns a non-running result.
 Synchronous runs are tied to the client connection. If a synchronous `soma run`
 client disconnects while a tool is active, the daemon cancels that in-flight run.
 Detached runs outlive the client and must be managed by task id.
+
+With the durable event store enabled, an unclean daemon restart rebuilds the
+live detached-task projection from marked `run.started` journals. Soma restores
+configured tools before it resumes those runs, preserves the original task and
+correlation ids, and reports the resumed task as `running`; `trace` includes
+`run.resumed`, and `cancel` reaches the resumed worker and any external CLI
+process it owns. A controlled `soma stop` is different: it cancels live detached
+work before shutdown and durably records that owner decision before replying,
+so that work is not resumed later even if the VM exits immediately. If Soma
+cannot confirm the cancellation intent in the event store, `stop` returns an
+error and leaves the daemon listening; `cancel` likewise exits non-zero rather
+than reporting an unconfirmed request as success. Journals written by older
+Soma versions have no detached-owner marker and are not guessed into CLI
+ownership. An older journal interrupted inside a tool call also has no original
+repeat-safety snapshot and therefore fails closed—even for a tool currently
+classified as a safe reader; between-step journals still resume normally.
 
 ## Tracing
 
@@ -609,8 +629,9 @@ The wire is length-prefixed Lisp s-expressions: public run requests use
 requests are `(ask ...)`, `(status ...)`, `(trace ...)`, and `(cancel ...)`,
 with `(result ...)`, `(accepted ...)`, `(status ...)`, or `(trace ...)` replies
 rendered by `soma_lisp`. Detached run support is a `(detach)` marker inside
-`(run ...)`; detached tasks live in `soma_cli_task_registry` and can be managed
-by id.
+`(run ...)`; `soma_cli_task_registry` is the live owner/cache for detached tasks
+and, with durable events enabled, rebuilds its unfinished marked projection on
+daemon restart. Those tasks can be managed by id before and after recovery.
 
 ## Common Failures
 
@@ -622,7 +643,7 @@ by id.
 | `ask` fails before calling a model | Check `~/.soma/config`, `provider = "openai_compat"`, `base_url`, `model`, and `SOMA_LLM_API_KEY`. |
 | `rejected` | The policy gate rejected a proposed tool or action. Check the allowlist. |
 | `budget_exceeded` | The task hit `budget-llm` or `budget-steps` before completion. |
-| `status unknown` | The task id is wrong, the daemon restarted without durable state, or the task belonged to another socket/daemon. |
+| `status unknown` | The task id is wrong, the daemon restarted without durable state, the task belonged to another socket/daemon, or its journal predates the detached-owner marker. |
 
 When in doubt, use the `correlation-id` from the original reply:
 

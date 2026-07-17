@@ -19,11 +19,14 @@ routed by `soma_lfe:dispatch/1`), and `soma_cli_server:handle_lisp_request/3`
 branches on the distinct top-level key. The `trace` branch renders the
 correlation's event chain in timestamp order through `soma_trace:render_lisp/2`
 wrapped in a `(trace …)` head, ending (for a completed run) with `run.completed`.
-The `status` branch looks the task up with `soma_event_store:by_session/2` (the
-run path aliases `session_id => TaskId`), derives the terminal `(state …)` from
-the chain — `completed` / `failed` / `timeout` / `cancelled`, or `unknown` for an
-empty chain — and renders a `(status …)` reply; an unknown id reports `(state
-unknown)` without crashing the handler. The renderer also gains a `(task-id …)`
+The `status` branch first checks `soma_cli_task_registry`, the live owner/cache
+for detached tasks, and falls back to `soma_event_store:by_session/2` (the run
+path aliases `session_id => TaskId`) for synchronous or terminal compatibility.
+It derives the terminal `(state …)` from the chain — `completed` / `failed` /
+`timeout` / `cancelled`, or `unknown` for an empty chain — and renders a
+`(status …)` reply; an unknown id reports `(state unknown)` without crashing the
+handler. Durable reconstruction of the registry is the later CLI.4 extension
+mapped in [cli-4-test-contract.md](cli-4-test-contract.md). The renderer also gains a `(task-id …)`
 sub-form in `(result …)` (`soma_lisp:result_pairs/1`) so a `soma run` reply
 carries the task id a client feeds back into `soma status`. Both read handlers
 are read-only against the event store — no `soma_run`, no actor. The gate uses
@@ -87,12 +90,12 @@ mock directives only — no real provider, no non-local socket.
   text is carried in
   [cli-3-dialyzer-pr-report.md](cli-3-dialyzer-pr-report.md) and pinned by
   `soma_cli_3_contract_tests:test_cli_3_dialyzer_report_is_2026_06_27_historical_snapshot`.
-- **Status leans on the run path aliasing `session_id` to the task id.** The
-  status lookup uses `by_session/2` because the run path sets `session_id =>
-  TaskId`; there is no `by_task` query in this slice. If a future change stops
-  aliasing, status would silently return `unknown` — the honest fix then is a
-  `by_task` query. This coupling is intentional scope, recorded here so it is not
-  a surprise later.
+- **The status fallback leans on the run path aliasing `session_id` to the task
+  id.** Live detached status comes from `soma_cli_task_registry`; terminal and
+  synchronous compatibility uses `by_session/2` because the run path sets
+  `session_id => TaskId`. There is no `by_task` query in this slice. If a future
+  change stops aliasing, that fallback would silently return `unknown` — the
+  honest fix then is a `by_task` query.
 - **Ask tasks are not reachable by status the same way.** An ask task runs
   through an actor and its events are stamped by correlation id, not by the task
   id as a session id, so `status` on an ask task id returns `unknown`. The

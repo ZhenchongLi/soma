@@ -1,5 +1,7 @@
-%% @doc The top-level supervisor. Boots the four core children in order:
-%% `soma_event_store', `soma_tool_registry', `soma_session_sup', `soma_run_sup'.
+%% @doc The top-level supervisor. Runtime children are ordered by dependency.
+%% The run-id index starts before `soma_run_sup', so it can fence any orphaned
+%% run processes from a prior supervisor/application generation before new runs
+%% are admitted. The established one-for-one failure isolation remains intact.
 -module(soma_sup).
 
 -behaviour(supervisor).
@@ -21,6 +23,9 @@ init([]) ->
          #{id => soma_tool_registry,
            start => {soma_tool_registry, start_link, []},
            type => worker},
+         #{id => soma_run_index,
+           start => {soma_run_index, start_link, []},
+           type => worker},
          #{id => soma_session_sup,
            start => {soma_session_sup, start_link, []},
            type => supervisor},
@@ -35,6 +40,10 @@ init([]) ->
 %% byte for byte. The store mode is fixed at boot — a release config knob.
 event_store_start() ->
     case application:get_env(soma_runtime, event_store_log, undefined) of
-        undefined -> {soma_event_store, start_link, []};
-        Path -> {soma_event_store, start_link, [#{log => Path}]}
+        undefined ->
+            {soma_event_store, start_link,
+             [#{name => soma_runtime_event_store}]};
+        Path ->
+            {soma_event_store, start_link,
+             [#{name => soma_runtime_event_store, log => Path}]}
     end.

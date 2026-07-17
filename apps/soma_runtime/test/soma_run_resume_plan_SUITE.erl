@@ -8,6 +8,8 @@
 -export([test_in_flight_safe_step_resumes/1]).
 -export([test_in_flight_text_readers_resume_from_live_descriptors/1]).
 -export([test_in_flight_unsafe_state_step_is_unsafe/1]).
+-export([test_recorded_unsafe_snapshot_cannot_be_softened/1]).
+-export([test_snapshotless_in_flight_fails_closed/1]).
 -export([test_terminal_trail_returns_terminal_status_over_next_step/1]).
 -export([test_all_committed_no_terminal_is_nothing_to_do/1]).
 -export([test_propagates_reconstruct_errors/1]).
@@ -19,6 +21,8 @@ all() ->
      test_in_flight_safe_step_resumes,
      test_in_flight_text_readers_resume_from_live_descriptors,
      test_in_flight_unsafe_state_step_is_unsafe,
+     test_recorded_unsafe_snapshot_cannot_be_softened,
+     test_snapshotless_in_flight_fails_closed,
      test_terminal_trail_returns_terminal_status_over_next_step,
      test_all_committed_no_terminal_is_nothing_to_do,
      test_propagates_reconstruct_errors,
@@ -86,11 +90,18 @@ test_in_flight_safe_step_resumes(_Config) ->
                                    session_id => SessionId,
                                    step_id => s1,
                                    event_type => <<"tool.started">>,
-                                   payload => #{}}),
+                                   payload =>
+                                       #{resume_safety =>
+                                             #{effect => reader,
+                                               idempotent => true}}}),
 
     Verdict = soma_run_resume_plan:plan(StorePid, RunId),
 
-    ?assertMatch({resume, _}, Verdict).
+    ?assertMatch({resume, _}, Verdict),
+    {resume, Plan} = Verdict,
+    {ok, Descriptor} = soma_tool_registry:resolve_descriptor(file_read),
+    ?assertEqual(#{step_id => s1, descriptor => Descriptor},
+                 maps:get(resume_descriptor_guard, Plan)).
 
 test_in_flight_text_readers_resume_from_live_descriptors(_Config) ->
     StorePid = event_store_pid(),
@@ -123,7 +134,9 @@ test_in_flight_text_readers_resume_from_live_descriptors(_Config) ->
                    session_id => SessionId,
                    step_id => StepId,
                    event_type => <<"tool.started">>,
-                   payload => #{}}),
+                   payload =>
+                       #{resume_safety =>
+                             #{effect => reader, idempotent => true}}}),
 
           Verdict = soma_run_resume_plan:plan(StorePid, RunId),
 
@@ -162,6 +175,60 @@ test_in_flight_unsafe_state_step_is_unsafe(_Config) ->
 
     ?assertEqual({unsafe, s1}, Verdict),
     ?assertNotMatch({resume, _}, Verdict).
+
+%% Issue #256: the descriptor snapshot recorded when the invocation actually
+%% began is authoritative alongside the current descriptor. A same-name config
+%% manifest edited from state/non-idempotent to reader/idempotent cannot soften
+%% the interrupted call into a retry.
+test_recorded_unsafe_snapshot_cannot_be_softened(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-plan-mutated-safety">>,
+    ToolName = <<"mutable_plan_tool">>,
+    Step = #{id => mutate_once, tool => ToolName, args => #{}},
+    ok = soma_tool_registry:register_tool(
+           #{name => ToolName, effect => reader, idempotent => true,
+             timeout_ms => 5000, adapter => cli,
+             executable => "/bin/echo", argv => []}),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => RunId,
+             event_type => <<"run.started">>,
+             payload => #{steps => [Step],
+                          run_options => #{run_id => RunId}}}),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => RunId,
+             step_id => mutate_once,
+             event_type => <<"tool.started">>,
+             payload => #{resume_safety =>
+                              #{effect => state, idempotent => false}}}),
+
+    ?assertEqual({unsafe, mutate_once},
+                 soma_run_resume_plan:plan(StorePid, RunId)).
+
+%% Journals predating the safety snapshot cannot prove which descriptor was
+%% used, even when the current spelling resolves to a safe built-in. Fail closed
+%% rather than rely on post-crash registry state.
+test_snapshotless_in_flight_fails_closed(_Config) ->
+    StorePid = event_store_pid(),
+    RunId = <<"run-plan-snapshotless-safety">>,
+    ToolName = file_read,
+    Step = #{id => legacy_call, tool => ToolName, args => #{}},
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => RunId,
+             event_type => <<"run.started">>,
+             payload => #{steps => [Step],
+                          run_options => #{run_id => RunId}}}),
+    ok = soma_event_store:append(
+           StorePid,
+           #{run_id => RunId,
+             step_id => legacy_call,
+             event_type => <<"tool.started">>,
+             payload => #{}}),
+
+    ?assertEqual({unsafe, legacy_call},
+                 soma_run_resume_plan:plan(StorePid, RunId)).
 
 test_terminal_trail_returns_terminal_status_over_next_step(_Config) ->
     StorePid = event_store_pid(),

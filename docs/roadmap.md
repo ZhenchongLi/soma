@@ -10,7 +10,8 @@ auto-resume) are built and merged. The parallel tracks have also moved:
 **node B.1/B.2** landed the
 OpenAI-compatible provider and actor `model_config` wiring, with actor-level
 planning mode behind `plan => true`; the **CLI / daemon** modules now expose a
-single-user Unix-socket Lisp wire for run/ask/status/trace/cancel/detach; and the
+single-user Unix-socket Lisp wire for run/ask/status/trace/cancel/detach, with
+durable detached ownership restored after daemon restart; and the
 **Lisp s-expr message language** has L.1-L.5 tests for envelopes, actor-to-actor
 delivery, proposals, audit rendering, and bounded repair. The sequence below is
 the current state and remaining work.
@@ -36,7 +37,7 @@ v0.8    DAG / parallel execution, only if still needed
 
 Active tracks (parallel to v0.7+, building now):
 node B  real LLM provider behind the perform_call seam   [done — provider + actor planning + CLI/config planning surface]
-CLI     single-user soma daemon + CLI clients            [done — packaged `soma` command + auto-start]
+CLI     single-user soma daemon + CLI clients            [done — packaged command + auto-start + durable detached ownership]
 Lisp    bounded Soma Lisp v1 public task surface          [done] L.1-L.5 + task form
 tools   tool abstraction (docs/tool-abstraction.md)       [T.1 catalog + T.2 config tools + planning prompt + T.4 ask_actor done; T.3 memory deferred; T.5 MCP later]
 shell   agent-shell exploration (#225, AS.1-AS.4)          [done — text tools, (explore ...) form, bounded reader-only loop, config/CLI surface]
@@ -213,9 +214,9 @@ event trail to the last committed step and continue from there.
 
 - `v0.7.1` — resume journal + read-only reconstruction [done] (#129): `soma_run`
   journals each run into `run.started` as `#{steps, run_options}`, where
-  `run_options` is an allowlist of resume-safe metadata (`run_id`, optional
-  `session_id`, optional `correlation_id`) and never process-local values or
-  secrets. `soma_run_resume:reconstruct/2` reads the durable trail through
+  `run_options` is an allowlist of resume-safe metadata (run/session/task and
+  correlation identities plus bounded owner/recovery controls) and never
+  process-local values or secrets. `soma_run_resume:reconstruct/2` reads the durable trail through
   `soma_event_store:by_run/2` and rebuilds run progress — journaled steps,
   durable options, committed outputs by step id, the first uncommitted step, and
   terminal status — strictly read-only (no event append, no run child started).
@@ -239,9 +240,12 @@ event trail to the last committed step and continue from there.
   irreversible side effect, and the fail-safe is sticky.
 - `v0.7.5` — auto-resume on boot [done] (#198): the durable event store exposes
   interrupted run discovery (`run.started`, no terminal event), excludes terminal
-  runs, and `soma_runtime` boot hands interrupted runs to the existing resume
-  executor. A between-steps run resumes and emits `run.resumed`; a non-idempotent
-  in-flight `state` step fails clearly with `{resume_unsafe, StepId}`.
+  runs, and `soma_runtime` boot hands default-owned interrupted runs to the
+  existing resume executor only for an exact `runtime_default/true` durable
+  opt-in. Missing or malformed legacy ownership fails closed; explicit
+  `auto_resume => false` runs are deferred to their durable upper-layer owner. A between-steps run resumes
+  and emits `run.resumed`; a non-idempotent in-flight `state` step fails clearly
+  with `{resume_unsafe, StepId}`.
 
 Still open:
 
@@ -313,11 +317,20 @@ with thin CLI clients over a local **Unix socket**. Single-user / trusted-local
 - `CLI.3` / follow-up — read/manage commands [done on the module/server path]:
   `soma_cli:status/1`, `trace/1`, `cancel/1`, plus detached run support and
   cancel-by-id through `soma_cli_task_registry`.
+- `CLI.4` / issue #256 — durable detached ownership [done]: new detached runs
+  journal a fixed owner marker and opt out of ownerless runtime auto-resume;
+  after configured tools load, the CLI registry rebuilds unfinished tasks,
+  adopts an already-live run or resumes it with a real owner, and preserves the
+  original task/correlation handles for status, trace, and cancellation. Legacy
+  unmarked journals fail closed, new CLI ids use restart-safe random suffixes,
+  and durable cancel intent prevents stop/restart from replaying cancelled work.
+  Proofs in [contracts/cli-4-test-contract.md](contracts/cli-4-test-contract.md).
 - `CLI.8` — `~/.soma/config` (TOML) → daemon `model_config` [done]: a hand-rolled
   minimal TOML reader builds the real-provider config at daemon boot, with the API
   key only from `SOMA_LLM_API_KEY` env, so `soma ask` can answer from a real model.
 - `CLI.9` — `soma stop` [done]: an in-band `(stop)` request tears the daemon down
-  (closes the listen socket, cancels in-flight runs, unlinks the socket file),
+  (durably records detached cancellation, closes the listen socket, cancels
+  in-flight runs, unlinks the socket file),
   distinct from relx's node-control `stop`.
 - `CLI.6` — packaged `soma` command [done]: the OTP release is named `somad` (so
   `bin/somad` is node control) and ships `bin/soma`, a wrapper that dispatches

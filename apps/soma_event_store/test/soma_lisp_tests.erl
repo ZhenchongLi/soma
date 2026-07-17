@@ -32,6 +32,21 @@ test_render_result_map_with_task_id_emits_task_id_subform() ->
 render_result_map_with_task_id_emits_task_id_subform_test() ->
     test_render_result_map_with_task_id_emits_task_id_subform().
 
+test_render_in_doubt_result_carries_stable_task_and_run_ids() ->
+    ResultMap = #{status => error,
+                  task_id => <<"task-9">>,
+                  run_id => <<"run-9">>,
+                  error => admission_in_doubt,
+                  correlation_id => <<"corr-9">>},
+    Rendered = iolist_to_binary(soma_lisp:render(ResultMap)),
+    Expected = <<"(result (status error) (task-id \"task-9\") "
+                 "(run-id \"run-9\") (error admission-in-doubt) "
+                 "(correlation-id \"corr-9\"))">>,
+    ?assertEqual(Expected, Rendered).
+
+render_in_doubt_result_carries_stable_task_and_run_ids_test() ->
+    test_render_in_doubt_result_carries_stable_task_and_run_ids().
+
 test_render_status_only_timeout_map_heads_result() ->
     %% A terminal timeout map carries `status' but neither `outputs' nor `error'
     %% (a timed-out run produced no outputs and recorded no error). It must still

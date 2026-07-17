@@ -3,7 +3,7 @@
 -include_lib("common_test/include/ct.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
--export([test_sup_has_four_live_children/1]).
+-export([test_sup_has_five_live_children/1]).
 -export([test_registry_seeded_with_v01_tools/1]).
 -export([test_registry_resolves_erlang_module_descriptors/1]).
 -export([test_registry_seeds_descriptors_from_manifests/1]).
@@ -22,7 +22,7 @@
 -export([test_run_without_correlation_id_emits_normal_trail/1]).
 
 all() ->
-    [test_sup_has_four_live_children,
+    [test_sup_has_five_live_children,
      test_registry_seeded_with_v01_tools,
      test_registry_resolves_erlang_module_descriptors,
      test_registry_seeds_descriptors_from_manifests,
@@ -49,18 +49,21 @@ end_per_testcase(_Case, _Config) ->
     ok.
 
 %% Criterion 1: booting the soma_runtime application brings up soma_sup with
-%% four live children, in order: soma_event_store, soma_tool_registry,
-%% soma_session_sup, soma_run_sup.
-test_sup_has_four_live_children(_Config) ->
+%% five live children, in dependency order: soma_event_store,
+%% soma_tool_registry, soma_run_index, soma_session_sup, soma_run_sup. The live
+%% RunId index must start before the dynamic run supervisor whose children
+%% claim it.
+test_sup_has_five_live_children(_Config) ->
     SupPid = whereis(soma_sup),
     true = is_pid(SupPid),
     true = is_process_alive(SupPid),
     Children = supervisor:which_children(soma_sup),
-    Ids = [Id || {Id, _Child, _Type, _Mods} <- Children],
-    Expected = [soma_event_store, soma_tool_registry, soma_session_sup,
-                soma_run_sup],
-    true = lists:all(fun(Id) -> lists:member(Id, Ids) end, Expected),
-    4 = length(Children),
+    %% OTP reports children in reverse start order.
+    StartOrder = [Id || {Id, _Child, _Type, _Mods} <-
+                            lists:reverse(Children)],
+    [soma_event_store, soma_tool_registry, soma_run_index,
+     soma_session_sup, soma_run_sup] = StartOrder,
+    5 = length(Children),
     Pids = [Pid || {_Id, Pid, _Type, _Mods} <- Children],
     true = lists:all(fun(Pid) -> is_pid(Pid) andalso is_process_alive(Pid) end,
                      Pids),

@@ -38,6 +38,7 @@ end_per_testcase(_Case, Config) ->
 test_stop_returns_stopped_result(Config) ->
     Path = socket_path(Config),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    ok = wait_for_registry_ready(100),
     {ok, Client} = connect(Path),
     ok = gen_tcp:send(Client, <<"(stop)">>),
     {ok, Reply} = gen_tcp:recv(Client, 0, 5000),
@@ -54,6 +55,7 @@ test_stop_returns_stopped_result(Config) ->
 test_after_stop_fresh_connect_fails(Config) ->
     Path = socket_path(Config),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    ok = wait_for_registry_ready(100),
     {ok, Client} = connect(Path),
     ok = gen_tcp:send(Client, <<"(stop)">>),
     {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
@@ -72,6 +74,7 @@ test_after_stop_fresh_connect_fails(Config) ->
 test_after_stop_socket_file_gone(Config) ->
     Path = socket_path(Config),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    ok = wait_for_registry_ready(100),
     {ok, Client} = connect(Path),
     ok = gen_tcp:send(Client, <<"(stop)">>),
     {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
@@ -89,6 +92,7 @@ test_after_stop_socket_file_gone(Config) ->
 test_after_stop_start_link_rebinds_path(Config) ->
     Path = socket_path(Config),
     {ok, _Server} = soma_cli_server:start_link(#{socket => Path}),
+    ok = wait_for_registry_ready(100),
     {ok, Client} = connect(Path),
     ok = gen_tcp:send(Client, <<"(stop)">>),
     {ok, _Reply} = gen_tcp:recv(Client, 0, 5000),
@@ -216,7 +220,21 @@ wait_for_registry_status(TaskId, Expected, N) ->
             wait_for_registry_status(TaskId, Expected, N - 1);
         {error, not_found} ->
             timer:sleep(20),
+            wait_for_registry_status(TaskId, Expected, N - 1);
+        {error, recovery_incomplete} ->
+            timer:sleep(20),
             wait_for_registry_status(TaskId, Expected, N - 1)
+    end.
+
+wait_for_registry_ready(0) ->
+    {error, recovery_timeout};
+wait_for_registry_ready(N) ->
+    case soma_cli_task_registry:lookup(<<"__recovery_probe__">>) of
+        {error, recovery_incomplete} ->
+            timer:sleep(20),
+            wait_for_registry_ready(N - 1);
+        _ ->
+            ok
     end.
 
 %% Poll for the path becoming rebindable. While the old listener has not yet torn

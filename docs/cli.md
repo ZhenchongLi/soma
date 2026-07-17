@@ -110,6 +110,17 @@ Reply:
 (accepted (task-id "task-3") (correlation-id "corr-4"))
 ```
 
+If the daemon cannot confirm whether durable admission or activation committed,
+it does not print `accepted`. It returns a queryable, structured result instead:
+
+```lisp
+(result (status error) (task-id "task-3") (run-id "run-5")
+  (error admission-in-doubt) (correlation-id "corr-4"))
+```
+
+Keep those ids and use `status`, `trace`, or `cancel`; a transport timeout alone
+does not prove that detached admission was absent.
+
 Use the ids from that reply:
 
 ```bash
@@ -117,6 +128,20 @@ $SOMA status "task-3"
 $SOMA trace "corr-4"
 $SOMA cancel "task-3"
 ```
+
+When the daemon uses a durable event store, a detached task interrupted by an
+unclean daemon or runtime restart keeps its original task and correlation ids.
+The restarted daemon first restores configured tools, then resumes the task
+under the CLI task registry.  While the resumed tool is active, `status` reports
+`running`, `trace` includes `run.resumed` on the original correlation trail, and
+`cancel` reaches the resumed worker and any external CLI process it owns.
+
+This recovery rule applies to interrupted ownership. A controlled `soma stop`
+records cancellation intent before reporting success, then cancels live
+detached tasks. Detached journals created by older Soma versions have no durable
+ownership marker and are not guessed into CLI ownership after restart. An old
+journal interrupted inside a tool call also lacks the original safety snapshot
+and fails closed rather than trusting the tool's current descriptor.
 
 `soma status <task-id>` prints:
 
@@ -294,6 +319,19 @@ Replies are also Lisp:
 (result (status stopped))
 ```
 
+For detached work, `cancel` and `stop` synchronously journal the fixed
+`cli.task.cancel_requested` owner event before acknowledging success. A restart
+that finds this intent never starts a fresh tool attempt: it cancels an adopted
+live run or, when no live run exists, finalizes `run.cancelled` directly. If the
+event-store acknowledgement is unavailable, cancel returns an error and the
+client exits non-zero; stop returns `(status stop-failed)` and keeps the listener
+open.
+
+Stop also closes detached admission atomically with that durable cancellation
+snapshot. A concurrent detached request is therefore either part of the stop
+batch or rejected; it cannot be acknowledged after stop without a cancel
+intent. A newly rebound listener opens a fresh admission generation.
+
 The transport carries one framed s-expression per request and one framed
 s-expression per reply. No JSON is used on this path.
 
@@ -306,4 +344,4 @@ s-expression per reply. No JSON is used on this path.
 - Disconnecting a synchronous `soma run` client cancels that in-flight run.
 - Detached runs outlive the client and can be read or cancelled by id.
 - `soma stop` closes the listener, cancels live detached runs, and removes the
-  socket file.
+  socket file only after every active detached cancellation intent is confirmed.

@@ -47,3 +47,18 @@ test_cli_md_documents_detach_and_cancel_not_deferred() ->
 
 cli_md_documents_detach_and_cancel_not_deferred_test() ->
     test_cli_md_documents_detach_and_cancel_not_deferred().
+
+%% Issue #256: the command reference names the durable detached-task restart
+%% semantics and distinguishes an unclean interruption from controlled stop.
+test_cli_md_documents_detached_restart_recovery() ->
+    Cli = read_doc(?CLI_DOC),
+    ?assert(contains(Cli, <<"unclean daemon or runtime restart">>)),
+    ?assert(contains(Cli, <<"keeps its original task and correlation ids">>)),
+    ?assert(contains(Cli, <<"first restores configured tools">>)),
+    ?assert(contains(Cli, <<"`run.resumed`">>)),
+    ?assert(contains(Cli, <<"A controlled `soma stop`">>)),
+    ?assert(contains(Cli, <<"`cli.task.cancel_requested`">>)),
+    ?assert(contains(Cli, <<"`(status stop-failed)`">>)).
+
+cli_md_documents_detached_restart_recovery_test() ->
+    test_cli_md_documents_detached_restart_recovery().

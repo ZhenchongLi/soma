@@ -14,11 +14,18 @@ resume_interrupted(StorePid) ->
 
 maybe_resume(RunId, StorePid) ->
     case soma_run_resume:reconstruct(StorePid, RunId) of
-        {ok, #{run_options := #{auto_resume := false}}} ->
-            ok;
-        _GenericRun ->
-            _ResumeResult =
-                soma_run_resume_executor:resume(
-                  RunId, undefined, StorePid),
+        {ok, #{run_options :=
+                   #{run_origin := runtime_default,
+                     auto_resume := true}}} ->
+            resume_generic(RunId, StorePid);
+        _LegacyOwnerManagedOrMalformed ->
+            %% Undefined legacy ownership is intentionally not guessed. Older
+            %% detached CLI and generic trails are indistinguishable, so only a
+            %% new explicit generic origin plus an exact boolean opt-in may run.
             ok
     end.
+
+resume_generic(RunId, StorePid) ->
+    _ResumeResult = soma_run_resume_executor:resume(
+                      RunId, undefined, StorePid),
+    ok.

@@ -37,9 +37,14 @@ listen(Parent, Path, ModelConfig, ToolsDir) ->
     case soma_socket_path:listen(Path) of
         {ok, ListenSocket, OwnershipToken} ->
             try
-                ok = ensure_task_registry(),
-                Parent ! {self(), listening},
-                accept_loop(ListenSocket, ModelConfig, ToolsDir, self())
+                case ensure_task_registry(ToolsDir, self()) of
+                    ok ->
+                        Parent ! {self(), listening},
+                        accept_loop(
+                          ListenSocket, ModelConfig, ToolsDir, self());
+                    {error, RegistryReason} ->
+                        Parent ! {self(), {error, RegistryReason}}
+                end
             after
                 _ = soma_socket_path:close(ListenSocket, OwnershipToken)
             end;
@@ -439,7 +444,7 @@ handle_lfe_request(Bytes, Socket, ModelConfig, Listener) ->
                end,
     case Compiled of
         {ok, #{run := #{steps := Steps, detach := true}}} ->
-            run_steps_detached(Steps);
+            run_steps_detached(Steps, Listener);
         {ok, #{run := #{steps := Steps}}} ->
             run_steps(Steps, Socket);
         {ok, #{ask := Ask}} ->
@@ -611,20 +616,40 @@ configured_explore_budget(_ModelConfig) ->
 %% connections; it does not disturb this already-accepted connection, so the
 %% reply still flushes to the stopping client. The listener also unlinks the
 %% socket file after closing the listen socket. Before signalling teardown the
-%% handler asks the daemon-owned registry to cancel every running detached run --
-%% stop cancels in-flight runs rather than refusing while busy -- so each
-%% `soma_run' tears down its worker and emits `run.cancelled' on the way out.
+%% handler asks the daemon-owned registry to durably record cancellation for
+%% every running detached run before teardown. Live runs are then signalled for
+%% immediate worker cleanup; a VM halt before their terminal event is harmless
+%% because the next registry finalizes the recorded intent without replay.
 handle_stop(Listener) ->
-    _ = cancel_inflight_runs(),
-    Listener ! close_listen,
-    ["(result (status stopped))"].
+    case cancel_inflight_runs(Listener) of
+        ok ->
+            Listener ! close_listen,
+            ["(result (status stopped))"];
+        {error, stale_daemon_generation} ->
+            %% A newer listener already owns admission. This old listener has
+            %% no authority over its tasks, but it may still retire itself.
+            Listener ! close_listen,
+            ["(result (status stopped))"];
+        {error, _Reason} ->
+            %% Fail closed: keep accepting connections when the owner decision
+            %% cannot be recorded. The client returns non-zero because the
+            %% response deliberately lacks `(status stopped)'.
+            ["(result (status stop-failed) "
+             "(error cancel-intent-not-persisted))"]
+    end.
 
 %% Cancel every running detached run the registry owns. Absent a registry (no
 %% detached run was ever started) there is nothing in flight to cancel.
-cancel_inflight_runs() ->
+cancel_inflight_runs(Listener) ->
     case whereis(soma_cli_task_registry) of
-        undefined -> ok;
-        _Pid -> soma_cli_task_registry:cancel_all()
+        undefined ->
+            {error, cancel_intent_not_persisted};
+        _Pid ->
+            try soma_cli_task_registry:cancel_all(Listener) of
+                Result -> Result
+            catch
+                _:_ -> {error, cancel_intent_not_persisted}
+            end
     end.
 
 %% Render a `(trace "<corr>")' read request. `soma_trace:render_lisp/2' fetches
@@ -642,9 +667,18 @@ handle_trace(CorrId) ->
 %% run's `session_id' to the task id, so a task's events are reachable by
 %% `by_session/2' even though the store has no `by_task' query.
 handle_status(TaskId) ->
-    State = case soma_cli_task_registry:lookup(TaskId) of
+    Lookup = try soma_cli_task_registry:lookup(TaskId) of
+                 RegistryResult -> RegistryResult
+             catch
+                 _:_ -> {error, registry_unavailable}
+             end,
+    State = case Lookup of
                 {ok, #{status := RegistryState}} ->
                     RegistryState;
+                {error, recovery_incomplete} ->
+                    recovering;
+                {error, registry_unavailable} ->
+                    unavailable;
                 {error, not_found} ->
                     Events = soma_event_store:by_session(event_store_pid(),
                                                          TaskId),
@@ -652,12 +686,18 @@ handle_status(TaskId) ->
             end,
     ["(status (state ", atom_to_list(State), "))"].
 
-%% Fire a cancellation request for a live detached task. The registry only sends
-%% the existing `cancel' message to the run; `soma_run' owns worker teardown and
-%% `run.cancelled' emission. The handler then waits briefly for the registry to
-%% observe the run's terminal message and reports that state to the client.
+%% Fire a cancellation request for a live detached task. The registry first
+%% records a durable owner intent, then sends the existing `cancel' message to a
+%% live run. The handler waits briefly for a terminal projection; if the runtime
+%% is between generations, the durable intent prevents recovery from executing
+%% a fresh tool attempt.
 handle_cancel(TaskId) ->
-    case soma_cli_task_registry:cancel(TaskId) of
+    Result = try soma_cli_task_registry:cancel(TaskId) of
+                 CancelResult -> CancelResult
+             catch
+                 _:_ -> {error, registry_unavailable}
+             end,
+    case Result of
         ok ->
             Task = wait_for_cancel_terminal(TaskId, 100),
             render_cancel_result(TaskId, Task);
@@ -671,26 +711,45 @@ handle_cancel(TaskId) ->
                                                    error => not_found});
                 Status ->
                     render_terminal_cancel_result(Status)
-            end
+            end;
+        {error, cancel_intent_not_persisted} ->
+            render_cancel_result(TaskId,
+                                 #{status => error,
+                                   error => cancel_intent_not_persisted});
+        {error, recovery_incomplete} ->
+            render_cancel_result(TaskId,
+                                 #{status => error,
+                                   error => recovery_incomplete});
+        {error, registry_unavailable} ->
+            render_cancel_result(TaskId,
+                                 #{status => error,
+                                   error => registry_unavailable})
     end.
 
 wait_for_cancel_terminal(TaskId, 0) ->
     lookup_cancel_task(TaskId);
 wait_for_cancel_terminal(TaskId, N) ->
-    case soma_cli_task_registry:lookup(TaskId) of
+    case safe_task_lookup(TaskId) of
         {ok, #{status := running}} ->
             timer:sleep(20),
             wait_for_cancel_terminal(TaskId, N - 1);
         {ok, Task} ->
             Task;
-        {error, not_found} ->
-            #{status => unknown, error => not_found}
+        {error, Reason} ->
+            #{status => unknown, error => Reason}
     end.
 
 lookup_cancel_task(TaskId) ->
-    case soma_cli_task_registry:lookup(TaskId) of
+    case safe_task_lookup(TaskId) of
         {ok, Task} -> Task;
-        {error, not_found} -> #{status => unknown, error => not_found}
+        {error, Reason} -> #{status => unknown, error => Reason}
+    end.
+
+safe_task_lookup(TaskId) ->
+    try soma_cli_task_registry:lookup(TaskId) of
+        Result -> Result
+    catch
+        _:_ -> {error, registry_unavailable}
     end.
 
 render_cancel_result(TaskId, Task) ->
@@ -778,24 +837,55 @@ run_steps(Steps, Socket) ->
             soma_lisp:render(Result)
     end.
 
-run_steps_detached(Steps) ->
-    ok = ensure_task_registry(),
+run_steps_detached(Steps, Listener) ->
     TaskId = mint_id("task"),
     CorrId = mint_id("corr"),
     RunId = mint_id("run"),
-    {ok, _Info} = soma_cli_task_registry:start_detached_run(
-                    TaskId, CorrId, RunId, Steps, event_store_pid()),
-    render_accepted(TaskId, CorrId).
+    StartResult = try soma_cli_task_registry:start_detached_run(
+                        TaskId, CorrId, RunId, Steps,
+                        event_store_pid(), Listener) of
+                      Result -> Result
+                  catch
+                      exit:_Reason ->
+                          %% A call timeout/registry exit cannot prove the
+                          %% admission message was not committed. Preserve the
+                          %% minted identities so the client can query the
+                          %% explicitly in-doubt task instead of receiving an
+                          %% uncorrelatable generic error.
+                          {error,
+                           {admission_in_doubt,
+                            #{task_id => TaskId,
+                              correlation_id => CorrId,
+                              run_id => RunId}}}
+                  end,
+    case StartResult of
+        {ok, _Info} ->
+            render_accepted(TaskId, CorrId);
+        {error, {admission_in_doubt, Info}} ->
+            soma_lisp:render(
+              Info#{status => error, error => admission_in_doubt});
+        {error, Reason} ->
+            soma_lisp:render(#{status => error, error => Reason})
+    end.
 
-ensure_task_registry() ->
+ensure_task_registry(ToolsDir, Owner) ->
     case whereis(soma_cli_task_registry) of
         undefined ->
-            case soma_cli_task_registry:start_link() of
-                {ok, _Pid} -> ok;
-                {error, {already_started, _Pid}} -> ok
+            case soma_cli_task_registry:start_link(#{tools_dir => ToolsDir}) of
+                {ok, _Pid} ->
+                    safe_open_admission(Owner, ToolsDir);
+                {error, {already_started, _Pid}} ->
+                    safe_open_admission(Owner, ToolsDir)
             end;
         _Pid ->
-            ok
+            safe_open_admission(Owner, ToolsDir)
+    end.
+
+safe_open_admission(Owner, ToolsDir) ->
+    try soma_cli_task_registry:open_admission(Owner, ToolsDir) of
+        Result -> Result
+    catch
+        exit:_Reason -> {error, registry_unresponsive}
     end.
 
 render_accepted(TaskId, CorrId) ->
@@ -833,18 +923,22 @@ await_run(RunId, TaskId, CorrId, RunPid, Socket) ->
             noreply
     end.
 
-%% Locate the running event store pid from the booted supervision tree, the same
-%% way `soma_agent_session' does, so the run the handler owns emits its event
-%% trail (the test seam this slice asserts on reads `run.cancelled' from there).
+%% The runtime store has a stable local name, so edge handlers do not need an
+%% unbounded supervisor:which_children/1 call while soma_sup is shutting down.
 event_store_pid() ->
-    Children = supervisor:which_children(soma_sup),
-    {soma_event_store, Pid, _Type, _Mods} =
-        lists:keyfind(soma_event_store, 1, Children),
-    Pid.
+    case whereis(soma_runtime_event_store) of
+        Pid when is_pid(Pid) -> Pid;
+        undefined -> error(runtime_event_store_unavailable)
+    end.
 
 mint_id(Prefix) ->
-    list_to_binary(
-      Prefix ++ "-" ++ integer_to_list(erlang:unique_integer([positive, monotonic]))).
+    %% IDs are persisted in the event trail and reused across daemon restarts.
+    %% A VM-local unique_integer sequence can restart at the same value and
+    %% alias a historical task/session, so use the same 128-bit random suffix
+    %% as the durable runtime service.
+    PrefixBin = list_to_binary(Prefix),
+    Random = binary:encode_hex(crypto:strong_rand_bytes(16)),
+    <<PrefixBin/binary, "-", Random/binary>>.
 
 %% Compatibility wrappers retained for callers that exercise the pure wire
 %% contract without opening a socket. The shared codec owns the prefix logic.
