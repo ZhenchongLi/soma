@@ -751,6 +751,21 @@ index_recovery_event(_Event, Candidates) ->
     Candidates.
 
 recover_detached_task(RunId, Task, Store, State) ->
+    %% A live-run adoption is only an in-memory ownership transition.  Exact
+    %% admission authority remains in the durable trail, including a rejection
+    %% append that may arrive after an earlier registry generation timed out.
+    %% Refresh that authority before every interruption/recovery decision so a
+    %% missing/stale in-memory field can never soften an admission-required run
+    %% into the legacy path.
+    case refresh_admission_state(RunId, Task, Store) of
+        {ok, RefreshedTask} ->
+            recover_detached_task_with_admission(
+              RunId, RefreshedTask, Store, State);
+        retry ->
+            defer_recovery(Task, State)
+    end.
+
+recover_detached_task_with_admission(RunId, Task, Store, State) ->
     case {maps:get(journal_invalid, Task, false),
           maps:get(admission_required, Task, false),
           maps:get(admission_accepted, Task, false),
@@ -762,6 +777,29 @@ recover_detached_task(RunId, Task, Store, State) ->
             recover_pending_admission(Task, Store, State);
         {false, false, _, _, _} ->
             recover_valid_detached_task(RunId, Task, Store, State)
+    end.
+
+refresh_admission_state(RunId, Task, Store) ->
+    case read_run_events(Store, RunId) of
+        {ok, Events} ->
+            Candidates = lists:foldl(fun index_recovery_event/2, #{}, Events),
+            case maps:find(RunId, Candidates) of
+                {ok, TrailTask} ->
+                    AdmissionKeys =
+                        [admission_required, admission_id,
+                         admission_accepted, admission_committed,
+                         admission_rejected, journal_invalid],
+                    Cleared = maps:without(AdmissionKeys, Task),
+                    {ok, maps:merge(
+                           Cleared, maps:with(AdmissionKeys, TrailTask))};
+                error ->
+                    %% A task already selected for detached recovery without a
+                    %% reconstructable marked start is malformed, not legacy
+                    %% permission to resume.
+                    {ok, Task#{journal_invalid => true}}
+            end;
+        retry ->
+            retry
     end.
 
 recover_pending_admission(Task = #{run_id := RunId}, Store, State) ->
@@ -1014,9 +1052,9 @@ finalize_failed_task(Task, Store, Reason, State) ->
     end.
 
 put_recovered_running_task(
-  Task = #{task_id := TaskId, correlation_id := CorrId, run_id := RunId,
+  Task = #{task_id := TaskId,
            cancel_requested := true}, RunPid, State) ->
-    State1 = put_running_task(TaskId, CorrId, RunId, RunPid, State),
+    State1 = put_running_task(Task, RunPid, State),
     State2 = case maps:get(cancel_intent_durable, Task, false) of
                  true -> mark_cancel_intent_durable(TaskId, State1);
                  false ->
@@ -1028,9 +1066,24 @@ put_recovered_running_task(
     RunPid ! cancel,
     State2;
 put_recovered_running_task(
-  #{task_id := TaskId, correlation_id := CorrId, run_id := RunId},
+  Task = #{task_id := _TaskId, correlation_id := _CorrId, run_id := _RunId},
   RunPid, State) ->
-    put_running_task(TaskId, CorrId, RunId, RunPid, State).
+    put_running_task(Task, RunPid, State).
+
+put_running_task(
+  Task0 = #{task_id := TaskId, correlation_id := CorrId, run_id := RunId},
+  RunPid, State) ->
+    State1 = put_running_task(TaskId, CorrId, RunId, RunPid, State),
+    #{tasks := Tasks} = State1,
+    LiveTask = maps:get(TaskId, Tasks),
+    %% Preserve the exact durable admission identity and decision carried by
+    %% the recovery projection.  Runtime-local ownership fields come from the
+    %% freshly installed live entry and cannot be injected by the journal.
+    AdmissionKeys = [admission_required, admission_id,
+                     admission_accepted, admission_committed,
+                     admission_rejected],
+    Preserved = maps:with(AdmissionKeys, Task0),
+    State1#{tasks := Tasks#{TaskId => maps:merge(LiveTask, Preserved)}}.
 
 put_running_task(TaskId, CorrId, RunId, RunPid,
                  #{tasks := Tasks, runs := Runs,

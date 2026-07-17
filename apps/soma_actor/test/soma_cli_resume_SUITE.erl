@@ -8,11 +8,14 @@
 -export([test_uncommitted_fresh_admission_fails_closed_after_registry_restart/1]).
 -export([test_rejected_admission_outvotes_later_exact_acceptance/1]).
 -export([test_committed_before_accepted_is_rejected/1]).
+-export([test_acceptance_unknown_socket_returns_ids_and_retries_once/1]).
+-export([test_activation_unknown_socket_returns_ids_without_effect/1]).
 -export([test_restarted_detached_run_is_visible_cancellable_and_traceable/1]).
 -export([test_unsafe_detached_resume_reports_failed_without_reexecution/1]).
 -export([test_unmarked_foreground_run_is_not_adopted/1]).
 -export([test_config_cli_tool_recovers_after_restart_and_cancel_kills_os_process/1]).
 -export([test_listener_restart_adopts_live_detached_run_without_second_resume/1]).
+-export([test_late_rejection_after_live_adoption_cancels_without_replay/1]).
 -export([test_runtime_restart_recovers_with_registry_alive/1]).
 -export([test_tool_registry_generation_reload_recovers_config_tool/1]).
 -export([test_unresponsive_live_run_defers_without_duplicate/1]).
@@ -44,11 +47,14 @@ all() ->
      test_uncommitted_fresh_admission_fails_closed_after_registry_restart,
      test_rejected_admission_outvotes_later_exact_acceptance,
      test_committed_before_accepted_is_rejected,
+     test_acceptance_unknown_socket_returns_ids_and_retries_once,
+     test_activation_unknown_socket_returns_ids_without_effect,
      test_restarted_detached_run_is_visible_cancellable_and_traceable,
      test_unsafe_detached_resume_reports_failed_without_reexecution,
      test_unmarked_foreground_run_is_not_adopted,
      test_config_cli_tool_recovers_after_restart_and_cancel_kills_os_process,
      test_listener_restart_adopts_live_detached_run_without_second_resume,
+     test_late_rejection_after_live_adoption_cancels_without_replay,
      test_runtime_restart_recovers_with_registry_alive,
      test_tool_registry_generation_reload_recovers_config_tool,
      test_unresponsive_live_run_defers_without_duplicate,
@@ -561,6 +567,193 @@ test_committed_before_accepted_is_rejected(Config) ->
         stop_server(Server)
     end.
 
+%% Drive the real socket -> daemon -> registry admission path while the event
+%% store blocks the registry's first post-preparation by_run read. The request
+%% therefore loses certainty about cli.task.accepted and must return the minted
+%% ids as admission_in_doubt, never as accepted. Releasing the exact store call
+%% proves the registry's pending-admission retry completes one handshake and
+%% one tool invocation under the same queryable task id.
+test_acceptance_unknown_socket_returns_ids_and_retries_once(Config) ->
+    ok = boot_runtime(Config),
+    {ok, Server} = start_server(Config),
+    ok = wait_for_registry_ready(100),
+    Store = event_store_pid(),
+    Registry = whereis(soma_cli_task_registry),
+    OutputName = <<"acceptance-unknown-retry.txt">>,
+    Output = filename:join(?config(tmp_dir, Config),
+                           binary_to_list(OutputName)),
+    Gate = install_admission_store_gate(Store, acceptance_read),
+    try
+        {TaskId, CorrelationId, RunId} =
+            try
+                Reply = request(
+                          ?config(socket_path, Config),
+                          <<"(run (detach) "
+                            "(step once file_write "
+                            "(args (path \"", OutputName/binary,
+                            "\") (root \"",
+                            (unicode:characters_to_binary(
+                               ?config(tmp_dir, Config)))/binary,
+                            "\") (bytes \"once\"))))">>),
+                {ReplyTaskId, ReplyCorrelationId, ReplyRunId} =
+                    admission_in_doubt_ids(Reply),
+                {acceptance_read, ReplyRunId} =
+                    wait_for_admission_store_gate(Gate, 1000),
+                ?assertEqual(match,
+                             re:run(ReplyTaskId,
+                                    "^task-[0-9A-F]{32}$",
+                                    [{capture, none}])),
+                ?assertEqual(match,
+                             re:run(ReplyCorrelationId,
+                                    "^corr-[0-9A-F]{32}$",
+                                    [{capture, none}])),
+                ?assertEqual(match,
+                             re:run(ReplyRunId,
+                                    "^run-[0-9A-F]{32}$",
+                                    [{capture, none}])),
+                RegistryState = sys:get_state(Registry),
+                Pending = maps:get(
+                            ReplyTaskId, maps:get(tasks, RegistryState)),
+                ?assertEqual(ReplyRunId, maps:get(run_id, Pending)),
+                ?assertEqual(ReplyCorrelationId,
+                             maps:get(correlation_id, Pending)),
+                ?assertEqual(true,
+                             maps:get(admission_accept_pending, Pending)),
+                PendingRunPid = maps:get(pid, Pending),
+                ?assert(is_process_alive(PendingRunPid)),
+                ?assertEqual(false, filelib:is_file(Output)),
+                {ReplyTaskId, ReplyCorrelationId, ReplyRunId}
+            after
+                release_admission_store_gate(Gate)
+            end,
+        ok = remove_admission_store_gate(Gate),
+
+        ok = wait_for_event(Store, RunId, <<"run.completed">>, 200),
+        {ok, <<"once">>} = file:read_file(Output),
+        {ok, #{status := completed}} =
+            wait_for_registry_status(TaskId, completed, 100),
+        Status = request(
+                   ?config(socket_path, Config),
+                   <<"(status \"", TaskId/binary, "\")">>),
+        ?assertEqual(match,
+                     re:run(Status, "\\(state completed\\)",
+                            [{capture, none}])),
+        Events = soma_event_store:by_run(Store, RunId),
+        Types = [maps:get(event_type, Event) || Event <- Events],
+        ?assertEqual(1, count(<<"run.started">>, Types)),
+        ?assertEqual(1, count(<<"cli.task.accepted">>, Types)),
+        ?assertEqual(1, count(<<"run.admission.committed">>, Types)),
+        ?assertEqual(0,
+                     count(<<"cli.task.admission_rejected">>, Types)),
+        ?assertEqual(1, count(<<"tool.started">>, Types)),
+        ?assertEqual(1, count(<<"step.succeeded">>, Types)),
+        ?assertEqual(1, count(<<"run.completed">>, Types)),
+        ?assertEqual(
+           [<<"run.started">>, <<"cli.task.accepted">>,
+            <<"run.admission.committed">>, <<"step.started">>,
+            <<"tool.started">>],
+           ordered_event_types(
+             [<<"run.started">>, <<"cli.task.accepted">>,
+              <<"run.admission.committed">>, <<"step.started">>,
+              <<"tool.started">>], Events)),
+        ?assert(is_process_alive(Registry)),
+        ?assert(is_process_alive(Server)),
+        ?assertEqual(CorrelationId,
+                     maps:get(correlation_id,
+                              latest_event(Store, RunId,
+                                           <<"cli.task.accepted">>)))
+    after
+        _ = remove_admission_store_gate(Gate),
+        stop_server(Server)
+    end.
+
+%% Block the run-owned admission commit itself after the edge acceptance is
+%% durable. The real socket call must again return admission_in_doubt with all
+%% ids and no accepted form. Once released after the request lease expired, the
+%% run may durably finish that commit but must cancel before the first step/tool
+%% boundary; the registry then projects the stable task id as cancelled.
+test_activation_unknown_socket_returns_ids_without_effect(Config) ->
+    ok = boot_runtime(Config),
+    {ok, Server} = start_server(Config),
+    ok = wait_for_registry_ready(100),
+    Store = event_store_pid(),
+    Registry = whereis(soma_cli_task_registry),
+    OutputName = <<"activation-unknown-must-not-exist.txt">>,
+    Output = filename:join(?config(tmp_dir, Config),
+                           binary_to_list(OutputName)),
+    Gate = install_admission_store_gate(Store, activation_commit),
+    try
+        {TaskId, CorrelationId, RunId} =
+            try
+                Reply = request(
+                          ?config(socket_path, Config),
+                          <<"(run (detach) "
+                            "(step never file_write "
+                            "(args (path \"", OutputName/binary,
+                            "\") (root \"",
+                            (unicode:characters_to_binary(
+                               ?config(tmp_dir, Config)))/binary,
+                            "\") (bytes \"must-not-run\"))))">>),
+                {ReplyTaskId, ReplyCorrelationId, ReplyRunId} =
+                    admission_in_doubt_ids(Reply),
+                {activation_commit, ReplyRunId} =
+                    wait_for_admission_store_gate(Gate, 1000),
+                RegistryState = sys:get_state(Registry),
+                Pending = maps:get(
+                            ReplyTaskId, maps:get(tasks, RegistryState)),
+                ?assertEqual(true,
+                             maps:get(admission_accepted, Pending)),
+                ?assertEqual(true,
+                             maps:get(admission_activation_pending, Pending)),
+                ?assertEqual(ReplyRunId, maps:get(run_id, Pending)),
+                ?assertEqual(ReplyCorrelationId,
+                             maps:get(correlation_id, Pending)),
+                ?assert(is_process_alive(maps:get(pid, Pending))),
+                ?assertEqual(false, filelib:is_file(Output)),
+                {ReplyTaskId, ReplyCorrelationId, ReplyRunId}
+            after
+                release_admission_store_gate(Gate)
+            end,
+        ok = remove_admission_store_gate(Gate),
+
+        ok = wait_for_event(Store, RunId, <<"run.cancelled">>, 200),
+        {ok, #{status := cancelled}} =
+            wait_for_registry_status(TaskId, cancelled, 100),
+        Status = request(
+                   ?config(socket_path, Config),
+                   <<"(status \"", TaskId/binary, "\")">>),
+        ?assertEqual(match,
+                     re:run(Status, "\\(state cancelled\\)",
+                            [{capture, none}])),
+        Events = soma_event_store:by_run(Store, RunId),
+        Types = [maps:get(event_type, Event) || Event <- Events],
+        ?assertEqual(1, count(<<"run.started">>, Types)),
+        ?assertEqual(1, count(<<"cli.task.accepted">>, Types)),
+        ?assertEqual(1, count(<<"run.admission.committed">>, Types)),
+        ?assertEqual(1, count(<<"run.cancelled">>, Types)),
+        ?assertEqual(0,
+                     count(<<"cli.task.admission_rejected">>, Types)),
+        ?assertEqual(0, count(<<"step.started">>, Types)),
+        ?assertEqual(0, count(<<"tool.started">>, Types)),
+        ?assertEqual(0, count(<<"step.succeeded">>, Types)),
+        ?assertEqual(0, count(<<"run.completed">>, Types)),
+        ?assertEqual(false, filelib:is_file(Output)),
+        ?assertEqual(
+           [<<"run.started">>, <<"cli.task.accepted">>,
+            <<"run.admission.committed">>, <<"run.cancelled">>],
+           ordered_event_types(
+             [<<"run.started">>, <<"cli.task.accepted">>,
+              <<"run.admission.committed">>, <<"run.cancelled">>],
+             Events)),
+        ?assertEqual(CorrelationId,
+                     maps:get(correlation_id,
+                              latest_event(Store, RunId,
+                                           <<"run.admission.committed">>)))
+    after
+        _ = remove_admission_store_gate(Gate),
+        stop_server(Server)
+    end.
+
 %% Issue #256: after runtime restart, auto-resume deliberately leaves a
 %% cli_detached/auto_resume=false journal alone.  Once the CLI registry starts
 %% (after configured tools are loaded in the production daemon), it resumes the
@@ -833,6 +1026,90 @@ test_listener_restart_adopts_live_detached_run_without_second_resume(Config) ->
         ok = wait_for_process_dead(WorkerPid, 100),
         {ok, #{status := cancelled}} =
             soma_cli_task_registry:lookup(TaskId)
+    after
+        stop_server(Server2)
+    end.
+
+%% A replacement registry that adopts a fully committed live run must retain
+%% its exact admission identity.  A rejection append from an older generation
+%% may land after that adoption; if the adopted run is then interrupted, the
+%% replacement must re-read the absorbing tombstone and cancel rather than
+%% softening the missing in-memory fields into a legacy resume permission.
+test_late_rejection_after_live_adoption_cancels_without_replay(Config) ->
+    ok = boot_runtime(Config),
+    Output = filename:join(
+               ?config(tmp_dir, Config), "late-rejection-effect.txt"),
+    {ok, Server1} = start_server(Config),
+    Reply = request(
+              ?config(socket_path, Config),
+              iolist_to_binary(
+                ["(run (detach) ",
+                 "(step hold sleep (args (ms 15000))) ",
+                 "(step forbidden file_write (args (path ",
+                 soma_lisp:render(unicode:characters_to_binary(Output)),
+                 ") (bytes \"must-not-run\"))))"])),
+    TaskId = accepted_id(<<"task-id">>, Reply),
+    CorrelationId = accepted_id(<<"correlation-id">>, Reply),
+    Store = event_store_pid(),
+    Started = wait_for_started_by_session(Store, TaskId, 100),
+    RunId = maps:get(run_id, Started),
+    ok = wait_for_event(Store, RunId, <<"tool.started">>, 100),
+    RunPid = live_run_pid(RunId),
+
+    crash_server(Server1),
+    ?assert(is_process_alive(RunPid)),
+
+    {ok, Server2} = start_server(Config),
+    try
+        {ok, Adopted = #{pid := RunPid, status := running,
+                         admission_required := true,
+                         admission_id := AdmissionId,
+                         admission_accepted := true,
+                         admission_committed := true}} =
+            wait_for_registry_run(TaskId, 100),
+        ?assertEqual(TaskId, maps:get(task_id, Adopted)),
+        ?assertEqual(RunId, maps:get(run_id, Adopted)),
+        ?assert(is_binary(AdmissionId)),
+        ?assert(byte_size(AdmissionId) > 0),
+
+        ok = soma_event_store:append(
+               Store,
+               #{event_type => <<"cli.task.admission_rejected">>,
+                 run_id => RunId,
+                 session_id => TaskId,
+                 task_id => TaskId,
+                 correlation_id => CorrelationId,
+                 payload =>
+                     #{admission_protocol => cli_detached_v1,
+                       admission_id => AdmissionId,
+                       reason => delayed_old_generation}}),
+        Rejection = latest_event(
+                      Store, RunId, <<"cli.task.admission_rejected">>),
+
+        exit(RunPid, kill),
+        ok = wait_for_process_dead(RunPid, 100),
+        ok = wait_for_event(Store, RunId, <<"run.cancelled">>, 150),
+        {ok, #{status := cancelled}} =
+            wait_for_registry_status(TaskId, cancelled, 150),
+        ok = wait_for_run_claim_absent(RunId, 100),
+
+        Events = soma_event_store:by_run(Store, RunId),
+        AfterRejection = lists:nthtail(
+                           event_position(Rejection, Events), Events),
+        AfterTypes = [maps:get(event_type, Event)
+                      || Event <- AfterRejection],
+        ?assertEqual([<<"run.cancelled">>], AfterTypes),
+        ?assertEqual(
+           [], [Type || Type <- AfterTypes,
+                       lists:member(
+                         Type,
+                         [<<"run.resumed">>, <<"step.started">>,
+                          <<"tool.started">>])]),
+        ?assertEqual(false, filelib:is_file(Output)),
+        ?assert(is_process_alive(Server2)),
+        Registry2 = whereis(soma_cli_task_registry),
+        ?assert(is_pid(Registry2)),
+        ?assert(is_process_alive(Registry2))
     after
         stop_server(Server2)
     end.
@@ -2452,6 +2729,77 @@ accepted_id(Field, Reply) ->
     {match, [Value]} = re:run(Reply, Pattern,
                               [{capture, all_but_first, binary}]),
     Value.
+
+admission_in_doubt_ids(Reply) ->
+    ?assertEqual(match,
+                 re:run(Reply, "\\(status error\\)",
+                        [{capture, none}])),
+    ?assertEqual(match,
+                 re:run(Reply, "\\(error admission-in-doubt\\)",
+                        [{capture, none}])),
+    ?assertEqual(nomatch,
+                 re:run(Reply, "\\(accepted ", [{capture, none}])),
+    {accepted_id(<<"task-id">>, Reply),
+     accepted_id(<<"correlation-id">>, Reply),
+     accepted_id(<<"run-id">>, Reply)}.
+
+install_admission_store_gate(Store, Mode)
+  when Mode =:= acceptance_read; Mode =:= activation_commit ->
+    Token = make_ref(),
+    Name = case Mode of
+               acceptance_read -> admission_acceptance_store_gate;
+               activation_commit -> admission_activation_store_gate
+           end,
+    ok = sys:install(
+           Store,
+           {Name, fun admission_store_gate/3,
+            #{observer => self(), token => Token, mode => Mode,
+              done => false}}),
+    #{store => Store, name => Name, token => Token, mode => Mode}.
+
+admission_store_gate(
+  State = #{mode := acceptance_read, done := false},
+  {in, {'$gen_call', _From, {by_run, RunId}}}, _ProcessState) ->
+    block_admission_store_gate(State, RunId);
+admission_store_gate(
+  State = #{mode := activation_commit, done := false},
+  {in, {'$gen_call', _From,
+        {append, #{event_type := <<"run.admission.committed">>,
+                   run_id := RunId}}}}, _ProcessState) ->
+    block_admission_store_gate(State, RunId);
+admission_store_gate(State, _Event, _ProcessState) ->
+    State.
+
+block_admission_store_gate(
+  State = #{observer := Observer, token := Token, mode := Mode}, RunId) ->
+    Observer ! {admission_store_gate_blocked, Token, Mode, RunId},
+    receive
+        {release_admission_store_gate, Token} ->
+            State#{done => true}
+    after 10000 ->
+            State#{done => true}
+    end.
+
+wait_for_admission_store_gate(#{token := Token}, Timeout) ->
+    receive
+        {admission_store_gate_blocked, Token, Mode, RunId} ->
+            {Mode, RunId}
+    after Timeout ->
+        ct:fail(admission_store_gate_did_not_block)
+    end.
+
+release_admission_store_gate(#{store := Store, token := Token}) ->
+    Store ! {release_admission_store_gate, Token},
+    ok.
+
+remove_admission_store_gate(#{store := Store, name := Name}) ->
+    case is_process_alive(Store) of
+        true ->
+            _ = catch sys:remove(Store, Name),
+            ok;
+        false ->
+            ok
+    end.
 
 wait_for_started_by_session(_Store, _TaskId, 0) ->
     error(run_started_timeout);
